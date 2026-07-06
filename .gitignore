@@ -25,6 +25,7 @@ $RECYCLE.BIN/
 /expenseflow-backend/.env
 /expenseflow-backend/.env.backup
 /expenseflow-backend/.phpunit.result.cache
+/expenseflow-backend/.claude/
 
 # ---------------------------------------------------
 # Frontend Web (Node/React/Vue/Svelte - expenseflow-web)
@@ -58,3 +59,5 @@ yarn-error.log*
 /expenseflow-mobile/ios/Flutter/app.zip
 /expenseflow-mobile/ios/Flutter/flutter_export_environment.sh
 /expenseflow-mobile/ios/Flutter/flutter_assets/
+
+.claude/
