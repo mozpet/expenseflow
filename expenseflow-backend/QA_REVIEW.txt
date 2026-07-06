@@ -1,0 +1,165 @@
+================================================================================
+QA REVIEW — ExpenseFlow Backend
+Tanggal: 2026-06-25
+Scope: controllers, models, middleware, routes, migrations, OCR job, config
+================================================================================
+
+
+################################################################################
+# CRITICAL (wajib diperbaiki sebelum launch)
+################################################################################
+
+--------------------------------------------------------------------------------
+C1. Check-in lapangan (radius) akan GAGAL — enum check_in_type tidak punya 'field'
+--------------------------------------------------------------------------------
+File:
+  - database/migrations/2026_06_19_000003_create_attendances_table.php:25,32
+  - app/Http/Controllers/API/AttendanceController.php:899,912,953
+
+Masalah:
+  Fitur radius yang baru dibuat menulis check_in_type = 'field', tapi kolom enum
+  hanya mengizinkan ['onsite', 'wfh']:
+
+      $table->enum('check_in_type', ['onsite', 'wfh'])->nullable();   // baris 25
+      $table->enum('check_out_type', ['onsite', 'wfh'])->nullable();  // baris 32
+
+  - MySQL strict mode  -> SQLException, check-in lapangan langsung error 500.
+  - MySQL non-strict    -> kolom diisi string kosong '' -> data presensi rusak diam-diam.
+  - checkOut() baris 953 menyalin check_in_type ke check_out_type -> error yang sama.
+
+Fix:
+  Buat migration baru untuk mengubah kedua enum:
+
+      DB::statement("ALTER TABLE attendances MODIFY check_in_type ENUM('onsite','wfh','field') NULL");
+      DB::statement("ALTER TABLE attendances MODIFY check_out_type ENUM('onsite','wfh','field') NULL");
+
+  CATATAN: Ini bug dari fitur radius yang dikerjakan kemarin — belum ada migration
+  enum-nya. Seluruh fitur radius TIDAK akan jalan tanpa fix ini.
+
+
+################################################################################
+# WARNING (sebaiknya diperbaiki)
+################################################################################
+
+--------------------------------------------------------------------------------
+W1. Privilege escalation — HRD bisa ubah role siapa pun jadi super_admin
+--------------------------------------------------------------------------------
+File:
+  - app/Http/Controllers/API/UserController.php:68-79
+  - routes/api.php:102-105
+
+Masalah:
+  PUT /admin/users/{user} diizinkan untuk role:hrd,admin,super_admin, dan update()
+  melakukan $user->update($validated) di mana $validated termasuk 'role'. Akibatnya:
+    - HRD bisa menaikkan dirinya/orang lain menjadi super_admin.
+    - HRD bisa reset-password / deactivate akun admin/super_admin -> account takeover.
+
+  Inkonsisten: store() (buat user) butuh role:admin,super_admin, tapi update()
+  (yang bisa ganti role) hanya butuh hrd.
+
+Fix:
+  Batasi route update/role-change ke admin,super_admin, atau larang non-admin
+  mengubah field 'role' dan mentarget user dengan role >= dirinya.
+
+--------------------------------------------------------------------------------
+W2. Multi-level approval invoice — satu orang bisa approve semua level
+--------------------------------------------------------------------------------
+File:
+  - app/Http/Controllers/API/InvoiceController.php:50-58, 295-337
+
+Masalah:
+  allowedRolesForLevel() memasukkan super_admin di level 0, 1, dan 2; admin di
+  level 0 dan 1. Tidak ada pengecekan bahwa approver level N berbeda dari approver
+  level sebelumnya. Jadi satu super_admin bisa memanggil approve() 3x dan
+  meloloskan invoice >50jt sendirian — menghilangkan tujuan separation-of-duties.
+
+Fix:
+  Tolak approve jika user_id sudah ada di invoice_approvals untuk invoice tsb
+  (pastikan approver berbeda per level).
+
+--------------------------------------------------------------------------------
+W3. CORS terlalu permisif
+--------------------------------------------------------------------------------
+File:
+  - config/cors.php
+
+Masalah:
+      'allowed_origins' => ['*'],
+
+  Karena supports_credentials => false dan auth pakai Bearer token (bukan cookie),
+  dampaknya terbatas — tapi tetap sebaiknya dikunci ke origin web dashboard yang
+  dikenal sebelum production.
+
+--------------------------------------------------------------------------------
+W4. selectRaw pakai string literal tanda kutip ganda
+--------------------------------------------------------------------------------
+File:
+  - app/Http/Controllers/API/ReceiptController.php:460
+
+Masalah:
+      '... WHERE ... status = "rejected" ...'
+
+  Bukan SQL injection (tidak ada input user), tapi "rejected" akan dianggap NAMA
+  KOLOM jika MySQL ANSI_QUOTES aktif -> query error. Pakai kutip tunggal 'rejected'
+  atau binding.
+
+
+################################################################################
+# INFO (nice to have)
+################################################################################
+
+I1. Status telat field worker pakai kantor pertama saja.
+    File: app/Http/Controllers/API/AttendanceController.php:64-81
+    determineStatus() selalu ambil kantor orderBy('id')->first(), bukan kantor
+    terdekat. Karyawan lapangan dekat kantor cabang tetap dinilai dengan jam
+    kantor pusat.
+
+I2. discount_amount selalu 0.
+    File: app/Http/Controllers/API/InvoiceController.php:228
+    Hardcode 0 — kolom diskon tidak pernah dipakai meski ada di schema & response.
+
+I3. Variance tidak dihitung saat ocr_raw_amount = 0.
+    File: app/Models/Receipt.php:92
+    Guard $ocrAmount > 0 benar mencegah div-by-zero, tapi struk dengan OCR nominal
+    0 tidak akan pernah kena variance_flag.
+
+I4. User non-aktif/soft-deleted tetap punya receipt pending.
+    SoftDeletes pada User -> FK cascadeOnDelete tidak pernah menyala. Receipt
+    pending milik user yang dinonaktifkan tetap muncul di inbox finance.
+    Pertimbangkan handling eksplisit.
+
+I5. Employee tidak bisa ambil foto struk sendiri via API.
+    File: app/Http/Controllers/API/ReceiptController.php:352
+    Route /receipts/{receipt}/image hanya ada di grup dashboard (role:finance,...).
+    Cabang employee di image() jadi dead code.
+
+
+################################################################################
+# YANG SUDAH BENAR (diverifikasi)
+################################################################################
+
+  OCR gagal?              -> OK. ocr_status='failed' -> submit diblokir (400),
+                            karyawan boleh isi manual via updateClaim.
+  GPS null?               -> OK. latitude/longitude required|numeric|between -> 422.
+  Amount = 0?             -> OK. div-by-zero dijaga $ocrAmount > 0 di recalculateVariance().
+  Variance formula        -> OK. abs(claimed-ocr)/ocr*100, flag >10% — benar.
+  PPN invoice             -> OK. subtotal*0.11, total=subtotal+ppn, round(...,2).
+  Token expiry 24 jam     -> OK. di-set per-token via createToken(..., now()->addHours(24));
+                            Sanctum menghormati expires_at walau config global null.
+  Login rate limit        -> OK. throttle:login = 5/menit/IP aktif.
+  Cross-company access    -> OK. CompanyMiddleware cek company_id model binding;
+                            route {id} non-model di-scope manual di controller.
+  Password/token exposure -> OK. #[Hidden] di User, response pakai ->only([...]) tanpa password.
+  OCR fields immutable    -> OK. ocr_raw_* di luar $fillable, hanya diisi sekali via guard === null.
+
+
+################################################################################
+# PRIORITAS EKSEKUSI
+################################################################################
+
+  1. C1  -> fitur radius mati total tanpa ini.
+  2. W1  -> celah otorisasi (privilege escalation).
+  3. W2  -> celah otorisasi (separation-of-duties).
+  Lalu W3, W4, dan INFO sesuai kebutuhan.
+
+================================================================================

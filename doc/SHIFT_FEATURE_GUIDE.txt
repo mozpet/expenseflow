@@ -1,0 +1,40 @@
+EXPENSEFLOW BACKEND - SHIFT FEATURE ARCHITECTURE GUIDE
+=====================================================
+
+1. MIDDLEWARE CHAINS
+CompanyMiddleware: Enforces company_id match
+- Super_admin bypasses
+- Route model bindings auto-validated
+- Shift model MUST have company_id
+
+2. ROUTE MODEL BINDING AUTO-VALIDATES
+Route::get('/shifts/{shift}') auto-checks via middleware
+
+3. VALIDATION PATTERN
+Current: Inline in controller with request->validate()
+Recommended for Shifts: FormRequest classes
+
+4. KEY MODELS
+User: company_id, role, attendance_enabled
+AttendanceSetting: office config with work times
+Attendance: daily check-in/out records
+
+5. RECOMMENDED SHIFT MODELS
+Shift: id, company_id, name, start_time, end_time, is_active
+ShiftAssignment: id, company_id, user_id, shift_id, date, is_confirmed
+
+6. ROUTES FOR SHIFTS
+Admin: GET /admin/shifts, POST, PUT, DELETE
+Assignments: GET /admin/shift-assignments, POST, PUT, DELETE
+Employees: GET /shifts/my, GET /shifts/{shift}
+
+7. INTEGRATION POINTS
+Check-in: Verify shift assignment for today
+Dashboard: Show shifts in /dashboard/attendance/today
+Leave: Check for shift conflicts
+
+8. SECURITY
+- All queries filter by company_id
+- Route bindings auto-validate via middleware
+- Admin operations: role:hrd|admin|super_admin
+- Use 'Asia/Jakarta' timezone consistently

@@ -1,0 +1,60 @@
+# OS-specific files
+.DS_Store
+Thumbs.db
+ehthumbs.db
+$RECYCLE.BIN/
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# ---------------------------------------------------
+# Backend (Laravel - expenseflow-backend)
+# ---------------------------------------------------
+/expenseflow-backend/vendor/
+/expenseflow-backend/node_modules/
+/expenseflow-backend/public/build/
+/expenseflow-backend/public/hot
+/expenseflow-backend/public/storage
+/expenseflow-backend/storage/*.key
+/expenseflow-backend/.env
+/expenseflow-backend/.env.backup
+/expenseflow-backend/.phpunit.result.cache
+
+# ---------------------------------------------------
+# Frontend Web (Node/React/Vue/Svelte - expenseflow-web)
+# ---------------------------------------------------
+/expenseflow-web/node_modules/
+/expenseflow-web/dist/
+/expenseflow-web/build/
+/expenseflow-web/.env
+/expenseflow-web/.env.local
+/expenseflow-web/.env.development.local
+/expenseflow-web/.env.test.local
+/expenseflow-web/.env.production.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ---------------------------------------------------
+# Mobile (Flutter - expenseflow-mobile)
+# ---------------------------------------------------
+/expenseflow-mobile/.dart_tool/
+/expenseflow-mobile/.packages
+/expenseflow-mobile/build/
+/expenseflow-mobile/.flutter-plugins
+/expenseflow-mobile/.flutter-plugins-dependencies
+/expenseflow-mobile/android/key.properties
+/expenseflow-mobile/ios/Pods/
+/expenseflow-mobile/ios/.symlinks/
+/expenseflow-mobile/ios/Flutter/Flutter.podspec
+/expenseflow-mobile/ios/Flutter/Generated.xcconfig
+/expenseflow-mobile/ios/Flutter/app.flx
+/expenseflow-mobile/ios/Flutter/app.zip
+/expenseflow-mobile/ios/Flutter/flutter_export_environment.sh
+/expenseflow-mobile/ios/Flutter/flutter_assets/

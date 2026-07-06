@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "812503319632",
+    "project_id": "expenseflow-e5296",
+    "storage_bucket": "expenseflow-e5296.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:812503319632:android:17790fdc0e0a8782303d55",
+        "android_client_info": {
+          "package_name": "com.example.cobain"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD_-_4nJoycU4Wh9VxEU6I2yjRA59ftmDU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

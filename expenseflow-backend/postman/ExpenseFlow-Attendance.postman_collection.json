@@ -1,0 +1,568 @@
+{
+  "info": {
+    "name": "ExpenseFlow — Attendance",
+    "description": "Koleksi testing fitur presensi ExpenseFlow.\n\nCara pakai:\n1. Jalankan: php artisan migrate:fresh --seed && php artisan serve\n2. Jalankan 'Login HRD' lalu 'Login Employee (Budi)' — token tersimpan otomatis.\n3. Lanjut request lain. setting_id & leave_id ikut tersimpan otomatis.\n\nVariable: base_url, token_hrd, token_emp, emp_id, setting_id, leave_id.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url", "value": "http://127.0.0.1:8000/api/v1" },
+    { "key": "token_hrd", "value": "" },
+    { "key": "token_emp", "value": "" },
+    { "key": "emp_id", "value": "1" },
+    { "key": "setting_id", "value": "" },
+    { "key": "leave_id", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login HRD (web)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.set('token_hrd', pm.response.json().token);",
+                  "  console.log('token_hrd tersimpan');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"dewi@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Login Employee Budi (mobile)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  pm.collectionVariables.set('token_emp', pm.response.json().token);",
+                  "  console.log('token_emp tersimpan');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "mobile" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"budi@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Employee login di web → 403 (harus gagal)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"budi@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Me (HRD)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": { "raw": "{{base_url}}/me", "host": ["{{base_url}}"], "path": ["me"] }
+          }
+        },
+        {
+          "name": "Me (Employee Budi) — cek flag wfh/attendance",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": { "raw": "{{base_url}}/me", "host": ["{{base_url}}"], "path": ["me"] }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": { "raw": "{{base_url}}/logout", "host": ["{{base_url}}"], "path": ["logout"] }
+          }
+        },
+        {
+          "name": "Ping (health check)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" }
+            ],
+            "url": { "raw": "{{base_url}}/ping", "host": ["{{base_url}}"], "path": ["ping"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "HRD — Dashboard Attendance",
+      "item": [
+        {
+          "name": "List users + status presensi",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/users?filter=enabled",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "users"],
+              "query": [{ "key": "filter", "value": "enabled" }]
+            }
+          }
+        },
+        {
+          "name": "Toggle WFH user (switch izin presensi dari rumah)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 200) {",
+                  "  var wfh = pm.response.json().user.wfh_enabled;",
+                  "  console.log('wfh_enabled sekarang: ' + wfh);",
+                  "  console.log(wfh ? 'Karyawan boleh presensi dari rumah' : 'Karyawan wajib presensi dari kantor');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/users/{{emp_id}}/toggle-wfh",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "users", "{{emp_id}}", "toggle-wfh"]
+            }
+          }
+        },
+        {
+          "name": "Buat kantor (settings)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('setting_id', pm.response.json().setting.id);",
+                  "  console.log('setting_id tersimpan');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"office_name\": \"Kantor Cabang Bandung\",\n  \"office_latitude\": -6.914744,\n  \"office_longitude\": 107.609810,\n  \"radius_meters\": 150,\n  \"work_start_time\": \"08:30\",\n  \"late_tolerance_minutes\": 10\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings"]
+            }
+          }
+        },
+        {
+          "name": "List kantor",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings"]
+            }
+          }
+        },
+        {
+          "name": "Detail kantor",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update kantor",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"radius_meters\": 250,\n  \"require_selfie\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Hapus kantor",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        },
+        {
+          "name": "List pengajuan izin/cuti (filter status)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves?status=pending",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves"],
+              "query": [{ "key": "status", "value": "pending" }]
+            }
+          }
+        },
+        {
+          "name": "Approve cuti",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves/{{leave_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves", "{{leave_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject cuti (wajib rejection_reason)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rejection_reason\": \"Kuota cuti bulan ini sudah habis\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves/{{leave_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves", "{{leave_id}}", "reject"]
+            }
+          }
+        },
+        {
+          "name": "Laporan presensi (filter periode/status)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/report?status=present",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "report"],
+              "query": [{ "key": "status", "value": "present" }]
+            }
+          }
+        },
+        {
+          "name": "Laporan presensi (filter lokasi: type=wfh|onsite)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/report?type=wfh",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "report"],
+              "query": [{ "key": "type", "value": "wfh" }]
+            }
+          }
+        },
+        {
+          "name": "Export laporan ke CSV",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "text/csv" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/report/export",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "report", "export"]
+            }
+          }
+        },
+        {
+          "name": "Dashboard presensi hari ini",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/today",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "today"]
+            }
+          }
+        },
+        {
+          "name": "Rekap bulanan karyawan (payroll)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/summary?user_id={{emp_id}}&month=6&year=2026",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "summary"],
+              "query": [
+                { "key": "user_id", "value": "{{emp_id}}" },
+                { "key": "month", "value": "6" },
+                { "key": "year", "value": "2026" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List saldo cuti karyawan",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leave-balances",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leave-balances"]
+            }
+          }
+        },
+        {
+          "name": "Set kuota cuti karyawan",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{emp_id}},\n  \"leave_type\": \"cuti\",\n  \"quota\": 14\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leave-balances",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leave-balances"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Employee — Attendance",
+      "item": [
+        {
+          "name": "Check-in WFH (hanya untuk karyawan wfh_enabled = true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -6.250000,\n  \"longitude\": 106.900000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/check-in",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "check-in"]
+            }
+          }
+        },
+        {
+          "name": "Check-out",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -6.200000,\n  \"longitude\": 106.816667\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/check-out",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "check-out"]
+            }
+          }
+        },
+        {
+          "name": "Riwayat presensi saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/my",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "my"]
+            }
+          }
+        },
+        {
+          "name": "Saldo cuti saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/leave-balance",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "leave-balance"]
+            }
+          }
+        },
+        {
+          "name": "Ajukan cuti/izin",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "if (pm.response.code === 201) {",
+                  "  pm.collectionVariables.set('leave_id', pm.response.json().leave.id);",
+                  "  console.log('leave_id tersimpan');",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"leave_type\": \"cuti\",\n  \"start_date\": \"2026-06-25\",\n  \"end_date\": \"2026-06-27\",\n  \"reason\": \"Acara keluarga\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/leave-request",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "leave-request"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

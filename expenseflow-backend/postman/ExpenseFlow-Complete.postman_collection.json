@@ -1,0 +1,2329 @@
+{
+  "info": {
+    "name": "ExpenseFlow — Complete API",
+    "description": "Collection lengkap semua endpoint ExpenseFlow.\n\nCara pakai:\n1. php artisan migrate:fresh --seed && php artisan serve\n2. php artisan queue:work  (wajib untuk OCR)\n3. Jalankan request Login di folder Auth sesuai role yang dibutuhkan.\n   Token tersimpan otomatis ke variabel koleksi.\n4. Lanjut request lain. ID hasil create tersimpan otomatis.\n\nVariabel koleksi: base_url, token_hrd, token_finance, token_admin, token_emp,\n  emp_id, receipt_id, vendor_id, invoice_id, user_id,\n  setting_id, leave_id, holiday_id, notification_id.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "base_url",         "value": "http://127.0.0.1:8000/api/v1" },
+    { "key": "token_hrd",        "value": "" },
+    { "key": "token_finance",    "value": "" },
+    { "key": "token_admin",      "value": "" },
+    { "key": "token_emp",        "value": "" },
+    { "key": "emp_id",           "value": "2" },
+    { "key": "receipt_id",       "value": "" },
+    { "key": "vendor_id",        "value": "" },
+    { "key": "invoice_id",       "value": "" },
+    { "key": "user_id",          "value": "" },
+    { "key": "setting_id",       "value": "" },
+    { "key": "leave_id",         "value": "" },
+    { "key": "holiday_id",       "value": "" },
+    { "key": "notification_id",  "value": "" },
+    { "key": "token_super_admin", "value": "" },
+    { "key": "overtime_id",       "value": "" },
+    { "key": "device_change_id",  "value": "" },
+    { "key": "shift_id",          "value": "" },
+    { "key": "assignment_id",     "value": "" }
+  ],
+  "item": [
+
+    {
+      "name": "01. Auth",
+      "item": [
+        {
+          "name": "Ping (health check)",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": { "raw": "{{base_url}}/ping", "host": ["{{base_url}}"], "path": ["ping"] }
+          }
+        },
+        {
+          "name": "Login HRD (web)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  pm.collectionVariables.set('token_hrd', pm.response.json().token);",
+              "  console.log('token_hrd tersimpan');",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"dewi@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Login Finance (web)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  pm.collectionVariables.set('token_finance', pm.response.json().token);",
+              "  console.log('token_finance tersimpan');",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"siti@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Login Super Admin (web)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  pm.collectionVariables.set('token_super_admin', pm.response.json().token);",
+              "  console.log('token_super_admin tersimpan');",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"super@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Login Admin (web)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  pm.collectionVariables.set('token_admin', pm.response.json().token);",
+              "  console.log('token_admin tersimpan');",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"admin@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Login Employee Budi (mobile)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  var json = pm.response.json();",
+              "  pm.collectionVariables.set('token_emp', json.token);",
+              "  if (json.user && json.user.id) {",
+              "    pm.collectionVariables.set('emp_id', json.user.id);",
+              "  }",
+              "  console.log('token_emp tersimpan, emp_id=' + pm.collectionVariables.get('emp_id'));",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "mobile" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"budi@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Employee login via web → 403 (harus gagal)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"budi@majubersama.co.id\",\n  \"password\": \"password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Login gagal — password salah (rate limit test)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-Platform", "value": "web" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"dewi@majubersama.co.id\",\n  \"password\": \"salah_password\"\n}"
+            },
+            "url": { "raw": "{{base_url}}/login", "host": ["{{base_url}}"], "path": ["login"] }
+          }
+        },
+        {
+          "name": "Me (HRD)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": { "raw": "{{base_url}}/me", "host": ["{{base_url}}"], "path": ["me"] }
+          }
+        },
+        {
+          "name": "Me (Employee) — cek flag wfh_enabled, radius_enabled",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": { "raw": "{{base_url}}/me", "host": ["{{base_url}}"], "path": ["me"] }
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": { "raw": "{{base_url}}/logout", "host": ["{{base_url}}"], "path": ["logout"] }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "02. Employee — Struk (Receipt)",
+      "description": "Middleware: auth:sanctum + role:employee + company + receipt_access. Gunakan token_emp.",
+      "item": [
+        {
+          "name": "Upload struk (form-data + foto)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().receipt && pm.response.json().receipt.id;",
+              "  if (id) { pm.collectionVariables.set('receipt_id', id); console.log('receipt_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                { "key": "image", "type": "file", "src": "", "description": "Pilih file foto struk (jpg/png/pdf)" }
+              ]
+            },
+            "url": { "raw": "{{base_url}}/employee/receipts", "host": ["{{base_url}}"], "path": ["employee", "receipts"] }
+          }
+        },
+        {
+          "name": "List struk saya (myReceipts)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employee/receipts?status=draft",
+              "host": ["{{base_url}}"],
+              "path": ["employee", "receipts"],
+              "query": [
+                { "key": "status", "value": "draft", "description": "draft | submitted | approved | rejected" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Detail struk saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employee/receipts/{{receipt_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["employee", "receipts", "{{receipt_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update klaim struk (kategori & catatan)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"category\": \"transport\",\n  \"notes\": \"Taksi dari kantor ke klien\",\n  \"claimed_amount\": 150000,\n  \"vendor_name\": \"Grab\",\n  \"receipt_date\": \"2026-06-29\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/employee/receipts/{{receipt_id}}/claim",
+              "host": ["{{base_url}}"],
+              "path": ["employee", "receipts", "{{receipt_id}}", "claim"]
+            }
+          }
+        },
+        {
+          "name": "Submit struk ke finance",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employee/receipts/{{receipt_id}}/submit",
+              "host": ["{{base_url}}"],
+              "path": ["employee", "receipts", "{{receipt_id}}", "submit"]
+            }
+          }
+        },
+        {
+          "name": "Hapus draft struk",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employee/receipts/{{receipt_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["employee", "receipts", "{{receipt_id}}"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "03. Dashboard — Struk Approval (Finance/Admin)",
+      "description": "Middleware: auth:sanctum + role:finance,admin,super_admin + company. Gunakan token_finance atau token_admin.",
+      "item": [
+        {
+          "name": "Inbox struk menunggu approval",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/receipts",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "receipts"]
+            }
+          }
+        },
+        {
+          "name": "Semua struk (filter status + summary)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/receipts/all?status=submitted",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "receipts", "all"],
+              "query": [
+                { "key": "status", "value": "submitted", "description": "draft | submitted | approved | rejected" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Detail struk (dashboard, tanpa ownership check)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/receipts/{{receipt_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "receipts", "{{receipt_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Stream foto struk (image)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/receipts/{{receipt_id}}/image",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "receipts", "{{receipt_id}}", "image"]
+            }
+          }
+        },
+        {
+          "name": "Approve struk",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Disetujui — sesuai bukti\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/receipts/{{receipt_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "receipts", "{{receipt_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject struk",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Nominal tidak sesuai dengan bukti struk\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/receipts/{{receipt_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "receipts", "{{receipt_id}}", "reject"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "04. Dashboard — Vendor",
+      "description": "Middleware: auth:sanctum + role:finance,hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List vendor",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/vendors",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "vendors"]
+            }
+          }
+        },
+        {
+          "name": "Tambah vendor",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().vendor && pm.response.json().vendor.id;",
+              "  if (id) { pm.collectionVariables.set('vendor_id', id); console.log('vendor_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"PT Maju Supplier\",\n  \"email\": \"supplier@majusupplier.co.id\",\n  \"phone\": \"02112345678\",\n  \"address\": \"Jl. Sudirman No. 10, Jakarta\",\n  \"contact_person\": \"Andi Supplier\",\n  \"tax_id\": \"01.234.567.8-901.000\",\n  \"bank_name\": \"BCA\",\n  \"bank_account_no\": \"1234567890\",\n  \"bank_account_name\": \"PT Maju Supplier\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/vendors",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "vendors"]
+            }
+          }
+        },
+        {
+          "name": "Update vendor",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"phone\": \"02198765432\",\n  \"contact_person\": \"Budi Supplier\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/vendors/{{vendor_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "vendors", "{{vendor_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Toggle aktif/nonaktif vendor",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/vendors/{{vendor_id}}/toggle",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "vendors", "{{vendor_id}}", "toggle"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "05. Dashboard — Invoice",
+      "description": "Middleware: auth:sanctum + role:finance,hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List invoice (filter status + summary)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices?status=pending",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices"],
+              "query": [
+                { "key": "status", "value": "pending", "description": "pending | approved | rejected" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Detail invoice (vendor + items + approvals)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices/{{invoice_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices", "{{invoice_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Buat invoice (nominal < 10jt → level 1)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().invoice && pm.response.json().invoice.id;",
+              "  if (id) { pm.collectionVariables.set('invoice_id', id); console.log('invoice_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vendor_id\": {{vendor_id}},\n  \"invoice_number\": \"INV-2026-001\",\n  \"invoice_date\": \"2026-06-29\",\n  \"due_date\": \"2026-07-29\",\n  \"category\": \"operasional\",\n  \"notes\": \"Pembelian alat tulis kantor\",\n  \"items\": [\n    { \"description\": \"Kertas HVS A4\", \"quantity\": 10, \"unit_price\": 50000 },\n    { \"description\": \"Pulpen Hitam\",  \"quantity\": 5,  \"unit_price\": 20000 }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices"]
+            }
+          }
+        },
+        {
+          "name": "Buat invoice nominal besar (> 50jt → level 3)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().invoice && pm.response.json().invoice.id;",
+              "  if (id) { pm.collectionVariables.set('invoice_id', id); console.log('invoice_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"vendor_id\": {{vendor_id}},\n  \"invoice_number\": \"INV-2026-BIG-001\",\n  \"invoice_date\": \"2026-06-29\",\n  \"due_date\": \"2026-07-29\",\n  \"category\": \"pengadaan\",\n  \"notes\": \"Pengadaan server baru\",\n  \"items\": [\n    { \"description\": \"Server Dell PowerEdge\", \"quantity\": 1, \"unit_price\": 60000000 }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices"]
+            }
+          }
+        },
+        {
+          "name": "Approve invoice (Level 1 — Finance/HRD/Admin)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Disetujui oleh Finance Manager\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices/{{invoice_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices", "{{invoice_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Approve invoice (Level 2 — Admin/Direksi)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Disetujui oleh Direksi\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices/{{invoice_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices", "{{invoice_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Approve invoice (Level 3 — Super Admin/Komisaris)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_super_admin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Disetujui oleh Komisaris\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices/{{invoice_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices", "{{invoice_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject invoice",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_finance}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rejection_reason\": \"Nominal tidak sesuai PO\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/invoices/{{invoice_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "invoices", "{{invoice_id}}", "reject"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "06. Dashboard — Notifikasi",
+      "description": "Middleware: auth:sanctum + role:finance,hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List notifikasi (+ unread_count)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/notifications",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "notifications"]
+            }
+          }
+        },
+        {
+          "name": "List notifikasi belum dibaca saja",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  var notifs = pm.response.json().data;",
+              "  if (notifs && notifs.length > 0) {",
+              "    pm.collectionVariables.set('notification_id', notifs[0].id);",
+              "    console.log('notification_id=' + notifs[0].id);",
+              "  }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/notifications?only_unread=1",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "notifications"],
+              "query": [{ "key": "only_unread", "value": "1" }]
+            }
+          }
+        },
+        {
+          "name": "Mark satu notifikasi sebagai dibaca",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/notifications/{{notification_id}}/read",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "notifications", "{{notification_id}}", "read"]
+            }
+          }
+        },
+        {
+          "name": "Mark semua notifikasi sebagai dibaca",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/notifications/read-all",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "notifications", "read-all"]
+            }
+          }
+        },
+        {
+          "name": "Hapus notifikasi",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/notifications/{{notification_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "notifications", "{{notification_id}}"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "07. Dashboard — Activity Log",
+      "description": "Middleware: auth:sanctum + role:finance,hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List semua log aktivitas",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/activity-logs",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "activity-logs"]
+            }
+          }
+        },
+        {
+          "name": "Filter log — action=receipt_approved",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/activity-logs?action=receipt_approved",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "activity-logs"],
+              "query": [{ "key": "action", "value": "receipt_approved" }]
+            }
+          }
+        },
+        {
+          "name": "Filter log — entity_type=invoice",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/activity-logs?entity_type=invoice",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "activity-logs"],
+              "query": [{ "key": "entity_type", "value": "invoice" }]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "08. Dashboard — Pengaturan Perusahaan",
+      "description": "Middleware: auth:sanctum + role:finance,hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "Lihat pengaturan perusahaan",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/settings",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "settings"]
+            }
+          }
+        },
+        {
+          "name": "Update pengaturan (upsert key-value)",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"variance_limit\": \"10\",\n  \"max_claim_limit\": \"5000000\",\n  \"threshold_single\": \"10000000\",\n  \"threshold_two\": \"50000000\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/settings",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "settings"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "09. Admin — Manajemen Karyawan",
+      "description": "GET: role:hrd,admin,super_admin. POST/PUT/PATCH/DELETE: role:admin,super_admin.",
+      "item": [
+        {
+          "name": "List karyawan",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/users",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "users"]
+            }
+          }
+        },
+        {
+          "name": "Tambah karyawan (admin/super_admin)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().user && pm.response.json().user.id;",
+              "  if (id) { pm.collectionVariables.set('user_id', id); console.log('user_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Rina Karyawan\",\n  \"email\": \"rina@majubersama.co.id\",\n  \"password\": \"password\",\n  \"employee_code\": \"EMP-999\",\n  \"role\": \"employee\",\n  \"department\": \"Marketing\",\n  \"monthly_claim_limit\": 2000000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/users",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "users"]
+            }
+          }
+        },
+        {
+          "name": "Update karyawan",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"department\": \"Finance\",\n  \"monthly_claim_limit\": 3000000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/users/{{user_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "users", "{{user_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Nonaktifkan karyawan",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/users/{{user_id}}/deactivate",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "users", "{{user_id}}", "deactivate"]
+            }
+          }
+        },
+        {
+          "name": "Aktifkan kembali karyawan",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/admin/users/{{user_id}}/activate",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "users", "{{user_id}}", "activate"]
+            }
+          }
+        },
+        {
+          "name": "Reset password karyawan",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_admin}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"new_password\": \"newpassword123\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/admin/users/{{user_id}}/reset-password",
+              "host": ["{{base_url}}"],
+              "path": ["admin", "users", "{{user_id}}", "reset-password"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "10. HRD — Dashboard Presensi",
+      "description": "Middleware: auth:sanctum + role:hrd,admin,super_admin + company. Gunakan token_hrd.",
+      "item": [
+        {
+          "name": "Dashboard presensi hari ini",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/today",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "today"]
+            }
+          }
+        },
+        {
+          "name": "Rekap bulanan karyawan (fondasi payroll)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/summary?user_id={{emp_id}}&month=6&year=2026",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "summary"],
+              "query": [
+                { "key": "user_id", "value": "{{emp_id}}" },
+                { "key": "month",   "value": "6" },
+                { "key": "year",    "value": "2026" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Laporan presensi (filter periode)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/report?start_date=2026-06-01&end_date=2026-06-30",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "report"],
+              "query": [
+                { "key": "start_date",  "value": "2026-06-01" },
+                { "key": "end_date",    "value": "2026-06-30" },
+                { "key": "department",  "value": "", "disabled": true },
+                { "key": "status",      "value": "present", "disabled": true, "description": "present | late | absent" },
+                { "key": "type",        "value": "wfh", "disabled": true, "description": "wfh | onsite | field" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Laporan presensi filter lokasi WFH",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/report?type=wfh",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "report"],
+              "query": [{ "key": "type", "value": "wfh" }]
+            }
+          }
+        },
+        {
+          "name": "Export laporan presensi ke CSV",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "text/csv" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/report/export?start_date=2026-06-01&end_date=2026-06-30",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "report", "export"],
+              "query": [
+                { "key": "start_date", "value": "2026-06-01" },
+                { "key": "end_date",   "value": "2026-06-30" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "List karyawan + status WFH & radius",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/users",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "users"]
+            }
+          }
+        },
+        {
+          "name": "Toggle WFH karyawan (ON/OFF)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/users/{{emp_id}}/toggle-wfh",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "users", "{{emp_id}}", "toggle-wfh"]
+            }
+          }
+        },
+        {
+          "name": "Toggle Radius karyawan lapangan (ON/OFF)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/users/{{emp_id}}/toggle-radius",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "users", "{{emp_id}}", "toggle-radius"]
+            }
+          }
+        },
+        {
+          "name": "List pengajuan izin/cuti (semua status)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves"]
+            }
+          }
+        },
+        {
+          "name": "Filter pengajuan izin/cuti — status pending",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  var leaves = pm.response.json().data || pm.response.json().leaves;",
+              "  if (leaves && leaves.length > 0) {",
+              "    pm.collectionVariables.set('leave_id', leaves[0].id);",
+              "    console.log('leave_id=' + leaves[0].id);",
+              "  }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves?status=pending",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves"],
+              "query": [
+                { "key": "status",     "value": "pending", "description": "pending | approved | rejected" },
+                { "key": "leave_type", "value": "",        "disabled": true, "description": "wfh | izin | sakit | cuti" },
+                { "key": "user_id",    "value": "",        "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Approve izin/cuti karyawan",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves/{{leave_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves", "{{leave_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject izin/cuti karyawan",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rejection_reason\": \"Kuota cuti bulan ini telah habis\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves/{{leave_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves", "{{leave_id}}", "reject"]
+            }
+          }
+        },
+        {
+          "name": "List saldo cuti karyawan",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leave-balances",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leave-balances"]
+            }
+          }
+        },
+        {
+          "name": "Set kuota cuti karyawan",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{emp_id}},\n  \"leave_type\": \"cuti\",\n  \"quota\": 14\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leave-balances",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leave-balances"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "11. HRD — Pengaturan Kantor (Attendance Settings)",
+      "description": "CRUD lokasi & jam kerja kantor. Middleware: auth:sanctum + role:hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List kantor",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings"]
+            }
+          }
+        },
+        {
+          "name": "Detail kantor",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Tambah kantor",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().setting && pm.response.json().setting.id;",
+              "  if (id) { pm.collectionVariables.set('setting_id', id); console.log('setting_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"office_name\": \"Kantor Pusat Jakarta\",\n  \"office_latitude\": -6.200000,\n  \"office_longitude\": 106.816667,\n  \"radius_meters\": 100,\n  \"work_start_time\": \"08:00\",\n  \"work_end_time\": \"17:00\",\n  \"late_tolerance_minutes\": 15,\n  \"require_selfie\": false,\n  \"allow_wfh\": true,\n  \"wfh_checkin_window_minutes\": 120,\n  \"overtime_enabled\": true,\n  \"min_overtime_minutes\": 30\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings"]
+            }
+          }
+        },
+        {
+          "name": "Update kantor",
+          "request": {
+            "method": "PUT",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"radius_meters\": 150,\n  \"late_tolerance_minutes\": 10,\n  \"wfh_checkin_window_minutes\": 60,\n  \"overtime_enabled\": true,\n  \"min_overtime_minutes\": 30,\n  \"early_leave_tolerance_minutes\": 30\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update kantor — aktifkan early leave (30 menit)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"early_leave_tolerance_minutes\": 30\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Update kantor — nonaktifkan early leave (null)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"early_leave_tolerance_minutes\": null\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Hapus kantor",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/settings/{{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "settings", "{{setting_id}}"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "12. HRD — Kalender Libur",
+      "description": "Kelola libur nasional & libur perusahaan. Middleware: auth:sanctum + role:hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List libur (filter per tahun)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  var holidays = pm.response.json().data || pm.response.json().holidays;",
+              "  if (holidays && holidays.length > 0) {",
+              "    pm.collectionVariables.set('holiday_id', holidays[0].id);",
+              "    console.log('holiday_id=' + holidays[0].id);",
+              "  }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/holidays?year=2026",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "holidays"],
+              "query": [{ "key": "year", "value": "2026" }]
+            }
+          }
+        },
+        {
+          "name": "Tambah libur nasional (berlaku semua perusahaan)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().holiday && pm.response.json().holiday.id;",
+              "  if (id) { pm.collectionVariables.set('holiday_id', id); console.log('holiday_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"date\": \"2027-01-01\",\n  \"name\": \"Tahun Baru 2027\",\n  \"is_national\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/holidays",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "holidays"]
+            }
+          }
+        },
+        {
+          "name": "Tambah libur perusahaan (cuti bersama internal)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().holiday && pm.response.json().holiday.id;",
+              "  if (id) { pm.collectionVariables.set('holiday_id', id); console.log('holiday_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"date\": \"2026-08-17\",\n  \"name\": \"HUT RI ke-81 (cuti bersama)\",\n  \"is_national\": false\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/holidays",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "holidays"]
+            }
+          }
+        },
+        {
+          "name": "Update libur (ubah tanggal/nama — nasional bisa diedit)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"date\": \"2027-01-02\",\n  \"name\": \"Tahun Baru 2027 (digeser)\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/holidays/{{holiday_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "holidays", "{{holiday_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Hapus libur perusahaan (libur nasional → 403)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/holidays/{{holiday_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "holidays", "{{holiday_id}}"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "13. Employee — Presensi Mobile",
+      "description": "Middleware check-in/out: auth:sanctum + company + attendance_access (wfh_enabled=true). Riwayat & cuti tidak butuh attendance_access.",
+      "item": [
+        {
+          "name": "Check-in WFH (wfh_enabled=true, radius_enabled=false)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -6.250000,\n  \"longitude\": 106.900000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/check-in",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "check-in"]
+            }
+          }
+        },
+        {
+          "name": "Check-in lapangan (wfh_enabled=true, radius_enabled=true)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -6.200010,\n  \"longitude\": 106.816677\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/check-in",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "check-in"]
+            }
+          }
+        },
+        {
+          "name": "Check-in ditolak — di luar radius (lapangan mode)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -6.300000,\n  \"longitude\": 107.000000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/check-in",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "check-in"]
+            }
+          }
+        },
+        {
+          "name": "Check-in ditolak — wfh_enabled=false (harus via perangkat kantor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -6.200000,\n  \"longitude\": 106.816667\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/check-in",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "check-in"]
+            }
+          }
+        },
+        {
+          "name": "Check-out",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"latitude\": -6.250000,\n  \"longitude\": 106.900000\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/check-out",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "check-out"]
+            }
+          }
+        },
+        {
+          "name": "Riwayat presensi saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/my",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "my"]
+            }
+          }
+        },
+        {
+          "name": "Saldo cuti saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/leave-balance",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "leave-balance"]
+            }
+          }
+        },
+        {
+          "name": "Riwayat izin/cuti saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/my-leaves",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "my-leaves"]
+            }
+          }
+        },
+        {
+          "name": "Ajukan cuti",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().leave && pm.response.json().leave.id;",
+              "  if (id) { pm.collectionVariables.set('leave_id', id); console.log('leave_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"leave_type\": \"cuti\",\n  \"start_date\": \"2026-07-07\",\n  \"end_date\": \"2026-07-11\",\n  \"reason\": \"Liburan keluarga ke Bali\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/leave-request",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "leave-request"]
+            }
+          }
+        },
+        {
+          "name": "Ajukan izin sakit",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().leave && pm.response.json().leave.id;",
+              "  if (id) { pm.collectionVariables.set('leave_id', id); console.log('leave_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"leave_type\": \"sakit\",\n  \"start_date\": \"2026-07-01\",\n  \"end_date\": \"2026-07-02\",\n  \"reason\": \"Demam dan flu\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/leave-request",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "leave-request"]
+            }
+          }
+        },
+        {
+          "name": "Ajukan WFH",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var id = pm.response.json().leave && pm.response.json().leave.id;",
+              "  if (id) { pm.collectionVariables.set('leave_id', id); console.log('leave_id=' + id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"leave_type\": \"wfh\",\n  \"start_date\": \"2026-07-14\",\n  \"end_date\": \"2026-07-14\",\n  \"reason\": \"Menunggu tamu servis di rumah\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/leave-request",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "leave-request"]
+            }
+          }
+        },
+        {
+          "name": "Kalender libur (read-only untuk mobile)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/holidays?year=2026",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "holidays"],
+              "query": [{ "key": "year", "value": "2026" }]
+            }
+          }
+        },
+        {
+          "name": "Status presensi hari ini (cek auto-checkout)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/status",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "status"]
+            }
+          }
+        },
+        {
+          "name": "Riwayat approval lembur saya",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/my-overtime",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "my-overtime"]
+            }
+          }
+        },
+        {
+          "name": "Daftarkan FCM token device",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"fcm_token\": \"fcm_device_token_contoh_dari_firebase\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/attendance/fcm-token",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "fcm-token"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "14. HRD — Approval Lembur",
+      "description": "Setiap checkout lembur (manual/auto) wajib disetujui HRD sebelum masuk payroll. Middleware: auth:sanctum + role:hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List pengajuan lembur (semua status)",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  var list = pm.response.json().data || [];",
+              "  if (list.length > 0) {",
+              "    pm.collectionVariables.set('overtime_id', list[0].id);",
+              "    console.log('overtime_id=' + list[0].id);",
+              "  }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/overtime-approvals",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "overtime-approvals"]
+            }
+          }
+        },
+        {
+          "name": "Filter lembur — status pending",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/overtime-approvals?status=pending",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "overtime-approvals"],
+              "query": [
+                { "key": "status",     "value": "pending",    "description": "pending | approved | rejected" },
+                { "key": "user_id",    "value": "",           "disabled": true },
+                { "key": "start_date", "value": "",           "disabled": true },
+                { "key": "end_date",   "value": "",           "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Approve lembur karyawan",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Lembur disetujui — sesuai kebutuhan proyek\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/overtime-approvals/{{overtime_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "overtime-approvals", "{{overtime_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject lembur karyawan (overtime_minutes = 0)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Tidak ada persetujuan lembur sebelumnya\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/overtime-approvals/{{overtime_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "overtime-approvals", "{{overtime_id}}", "reject"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "15. HRD — Approval Pindah Perangkat",
+      "description": "Karyawan login dari HP baru otomatis membuat permintaan pending. HRD approve agar token HP lama dicabut (cegah titip absen). Middleware: auth:sanctum + role:hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "List permintaan pindah perangkat",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 200) {",
+              "  var list = pm.response.json().data || [];",
+              "  if (list.length > 0) {",
+              "    pm.collectionVariables.set('device_change_id', list[0].id);",
+              "    console.log('device_change_id=' + list[0].id);",
+              "  }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/device-changes",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "device-changes"]
+            }
+          }
+        },
+        {
+          "name": "Filter permintaan — status pending",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/device-changes?status=pending",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "device-changes"],
+              "query": [{ "key": "status", "value": "pending", "description": "pending | approved | rejected" }]
+            }
+          }
+        },
+        {
+          "name": "Approve pindah perangkat (token HP lama dicabut)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"HP lama hilang, disetujui ganti perangkat\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/device-changes/{{device_change_id}}/approve",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "device-changes", "{{device_change_id}}", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject pindah perangkat",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"notes\": \"Karyawan tidak melapor kehilangan perangkat\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/device-changes/{{device_change_id}}/reject",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "device-changes", "{{device_change_id}}", "reject"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "16. HRD — Dokumen Surat Izin/Cuti",
+      "description": "Download file dokumen surat izin/cuti yang diupload karyawan. Middleware: auth:sanctum + role:hrd,admin,super_admin + company.",
+      "item": [
+        {
+          "name": "Download dokumen surat izin/cuti",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/leaves/{{leave_id}}/document",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "leaves", "{{leave_id}}", "document"]
+            }
+          }
+        }
+      ]
+    },
+
+    {
+      "name": "17. HRD — Custom Shift / Scheduling",
+      "description": "Manajemen shift kerja custom per karyawan & cabang. Override jam kerja global kantor (mis. masuk Sabtu/Minggu). Middleware: auth:sanctum + role:hrd,admin,super_admin + company. CATATAN: jalankan 'Buat shift' dulu agar shift_id terisi, lalu 'Assign shift' untuk mengisi assignment_id. Butuh setting_id (cabang) — ambil dari folder 11.",
+      "item": [
+        {
+          "name": "Buat template shift (Shift Sabtu) — simpan shift_id",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var d = pm.response.json().data;",
+              "  if (d && d.id) { pm.collectionVariables.set('shift_id', d.id); console.log('shift_id=' + d.id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Shift Sabtu\",\n  \"description\": \"Masuk Senin-Jumat normal + Sabtu 09:00-15:00, Minggu libur\",\n  \"is_active\": true,\n  \"attendance_setting_id\": {{setting_id}},\n  \"schedules\": [\n    { \"day_of_week\": 0, \"is_off\": true },\n    { \"day_of_week\": 1, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 2, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 3, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 4, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 5, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 6, \"is_off\": false, \"work_start_time\": \"09:00\", \"work_end_time\": \"15:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/shifts",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "shifts"]
+            }
+          }
+        },
+        {
+          "name": "List template shift (filter cabang & aktif)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/shifts?is_active=1&attendance_setting_id={{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "shifts"],
+              "query": [
+                { "key": "is_active", "value": "1" },
+                { "key": "attendance_setting_id", "value": "{{setting_id}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Update template shift (ubah nama & jam Sabtu)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"name\": \"Shift Sabtu (Revisi)\",\n  \"description\": \"Jam Sabtu diperpendek jadi 09:00-13:00\",\n  \"schedules\": [\n    { \"day_of_week\": 0, \"is_off\": true },\n    { \"day_of_week\": 1, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 2, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 3, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 4, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 5, \"is_off\": false, \"work_start_time\": \"08:00\", \"work_end_time\": \"17:00\" },\n    { \"day_of_week\": 6, \"is_off\": false, \"work_start_time\": \"09:00\", \"work_end_time\": \"13:00\" }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/shifts/{{shift_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "shifts", "{{shift_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Assign shift ke karyawan — simpan assignment_id",
+          "event": [{
+            "listen": "test",
+            "script": { "type": "text/javascript", "exec": [
+              "if (pm.response.code === 201) {",
+              "  var d = pm.response.json().data;",
+              "  if (d && d.id) { pm.collectionVariables.set('assignment_id', d.id); console.log('assignment_id=' + d.id); }",
+              "}"
+            ]}
+          }],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{emp_id}},\n  \"shift_id\": {{shift_id}},\n  \"start_date\": \"2026-07-06\",\n  \"notes\": \"Ditugaskan shift Sabtu untuk proyek gudang\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/assign-shift",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "assign-shift"]
+            }
+          }
+        },
+        {
+          "name": "Assign shift = null (kembali ke default kantor)",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_id\": {{emp_id}},\n  \"shift_id\": null,\n  \"start_date\": \"2026-08-01\",\n  \"notes\": \"Hapus shift khusus, kembali ke jam kantor default\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/assign-shift",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "assign-shift"]
+            }
+          }
+        },
+        {
+          "name": "Bulk assign — 1 shift ke banyak karyawan",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"user_ids\": [{{emp_id}}],\n  \"shift_id\": {{shift_id}},\n  \"start_date\": \"2026-09-01\",\n  \"notes\": \"Bulk assign shift Sabtu ke tim gudang\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/bulk-assign",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "bulk-assign"]
+            }
+          }
+        },
+        {
+          "name": "Update assignment (ubah tanggal/catatan)",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"start_date\": \"2026-07-13\",\n  \"notes\": \"Koreksi: shift mulai seminggu lebih lambat\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/assignments/{{assignment_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "assignments", "{{assignment_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Riwayat shift karyawan",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/users/{{emp_id}}/shift-history",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "users", "{{emp_id}}", "shift-history"]
+            }
+          }
+        },
+        {
+          "name": "Preview jadwal efektif (user + tanggal)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/effective-schedule?user_id={{emp_id}}&date=2026-07-11",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "effective-schedule"],
+              "query": [
+                { "key": "user_id", "value": "{{emp_id}}" },
+                { "key": "date", "value": "2026-07-11" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Roster — shift aktif karyawan hari ini",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/shifts/roster?date=2026-07-11&attendance_setting_id={{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "shifts", "roster"],
+              "query": [
+                { "key": "date", "value": "2026-07-11" },
+                { "key": "attendance_setting_id", "value": "{{setting_id}}" },
+                { "key": "search", "value": "", "disabled": true }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Hapus assignment",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/assignments/{{assignment_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "assignments", "{{assignment_id}}"]
+            }
+          }
+        },
+        {
+          "name": "Hapus template shift (diblokir bila masih dipakai)",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/shifts/{{shift_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "shifts", "{{shift_id}}"]
+            }
+          }
+        }
+      ]
+    }
+
+  ]
+}

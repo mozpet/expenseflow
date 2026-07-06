@@ -1,0 +1,6 @@
+{
+  "name": "ExpenseFlow Dashboard",
+  "description": "Web dashboard finance untuk mengelola receipt (struk) dan invoice dengan persetujuan (approval) berjenjang, grafik analitik responsive, audit log, notifikasi, dan scan OCR.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
