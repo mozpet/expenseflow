@@ -512,9 +512,21 @@ class AttendanceController extends Controller
 
         // Presensi hari ini, di-index per user_id
         // where() (bukan whereDate) agar index('date') terpakai — kolom sudah bertipe DATE
-        $attendances = Attendance::where('date', $today)
+        $yesterday = Carbon::parse($today)->subDay()->toDateString();
+
+        // Presensi hari ini
+        $attendancesToday = Attendance::where('date', $today)
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
             ->get()->keyBy('user_id');
+
+        // Presensi shift malam kemarin yang belum checkout (cross-day, masih aktif bekerja hari ini)
+        $attendancesYesterday = Attendance::where('date', $yesterday)
+            ->whereNull('check_out_time')
+            ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
+            ->get()->keyBy('user_id');
+
+        // Gabungkan: record hari ini mengalahkan kemarin untuk user yang sama
+        $attendances = $attendancesYesterday->merge($attendancesToday);
 
         // Izin/cuti disetujui yang mencakup hari ini, di-index per user_id
         $onLeave = LeaveRequest::where('status', 'approved')
@@ -531,6 +543,9 @@ class AttendanceController extends Controller
             $att = $attendances[$emp->id] ?? null;
 
             if ($att && $att->check_in_time) {
+                // Shift malam kemarin yang masih aktif (cross-day, belum checkout)
+                $isCrossDay = Carbon::parse($att->date)->format('Y-m-d') === $yesterday
+                              && is_null($att->check_out_time);
                 $checkedIn[] = [
                     'user_id'        => $emp->id,
                     'name'           => $emp->name,
@@ -539,6 +554,9 @@ class AttendanceController extends Controller
                     'check_out_time' => $att->check_out_time,
                     'check_in_type'  => $att->check_in_type,
                     'status'         => $att->status,
+                    'shift_date'     => Carbon::parse($att->date)->format('Y-m-d'),
+                    'checkout_date'  => $isCrossDay ? $today : null,
+                    'is_cross_day'   => $isCrossDay,
                 ];
             } elseif (isset($onLeave[$emp->id])) {
                 $leaveList[] = [
@@ -581,24 +599,58 @@ class AttendanceController extends Controller
         ]);
         $year = $validated['year'] ?? now()->year;
 
-        $balances = LeaveBalance::query()
-            ->join('users', 'leave_balances.user_id', '=', 'users.id')
+        $usersQuery = User::where('is_active', true)
             ->when(
                 $actor->role !== 'super_admin',
-                fn ($q) => $q->where('leave_balances.company_id', $actor->company_id)
+                fn ($q) => $q->where('company_id', $actor->company_id)
             )
-            ->where('leave_balances.year', $year)
-            ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('leave_balances.user_id', $u))
-            ->select([
-                'leave_balances.id', 'leave_balances.user_id', 'users.name as user_name',
-                'leave_balances.year', 'leave_balances.leave_type',
-                'leave_balances.quota', 'leave_balances.used',
-                DB::raw('(leave_balances.quota - leave_balances.used) as remaining'),
-            ])
-            ->orderBy('users.name')
-            ->get();
+            ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('id', $u))
+            ->orderBy('name');
 
-        return response()->json(['year' => $year, 'balances' => $balances]);
+        $users = $usersQuery->get(['id', 'name', 'company_id']);
+
+        $existingBalances = LeaveBalance::where('year', $year)
+            ->whereIn('user_id', $users->pluck('id'))
+            ->get()
+            ->groupBy('user_id');
+
+        $balances = collect();
+        $leaveTypes = ['cuti', 'izin'];
+        $defaultQuotas = ['cuti' => self::DEFAULT_LEAVE_QUOTA['cuti'] ?? 12, 'izin' => 0];
+
+        foreach ($users as $user) {
+            $userBalances = $existingBalances->get($user->id, collect());
+
+            foreach ($leaveTypes as $type) {
+                $existing = $userBalances->firstWhere('leave_type', $type);
+
+                if ($existing) {
+                    $balances->push([
+                        'id'         => $existing->id,
+                        'user_id'    => $user->id,
+                        'user_name'  => $user->name,
+                        'year'       => $year,
+                        'leave_type' => $type,
+                        'quota'      => $existing->quota,
+                        'used'       => $existing->used,
+                        'remaining'  => $existing->quota - $existing->used,
+                    ]);
+                } else {
+                    $balances->push([
+                        'id'         => null,
+                        'user_id'    => $user->id,
+                        'user_name'  => $user->name,
+                        'year'       => $year,
+                        'leave_type' => $type,
+                        'quota'      => $defaultQuotas[$type],
+                        'used'       => 0,
+                        'remaining'  => $defaultQuotas[$type],
+                    ]);
+                }
+            }
+        }
+
+        return response()->json(['year' => $year, 'balances' => $balances->values()]);
     }
 
     // 4e. setLeaveBalance() — atur kuota cuti/sakit karyawan (HRD)
@@ -860,13 +912,20 @@ class AttendanceController extends Controller
 
                 if (isset($attendances[$key])) {
                     // Ada record presensi nyata
-                    $att    = $attendances[$key];
+                    $att         = $attendances[$key];
+                    // Deteksi shift lintas hari: checkout terjadi di hari berikutnya
+                    $checkoutDate = $att->check_out_time
+                        ? Carbon::parse($att->check_out_time)->format('Y-m-d')
+                        : null;
+                    $isCrossDay   = $checkoutDate && $checkoutDate > $dateStr;
                     $rows[] = [
                         'id'               => $att->id,
                         'user_id'          => $att->user_id,
                         'user_name'        => $att->user_name,
                         'department'       => $att->department,
                         'date'             => $dateStr,
+                        'checkout_date'    => $checkoutDate,
+                        'is_cross_day'     => $isCrossDay,
                         'check_in_time'    => $att->check_in_time,
                         'check_out_time'   => $att->check_out_time,
                         'check_in_type'    => $att->check_in_type,
@@ -886,6 +945,8 @@ class AttendanceController extends Controller
                         'user_name'        => $user->name,
                         'department'       => $user->department,
                         'date'             => $dateStr,
+                        'checkout_date'    => null,
+                        'is_cross_day'     => false,
                         'check_in_time'    => null,
                         'check_out_time'   => null,
                         'check_in_type'    => null,
@@ -1060,6 +1121,9 @@ class AttendanceController extends Controller
             'radius_meters'          => 'sometimes|integer|min:1',
             'work_start_time'        => 'sometimes|date_format:H:i:s,H:i',
             'work_end_time'          => 'sometimes|date_format:H:i:s,H:i',
+            // Maks 6 hari kerja — karyawan wajib mendapat min 1 hari libur/minggu (UU 13/2003 Pasal 79)
+            'work_days'              => 'sometimes|array|min:1|max:6',
+            'work_days.*'            => 'integer|between:0,6|distinct',
             'late_tolerance_minutes'     => 'sometimes|integer|min:0',
             'require_selfie'             => 'sometimes|boolean',
             'allow_wfh'                  => 'sometimes|boolean',
@@ -1069,6 +1133,26 @@ class AttendanceController extends Controller
             'early_leave_tolerance_minutes'  => 'sometimes|nullable|integer|min:0|max:480',
             'checkout_reminder_minutes'      => 'sometimes|integer|min:5|max:120',
             'auto_checkout_grace_minutes'    => 'sometimes|integer|min:30|max:240',
+            // Validasi jam kerja mingguan (opsional, bisa di-toggle per kantor)
+            'enforce_weekly_hours'           => 'sometimes|boolean',
+            'max_weekly_hours'               => 'sometimes|nullable|integer|min:40|max:168',
+            // Validasi custom_schedules (override per hari)
+            'custom_schedules'               => 'sometimes|nullable|array',
+            'custom_schedules.*.start'       => 'required_with:custom_schedules|date_format:H:i',
+            'custom_schedules.*.end'         => 'required_with:custom_schedules|date_format:H:i',
+        ];
+    }
+
+    // Pesan validasi kustom untuk settingRules()
+    private function settingMessages(): array
+    {
+        return [
+            'work_days.max'        => 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).',
+            'work_days.min'        => 'Hari kerja minimal 1 hari per minggu.',
+            'work_days.*.distinct' => 'Setiap hari kerja hanya boleh dipilih satu kali.',
+            'work_days.*.between'  => 'Nilai hari kerja tidak valid (0=Minggu hingga 6=Sabtu).',
+            'custom_schedules.*.start.date_format' => 'Format jam masuk khusus harus HH:MM.',
+            'custom_schedules.*.end.date_format'   => 'Format jam pulang khusus harus HH:MM.',
         ];
     }
 
@@ -1088,7 +1172,7 @@ class AttendanceController extends Controller
     // 11. storeSettings() — tambah kantor baru
     public function storeSettings(Request $request): JsonResponse
     {
-        $validated = $request->validate($this->settingRules());
+        $validated = $request->validate($this->settingRules(), $this->settingMessages());
 
         $actor = $request->user();
         // super_admin boleh menentukan company_id; lainnya pakai milik sendiri
@@ -1126,7 +1210,7 @@ class AttendanceController extends Controller
     // 13. updateSettings() — ubah kantor
     public function updateSettings(Request $request, AttendanceSetting $attendanceSetting): JsonResponse
     {
-        $validated = $request->validate($this->settingRules(forUpdate: true));
+        $validated = $request->validate($this->settingRules(forUpdate: true), $this->settingMessages());
 
         $data = array_filter($validated, fn ($v) => $v !== null);
         $attendanceSetting->update($data);
@@ -1337,10 +1421,55 @@ class AttendanceController extends Controller
 
         $today = $this->todayDate();
 
+        // Cegah presensi jika user sedang cuti, sakit, atau izin hari ini
+        // (leave_type 'wfh' dikecualikan — itu mode kerja dari rumah, bukan izin tidak masuk)
+        $activeLeave = LeaveRequest::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->where('start_date', '<=', $today)
+            ->where('end_date', '>=', $today)
+            ->whereIn('leave_type', ['cuti', 'sakit', 'izin'])
+            ->first();
+
+        if ($activeLeave) {
+            $leaveLabel = match ($activeLeave->leave_type) {
+                'cuti'  => 'cuti',
+                'sakit' => 'sakit',
+                'izin'  => 'izin',
+                default => $activeLeave->leave_type,
+            };
+            return response()->json([
+                'message'    => "Anda tidak dapat melakukan presensi karena sedang dalam status {$leaveLabel} hari ini.",
+                'leave_type' => $activeLeave->leave_type,
+                'start_date' => $activeLeave->start_date,
+                'end_date'   => $activeLeave->end_date,
+            ], 403);
+        }
+
         // Cegah double check-in
         $existing = Attendance::where('user_id', $user->id)->whereDate('date', $today)->first();
         if ($existing && $existing->check_in_time) {
             return response()->json(['message' => 'Anda sudah check-in hari ini.'], 409);
+        }
+
+        // Cegah tumpang tindih shift: bila ada shift LINTAS HARI dari KEMARIN yang belum
+        // di-checkout, karyawan wajib menyelesaikan (check-out) shift malam itu dulu.
+        // Menjamin aturan "satu shift per hari" untuk sistem shift 24 jam.
+        $crossDayKemarin = \App\Http\Controllers\API\ShiftController::resolveYesterdayCrossDay($user, $today);
+        if ($crossDayKemarin) {
+            $yesterday   = Carbon::parse($today)->subDay()->toDateString();
+            $shiftTerbuka = Attendance::where('user_id', $user->id)
+                ->whereDate('date', $yesterday)
+                ->whereNotNull('check_in_time')
+                ->whereNull('check_out_time')
+                ->first();
+
+            if ($shiftTerbuka) {
+                return response()->json([
+                    'message' => 'Anda masih memiliki shift malam kemarin yang belum di-checkout. Silakan check-out terlebih dahulu sebelum memulai presensi baru.',
+                    'pending_attendance_id' => $shiftTerbuka->id,
+                    'pending_shift_date'    => $yesterday,
+                ], 409);
+            }
         }
 
         $distanceMeters = null;
@@ -1441,7 +1570,13 @@ class AttendanceController extends Controller
         if ($office && $jamPulang) {
             $graceMinutes    = (int) ($office->auto_checkout_grace_minutes ?? 60);
             $reminderMinutes = (int) ($office->checkout_reminder_minutes ?? 30);
-            $workEnd         = Carbon::parse($today . ' ' . $jamPulang, 'Asia/Jakarta');
+            // Shift lintas hari (cross-day): jam pulang berada di hari BERIKUTNYA setelah tanggal check-in.
+            // Tanpa ini, shift malam 22:00–06:00 akan menjadwalkan reminder/auto-checkout ke 06:00 hari ini (salah).
+            $isCrossDay  = ! empty($jadwalHariIni['is_cross_day']);
+            $workEndDate = $isCrossDay
+                ? Carbon::parse($today, 'Asia/Jakarta')->addDay()->toDateString()
+                : $today;
+            $workEnd         = Carbon::parse($workEndDate . ' ' . $jamPulang, 'Asia/Jakarta');
             $reminderAt      = $workEnd->copy()->addMinutes($reminderMinutes)->toIso8601String();
             $autoCheckoutAt  = $workEnd->copy()->addMinutes($graceMinutes)->toIso8601String();
         }
@@ -1476,14 +1611,37 @@ class AttendanceController extends Controller
         $user  = $request->user();
         $today = $this->todayDate();
 
-        $attendance = Attendance::where('user_id', $user->id)->whereDate('date', $today)->first();
+        // 1. Cari record hari ini yang belum di-checkout (shift normal)
+        $attendance = Attendance::where('user_id', $user->id)
+            ->whereDate('date', $today)
+            ->whereNull('check_out_time')
+            ->first();
 
-        if (! $attendance || ! $attendance->check_in_time) {
-            return response()->json(['message' => 'Anda belum check-in hari ini.'], 403);
+        // 2. Jika tidak ada, cek shift lintas hari (cross-day) dari KEMARIN yang masih terbuka.
+        //    Shift malam 22:00 (Jumat) -> check-out 06:00 (Sabtu): record ada di tanggal Jumat.
+        //    scheduleDate menyimpan tanggal shift asli untuk perhitungan lembur.
+        $scheduleDate = (string) $today;
+        if (! $attendance) {
+            $crossDay = \App\Http\Controllers\API\ShiftController::resolveYesterdayCrossDay($user, (string) $today);
+            if ($crossDay) {
+                $yesterday  = Carbon::parse($today)->subDay()->toDateString();
+                $attendance = Attendance::where('user_id', $user->id)
+                    ->whereDate('date', $yesterday)
+                    ->whereNull('check_out_time')
+                    ->first();
+                if ($attendance) {
+                    $scheduleDate = $yesterday;
+                }
+            }
         }
 
-        if ($attendance->check_out_time) {
-            return response()->json(['message' => 'Anda sudah check-out hari ini.'], 409);
+        // 3. Belum ada record terbuka -> tentukan pesan yang tepat
+        if (! $attendance || ! $attendance->check_in_time) {
+            $already = Attendance::where('user_id', $user->id)->whereDate('date', $today)->first();
+            if ($already && $already->check_out_time) {
+                return response()->json(['message' => 'Anda sudah check-out hari ini.'], 409);
+            }
+            return response()->json(['message' => 'Anda belum check-in hari ini.'], 403);
         }
 
         $checkOutTime = now();
@@ -1493,11 +1651,11 @@ class AttendanceController extends Controller
             ? (int) $attendance->check_in_time->diffInMinutes($checkOutTime)
             : 0;
 
-        // isNonWorkingDay: apakah hari ini libur nasional/weekend secara kalender
-        $nonWorking      = $this->isNonWorkingDay((string) $today, $user->company_id);
-        // calculateOvertime & checkEarlyLeave sudah mempertimbangkan shift aktif karyawan
-        $overtimeMinutes = $this->calculateOvertime($user, (string) $today, $checkOutTime, $workMinutes, $nonWorking);
-        $isEarlyLeave    = $this->checkEarlyLeave($user, (string) $today, $checkOutTime, $nonWorking);
+        // isNonWorkingDay: apakah tanggal shift libur nasional/weekend secara kalender
+        $nonWorking      = $this->isNonWorkingDay($scheduleDate, $user->company_id);
+        // calculateOvertime & checkEarlyLeave sudah mempertimbangkan shift aktif karyawan (cross-day aware)
+        $overtimeMinutes = $this->calculateOvertime($user, $scheduleDate, $checkOutTime, $workMinutes, $nonWorking);
+        $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking);
 
         $updateData = [
             'check_out_time'   => $checkOutTime,
@@ -1569,7 +1727,12 @@ class AttendanceController extends Controller
             return 0;
         }
 
-        $jamPulang   = Carbon::parse($date . ' ' . $jamPulangStr, 'Asia/Jakarta');
+        // Shift lintas hari (cross-day, mis. 22:00–06:00): jam pulang berada di HARI BERIKUTNYA.
+        $jamPulangDate = ! empty($schedule['is_cross_day'])
+            ? Carbon::parse($date, 'Asia/Jakarta')->addDay()->toDateString()
+            : $date;
+
+        $jamPulang   = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta');
         $checkOutWib = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
 
         $lewat = $checkOutWib->greaterThan($jamPulang)
@@ -1607,8 +1770,13 @@ class AttendanceController extends Controller
             return false;
         }
 
+        // Shift lintas hari (cross-day): jam pulang berada di HARI BERIKUTNYA.
+        $jamPulangDate = ! empty($schedule['is_cross_day'])
+            ? Carbon::parse($date, 'Asia/Jakarta')->addDay()->toDateString()
+            : $date;
+
         $toleransi   = (int) $office->early_leave_tolerance_minutes;
-        $jamPulang   = Carbon::parse($date . ' ' . $jamPulangStr, 'Asia/Jakarta');
+        $jamPulang   = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta');
         $batasAwal   = $jamPulang->copy()->subMinutes($toleransi);
         $checkOutWib = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
 
@@ -1624,6 +1792,8 @@ class AttendanceController extends Controller
             return;
         }
 
+        $overtimeReason = $this->resolveOvertimeReason($attendance, $isAutoCheckout);
+
         $approval = OvertimeApproval::create([
             'attendance_id'   => $attendance->id,
             'user_id'         => $attendance->user_id,
@@ -1631,6 +1801,7 @@ class AttendanceController extends Controller
             'overtime_minutes'=> $attendance->overtime_minutes,
             'status'          => 'pending',
             'is_auto_checkout'=> $isAutoCheckout,
+            'overtime_reason' => $overtimeReason,
         ]);
 
         // Cari info user karyawan
@@ -1654,9 +1825,37 @@ class AttendanceController extends Controller
                 'user_name'        => $employee ? $employee->name : null,
                 'overtime_minutes' => $attendance->overtime_minutes,
                 'is_auto_checkout' => $isAutoCheckout,
+                'overtime_reason'  => $overtimeReason,
                 'date'             => $tanggal,
             ], 'overtime_approval', $approval->id);
         }
+    }
+
+    // ─── Helper: tentukan alasan lembur otomatis untuk info HRD ─────────────
+    private function resolveOvertimeReason(Attendance $attendance, bool $isAutoCheckout): ?string
+    {
+        if ($isAutoCheckout) {
+            return 'Lupa checkout (auto-checkout oleh sistem)';
+        }
+
+        $user = User::find($attendance->user_id);
+        $date = (string) $attendance->date;
+
+        if ($user) {
+            $schedule = $this->getWorkSchedule($user, $date);
+
+            // Shift menandai hari ini libur (is_off)
+            if ($schedule['is_off']) {
+                return 'Masuk di hari libur (jadwal shift libur)';
+            }
+        }
+
+        // Hari libur nasional/weekend
+        if ($attendance->is_holiday) {
+            return 'Masuk di hari libur';
+        }
+
+        return null;
     }
 
     // ─── Helper: kirim FCM push notification (fire-and-forget) ─────────────
@@ -1710,8 +1909,13 @@ class AttendanceController extends Controller
             $office    = $jadwalHariIni['office'];
             $jamPulang = $jadwalHariIni['work_end_time'];
             if ($office && $jamPulang) {
-                $graceMinutes          = (int) ($office->auto_checkout_grace_minutes ?? 60);
-                $workEnd               = Carbon::parse($today . ' ' . $jamPulang, 'Asia/Jakarta');
+                $graceMinutes = (int) ($office->auto_checkout_grace_minutes ?? 60);
+                // Shift lintas hari: jam pulang berada di hari BERIKUTNYA setelah tanggal check-in.
+                $isCrossDay  = ! empty($jadwalHariIni['is_cross_day']);
+                $workEndDate = $isCrossDay
+                    ? Carbon::parse($today, 'Asia/Jakarta')->addDay()->toDateString()
+                    : $today;
+                $workEnd               = Carbon::parse($workEndDate . ' ' . $jamPulang, 'Asia/Jakarta');
                 $scheduledAutoCheckout = $workEnd->copy()->addMinutes($graceMinutes)->toIso8601String();
             }
         }
@@ -1779,6 +1983,7 @@ class AttendanceController extends Controller
                 'overtime_approvals.overtime_minutes',
                 'overtime_approvals.status',
                 'overtime_approvals.is_auto_checkout',
+                'overtime_approvals.overtime_reason',
                 'overtime_approvals.reviewed_at',
                 'overtime_approvals.notes',
                 'overtime_approvals.created_at',
@@ -1789,6 +1994,14 @@ class AttendanceController extends Controller
         // Tambahkan format jam untuk kemudahan tampilan
         $approvals->getCollection()->transform(function ($a) {
             $a->overtime_formatted = $this->formatMinutes((int) $a->overtime_minutes);
+
+            if ($a->check_in_time) {
+                $a->check_in_time = \Carbon\Carbon::parse($a->check_in_time)->toJSON();
+            }
+            if ($a->check_out_time) {
+                $a->check_out_time = \Carbon\Carbon::parse($a->check_out_time)->toJSON();
+            }
+
             return $a;
         });
 
@@ -2077,6 +2290,7 @@ class AttendanceController extends Controller
     public function myAttendance(Request $request): JsonResponse
     {
         $attendances = Attendance::where('user_id', $request->user()->id)
+            ->with(['overtimeApproval:id,attendance_id,status,overtime_minutes,notes,reviewed_at,is_auto_checkout,overtime_reason'])
             ->select([
                 'id', 'date', 'check_in_time', 'check_in_type', 'check_in_distance_meters',
                 'check_out_time', 'check_out_type', 'status', 'notes',
@@ -2084,6 +2298,27 @@ class AttendanceController extends Controller
             ])
             ->orderByDesc('date')
             ->paginate(30);
+
+        // Tambahkan field overtime_approval ke setiap record:
+        //   - null  : tidak ada lembur (overtime_minutes = 0 atau belum checkout)
+        //   - object: status pending/approved/rejected beserta detailnya
+        $attendances->getCollection()->transform(function ($att) {
+            $oa = $att->overtimeApproval;
+            $att->overtime_approval = $oa ? [
+                'id'               => $oa->id,
+                'status'           => $oa->status,           // pending | approved | rejected
+                'overtime_minutes' => $oa->overtime_minutes,
+                'notes'            => $oa->notes,
+                'reviewed_at'      => $oa->reviewed_at,
+                'is_auto_checkout' => $oa->is_auto_checkout,
+                'overtime_reason'  => $oa->overtime_reason,
+            ] : null;
+
+            // Hapus relasi Eloquent dari payload (sudah dimap ke array di atas)
+            unset($att->overtimeApproval);
+
+            return $att;
+        });
 
         return response()->json($attendances);
     }
@@ -2104,6 +2339,7 @@ class AttendanceController extends Controller
                 'overtime_approvals.overtime_minutes',
                 'overtime_approvals.status',
                 'overtime_approvals.is_auto_checkout',
+                'overtime_approvals.overtime_reason',
                 'overtime_approvals.reviewed_at',
                 'overtime_approvals.notes',
                 'overtime_approvals.created_at',
@@ -2113,6 +2349,14 @@ class AttendanceController extends Controller
 
         $approvals->getCollection()->transform(function ($a) {
             $a->overtime_formatted = $this->formatMinutes((int) $a->overtime_minutes);
+
+            if ($a->check_in_time) {
+                $a->check_in_time = \Carbon\Carbon::parse($a->check_in_time)->toJSON();
+            }
+            if ($a->check_out_time) {
+                $a->check_out_time = \Carbon\Carbon::parse($a->check_out_time)->toJSON();
+            }
+
             return $a;
         });
 

@@ -50,6 +50,9 @@ Route::prefix('v1')->group(function () {
                 Route::post('/receipts/{receipt}/submit', [ReceiptController::class, 'submit']);
                 Route::delete('/receipts/{receipt}', [ReceiptController::class, 'destroy']);
             });
+
+            // Jadwal shift karyawan
+            Route::get('/my-schedule', [ShiftController::class, 'mySchedule']);
         });
 
     // Finance / HRD / Admin / Super Admin routes — hanya web
@@ -156,6 +159,8 @@ Route::prefix('v1')->group(function () {
             Route::post('/device-changes/{id}/reject', [AttendanceController::class, 'rejectDeviceChange']);
 
             // ── Manajemen Shift (Custom Scheduling) ──────────────────────────────
+            // Kalender bulanan shift (definisikan SEBELUM /shifts/{id})
+            Route::get('/shifts/calendar', [ShiftController::class, 'calendar']);
             // Roster harian: daftar shift aktif karyawan (definisikan SEBELUM /shifts/{id})
             Route::get('/shifts/roster', [ShiftController::class, 'roster']);
 
@@ -163,6 +168,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/shifts', [ShiftController::class, 'index']);
             Route::post('/shifts', [ShiftController::class, 'store']);
             Route::match(['put', 'patch'], '/shifts/{id}', [ShiftController::class, 'update']);
+            Route::post('/shifts/{id}/toggle-active', [ShiftController::class, 'toggleActive']);
             Route::delete('/shifts/{id}', [ShiftController::class, 'destroy']);
 
             // Riwayat shift assignment seorang karyawan

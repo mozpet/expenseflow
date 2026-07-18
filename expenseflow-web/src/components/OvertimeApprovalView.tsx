@@ -21,6 +21,7 @@ interface OvertimeRecord {
   overtime_formatted: string;
   status: 'pending' | 'approved' | 'rejected';
   is_auto_checkout: boolean;
+  overtime_reason: string | null;
   reviewed_at: string | null;
   notes: string | null;
   created_at: string;
@@ -148,6 +149,12 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
             <div className="flex justify-between">
               <span className="text-slate-500">Tipe checkout</span>
               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-100 text-purple-700">Auto-Checkout</span>
+            </div>
+          )}
+          {record.overtime_reason && (
+            <div className="flex justify-between">
+              <span className="text-slate-500">Keterangan</span>
+              <span className="font-semibold text-slate-700">{record.overtime_reason}</span>
             </div>
           )}
         </div>
@@ -522,6 +529,7 @@ export function OvertimeApprovalView() {
                 <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Pulang</th>
                 <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Lembur</th>
                 <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Tipe</th>
+                <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Keterangan</th>
                 <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Status</th>
                 <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Aksi</th>
               </tr>
@@ -529,7 +537,7 @@ export function OvertimeApprovalView() {
             <tbody className="divide-y divide-slate-50">
               {!loading && displayed.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center">
+                  <td colSpan={9} className="py-16 text-center">
                     <div className="flex flex-col items-center gap-2 text-slate-400">
                       <Clock className="w-10 h-10 opacity-30" />
                       <p className="font-semibold text-sm">Tidak ada data lembur</p>
@@ -597,6 +605,17 @@ export function OvertimeApprovalView() {
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
                           Manual
                         </span>
+                      )}
+                    </td>
+
+                    {/* Keterangan lembur */}
+                    <td className="py-3 px-3">
+                      {r.overtime_reason ? (
+                        <span className="text-[11px] text-amber-700 bg-amber-50 px-2 py-1 rounded-lg">
+                          {r.overtime_reason}
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-slate-300">—</span>
                       )}
                     </td>
 

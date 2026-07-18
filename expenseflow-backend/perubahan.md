@@ -1319,3 +1319,410 @@ if ($validated['leave_type'] === 'cuti') {
 `GET /attendance/leave-balance` sudah mengembalikan field `remaining` per tipe cuti.
 Jika `remaining <= 0` untuk `leave_type === 'cuti'`, **disable/sembunyikan tombol "Ajukan Cuti"**
 dan tampilkan pesan: *"Saldo cuti Anda sudah habis (0 hari tersisa)"*.
+
+---
+
+# Perubahan — Sesi 2026-07-14 (Edit Nominal Klaim + Variance Flag Dinamis)
+
+## Tujuan
+
+Sebelumnya, setelah OCR berhasil, **semua data struk terkunci** — karyawan hanya bisa edit
+`category` dan `notes`. Jika OCR salah baca angka, karyawan tidak bisa mengoreksi nominal.
+
+Perubahan ini memungkinkan karyawan **mengedit `claimed_amount` (nominal klaim)** setelah OCR
+berhasil. `ocr_raw_amount` tetap immutable sebagai bukti asli. Jika karyawan mengubah nominal,
+**variance flag** otomatis dihitung dan ditampilkan sebagai **peringatan ke finance** (tidak
+memblokir submit).
+
+Threshold variance (`variance_limit`) bisa diatur finance di halaman **Pengaturan** web
+dashboard (`company_settings`, default 10%). Sebelumnya threshold ini **hardcode 10%** di kode.
+
+## Status: SELESAI ✅
+
+## Perubahan Backend
+
+### `app/Http/Controllers/API/ReceiptController.php` — method `updateClaim()`
+- **Sebelum:** `claimed_amount` hanya boleh diisi jika `ocr_status === 'failed'`
+- **Sesudah:** `claimed_amount` boleh diisi **kapan saja** selama status `draft`
+- Setelah update, panggil `recalculateVariance()` jika `claimed_amount` berubah
+- Response tambah field `variance_flag` dan `variance_pct`
+
+### `app/Models/Receipt.php` — method `recalculateVariance()`
+- **Sebelum:** threshold hardcode `$variancePct > 10`
+- **Sesudah:** ambil `variance_limit` dari `company_settings` per perusahaan, fallback 10%
+- Finance bisa mengatur threshold via `PUT /api/v1/dashboard/settings` (key `variance_limit`,
+  sudah ada sejak sesi 2026-06-23)
+
+## Perubahan Flutter
+
+### `lib/screens/submit_step2_screen.dart`
+- Saat OCR berhasil: nominal OCR tetap ditampilkan **read-only** (dengan ikon kunci)
+- Tambah **TextField** `claimed_amount` (pre-fill dari `ocr_raw_amount`, bisa diedit)
+- Jika karyawan mengubah nominal → tampil warning oranye:
+  *"Nominal klaim berbeda dari OCR. Finance akan melihat selisihnya."*
+- `_submit()` selalu kirim `claimed_amount` ke backend (bukan hanya saat OCR gagal)
+- Info text diperbarui: "Merchant dan tanggal terkunci. Nominal klaim bisa diubah."
+
+## Yang TIDAK Berubah
+- `ocr_raw_amount`, `ocr_raw_merchant`, `ocr_raw_date` tetap **immutable**
+- `SettingsController` + halaman Pengaturan web **tidak berubah** (variance_limit sudah ada)
+- Flow submit/approve/reject tidak berubah
+- Variance flag = **warning saja**, finance approve/reject seperti biasa
+
+---
+
+# Perubahan — Sesi 2026-07-17 (end_date pada Shift Assignment)
+
+## Tujuan
+HRD bisa menentukan **tanggal berakhir** saat assign shift ke karyawan. Setelah `end_date`, karyawan **otomatis kembali ke jam default kantor** — tanpa perlu aksi manual dari HRD.
+
+## Status: SELESAI ✅
+
+## Perubahan Database
+
+### Migration Baru
+`database/migrations/2026_07_17_000001_add_end_date_to_user_shifts_table.php`
+- Tambah kolom `end_date DATE nullable` setelah kolom `start_date` di tabel `user_shifts`
+- `NULL` = shift berlaku tanpa batas waktu (perilaku lama, backward compatible)
+- Terisi = shift berakhir pada tanggal itu (inklusif). Sehari setelahnya karyawan fallback ke jam default kantor
+
+## Perubahan Kode
+
+### `app/Models/UserShift.php`
+- Tambah `end_date` ke `$fillable`
+- Tambah `'end_date' => 'date'` ke `casts()`
+
+### `app/Http/Controllers/API/ShiftController.php`
+
+#### `resolveSchedule(User, date)` [static]
+- Tambah variabel `$shiftStillActive`:
+  - `end_date = null` → shift masih aktif (perilaku lama)
+  - `end_date terisi` → cek apakah `end_date >= $date`; jika lewat → shift tidak aktif → fallback ke default kantor
+- Semua logika pembacaan jadwal dari `ShiftSchedule` kini melalui guard ini
+
+#### `assignShift()` — POST `/dashboard/attendance/assign-shift`
+- Tambah field `end_date` ke validasi (`nullable|date|after_or_equal:start_date`)
+- Simpan `end_date` ke `UserShift::create()`
+- Log aktivitas & notifikasi karyawan menyertakan info "s.d. {end_date}" jika terisi
+
+#### `bulkAssign()` — POST `/dashboard/attendance/bulk-assign`
+- Tambah field `end_date` ke validasi (`nullable|date|after_or_equal:start_date`)
+- `end_date` yang sama diterapkan ke semua karyawan yang berhasil di-assign
+- Notifikasi karyawan menyertakan info "hingga {end_date}" jika terisi
+
+#### `updateAssignment()` — PUT/PATCH `/dashboard/attendance/assignments/{id}`
+- Tambah field `end_date` ke validasi (`sometimes|nullable|date`)
+- Validasi silang: `end_date >= start_date` (dikoreksi menggunakan `start_date` efektif)
+- Kirim `null` secara eksplisit untuk menghapus batas waktu (shift kembali tanpa batas)
+- `fill()` kini menyertakan `end_date`
+
+## Contoh Penggunaan
+
+### Assign shift sementara (proyek 1 bulan)
+```json
+POST /api/v1/dashboard/attendance/assign-shift
+{
+  "user_id": 5,
+  "shift_id": 3,
+  "start_date": "2026-07-20",
+  "end_date": "2026-08-20",
+  "notes": "Shift proyek konstruksi X"
+}
+```
+→ Per 21 Agustus 2026, karyawan otomatis menggunakan jam kantor default kembali.
+
+### Bulk assign dengan batas waktu
+```json
+POST /api/v1/dashboard/attendance/bulk-assign
+{
+  "user_ids": [5, 8, 12],
+  "shift_id": 3,
+  "start_date": "2026-07-20",
+  "end_date": "2026-08-20",
+  "notes": "Tim proyek sementara"
+}
+```
+
+### Hapus batas waktu (shift permanen kembali)
+```json
+PATCH /api/v1/dashboard/attendance/assignments/{id}
+{
+  "end_date": null
+}
+```
+
+## Backward Compatibility
+- Assignment lama (tanpa `end_date`) tetap berfungsi normal — `end_date = NULL` = tanpa batas waktu
+- Tidak ada breaking change di response API (field `end_date` hanya ditambahkan ke objek `user_shift`)
+
+---
+
+# Perubahan — Sesi 2026-07-18 (Dukungan Shift Lintas Hari / Sistem Shift 24 Jam)
+
+## Tujuan
+Mendukung **sistem shift 24 jam (3 roster × 8 jam)** dan **16 jam (2 roster × 8 jam)** di
+mana salah satu roster adalah **shift malam yang melintasi tengah malam** (mis. 22:00–06:00).
+Sebelumnya seluruh alur presensi mengasumsikan shift selesai di hari yang sama, sehingga
+karyawan shift malam gagal check-out (record ada di tanggal check-in, tapi `todayDate()`
+sudah berganti hari saat check-out pagi harinya).
+
+## Status: SELESAI ✅ (backend + dashboard UI)
+
+## Konsep
+- **Sistem 24 jam = 3 template shift terpisah** di 1 cabang: Pagi (06:00–14:00),
+  Sore (14:00–22:00), Malam (22:00–06:00). Sistem 16 jam = 2 template.
+- **Deteksi cross-day otomatis**: di `validateSchedules()`, bila `work_end_time <= work_start_time`
+  → `is_cross_day = true` (jam pulang berada di hari berikutnya).
+- **Toggle 24 jam** = pakai `is_active` per template yang sudah ada (`toggleActive`). Tidak
+  ada migration/flag baru — HRD nonaktifkan template Shift Malam bila tidak dipakai.
+- Kolom `is_cross_day` di `shift_schedules` sudah ada sejak migration `2026_07_17_000002`.
+
+## Perubahan Backend (tanpa migration baru)
+
+### `app/Http/Controllers/API/AttendanceController.php`
+- **`checkOut()`** — fallback cross-day: bila tidak ada record hari ini yang belum di-checkout,
+  cek shift malam **kemarin** via `ShiftController::resolveYesterdayCrossDay()`. Perhitungan
+  memakai `$scheduleDate` (tanggal shift asli = kemarin bila cross-day).
+- **`checkIn()`** — cegah tumpang tindih: bila ada shift malam kemarin yang **belum di-checkout**,
+  tolak `409` (`pending_attendance_id`, `pending_shift_date`) → jamin "1 shift per hari".
+- **`calculateOvertime()`** — jam pulang shift `is_cross_day` dihitung di **hari berikutnya**
+  (`Carbon::parse($date)->addDay()`).
+- **`checkEarlyLeave()`** — deteksi pulang awal cross-day dengan acuan jam pulang hari +1.
+
+### `app/Console/Commands/AutoCheckoutCommand.php`
+- Query diperluas: ambil attendance yang belum di-checkout dari **hari ini + kemarin**
+  (`whereIn('date', [$today, $yesterday])`). Record kemarin yang **bukan** cross-day dilewati.
+- Tiap record memakai tanggal shift-nya sendiri (`$attDate`); jam pulang cross-day dihitung
+  di hari berikutnya (di loop utama & helper `calculateOvertime()`).
+
+## Perubahan Dashboard UI (`expenseflow-web/src/components/ShiftManagement.tsx`)
+- **Hapus validasi** yang menolak shift lintas tengah malam (`work_end_time <= work_start_time`).
+  Sekarang diizinkan & otomatis ditandai cross-day oleh backend.
+- Tambah field `is_cross_day` ke tipe `ScheduleRow` & `RosterRow`.
+- **Badge "+1 hari" / ikon Moon** di 3 tempat:
+  - Editor form template (saat jam pulang ≤ jam masuk).
+  - Tabel roster harian (kolom Jam Kerja) bila `is_cross_day`.
+  - Mini-grid 7 hari di kartu template.
+
+## Endpoint (tidak berubah)
+`endpoints.ts` (`shiftApi`) sudah lengkap — tidak ada penambahan/perubahan. Field `is_cross_day`
+sudah dikirim `roster()` sejak awal dan kini dikonsumsi UI.
+
+## Contoh Alur Shift Malam
+```
+Karyawan shift Malam (22:00–06:00), assigned ke Shift Malam.
+1. Check-in 22:00 tgl 5 → record date=2026-07-05, status present/late (acuan jam masuk shift).
+2. Check-out 06:10 tgl 6 → tidak ada record tgl 6 yang terbuka →
+   resolveYesterdayCrossDay() menemukan shift malam tgl 5 → pakai record tgl 5.
+   Jam pulang = 2026-07-06 06:00 (hari +1). Lembur = menit setelah 06:00 bila ≥ min_overtime.
+3. Bila lupa check-out → AutoCheckoutCommand menangkap record tgl 5 (cross-day) &
+   auto-checkout setelah 06:00 + grace period.
+```
+
+## Catatan untuk Tim Flutter
+- Response `check-in`/`status` sudah mengirim `active_shift` (termasuk shift malam).
+- Bila check-in ditolak `409` dengan `pending_attendance_id` → tampilkan pesan agar
+  karyawan menyelesaikan (check-out) shift malam kemarin dulu.
+
+## Belum Dikerjakan (opsional)
+- Premi/tarif khusus shift malam (di luar lembur) — belum ada; lembur tetap pakai aturan
+  `overtime_enabled` + `min_overtime_minutes` per cabang.
+- Optimasi N+1 di `roster` (resolveSchedule per karyawan).
+
+---
+
+# Perubahan — Sesi 2026-07-17 (Fix Bug Cross-Day Shift + Validasi Overlap Template)
+
+## Tujuan
+Dua masalah diselesaikan sekaligus:
+1. **3 bug runtime** — shift malam (cross-day) menghasilkan jadwal reminder/auto-checkout yang salah, dan auto-checkout command memakai jadwal hari yang salah.
+2. **Validasi overlap template** — HRD bisa membuat dua template aktif di cabang yang sama dengan jam bertabrakan tanpa peringatan apapun.
+
+## Status: SELESAI ✅
+
+---
+
+## Bug A — `AutoCheckoutCommand.php` (KRITIS)
+
+### Masalah
+`doAutoCheckout()` memanggil `ShiftController::resolveSchedule($user, $today)` dengan `$today` = tanggal hari ini (saat command dijalankan). Untuk record shift malam (check-in kemarin, masih terbuka pagi ini), parameter yang benar adalah tanggal kemarin (`$attDate`), bukan hari ini.
+
+Efek: overtime dihitung dari jadwal shift hari ini, bukan jadwal shift malam kemarin → angka lembur salah, `is_holiday` salah.
+
+### Fix
+- Rename parameter `string $today` → `string $attDate` di signature `doAutoCheckout()`
+- Semua penggunaan `$today` di dalam method diganti `$attDate`
+- `resolveSchedule($user, $attDate)` dan `isNonWorkingDay($attDate, ...)` kini memakai tanggal shift asli
+
+**File:** `app/Console/Commands/AutoCheckoutCommand.php`
+
+---
+
+## Bug B — `AttendanceController::checkIn()` (FUNGSIONAL)
+
+### Masalah
+```php
+$workEnd = Carbon::parse($today . ' ' . $jamPulang, 'Asia/Jakarta');
+```
+Untuk shift cross-day (mis. 22:00–06:00), jam pulang 06:00 berada di **hari berikutnya**. Baris di atas menghasilkan `workEnd = hari-ini 06:00` (salah) bukan `besok 06:00` (benar).
+
+Efek: `reminder_at` dan `auto_checkout_at` di response check-in salah → Flutter menjadwalkan notifikasi lokal ke waktu yang sudah lewat.
+
+### Fix
+```php
+$isCrossDay  = ! empty($jadwalHariIni['is_cross_day']);
+$workEndDate = $isCrossDay
+    ? Carbon::parse($today, 'Asia/Jakarta')->addDay()->toDateString()
+    : $today;
+$workEnd = Carbon::parse($workEndDate . ' ' . $jamPulang, 'Asia/Jakarta');
+```
+
+**File:** `app/Http/Controllers/API/AttendanceController.php` — method `checkIn()`
+
+---
+
+## Bug C — `AttendanceController::checkStatus()` (FUNGSIONAL)
+
+### Masalah
+Bug identik dengan Bug B di method `checkStatus()`. `scheduled_auto_checkout_at` yang dikirim ke Flutter untuk polling status salah untuk karyawan shift malam.
+
+### Fix
+Logika `$isCrossDay` + `$workEndDate` yang sama diterapkan di `checkStatus()`.
+
+**File:** `app/Http/Controllers/API/AttendanceController.php` — method `checkStatus()`
+
+---
+
+## Fitur Baru — Validasi Overlap Template Shift
+
+### Latar Belakang
+Sistem shift 24 jam pakai **multi-template per cabang** (mis. Shift Pagi 06-14, Shift Sore 14-22, Shift Malam 22-06). Tanpa validasi, HRD bisa mengaktifkan dua template yang jamnya tabrakan di cabang yang sama → karyawan punya dua jadwal bertentangan.
+
+### Aturan Overlap
+- **Strict overlap**: `newStart < existingEnd && newEnd > existingStart`
+- Bersebelahan tepat (endA == startB) = **OK**, tidak dianggap tabrakan
+- Shift cross-day: jam pulang dikonversi ke +1440 menit (hari berikutnya) sebelum dibandingkan
+- Validasi hanya terhadap template yang **aktif** (`is_active = true`) di cabang yang sama
+
+### Contoh
+```
+Shift Pagi  06:00–14:00  → menit 360–840
+Shift Sore  14:00–22:00  → menit 840–1320  → OK (bersebelahan)
+Shift Malam 22:00–06:00  → menit 1320–1800 (cross-day) → OK
+Shift Konflik 13:00–21:00 → menit 780–1260 → DITOLAK (overlap dengan Shift Pagi & Sore)
+```
+
+### Helper Baru
+- `timeToMinutes(string $time): int` — parse "HH:MM" atau "HH:MM:SS" → total menit
+- `detectTemplateOverlap(int $branchId, array $schedules, ?int $excludeShiftId): ?string` — cek semua hari non-off di schedules baru vs template aktif di cabang; return pesan error atau null
+
+### Dipanggil Di
+| Method | Kapan dicek |
+|--------|-------------|
+| `store()` | Selalu, sebelum `DB::transaction()` |
+| `update()` | Jika shift aktif DAN jadwal/cabang berubah (exclude diri sendiri) |
+| `toggleActive()` | Hanya saat inactive → active |
+
+**File:** `app/Http/Controllers/API/ShiftController.php`
+
+---
+
+## Catatan untuk Tim Flutter
+- Response `check-in` sekarang mengirim `reminder_at` dan `auto_checkout_at` yang benar untuk shift malam (besok jam 06:xx, bukan hari ini jam 06:xx).
+- Response `check-status` mengirim `scheduled_auto_checkout_at` yang benar.
+- Tidak ada perubahan struktur response — hanya nilai yang kini akurat.
+
+---
+
+# Perubahan — Sesi 2026-07-18 (Validasi Jam Kerja Mingguan & Hari Libur Wajib)
+
+## Tujuan
+
+Menambahkan dua validasi shift yang wajib secara hukum:
+
+1. **P0 #2 — Min 1 hari libur per minggu (hard rule, UU 13/2003 Pasal 79)**: Template shift 7 hari penuh tanpa libur ditolak, baik dari frontend maupun backend.
+2. **P0 #1 — Batas jam kerja per minggu (opsional, toggle per kantor, UU 13/2003 Pasal 77)**: HRD bisa mengaktifkan batas maksimum jam/minggu per kantor. Jika diaktifkan, template shift yang melebihi batas ditolak saat dibuat/diubah.
+
+## Status: SELESAI ✅
+
+---
+
+## Perubahan Database
+
+### `database/migrations/2026_07_18_000001_add_weekly_hours_settings_to_attendance_settings_table.php` — BARU
+Tambah 2 kolom ke `attendance_settings`:
+- `enforce_weekly_hours` — boolean, default `false` (toggle)
+- `max_weekly_hours` — unsignedSmallInteger, nullable, default `40`
+
+---
+
+## Perubahan Backend
+
+### `app/Models/AttendanceSetting.php`
+- Tambah `enforce_weekly_hours` dan `max_weekly_hours` ke `$fillable`
+- Tambah cast `'enforce_weekly_hours' => 'boolean'` dan `'max_weekly_hours' => 'integer'`
+- **Fix bug lama**: `checkout_reminder_minutes` dan `auto_checkout_grace_minutes` sudah ada di DB (migrasi 2026_07_02) tapi belum di `$fillable` dan `casts()` — sekarang ditambahkan
+
+### `app/Http/Controllers/API/ShiftController.php`
+- **`validateSchedules()`**: Tambah pengecekan P0 #2 — jika semua 7 hari bukan libur (`is_off = false`), return error `"Minimal 1 hari libur per minggu"`
+- **Helper baru `validateWeeklyHours(array $schedules, AttendanceSetting $branch): array`** (P0 #1):
+  - Hitung total jam kerja semua hari non-off
+  - Tangani shift lintas tengah malam (`is_cross_day`)
+  - Jika `$branch->enforce_weekly_hours === false` → lewati validasi
+  - Jika total > batas → return error
+  - Jika total > batas × 0.9 → return warning (mendekati batas)
+- **Helper baru `timeToMinutes(string $time): int`** — konversi "HH:MM" ke menit
+- **`store()`**: Panggil `validateWeeklyHours()` setelah `resolveBranch()`, sebelum `DB::transaction()`
+- **`update()`**: Panggil `validateWeeklyHours()` jika jadwal dikirim (dengan efektif branch)
+- **Fix bug syntax**: Sesi sebelumnya tidak sengaja menghapus pembuka `$shift = DB::transaction(function () use (...)` di `store()` — sudah diperbaiki
+
+### `app/Http/Controllers/API/AttendanceController.php`
+Dalam `settingRules()`, tambah validasi:
+```php
+'enforce_weekly_hours' => 'sometimes|boolean',
+'max_weekly_hours'     => 'sometimes|nullable|integer|min:40|max:168',
+```
+
+---
+
+## Perubahan Frontend
+
+### `expenseflow-web/src/components/ShiftManagement.tsx`
+- **Interface `OfficeOpt`**: Tambah `enforce_weekly_hours?: boolean` dan `max_weekly_hours?: number | null`
+- **Import**: Tambah `Clock`, `ToggleLeft`, `ToggleRight` dari lucide-react
+- **Helper baru `computeWeeklyHours(schedules)`**: Hitung total jam kerja per minggu secara real-time
+- **`ShiftFormModal`**:
+  - `useMemo weeklyHours`: total jam kerja dari schedules saat ini
+  - `useMemo selectedOffice`: ambil data kantor yang dipilih (untuk batas jam)
+  - `useMemo weeklyStatus`: `'error' | 'warning' | 'safe' | 'info'` tergantung total dan batas kantor
+  - **Chip indikator** di atas grid 7 hari: menampilkan total jam/minggu + batas maks (jika enforce aktif), warna sesuai status (merah/kuning/hijau/abu-abu)
+  - **`validate()`**: Tambah cek P0 #2 di frontend — workingDays > 6 → error sebelum kirim ke backend
+
+### `expenseflow-web/src/components/SettingsManagement.tsx`
+- **State `emptyForm`**: Tambah `enforce_weekly_hours: false` dan `max_weekly_hours: 40`
+- **`openEdit()`**: Map field `enforce_weekly_hours` dan `max_weekly_hours` dari data kantor
+- **Payload submit**: Kirim `enforce_weekly_hours` dan `max_weekly_hours` (null jika enforce off)
+- **Form JSX**: Tambah section "Batas jam kerja per minggu" dengan:
+  - Toggle checkbox enable/disable
+  - Input number (min 40, max 168) yang muncul jika toggle ON
+  - Teks keterangan jika toggle OFF
+- **Card kantor**: Tampilkan info `"Maks X jam/minggu (aktif)"` atau `"Tidak dibatasi"`
+
+---
+
+## Verifikasi (test_p0.php)
+
+```
+P0#2 7 hari penuh   : ERROR  ✓   ← template 7 hari kerja ditolak
+P0#2 6 hari kerja   : LOLOS ✓   ← 6 hari kerja + 1 libur diizinkan
+P0#1 enforce 54j    : ERROR  ✓   ← 6×9j=54j > 40j batas → ditolak
+P0#1 enforce 40j    : SAFE   ✓   ← 5×8j=40j = tepat batas → aman
+P0#1 no-enforce 54j : LOLOS ✓   ← enforce=false → selalu lolos
+```
+
+---
+
+## Catatan untuk rules.md
+Roadmap Fitur Shift Lanjutan sudah ditambahkan di `rules.md`:
+- P1: Batas shift malam berturut-turut, minimum notice perubahan jadwal, shift swap, roster mobile
+- P2: Rotasi otomatis periodik, notifikasi libur nasional terdampak, unavailability karyawan

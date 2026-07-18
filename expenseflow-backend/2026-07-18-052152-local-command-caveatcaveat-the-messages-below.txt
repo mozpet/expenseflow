@@ -1,0 +1,901 @@
+❯ untuk P0 #1 saya sebenernya ingin membuat validasi bahwa seminggu harus 40    
+  jam seminggu namun jika sistem itu benar benar di terapkan nanti tidak ada    
+  perusahaan yang memakai aplikasi ini karna tidak fleksibel, karna ada         
+  beberapa perusahaan yang juga mempekaerjakan karyawan dengan lebih dari 40    
+  jam seminggu namun dengan gaji yang sesuai menurutmu apakah sistem ini ada    
+  tapi bisa di on atau of kan oleh user, untuk P0 #2 terapkan. untuk yang lain  
+  masukan ke dalam rules dulu nanti saya pertimbangkan lagi                     
+
+● Saya perlu eksplorasi dulu sebelum membuat rencana.
+
+● 2 Explore agents finished (ctrl+o to expand)
+   ├ Explore company settings dan AttendanceSetting model · 15 tool uses · 27.4k tokens
+   │ ⎿  Done
+   └ Explore rules.md dan ShiftController validateSchedules · 8 tool uses · 40.8k tokens
+     ⎿  Done
+
+● Sudah cukup informasi. Sekarang buat rencana implementasi.
+
+● Updated plan
+  ⎿  /plan to preview
+
+● User approved Claude's plan
+  ⎿  Plan saved to: C:\Users\Ricardo 
+     abet\.claude\plans\untuk-p0-1-saya-recursive-boole.md · /plan to edit
+     Rencana: Validasi Jam Kerja Mingguan & Hari Libur Wajib
+
+     Context
+
+     Sistem shift saat ini tidak memvalidasi:
+     1. Total jam kerja per minggu (UU 13/2003 Pasal 77: maks 40 jam). User
+     minta ini bisa di-toggle ON/OFF per cabang karena ada perusahaan yang bayar
+     lebih untuk >40 jam.
+     2. Hari libur wajib per minggu (UU 13/2003 Pasal 79: min 1 hari libur). Ini
+     hard rule, tidak perlu toggle — template 7 hari penuh adalah pelanggaran
+     hukum.
+     3. Items P1 #4–7 dan P2 #8–10 cukup dicatat di rules.md untuk roadmap
+     berikutnya.
+
+     ---
+     Perubahan yang Akan Dilakukan
+
+     1. Migration baru (backend)
+
+     File baru: database/migrations/2026_07_18_000001_add_weekly_hours_settings_
+     to_attendance_settings_table.php
+
+     Tambah 2 kolom ke tabel attendance_settings:
+     - enforce_weekly_hours — boolean, default false (toggle apakah batas
+     jam/minggu diberlakukan)
+     - max_weekly_hours — unsignedSmallInteger, nullable, default 40 (batas
+     jam/minggu jika enforce aktif)
+
+     2. app/Models/AttendanceSetting.php
+
+     - Tambah enforce_weekly_hours dan max_weekly_hours ke $fillable
+     - Tambah cast: enforce_weekly_hours => 'boolean', max_weekly_hours => 
+     'integer'
+     - Sekalian fix bug lama: checkout_reminder_minutes dan
+     auto_checkout_grace_minutes sudah ada di DB (migrasi 2026_07_02) tapi belum
+     ada di $fillable dan casts() — tambahkan sekarang
+
+     3. app/Http/Controllers/API/ShiftController.php
+
+     a. validateSchedules() — tambah P0 #2 (hari libur wajib):
+     $workingDays = count(array_filter($schedules, fn($s) =>
+     empty($s['is_off'])));
+     if ($workingDays > 6) {
+         return ['error' => 'Template shift tidak boleh memiliki 7 hari kerja 
+     penuh. Minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).',
+     'warnings' => []];
+     }
+     Letakkan setelah cek 7 hari unik, sebelum loop foreach.
+
+     b. Helper baru validateWeeklyHours(array $schedules, AttendanceSetting 
+     $branch): array — P0 #1:
+     - Hitung total jam kerja semua hari non-off dari schedules
+     - Untuk hari normal: endMins - startMins
+     - Untuk hari cross-day: (1440 - startMins) + endMins
+     - Jika $branch->enforce_weekly_hours === false → return ['error' => null, 
+     'warnings' => []]
+     - Jika total > $branch->max_weekly_hours → return error
+     - Jika total > $branch->max_weekly_hours * 0.9 (dalam 10% dari batas) →
+     return warning
+     - Sisanya safe
+
+     c. store() dan update() — setelah resolveBranch(), panggil
+     validateWeeklyHours():
+     $weeklyCheck = $this->validateWeeklyHours($validated['schedules'],
+     $branch);
+     if ($weeklyCheck['error']) {
+         return response()->json(['message' => $weeklyCheck['error']], 422);
+     }
+     // merge warnings
+     $k3Warnings = array_merge($k3Warnings, $weeklyCheck['warnings']);
+
+     4. app/Http/Controllers/API/AttendanceController.php
+
+     Dalam settingRules(), tambah validasi:
+     'enforce_weekly_hours' => 'sometimes|boolean',
+     'max_weekly_hours'     => 'sometimes|nullable|integer|min:40|max:168',
+
+     5. expenseflow-web/src/components/ShiftManagement.tsx
+
+     a. Interface OfficeOpt — tambah field:
+     enforce_weekly_hours?: boolean;
+     max_weekly_hours?: number | null;
+
+     b. Helper baru computeWeeklyHours(schedules) — hitung total jam kerja per
+     minggu secara real-time (di-export ke computed/useMemo di dalam modal).
+
+     c. ShiftFormModal:
+     - useMemo baru: weeklyHours = computeWeeklyHours(schedules)
+     - Tampilkan indikator total jam/minggu di atas grid 7 hari — chip
+     hijau/kuning/merah tergantung kondisi
+     - validate(): tambah cek P0 #2 (workingDays > 6 → error langsung di
+     frontend sebelum kirim)
+     - Jika branch punya enforce_weekly_hours=true dan total > max_weekly_hours
+     → error badge merah di chip total jam
+
+     d. OfficesTab di AttendanceManagement.tsx:
+     - Form tambah/edit kantor: tambah toggle switch enforce_weekly_hours
+     - Jika toggle ON: tampilkan input max_weekly_hours (default 40, min 40,
+     max 168)
+     - Tampilkan info di card kantor: "Batas jam/minggu: 40 jam (aktif)" atau
+     "Tidak dibatasi"
+
+     6. expenseflow-backend/rules.md
+
+     Tambah bagian baru di roadmap shift:
+
+     ## Roadmap Fitur Shift Lanjutan
+
+     ### P1 — Penting (Operasional & K3)
+     - [ ] Batas shift malam berturut-turut (max 5–7 malam berurutan)
+     - [ ] Minimum notice perubahan jadwal (H-1 atau H-2 sebelum berlaku)
+     - [ ] Shift swap antar karyawan (request + approval HRD)
+     - [ ] Roster jadwal shift di mobile (karyawan lihat jadwal ke depan)
+
+     ### P2 — Nilai Tambah
+     - [ ] Rotasi shift otomatis periodik (misal tiap 2 minggu)
+     - [ ] Notifikasi karyawan/HRD saat libur nasional terdampak shift aktif
+     - [ ] Unavailability / preferensi shift karyawan (input tanggal tidak
+     tersedia)
+
+     ---
+     Urutan Implementasi
+
+     1. Migration → jalankan php artisan migrate
+     2. AttendanceSetting.php (fix fillable + tambah kolom baru)
+     3. ShiftController.php (P0 #2 di validateSchedules + helper weeklyHours +
+     store/update)
+     4. AttendanceController.php (settingRules)
+     5. ShiftManagement.tsx (frontend validasi + indikator)
+     6. AttendanceManagement.tsx (form kantor)
+     7. rules.md (roadmap)
+
+     ---
+     Verifikasi
+
+     Backend (tinker):
+     // P0 #2: template 7 hari kerja → harus error
+     $schedules = array_map(fn($d) => ['day_of_week'=>$d,'is_off'=>false,'work_s
+     tart_time'=>'08:00','work_end_time'=>'17:00'], range(0,6));
+     // validateSchedules($schedules) → error "Minimal 1 hari libur..."
+
+     // P0 #1: template 6 hari × 9 jam = 54 jam, branch enforce=true max=40 → 
+     error
+     // P0 #1: template 6 hari × 7 jam = 42 jam, branch enforce=true max=40 → 
+     error
+     // P0 #1: template 5 hari × 8 jam = 40 jam, branch enforce=true max=40 → 
+     safe
+     // P0 #1: branch enforce=false → selalu lolos
+
+     Frontend: buka ShiftFormModal, centang semua 7 hari → muncul error "Minimal
+     1 hari libur". Toggle enforce di kantor → chip jam/minggu berubah warna
+     sesuai total.
+
+● Mulai implementasi. Task #7 dulu — migration.
+
+● Write(database\migrations\2026_07_18_000001_add_weekly_hours_settings_to_atten
+       dance_settings_table.php)
+  ⎿  Wrote 30 lines to database\migrations\2026_07_18_000001_add_weekly_hou
+     rs_settings_to_attendance_settings_table.php
+       1 <?php
+       2 
+       3 use Illuminate\Database\Migrations\Migration;
+       4 use Illuminate\Database\Schema\Blueprint;
+       5 use Illuminate\Support\Facades\Schema;
+       6 
+       7 return new class extends Migration
+       8 {
+       9     public function up(): void
+      10     {
+     … +30 lines (ctrl+o to expand)
+  Ran 1 shell command (ctrl+o to expand)
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(app\Models\AttendanceSetting.php)
+  ⎿  Added 21 lines, removed 11 lines
+      23          'overtime_enabled',
+      24          'min_overtime_minutes',
+      25          'early_leave_tolerance_minutes',
+      26 +        // ditambahkan: ada di DB (migrasi 2026_07_02) tapi bel
+         +um di fillable                                                 
+      27 +        'checkout_reminder_minutes',                           
+      28 +        'auto_checkout_grace_minutes',                         
+      29 +        // validasi jam kerja mingguan                         
+      30 +        'enforce_weekly_hours',                                
+      31 +        'max_weekly_hours',                                    
+      32      ];
+      33  
+      34      protected function casts(): array
+      35      {
+      36          return [
+      31 -            'office_latitude'            => 'decimal:8',       
+      32 -            'office_longitude'           => 'decimal:8',       
+      33 -            'radius_meters'              => 'integer',         
+      34 -            'late_tolerance_minutes'     => 'integer',         
+      35 -            'require_selfie'             => 'boolean',         
+      36 -            'allow_wfh'                  => 'boolean',         
+      37 -            'wfh_checkin_window_minutes' => 'integer',         
+      38 -            'overtime_enabled'                => 'boolean',    
+      39 -            'min_overtime_minutes'            => 'integer',    
+      40 -            'early_leave_tolerance_minutes'   => 'integer',    
+      41 -            'work_days'                       => 'array',      
+      37 +            'office_latitude'               => 'decimal:8',    
+      38 +            'office_longitude'              => 'decimal:8',    
+      39 +            'radius_meters'                 => 'integer',      
+      40 +            'late_tolerance_minutes'        => 'integer',      
+      41 +            'require_selfie'                => 'boolean',      
+      42 +            'allow_wfh'                     => 'boolean',      
+      43 +            'wfh_checkin_window_minutes'    => 'integer',      
+      44 +            'overtime_enabled'              => 'boolean',      
+      45 +            'min_overtime_minutes'          => 'integer',      
+      46 +            'early_leave_tolerance_minutes' => 'integer',      
+      47 +            'work_days'                     => 'array',        
+      48 +            'checkout_reminder_minutes'     => 'integer',      
+      49 +            'auto_checkout_grace_minutes'   => 'integer',      
+      50 +            'enforce_weekly_hours'          => 'boolean',      
+      51 +            'max_weekly_hours'              => 'integer',      
+      52          ];
+      53      }
+      54  
+
+● Kerjakan Task #9 (ShiftController) dan Task #10 (AttendanceController
+  settingRules) sekaligus.
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Dua edit sekaligus — settingRules() dan ShiftController.
+
+● Update(app\Http\Controllers\API\AttendanceController.php)
+  ⎿  Added 3 lines
+      1132              'early_leave_tolerance_minutes'  => 'sometimes|nu
+            llable|integer|min:0|max:480',
+      1133              'checkout_reminder_minutes'      => 'sometimes|in
+            teger|min:5|max:120',
+      1134              'auto_checkout_grace_minutes'    => 'sometimes|in
+            teger|min:30|max:240',
+      1135 +            // Validasi jam kerja mingguan (opsional, bisa di
+           +-toggle per kantor)                                          
+      1136 +            'enforce_weekly_hours'           => 'sometimes|bo
+           +olean',                                                      
+      1137 +            'max_weekly_hours'               => 'sometimes|nu
+           +llable|integer|min:40|max:168',                              
+      1138          ];
+      1139      }
+      1140  
+
+● Update(app\Http\Controllers\API\ShiftController.php)
+  ⎿  Added 6 lines
+      211              return ['error' => 'Jadwal harus mencakup tepat 7 
+           hari unik (0=Minggu hingga 6=Sabtu).', 'warnings' => []];
+      212          }
+      213  
+      214 +        // P0 #2 — min 1 hari libur per minggu (UU No. 13/2003
+          + Pasal 79)                                                    
+      215 +        $hariKerja = count(array_filter($schedules, fn ($s) =>
+          + empty($s['is_off'])));                                       
+      216 +        if ($hariKerja > 6) {                                 
+      217 +            return ['error' => 'Template shift tidak boleh mem
+          +iliki 7 hari kerja penuh. Karyawan wajib mendapat minimal 1 ha
+          +ri libur per minggu (UU No. 13/2003 Pasal 79).', 'warnings' =>
+          + []];                                                         
+      218 +        }                                                     
+      219 +                                                              
+      220          foreach ($schedules as &$sch) {
+      221              if (! empty($sch['is_off'])) {
+      222                  $sch['is_cross_day'] = false;
+
+● Tambah helper validateWeeklyHours di ShiftController, lalu panggil di store()
+  dan update().
+
+● Update(app\Http\Controllers\API\ShiftController.php)
+  ⎿  Error editing file
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Update(app\Http\Controllers\API\ShiftController.php)
+  ⎿  Added 54 lines
+      630  
+      631          return ['error' => null, 'warnings' => [], 'prev_end_a
+           t' => null, 'new_start_at' => null, 'earliest_start' => null];
+      632      }
+      633 +                                                              
+      634 +    // ─── Helper: validasi total jam kerja per minggu (P0 #1)
+          + ─────────────────                                            
+      635 +    //     Hanya aktif jika branch->enforce_weekly_hours = tru
+          +e.                                                            
+      636 +    //     Return ['error' => string|null, 'warnings' => strin
+          +g[], 'total_hours' => float]                                  
+      637 +    private function validateWeeklyHours(array $schedules, Att
+          +endanceSetting $branch): array                                
+      638 +    {                                                         
+      639 +        $totalMins = 0;                                       
+      640 +                                                              
+      641 +        foreach ($schedules as $sch) {                        
+      642 +            if (! empty($sch['is_off']) || empty($sch['work_st
+          +art_time']) || empty($sch['work_end_time'])) {                
+      643 +                continue;                                     
+      644 +            }                                                 
+      645 +                                                              
+      646 +            $startMins = $this->timeToMinutes($sch['work_start
+          +_time']);                                                     
+      647 +            $endMins   = $this->timeToMinutes($sch['work_end_t
+          +ime']);                                                       
+      648 +            $isCross   = (bool) ($sch['is_cross_day'] ?? ($end
+          +Mins <= $startMins));                                         
+      649 +                                                              
+      650 +            $totalMins += $isCross ? (1440 - $startMins + $end
+          +Mins) : ($endMins - $startMins);                              
+      651 +        }                                                     
+      652 +                                                              
+      653 +        $totalHours = round($totalMins / 60, 1);              
+      654 +                                                              
+      655 +        if (! $branch->enforce_weekly_hours) {                
+      656 +            return ['error' => null, 'warnings' => [], 'total_
+          +hours' => $totalHours];                                       
+      657 +        }                                                     
+      658 +                                                              
+      659 +        $max = $branch->max_weekly_hours ?? 40;               
+      660 +                                                              
+      661 +        if ($totalHours > $max) {                             
+      662 +            return [                                          
+      663 +                'error'       => "Total jam kerja template ini
+          + {$totalHours} jam/minggu, melebihi batas kantor {$max} jam/mi
+          +nggu. Kurangi jam kerja atau nonaktifkan batas jam mingguan di
+          + pengaturan kantor.",                                         
+      664 +                'warnings'    => [],                          
+      665 +                'total_hours' => $totalHours,                 
+      666 +            ];                                                
+      667 +        }                                                     
+      668 +                                                              
+      669 +        if ($totalHours > $max * 0.9) {                       
+      670 +            return [                                          
+      671 +                'error'       => null,                        
+      672 +                'warnings'    => ["Total jam kerja {$totalHour
+          +s} jam/minggu mendekati batas {$max} jam/minggu yang ditetapka
+          +n kantor."],                                                  
+      673 +                'total_hours' => $totalHours,                 
+      674 +            ];                                                
+      675 +        }                                                     
+      676 +                                                              
+      677 +        return ['error' => null, 'warnings' => [], 'total_hour
+          +s' => $totalHours];                                           
+      678 +    }                                                         
+      679 +                                                              
+      680 +    // ─── Helper: konversi "HH:MM" atau "HH:MM:SS" ke total m
+          +enit ─────────────                                            
+      681 +    private function timeToMinutes(string $time): int         
+      682 +    {                                                         
+      683 +        $parts = explode(':', $time);                         
+      684 +        return ((int) $parts[0]) * 60 + ((int) ($parts[1] ?? 0
+          +));                                                           
+      685 +    }                                                         
+      686 +                                                              
+      687      //     Return string error bila berbeda cabang; null bila 
+           cocok / boleh.
+      688      //     Shift company-wide (attendance_setting_id null) bol
+           eh untuk siapa saja.
+      689      private function assertBranchMatch(Shift $shift, User $use
+           r): ?string
+
+● Panggil validateWeeklyHours di store() dan update().
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(app\Http\Controllers\API\ShiftController.php)
+  ⎿  Added 6 lines, removed 1 line
+      168              return response()->json(['message' => 'Cabang tida
+           k ditemukan di perusahaan Anda.'], 404);
+      169          }
+      170  
+      171 -        $shift = DB::transaction(function () use ($validated, 
+          -$actor, $branch) {                                            
+      171 +        // P0 #1 — validasi batas jam kerja per minggu (opsion
+          +al, toggle per kantor)                                        
+      172 +        $weeklyCheck = $this->validateWeeklyHours($validated['
+          +schedules'], $branch);                                        
+      173 +        if ($weeklyCheck['error']) {                          
+      174 +            return response()->json(['message' => $weeklyCheck
+          +['error']], 422);                                             
+      175 +        }                                                     
+      176 +        $k3Warnings = array_merge($k3Warnings, $weeklyCheck['w
+          +arnings']);                                                   
+      177              $shift = Shift::create([
+      178                  'company_id'            => $actor->company_id,
+      179                  'attendance_setting_id' => $branch->id,
+
+● Tambah validateWeeklyHours di update() juga.
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Baca section update() setelah resolusi cabang:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(app\Http\Controllers\API\ShiftController.php)
+  ⎿  Added 13 lines
+      299              $shift->attendance_setting_id = $branch->id;
+      300          }
+      301  
+      302 +        // P0 #1 — validasi batas jam kerja per minggu jika ja
+          +dwal dikirim                                                  
+      303 +        if (isset($validated['schedules'])) {                 
+      304 +            $effectiveBranch = $shift->office                 
+      305 +                ?? AttendanceSetting::find($shift->attendance_
+          +setting_id);                                                  
+      306 +            if ($effectiveBranch) {                           
+      307 +                $weeklyCheck = $this->validateWeeklyHours($val
+          +idated['schedules'], $effectiveBranch);                       
+      308 +                if ($weeklyCheck['error']) {                  
+      309 +                    return response()->json(['message' => $wee
+          +klyCheck['error']], 422);                                     
+      310 +                }                                             
+      311 +                $k3Warnings = array_merge($k3Warnings, $weekly
+          +Check['warnings']);                                           
+      312 +            }                                                 
+      313 +        }                                                     
+      314 +                                                              
+      315          DB::transaction(function () use ($shift, $validated) {
+      316              $shift->fill(collect($validated)->only(['name', 'd
+           escription', 'color'])->toArray());
+      317              $shift->save();
+● Baca interface OfficeOpt dan area jadwal editor di ShiftFormModal:
+
+  Read 1 file (ctrl+o to expand)
+
+● Update OfficeOpt, tambah helper computeWeeklyHours, dan update ShiftFormModal:
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\ShiftManagem
+        ent.tsx)
+  ⎿  Added 2 lines
+      15    office_name: string;
+      16    work_start_time?: string | null;
+      17    work_end_time?: string | null;
+      18 +  enforce_weekly_hours?: boolean;                              
+      19 +  max_weekly_hours?: number | null;                            
+      20  }
+      21  
+      22  interface ScheduleRow {
+
+● Tambah helper computeWeeklyHours setelah computeTemplateGaps:
+
+  Searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\ShiftManagem
+        ent.tsx)
+  ⎿  Added 12 lines, removed 2 lines
+      167    return result;
+      168  }
+      169  
+      170 +/** Hitung total jam kerja per minggu dari array schedules */ 
+      171 +function computeWeeklyHours(schedules: ScheduleRow[]): number 
+          +{                                                             
+      172 +  let totalMins = 0;                                          
+      173 +  for (const s of schedules) {                                
+      174 +    if (s.is_off || !s.work_start_time || !s.work_end_time) co
+          +ntinue;                                                       
+      175 +    const start = timeToMins(s.work_start_time);              
+      176 +    const end   = timeToMins(s.work_end_time);                
+      177 +    const isCross = end <= start;                             
+      178 +    totalMins += isCross ? (1440 - start + end) : (end - start
+          +);                                                            
+      179 +  }                                                           
+      180 +  return Math.round((totalMins / 60) * 10) / 10;              
+      181 +}                                                             
+      182  // ═══════════════════════════════════════════════════════════
+           ════
+      171 -// Badge sumber jadwal                                        
+      172 -// ═══════════════════════════════════════════════════════════
+          -════                                                          
+      183  function SourceBadge({ source, isOff }: { source: string; isOf
+           f: boolean }) {
+      184    if (isOff)
+      185      return (
+
+● Tambah weeklyHours useMemo, update validate(), dan chip indikator di
+  ShiftFormModal:
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\ShiftManagem
+        ent.tsx)
+  ⎿  Added 18 lines
+      247    // Hitung jeda K3 antar hari secara real-time saat user ubah
+            jam
+      248    const k3Gaps = useMemo(() => computeTemplateGaps(schedules),
+            [schedules]);
+      249  
+      250 +  // Hitung total jam kerja per minggu secara real-time       
+      251 +  const weeklyHours = useMemo(() => computeWeeklyHours(schedul
+          +es), [schedules]);                                            
+      252 +                                                              
+      253 +  // Ambil setting kantor yang dipilih untuk validasi batas ja
+          +m/minggu                                                      
+      254 +  const selectedOffice = useMemo(                             
+      255 +    () => offices.find((o) => String(o.id) === branchId) ?? nu
+          +ll,                                                           
+      256 +    [offices, branchId],                                      
+      257 +  );                                                          
+      258 +                                                              
+      259 +  // Status indikator jam/minggu                              
+      260 +  const weeklyStatus = useMemo(() => {                        
+      261 +    if (!selectedOffice?.enforce_weekly_hours) return 'info'; 
+      262 +    const max = selectedOffice.max_weekly_hours ?? 40;        
+      263 +    if (weeklyHours > max) return 'error';                    
+      264 +    if (weeklyHours > max * 0.9) return 'warning';            
+      265 +    return 'safe';                                            
+      266 +  }, [weeklyHours, selectedOffice]);                          
+      267 +                                                              
+      268    const setDay = (d: number, patch: Partial<ScheduleRow>) =>
+      269      setSchedules((prev) => prev.map((s) => (s.day_of_week === 
+           d ? { ...s, ...patch } : s)));
+      270  
+
+● Update validate() tambah cek P0 #2, lalu tambah chip indikator jam/minggu di
+  JSX sebelum grid 7 hari.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\ShiftManagem
+        ent.tsx)
+  ⎿  Added 3 lines, removed 1 line
+      282    const validate = (): string | null => {
+      283      if (!name.trim()) return 'Nama shift wajib diisi.';
+      284      if (!branchId) return 'Cabang kantor wajib dipilih.';
+      285 +    // P0 #2 — min 1 hari libur per minggu (UU No. 13/2003 Pas
+          +al 79)                                                        
+      286 +    const workingDays = schedules.filter((s) => !s.is_off).len
+          +gth;                                                          
+      287 +    if (workingDays > 6) return 'Karyawan wajib mendapat minim
+          +al 1 hari libur per minggu (UU No. 13/2003 Pasal 79).';       
+      288      for (const s of schedules) {
+      289        if (s.is_off) continue;
+      290        if (!s.work_start_time || !s.work_end_time)
+      291          return `${DAY_NAMES[s.day_of_week]}: jam masuk & pulan
+           g wajib diisi (atau tandai libur).`;
+      289 -      // Shift lintas tengah malam (jam pulang <= jam masuk) D
+          -IIZINKAN — backend otomatis set is_cross_day.                 
+      292      }
+      293      return null;
+      294    };
+
+● Tambah chip indikator jam/minggu di JSX sebelum grid 7 hari:
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\ShiftManagem
+        ent.tsx)
+  ⎿  Added 18 lines, removed 3 lines
+      434  
+      435            {/* Editor 7 hari */}
+      436            <div>
+      437 -            <label className="text-xs font-semibold text-slate
+          --600 block mb-2 flex items-center gap-1.5">                   
+      438 -              <CalendarDays className="w-3.5 h-3.5" /> Jadwal 
+          -per Hari                                                      
+      439 -            </label>                                          
+      437 +            <div className="flex items-center justify-between 
+          +mb-2">                                                        
+      438 +              <label className="text-xs font-semibold text-sla
+          +te-600 flex items-center gap-1.5">                            
+      439 +                <CalendarDays className="w-3.5 h-3.5" /> Jadwa
+          +l per Hari                                                    
+      440 +              </label>                                        
+      441 +              {/* Chip indikator total jam/minggu */}         
+      442 +              <div className={`inline-flex items-center gap-1.
+          +5 text-[11px] font-bold px-2.5 py-1 rounded-full ${           
+      443 +                weeklyStatus === 'error'   ? 'bg-rose-100 text
+          +-rose-700' :                                                  
+      444 +                weeklyStatus === 'warning' ? 'bg-amber-100 tex
+          +t-amber-700' :                                                
+      445 +                weeklyStatus === 'safe'    ? 'bg-emerald-100 t
+          +ext-emerald-700' :                                            
+      446 +                'bg-slate-100 text-slate-500'                 
+      447 +              }`}>                                            
+      448 +                <Clock className="w-3 h-3" />                 
+      449 +                {weeklyHours}j/minggu                         
+      450 +                {selectedOffice?.enforce_weekly_hours && (    
+      451 +                  <span className="opacity-70">/ maks {selecte
+          +dOffice.max_weekly_hours ?? 40}j</span>                       
+      452 +                )}                                            
+      453 +              </div>                                          
+      454 +            </div>                                            
+      455              <div className="space-y-1.5">
+      456                {schedules.map((s) => (
+      457                  <div
+
+● Cek apakah Clock sudah diimport di ShiftManagement.tsx:
+
+  Searched for 1 pattern, read 1 file (ctrl+o to expand)
+
+● Clock belum ada di import. Tambahkan sekaligus lanjut Task #12.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\ShiftManagem
+        ent.tsx)
+  ⎿  Added 1 line, removed 1 line
+      2  import {
+      3    CalendarClock, CalendarDays, Plus, Pencil, Trash2, X, RefreshC
+         w,
+      4    Search, Users, Building2, AlertCircle, AlertTriangle, CheckCir
+         cle2, Moon,
+      5 -  Layers, UserCog, Save, History, ArrowRight, Info,             
+      5 +  Layers, UserCog, Save, History, ArrowRight, Info, Clock, Toggl
+        +eLeft, ToggleRight,                                             
+      6  } from 'lucide-react';
+      7  import { shiftApi, attendanceApi } from '../services/endpoints';
+      8  import { ApiError } from '../services/api';
+
+● Cari OfficesTab di AttendanceManagement.tsx:
+
+  Searched for 4 patterns (ctrl+o to expand)
+
+● Settings kantor mungkin ada di file atau komponen berbeda. Cari lebih luas:
+
+  Searched for 3 patterns (ctrl+o to expand)
+
+● Form kantor ada di SettingsManagement.tsx. Baca state dan form-nya:
+
+  Read 1 file (ctrl+o to expand)
+
+● Baca bagian form JSX di SettingsManagement.tsx:
+
+  Read 1 file (ctrl+o to expand)
+
+● Sekarang saya punya gambaran lengkap. 4 edit di SettingsManagement.tsx —
+  empty, openEdit, payload, JSX form + card.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\SettingsMana
+        gement.tsx)  ⎿  Added 2 lines
+      120      overtime_enabled: true,
+      121      min_overtime_minutes: 30,
+      122      early_leave_tolerance_minutes: 30,
+      123 +    enforce_weekly_hours: false,                              
+      124 +    max_weekly_hours: 40,                                     
+      125    };
+      126    const [showForm, setShowForm] = useState(false);
+      127    const [editId, setEditId] = useState<number | null>(null);
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\SettingsMana
+        gement.tsx)
+  ⎿  Added 2 lines
+      143        overtime_enabled: o.overtime_enabled ?? true,
+      144        min_overtime_minutes: o.min_overtime_minutes ?? 30,
+      145        early_leave_tolerance_minutes: o.early_leave_tolerance_m
+           inutes ?? 30,
+      146 +      enforce_weekly_hours: o.enforce_weekly_hours ?? false,  
+      147 +      max_weekly_hours: o.max_weekly_hours ?? 40,             
+      148      });
+      149      setEditId(o.id);
+      150      setShowForm(true);
+
+● Update payload di submit(), lalu tambah toggle di JSX form dan info di card.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\SettingsMana
+        gement.tsx)
+  ⎿  Added 2 lines
+      171          overtime_enabled: !!form.overtime_enabled,
+      172          min_overtime_minutes: Number(form.min_overtime_minutes
+           ),
+      173          early_leave_tolerance_minutes: form.early_leave_tolera
+           nce_minutes === '' ? null : Number(form.early_leave_tolerance_
+           minutes),
+      174 +        enforce_weekly_hours: !!form.enforce_weekly_hours,    
+      175 +        max_weekly_hours: form.enforce_weekly_hours ? Number(f
+          +orm.max_weekly_hours) : null,                                 
+      176        };
+      177        if (editId) {
+      178          await attendanceApi.settings.update(editId, payload);
+
+● Tambah toggle enforce_weekly_hours di JSX form dan info di card kantor.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\SettingsMana
+        gement.tsx)
+  ⎿  Added 40 lines, removed 2 lines
+      418                    )}
+      419                  </div>
+      420                </div>
+      421 -            </div>                                            
+      421  
+      423 -            <div className="flex gap-2.5 pt-3 border-t border-
+          -slate-100 dark:border-slate-800">                             
+      422 +              {/* Batas jam kerja per minggu (P0 #1 — opsional
+          +, toggle per kantor) */}                                      
+      423 +              <div className="pt-3 border-t border-slate-100 d
+          +ark:border-slate-800 space-y-3">                              
+      424 +                <label className="flex items-center justify-be
+          +tween gap-3 cursor-pointer">                                  
+      425 +                  <span className="text-[11px] font-bold text-
+          +slate-600 dark:text-slate-300 flex items-center gap-1.5">     
+      426 +                    <Clock className="w-3.5 h-3.5 text-indigo-
+          +500" /> Batas jam kerja per minggu                            
+      427 +                    <span className="text-[9px] font-normal te
+          +xt-slate-400 normal-case">(UU 13/2003 Pasal 77)</span>        
+      428 +                  </span>                                     
+      429 +                  <input                                      
+      430 +                    type="checkbox"                           
+      431 +                    checked={!!form.enforce_weekly_hours}     
+      432 +                    onChange={(e) => setForm({ ...form, enforc
+          +e_weekly_hours: e.target.checked })}                          
+      433 +                    className="w-4 h-4 accent-indigo-600"     
+      434 +                  />                                          
+      435 +                </label>                                      
+      436 +                {form.enforce_weekly_hours && (               
+      437 +                  <div className="space-y-1">                 
+      438 +                    <label className="text-[10px] font-bold te
+          +xt-slate-400 block">                                          
+      439 +                      Maksimal jam kerja per minggu           
+      440 +                    </label>                                  
+      441 +                    <input                                    
+      442 +                      type="number"                           
+      443 +                      min={40}                                
+      444 +                      max={168}                               
+      445 +                      value={form.max_weekly_hours}           
+      446 +                      onChange={(e) => setForm({ ...form, max_
+          +weekly_hours: e.target.value })}                              
+      447 +                      className="w-full p-2.5 border border-sl
+          +ate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-s
+          +late-800/20 text-slate-800 dark:text-slate-100 font-mono"     
+      448 +                    />                                        
+      449 +                    <p className="text-[9px] text-slate-400"> 
+      450 +                      Standar UU: 40 jam/minggu. Template shif
+          +t yang melebihi batas ini akan ditolak saat dibuat/diubah.    
+      451 +                    </p>                                      
+      452 +                  </div>                                      
+      453 +                )}                                            
+      454 +                {!form.enforce_weekly_hours && (              
+      455 +                  <p className="text-[9px] text-slate-400">   
+      456 +                    Nonaktif — template shift boleh melebihi 4
+          +0 jam/minggu. Aktifkan jika perusahaan ingin menegakkan batas 
+          +jam kerja.                                                    
+      457 +                  </p>                                        
+      458 +                )}                                            
+      459 +              </div>                                          
+      460 +            </div>                                            
+      461 +          </div>                                              
+      462                <button type="button" onClick={() => setShowForm
+           (false)} className="flex-1 py-2.5 border border-slate-200 dark
+           :border-slate-700 text-slate-600 dark:text-slate-400 rounded-x
+           l text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-
+           800">Batal</button>
+      463                <button type="submit" disabled={saving} classNam
+           e="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:op
+           acity-60 text-white font-bold rounded-xl text-xs">{saving ? 'M
+           enyimpan...' : 'Simpan'}</button>
+      464              </div>
+
+● Periksa struktur form setelah edit dan tambah info weekly hours di card
+  kantor.
+
+  Read 1 file (ctrl+o to expand)
+
+● Struktur form rusak — ada </div> ekstra. Fix sekarang.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\SettingsMana
+        gement.tsx)
+  ⎿  Added 2 lines, removed 1 line
+      458                  )}
+      459                </div>
+      460              </div>
+      461 -          </div>                                              
+      461 +                                                              
+      462 +            <div className="flex gap-2.5 pt-3 border-t border-
+          +slate-100 dark:border-slate-800">                             
+      463                <button type="button" onClick={() => setShowForm
+           (false)} className="flex-1 py-2.5 border border-slate-200 dark
+           :border-slate-700 text-slate-600 dark:text-slate-400 rounded-x
+           l text-xs font-semibold hover:bg-slate-50 dark:hover:bg-slate-
+           800">Batal</button>
+      464                <button type="submit" disabled={saving} classNam
+           e="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:op
+           acity-60 text-white font-bold rounded-xl text-xs">{saving ? 'M
+           enyimpan...' : 'Simpan'}</button>
+      465              </div>
+
+● Tambah info weekly hours di card kantor, lalu selesaikan rules.md.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-web\src\components\SettingsMana
+        gement.tsx)
+  ⎿  Added 8 lines
+      261                      : <span className="italic">Nonaktif</span>
+      262                    }
+      263                  </span>
+      264 +                <span className="col-span-2 flex items-center 
+          +gap-1">                                                       
+      265 +                  <Clock className="w-3 h-3 text-indigo-500" /
+          +>                                                             
+      266 +                  Jam/minggu:{' '}                            
+      267 +                  {o.enforce_weekly_hours                     
+      268 +                    ? <span className="text-indigo-600 dark:te
+          +xt-indigo-400 font-semibold">Maks {o.max_weekly_hours ?? 40} j
+          +am/minggu (aktif)</span>                                      
+      269 +                    : <span className="italic text-slate-400">
+          +Tidak dibatasi</span>                                         
+      270 +                  }                                           
+      271 +                </span>                                       
+      272                </div>
+      273              </div>
+      274            ))
+
+  Read 1 file (ctrl+o to expand)
+
+● Update(rules.md)
+  ⎿  Added 20 lines
+      776  
+      777  buat endpoint untuk delete user, tapi user harus nonaktif terl
+           ebih dahulu lalu hapus user dengan verifikasi type delete 
+      778  
+      779 +---                                                           
+      780  
+      781 +## Roadmap Fitur Shift Lanjutan (2026-07-18)                  
+      782  
+      783 +### Status Validasi Shift yang Sudah Ada                      
+      784 +- ✅ Jeda istirahat K3 antar shift (< 8 jam ditolak, 8–11 jam 
+          +warning) — `ShiftRestService`                                 
+      785 +- ✅ Min 1 hari libur per minggu (UU 13/2003 Pasal 79) — hard 
+          +rule, tidak bisa dinonaktifkan                                
+      786 +- ✅ Batas jam kerja per minggu (UU 13/2003 Pasal 77) — toggle
+          + ON/OFF per kantor (`enforce_weekly_hours`, default OFF)      
+      787  
+      788 +### P1 — Penting (Operasional & K3)                           
+      789 +- [ ] **Batas shift malam berturut-turut** (max 5–7 malam beru
+          +rutan) — standar K3 ritme sirkadian; perlu counter shift malam
+          + per karyawan                                                 
+      790 +- [ ] **Minimum notice perubahan jadwal** (H-1 atau H-2 sebelu
+          +m berlaku) — saat ini HRD bisa assign shift untuk hari yang su
+          +dah berjalan tanpa peringatan                                 
+      791 +- [ ] **Shift swap antar karyawan** — request tukar shift + ap
+          +proval HRD; saat ini semua perubahan harus lewat HRD manual   
+      792 +- [ ] **Roster jadwal shift di mobile** — karyawan bisa lihat 
+          +jadwal shift mereka ke depan; saat ini hanya ada `/my-schedule
+          +` statis                                                      
+      793  
+      794 +### P2 — Nilai Tambah                                         
+      795 +- [ ] **Rotasi shift otomatis periodik** — sistem 3-roster saa
+          +t ini assign manual; rotasi setiap N minggu perlu scheduling o
+          +tomatis                                                       
+      796 +- [ ] **Notifikasi terdampak libur nasional** — jika libur nas
+          +ional jatuh di hari shift aktif karyawan, kirim notif ke karya
+          +wan & HRD                                                     
+      797 +- [ ] **Unavailability karyawan** — karyawan bisa menyatakan t
+          +anggal tidak tersedia untuk dipertimbangkan HRD saat assign sh
+          +ift                                                           
+      798 +                                                              
+      799 +                                                              
+      800 +                                                              
+      801 +                                                              
+      802 +                                                              
+
+● Verifikasi akhir backend dengan tinker:
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Parse error karena konflik quote. Pisah jadi dua command:
+
+  Ran 2 shell commands (ctrl+o to expand)
+
+● Buat file test PHP sementara:
+
+● Write(test_p0.php)
+  ⎿  Wrote 53 lines to test_p0.php
+       1 <?php
+       2 require __DIR__ . '/vendor/autoload.php';
+       3 $app = require __DIR__ . '/bootstrap/app.php';
+       4 $app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstr
+         ap();
+       6 $ctrl = new \App\Http\Controllers\API\ShiftController();
+       7 $ref  = new ReflectionMethod($ctrl, 'validateSchedules');
+       8 $ref->setAccessible(true);
+       9 $wRef = new ReflectionMethod($ctrl, 'validateWeeklyHours');
+      10 $wRef->setAccessible(true);
+     … +56 lines (ctrl+o to expand)
+
+  Ran 1 shell command (ctrl+o to expand)
+
+● Ada syntax error di ShiftController.php baris 189. Baca area tersebut:
+
+  Read 1 file (ctrl+o to expand)
+
+● API Error: Request rejected (429) · plan_period_limit_exceeded
+
+✻ Baked for 28m 26s
+
+❯ lanjutkan                                                                     
+  ⎿  Interrupted · What should Claude do instead?

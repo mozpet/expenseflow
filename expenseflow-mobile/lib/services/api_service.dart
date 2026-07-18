@@ -115,6 +115,11 @@ class ApiService {
     throw ApiException(msg, res.statusCode);
   }
 
+  // ─── Generic GET ──────────────────────────────────────────
+  static Future<Map<String, dynamic>> get(String path, {Map<String, String>? query}) async {
+    return _request('GET', path, query: query);
+  }
+
   // ─── Auth ─────────────────────────────────────────────────
   static Future<Map<String, dynamic>> login(
       String email, String password) async {

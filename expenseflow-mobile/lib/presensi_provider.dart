@@ -9,6 +9,7 @@ class PresensiRecord {
   final String date;
   final String masukTime;
   final String pulangTime;
+  final String? checkInType; // 'wfh', 'onsite', 'field'
   final int overtimeMinutes;
   final bool isHoliday;
   final bool isAutoCheckout;
@@ -20,6 +21,7 @@ class PresensiRecord {
     required this.date,
     required this.masukTime,
     required this.pulangTime,
+    this.checkInType,
     this.overtimeMinutes = 0,
     this.isHoliday = false,
     this.isAutoCheckout = false,
@@ -31,6 +33,7 @@ class PresensiRecord {
     String? date,
     String? masukTime,
     String? pulangTime,
+    String? checkInType,
     int? overtimeMinutes,
     bool? isHoliday,
     bool? isAutoCheckout,
@@ -41,6 +44,7 @@ class PresensiRecord {
       date: date ?? this.date,
       masukTime: masukTime ?? this.masukTime,
       pulangTime: pulangTime ?? this.pulangTime,
+      checkInType: checkInType ?? this.checkInType,
       overtimeMinutes: overtimeMinutes ?? this.overtimeMinutes,
       isHoliday: isHoliday ?? this.isHoliday,
       isAutoCheckout: isAutoCheckout ?? this.isAutoCheckout,
@@ -308,14 +312,17 @@ class PresensiProvider extends ChangeNotifier {
         ..clear()
         ..addAll(list.map((e) {
           final m = e as Map<String, dynamic>;
+          final overtimeApproval = m['overtime_approval'] as Map<String, dynamic>?;
           return PresensiRecord(
             id: (m['id'] as num?)?.toInt() ?? 0,
             date: _formatDate(m['date']),
             masukTime: _extractTime(m['check_in_time']) ?? '-',
             pulangTime: _extractTime(m['check_out_time']) ?? '-',
+            checkInType: (m['check_in_type'] ?? '').toString(),
             overtimeMinutes: (m['overtime_minutes'] as num?)?.toInt() ?? 0,
             isHoliday: m['is_holiday'] == true || m['is_holiday'] == 1,
             isAutoCheckout: m['is_auto_checkout'] == true || m['is_auto_checkout'] == 1,
+            overtimeStatus: overtimeApproval?['status'] as String?,
           );
         }));
       // Set status hari ini bila ada record tanggal hari ini

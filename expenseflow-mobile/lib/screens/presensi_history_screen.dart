@@ -28,6 +28,19 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
     final todayStr = presensiProv.todayDateFormatted;
 
     return Scaffold(
+      floatingActionButton: presensiProv.wfhEnabled
+          ? FloatingActionButton.extended(
+              heroTag: 'presensi_history_fab',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const PresensiMapScreen()),
+              ),
+              backgroundColor: const Color(0xFF0088FF),
+              foregroundColor: Colors.white,
+              icon: const Icon(Icons.add),
+              label: const Text('Catat Presensi'),
+            )
+          : null,
       appBar: AppBar(
         title: const Text('Riwayat Presensi'),
         automaticallyImplyLeading: false,
@@ -453,6 +466,34 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                 runSpacing: 4,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
+                  if (record.checkInType != null && record.checkInType!.isNotEmpty) ...[
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(
+                          record.checkInType == 'wfh'
+                              ? Icons.home_rounded
+                              : Icons.business_rounded,
+                          size: 14,
+                          color: record.checkInType == 'wfh'
+                              ? Colors.green.shade700
+                              : Colors.blue.shade700,
+                        ),
+                        const SizedBox(width: 4),
+                        Text(
+                          record.checkInType == 'wfh' ? 'WFH' : 'Kantor',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: record.checkInType == 'wfh'
+                                ? Colors.green.shade700
+                                : Colors.blue.shade700,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ],
+                    ),
+                    Container(width: 1, height: 12, color: Colors.grey.shade300),
+                  ],
                   // Jam kerja
                   Row(
                     mainAxisSize: MainAxisSize.min,

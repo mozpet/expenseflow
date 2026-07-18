@@ -212,6 +212,83 @@ export const attendanceApi = {
   },
 };
 
+// ─── Shift / Custom Scheduling — HRD ────────────────────────
+// Satu baris jadwal harian dalam sebuah template shift.
+export interface ShiftScheduleInput {
+  day_of_week: number;              // 0=Minggu … 6=Sabtu
+  is_off: boolean;                  // true = shift libur di hari itu
+  work_start_time?: string | null;  // "H:i" (wajib jika !is_off)
+  work_end_time?: string | null;    // "H:i"
+}
+
+export const shiftApi = {
+  // ── Template shift ──
+  list: (filters?: { is_active?: boolean; attendance_setting_id?: number }) =>
+    apiGet('/dashboard/attendance/shifts', filters as Record<string, string | number | boolean>),
+  create: (payload: {
+    name: string;
+    description?: string;
+    attendance_setting_id: number;
+    schedules: ShiftScheduleInput[];
+    color?: string | null;
+  }) => apiPost('/dashboard/attendance/shifts', payload),
+  update: (
+    id: number | string,
+    payload: {
+      name?: string;
+      description?: string;
+      attendance_setting_id?: number;
+      schedules?: ShiftScheduleInput[];
+      color?: string | null;
+    },
+  ) => apiPut(`/dashboard/attendance/shifts/${id}`, payload),
+  toggleActive: (id: number | string) =>
+    apiPost(`/dashboard/attendance/shifts/${id}/toggle-active`),
+  destroy: (id: number | string) => apiDelete(`/dashboard/attendance/shifts/${id}`),
+
+  // ── Roster harian (siapa masuk shift apa pada tanggal tertentu) ──
+  roster: (filters?: { date?: string; attendance_setting_id?: number; search?: string }) =>
+    apiGet('/dashboard/attendance/shifts/roster', filters as Record<string, string | number>),
+
+  // ── Riwayat assignment shift seorang karyawan ──
+  history: (userId: number | string) =>
+    apiGet(`/dashboard/attendance/users/${userId}/shift-history`),
+
+  // ── Assignment ──
+  assign: (payload: {
+    user_id: number;
+    shift_id: number | null;   // null = kembali ke default kantor
+    start_date: string;
+    end_date?: string;         // opsional — tanggal berakhir shift, setelahnya kembali ke jam default
+    notes?: string;
+  }) => apiPost('/dashboard/attendance/assign-shift', payload),
+  bulkAssign: (payload: {
+    user_ids: number[];
+    shift_id: number | null;
+    start_date: string;
+    end_date?: string;         // opsional — tanggal berakhir shift untuk semua karyawan
+    notes?: string;
+  }) => apiPost('/dashboard/attendance/bulk-assign', payload),
+  updateAssignment: (
+    id: number | string,
+    payload: { shift_id?: number | null; start_date?: string; end_date?: string | null; notes?: string },
+  ) => apiPut(`/dashboard/attendance/assignments/${id}`, payload),
+  destroyAssignment: (id: number | string) =>
+    apiDelete(`/dashboard/attendance/assignments/${id}`),
+
+  // ── Preview jadwal efektif user+tanggal ──
+  effectiveSchedule: (userId: number, date: string) =>
+    apiGet('/dashboard/attendance/effective-schedule', { user_id: userId, date }),
+
+  // ── Kalender shift bulanan ──
+  calendar: (month: number, year: number, attendanceSettingId?: number) =>
+    apiGet('/dashboard/attendance/shifts/calendar', {
+      month,
+      year,
+      ...(attendanceSettingId ? { attendance_setting_id: attendanceSettingId } : {}),
+    }),
+};
+
 // ─── Overtime approvals — HRD ───────────────────────────────
 export const overtimeApi = {
   list: (filters?: {

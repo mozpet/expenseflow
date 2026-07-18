@@ -20,7 +20,23 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   _LocationState _state = _LocationState.requesting;
   Position? _position;
   StreamSubscription<Position>? _positionStream;
+  // MapController harus sama instance antara yang di-pass ke FlutterMap
+  // dan yang kita panggil .move(). Jangan buat instance baru di onMapReady.
   final MapController _mapController = MapController();
+  // Flag: true setelah onMapReady dipanggil flutter_map (late field sudah init)
+  bool _mapReady = false;
+
+  /// Memanggil _mapController.move() hanya jika map sudah siap.
+  /// try-catch sebagai safety net untuk kasus edge (hot-reload, dll).
+  void _safeMove(LatLng point, double zoom) {
+    if (!_mapReady) return;
+    try {
+      _mapController.move(point, zoom);
+    } catch (_) {
+      // Controller belum siap — abaikan, posisi akan di-sync saat onMapReady
+    }
+  }
+
 
   @override
   void initState() {
@@ -67,7 +83,8 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
           _position = pos;
           _state = _LocationState.ready; // langsung ready begitu dapat koordinat
         });
-        _mapController.move(LatLng(pos.latitude, pos.longitude), 16);
+        // Panggil hanya jika controller sudah di-attach oleh FlutterMap
+        _safeMove(LatLng(pos.latitude, pos.longitude), 16);
       },
       onError: (_) {
         if (mounted) setState(() => _state = _LocationState.denied);
@@ -148,6 +165,18 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                     interactionOptions: const InteractionOptions(
                       flags: InteractiveFlag.all,
                     ),
+                    onMapReady: () {
+                      // Set flag SETELAH flutter_map menginisialisasi internal
+                      // 'late _local' — baru aman memanggil .move()
+                      _mapReady = true;
+                      // Jika posisi sudah tersedia sebelum map siap, langsung pindah
+                      if (_position != null) {
+                        _safeMove(
+                          LatLng(_position!.latitude, _position!.longitude),
+                          16,
+                        );
+                      }
+                    },
                   ),
                   children: [
                     TileLayer(
@@ -219,7 +248,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                       backgroundColor: Colors.white,
                       foregroundColor: const Color(0xFF1E88E5),
                       elevation: 4,
-                      onPressed: () => _mapController.move(center, 16),
+                      onPressed: () => _safeMove(center, 16),
                       child: const Icon(Icons.my_location, size: 20),
                     ),
                   ),

@@ -193,10 +193,12 @@ Header `X-Platform: mobile` atau `web`
 ### Receipt (Struk)
 - Foto struk: **immutable** setelah upload (SHA-256 hash)
 - OCR raw: `ocr_raw_amount`, `ocr_raw_merchant`, `ocr_raw_date` **TIDAK BOLEH** diupdate setelah diisi
-- Karyawan hanya boleh edit: `category` dan `notes`
+- Karyawan hanya boleh edit: `category`, `notes`, dan `claimed_amount`
 - Jika OCR gagal: karyawan boleh isi manual `claimed_amount`, `total_amount`, `receipt_date`, `vendor_name`
-- Variance flag: otomatis `true` jika selisih claimed vs ocr_raw > 10%
+- Jika OCR berhasil: karyawan boleh ubah `claimed_amount` saja; `total_amount`, `receipt_date`, `vendor_name` terkunci (diisi OCR)
+- Variance flag: otomatis `true` jika selisih claimed vs ocr_raw > `variance_limit` (company_settings, default 10%)
 - Variance pct: `abs(claimed - ocrRaw) / ocrRaw * 100`
+- Variance flag = warning di dashboard finance, TIDAK memblokir submit
 
 ### Status Flow Receipt
 ```
@@ -720,6 +722,79 @@ Tabel `holidays` (company_id, date, name). Dipakai untuk:
 4. **PPh21**: implementasi penuh (TER 2024) atau komponen persentase sederhana dulu?
 5. **Komponen per cabang atau per perusahaan**: apakah tunjangan beda tiap cabang?
 6. **Periode cut-off**: tanggal 1–akhir bulan, atau custom (mis. 26–25)?
+
+reminders: bug user statusnya sedang cuti di hari itu masih bisa presensi, 
+fix: ✅ SELESAI 2026-07-09 — checkIn() di AttendanceController sekarang mengecek LeaveRequest (approved, leave_type cuti/sakit/izin) yang mencakup tanggal hari ini; jika ada → tolak 403 dengan pesan status cuti/sakit/izin.
+
+reminder: tambahkan 1 data json untuk presensi mobile jika lembur approval di terima dan di tolak jika tidak lebur null
+✅ SELESAI 2026-07-09 — myAttendance() kini eager-load overtimeApproval dan menyertakan field `overtime_approval` (id, status, overtime_minutes, notes, reviewed_at, is_auto_checkout) atau null jika tidak ada lembur.
+
+---
+
+# Analisis Performa Backend — Delay ~500ms Seragam (2026-07-14)
+
+## Gejala
+Log `php artisan serve` menunjukkan **hampir semua request ~510–515ms** (device-changes,
+overtime-approvals, today, settings, users) — konsisten walau bobot query tiap endpoint
+berbeda-beda. Sesekali muncul ~2ms (request duplikat/short-circuit). `admin/users` kadang ~1s.
+
+**Kesimpulan:** delay bukan di controller (kalau di controller, angkanya akan bervariasi
+sesuai berat query). Ini **overhead per-request TETAP** — semua request "diseret" ke ~500ms
+oleh sesuatu yang jalan di setiap request / lingkungan dev. Yang **BUKAN** penyebab (sudah dicek):
+tidak ada `sleep()`/`usleep()`, tidak ada HTTP call di middleware (FCM/Vision hanya di job/OCR),
+DB sudah `127.0.0.1` (bukan `localhost`), tidak ada Telescope/Debugbar, middleware semua ringan.
+
+## Root Cause: OPcache TIDAK AKTIF ⭐ TERKONFIRMASI
+
+Test `GET /api/v1/ping` (route statis, tanpa DB/auth/middleware) → **~520ms**.
+Artinya delay bukan di controller/DB/middleware, tapi **di level PHP sendiri**.
+
+Dicek: `php -r "echo extension_loaded('Zend OPcache') ? 'yes' : 'no';"` → **no**.
+File `C:\laragon\bin\php\php-8.3.30-Win32-vs16-x64\php.ini`:
+- Baris 833: `;zend_extension=opcache` → extension tidak di-load
+- Baris 1517: `;opcache.enable=1` → setting off
+
+**Tanpa OPcache, PHP compile ulang ratusan file Laravel di SETIAP request.**
+Di Windows + NTFS (filesystem I/O lambat), ini mudah makan ~500ms.
+
+### Fix yang Sudah Diterapkan (2026-07-14)
+1. ✅ `php.ini:833` → `zend_extension=opcache` (uncomment)
+2. ✅ `php.ini:1517` → `opcache.enable=1` (uncomment)
+3. ✅ `php.ini:1526` → `opcache.max_accelerated_files=10000` (uncomment, Laravel banyak file)
+4. ⏳ **Restart Laragon/server PHP** (WAJIB agar php.ini terbaca ulang)
+5. ⏳ **Test ulang** `curl /api/v1/ping` — target < 50ms
+
+### Optimasi Tambahan (belum diterapkan, opsional)
+| # | Item | Dampak | Cara |
+|---|------|--------|------|
+| 1 | `PHP_CLI_SERVER_WORKERS=4` | request paralel di dev | uncomment `.env:15` |
+| 2 | `config:cache` + `route:cache` | skip parsing config/route | jalankan saat uji performa |
+| 3 | `APP_DEBUG=false` | matikan stack trace/query log | `.env:3` (wajib di prod) |
+| 4 | Cache/Session → `file` atau `redis` | kurangi DB round-trip | `.env` ubah driver |
+| 5 | `admin/users` ~1s | kemungkinan N+1 | cek `UserController@index` |
+
+
+buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu hapus user dengan verifikasi type delete 
+
+---
+
+## Roadmap Fitur Shift Lanjutan (2026-07-18)
+
+### Status Validasi Shift yang Sudah Ada
+- ✅ Jeda istirahat K3 antar shift (< 8 jam ditolak, 8–11 jam warning) — `ShiftRestService`
+- ✅ Min 1 hari libur per minggu (UU 13/2003 Pasal 79) — hard rule, tidak bisa dinonaktifkan
+- ✅ Batas jam kerja per minggu (UU 13/2003 Pasal 77) — toggle ON/OFF per kantor (`enforce_weekly_hours`, default OFF)
+
+### P1 — Penting (Operasional & K3)
+- [ ] **Batas shift malam berturut-turut** (max 5–7 malam berurutan) — standar K3 ritme sirkadian; perlu counter shift malam per karyawan
+- [ ] **Minimum notice perubahan jadwal** (H-1 atau H-2 sebelum berlaku) — saat ini HRD bisa assign shift untuk hari yang sudah berjalan tanpa peringatan
+- [ ] **Shift swap antar karyawan** — request tukar shift + approval HRD; saat ini semua perubahan harus lewat HRD manual
+- [ ] **Roster jadwal shift di mobile** — karyawan bisa lihat jadwal shift mereka ke depan; saat ini hanya ada `/my-schedule` statis
+
+### P2 — Nilai Tambah
+- [ ] **Rotasi shift otomatis periodik** — sistem 3-roster saat ini assign manual; rotasi setiap N minggu perlu scheduling otomatis
+- [ ] **Notifikasi terdampak libur nasional** — jika libur nasional jatuh di hari shift aktif karyawan, kirim notif ke karyawan & HRD
+- [ ] **Unavailability karyawan** — karyawan bisa menyatakan tanggal tidak tersedia untuk dipertimbangkan HRD saat assign shift
 
 
 

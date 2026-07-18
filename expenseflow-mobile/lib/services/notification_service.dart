@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:ui' show Color;
 
 import 'package:firebase_messaging/firebase_messaging.dart';
-import 'package:flutter/foundation.dart';
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest.dart' as tz_data;
@@ -110,6 +110,7 @@ class NotificationService {
 
   // ─── Schedule: reminder checkout ─────────────────────────────────────────
   Future<void> scheduleCheckoutReminder(String reminderAtIso) async {
+    if (kIsWeb) return; // Web tidak support local notifications & tz.local
     if (!_initialized) await init();
 
     final time = DateTime.tryParse(reminderAtIso);
@@ -131,6 +132,7 @@ class NotificationService {
 
   // ─── Schedule: warning 5 menit sebelum auto-checkout ─────────────────────
   Future<void> scheduleAutoCheckoutWarning(String autoCheckoutAtIso) async {
+    if (kIsWeb) return; // Web tidak support local notifications & tz.local
     if (!_initialized) await init();
 
     final autoTime = DateTime.tryParse(autoCheckoutAtIso);
@@ -159,6 +161,7 @@ class NotificationService {
 
   // ─── Cancel reminder setelah checkout ────────────────────────────────────
   Future<void> cancelCheckoutNotifications() async {
+    if (kIsWeb) return;
     await _plugin.cancel(10);
     await _plugin.cancel(11);
   }
@@ -171,6 +174,7 @@ class NotificationService {
     String? payload,
     bool isOvertimeNotif = false,
   }) async {
+    if (kIsWeb) return; // Web tidak support local notifications
     if (!_initialized) await init();
     await _plugin.show(
       id,

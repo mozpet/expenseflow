@@ -132,11 +132,11 @@ class ReceiptController extends Controller
         $rules = [
             'category' => 'sometimes|required|string|max:100',
             'notes'    => 'nullable|string|max:1000',
+            'claimed_amount' => 'sometimes|required|numeric|min:0',
         ];
 
         // Jika OCR gagal — izinkan input manual field yang seharusnya diisi OCR
         if ($receipt->ocr_status === 'failed') {
-            $rules['claimed_amount'] = 'sometimes|required|numeric|min:0';
             $rules['total_amount']   = 'sometimes|required|numeric|min:0';
             $rules['receipt_date']   = 'sometimes|required|date';
             $rules['vendor_name']    = 'nullable|string|max:255';
@@ -146,6 +146,11 @@ class ReceiptController extends Controller
 
         $receipt->update($validated);
 
+        // Hitung ulang variance jika claimed_amount diubah
+        if (isset($validated['claimed_amount'])) {
+            $receipt->refresh()->recalculateVariance();
+        }
+
         $this->logActivity($request->user()->id, $receipt->company_id, 'receipt_updated', 'Update klaim ' . $receipt->receipt_number, $receipt->id, 'receipt', $receipt->id);
 
         return response()->json([
@@ -153,6 +158,7 @@ class ReceiptController extends Controller
             'receipt' => $receipt->only([
                 'id', 'receipt_number', 'category', 'notes',
                 'claimed_amount', 'total_amount', 'receipt_date', 'vendor_name',
+                'variance_flag', 'variance_pct',
             ]),
         ]);
     }

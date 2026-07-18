@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Receipt, ReceiptStatus } from '../types';
+import { Receipt, ReceiptStatus, AppSettings } from '../types';
 import {
   Inbox,
   AlertTriangle,
@@ -14,7 +14,9 @@ import {
   FileSpreadsheet,
   ZoomIn,
   ZoomOut,
-  Maximize2
+  Maximize2,
+  SlidersHorizontal,
+  Save
 } from 'lucide-react';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { receiptApi } from '../services/endpoints';
@@ -23,12 +25,16 @@ interface ReceiptInboxProps {
   receipts: Receipt[];
   onApprove: (id: string, catatan: string) => void;
   onReject: (id: string, catatan: string) => void;
+  currentSettings: AppSettings;
+  onSaveSettings: (settings: AppSettings) => void;
 }
 
 export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   receipts,
   onApprove,
   onReject,
+  currentSettings,
+  onSaveSettings,
 }) => {
   const [filter, setFilter] = useState<'all' | 'flag' | 'pend'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -39,6 +45,27 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [showImagePreview, setShowImagePreview] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
+  const [localSettings, setLocalSettings] = useState<AppSettings>(currentSettings ?? { varianceLimit: 10, maxClaimLimit: 500000 });
+  const [varianceInput, setVarianceInput] = useState(String(currentSettings?.varianceLimit ?? 10));
+  const [claimInput, setClaimInput] = useState(String(currentSettings?.maxClaimLimit ?? 500000));
+  const [activeTab, setActiveTab] = useState<'inbox' | 'settings'>('inbox');
+
+  // Sync localSettings with currentSettings prop
+  useEffect(() => {
+    setLocalSettings(currentSettings);
+    setVarianceInput(String(currentSettings?.varianceLimit ?? 10));
+    setClaimInput(String(currentSettings?.maxClaimLimit ?? 500000));
+  }, [currentSettings]);
+
+  const handleSaveLimits = () => {
+    const updated = {
+      ...localSettings,
+      varianceLimit: Number(varianceInput) || 0,
+      maxClaimLimit: Number(claimInput) || 0,
+    };
+    setLocalSettings(updated);
+    onSaveSettings(updated);
+  };
 
   // State for reusable confirmation dialog
   const [confirmState, setConfirmState] = useState<{
@@ -243,8 +270,37 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
         </div>
       </div>
 
-      {/* Main Container */}
-      <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
+      {/* Main Container with Tabs */}
+      <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-sm">
+        {/* Tab Bar */}
+        <div className="flex border-b border-slate-100 dark:border-slate-800">
+          <button
+            onClick={() => setActiveTab('inbox')}
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition border-b-2 ${
+              activeTab === 'inbox'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+            }`}
+          >
+            <Inbox className="w-4 h-4" />
+            Inbox Struk
+          </button>
+          <button
+            onClick={() => setActiveTab('settings')}
+            className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition border-b-2 ${
+              activeTab === 'settings'
+                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
+                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+            }`}
+          >
+            <SlidersHorizontal className="w-4 h-4" />
+            Pengaturan
+          </button>
+        </div>
+
+        <div className="p-5">
+        {activeTab === 'inbox' ? (
+          <>
         {/* Filters and Search Bar */}
         <div className="flex flex-col sm:flex-row gap-3 justify-between items-center mb-5 pb-4 border-b border-slate-100 dark:border-slate-800/80">
           <div className="flex flex-wrap gap-2 w-full sm:w-auto">
@@ -403,6 +459,53 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
               )}
             </tbody>
           </table>
+        </div>
+          </>
+        ) : (
+          /* Settings Tab Content */
+          <div className="space-y-6">
+            <div className="grid md:grid-cols-2 gap-6">
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Variance Limit</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={varianceInput}
+                    onChange={(e) => setVarianceInput(e.target.value.replace(/[^0-9.]/g, ''))}
+                    className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm dark:bg-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                  <span className="text-sm text-slate-500 dark:text-slate-400">%</span>
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Struk dengan selisih melebihi batas ini akan ditandai untuk review</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Maks. Klaim per Bulan</label>
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-slate-500 dark:text-slate-400">Rp</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={claimInput}
+                    onChange={(e) => setClaimInput(e.target.value.replace(/[^0-9]/g, ''))}
+                    className="w-full px-3 py-2 border border-slate-300 dark:border-slate-600 rounded-lg text-sm dark:bg-slate-800 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                </div>
+                <p className="text-xs text-slate-400 mt-1">Batas maksimum klaim struk per karyawan per bulan</p>
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <button
+                onClick={handleSaveLimits}
+                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-sm font-medium transition flex items-center gap-2"
+              >
+                <Save className="w-4 h-4" />
+                Simpan Pengaturan
+              </button>
+            </div>
+          </div>
+        )}
         </div>
       </div>
 

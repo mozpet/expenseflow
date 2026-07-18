@@ -11,6 +11,7 @@ class UserShift extends Model
         'user_id',
         'shift_id',
         'start_date',
+        'end_date',
         'notes',
     ];
 
@@ -18,6 +19,7 @@ class UserShift extends Model
     {
         return [
             'start_date' => 'date',
+            'end_date'   => 'date',
         ];
     }
 

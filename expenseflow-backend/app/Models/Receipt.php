@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Support\Facades\DB;
 
 class Receipt extends Model
 {
@@ -92,8 +93,13 @@ class Receipt extends Model
         if ($this->ocr_raw_amount !== null && $this->claimed_amount !== null && $ocrAmount > 0) {
             $variancePct = abs($claimed - $ocrAmount) / $ocrAmount * 100;
 
+            $limit = (float) (DB::table('company_settings')
+                ->where('company_id', $this->company_id)
+                ->where('key', 'variance_limit')
+                ->value('value') ?? 10);
+
             $this->variance_pct  = round($variancePct, 2);
-            $this->variance_flag = $variancePct > 10;
+            $this->variance_flag = $variancePct > $limit;
 
             static::withoutEvents(fn () => $this->save());
         }

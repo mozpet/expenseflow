@@ -24,6 +24,7 @@ import {
   CalendarClock,
   FileText,
   ExternalLink,
+  Moon,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
@@ -55,6 +56,22 @@ const fmtDate = (v?: string | null) => {
   return d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
 };
 
+// Untuk shift cross-day: tampilkan "12–13 Jun 2026"
+const fmtDateRange = (start?: string | null, end?: string | null) => {
+  if (!start) return '—';
+  if (!end || start === end) return fmtDate(start);
+  const s = new Date(start);
+  const e = new Date(end);
+  if (isNaN(s.getTime()) || isNaN(e.getTime())) return fmtDate(start);
+  const sameMonth = s.getMonth() === e.getMonth() && s.getFullYear() === e.getFullYear();
+  const dayS = s.toLocaleDateString('id-ID', { day: 'numeric' });
+  const dayE = sameMonth
+    ? e.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })
+    : e.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+  const monthYearS = s.toLocaleDateString('id-ID', { month: 'short', year: 'numeric' });
+  return sameMonth ? `${dayS}–${dayE}` : `${dayS} ${monthYearS} – ${dayE}`;
+};
+
 const fmtMinutes = (mins?: number | null): string => {
   if (mins == null || mins < 0) return '—';
   const h = Math.floor(mins / 60);
@@ -73,29 +90,29 @@ const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
 
 const statusBadge = (status: string) => {
   switch (status) {
-    case 'present':     return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400';
-    case 'late':        return 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400';
-    case 'absent':      return 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400';
+    case 'present': return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400';
+    case 'late': return 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400';
+    case 'absent': return 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400';
     case 'early_leave': return 'bg-violet-50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400';
-    case 'cuti':        return 'bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400';
-    case 'izin':        return 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400';
-    case 'sakit':       return 'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400';
-    case 'wfh':         return 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400';
-    default:            return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300';
+    case 'cuti': return 'bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400';
+    case 'izin': return 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400';
+    case 'sakit': return 'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400';
+    case 'wfh': return 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400';
+    default: return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300';
   }
 };
 
 const statusLabel = (status: string) => {
   switch (status) {
-    case 'present':     return 'Hadir';
-    case 'late':        return 'Telat';
-    case 'absent':      return 'Absen';
+    case 'present': return 'Hadir';
+    case 'late': return 'Telat';
+    case 'absent': return 'Absen';
     case 'early_leave': return 'Pulang Awal';
-    case 'cuti':        return 'Cuti';
-    case 'izin':        return 'Izin';
-    case 'sakit':       return 'Sakit';
-    case 'wfh':         return 'WFH';
-    default:            return status;
+    case 'cuti': return 'Cuti';
+    case 'izin': return 'Izin';
+    case 'sakit': return 'Sakit';
+    case 'wfh': return 'WFH';
+    default: return status;
   }
 };
 
@@ -303,16 +320,16 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     try {
       const f: any = { page };
       if (reportFilter.start_date) f.start_date = reportFilter.start_date;
-      if (reportFilter.end_date)   f.end_date   = reportFilter.end_date;
-      if (reportFilter.status)     f.status     = reportFilter.status;
-      if (reportFilter.type)       f.type       = reportFilter.type;
+      if (reportFilter.end_date) f.end_date = reportFilter.end_date;
+      if (reportFilter.status) f.status = reportFilter.status;
+      if (reportFilter.type) f.type = reportFilter.type;
       setReport(await attendanceApi.report(f));
     } catch (e) {
       reportApiError(e, 'Gagal memuat laporan presensi.');
     } finally {
       setLoading(false);
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportFilter, reportPage]);
 
   const loadHolidays = useCallback(async () => {
@@ -337,11 +354,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   // Muat data sesuai tab aktif.
   useEffect(() => {
-    if (tab === 'today')    loadToday();
-    else if (tab === 'leaves')   loadLeaves();
-    else if (tab === 'users')    loadUsers();
+    if (tab === 'today') loadToday();
+    else if (tab === 'leaves') loadLeaves();
+    else if (tab === 'users') loadUsers();
     else if (tab === 'balances') loadBalances();
-    else if (tab === 'report')   loadReport(reportPage);
+    else if (tab === 'report') loadReport(reportPage);
     else if (tab === 'holidays') loadHolidays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, reportFilter, reportPage]);
@@ -466,11 +483,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
-              tab === key
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${tab === key
                 ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
                 : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
-            }`}
+              }`}
           >
             <Icon className="w-3.5 h-3.5" />
             {label}
@@ -488,82 +504,97 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       {tab === 'today' && (
         loading ? <TabSkeleton tab="today" /> : today && (
           <div className="space-y-5">
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <SummaryCard label="Total Karyawan" value={today.summary?.total_employees ?? 0} color="text-slate-800 dark:text-white" />
-            <SummaryCard label="Sudah Check-in" value={today.summary?.checked_in ?? 0} color="text-emerald-600" />
-            <SummaryCard label="Belum Check-in" value={today.summary?.not_checked_in ?? 0} color="text-rose-600" />
-            <SummaryCard label="Izin / Cuti" value={today.summary?.on_leave ?? 0} color="text-amber-600" />
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-            {/* Sudah check-in */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
-              <h4 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 mb-3">
-                <CheckCircle2 className="w-4 h-4" /> Sudah Check-in ({today.checked_in?.length ?? 0})
-              </h4>
-              <div className="space-y-2 max-h-80 overflow-y-auto">
-                {(today.checked_in ?? []).length === 0 ? (
-                  <p className="text-[11px] text-slate-400 py-3 text-center">Belum ada.</p>
-                ) : (
-                  today.checked_in.map((p: any) => (
-                    <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                        <p className="text-[10px] text-slate-400">{p.department ?? '—'} · {fmtTime(p.check_in_time)}{p.check_out_time ? ` – ${fmtTime(p.check_out_time)}` : ''}</p>
-                      </div>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {p.check_in_type === 'wfh'   && <Home   className="w-3 h-3 text-indigo-500" />}
-                        {p.check_in_type === 'field' && <MapPin className="w-3 h-3 text-amber-500" />}
-                        <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              <SummaryCard label="Total Karyawan" value={today.summary?.total_employees ?? 0} color="text-slate-800 dark:text-white" />
+              <SummaryCard label="Sudah Check-in" value={today.summary?.checked_in ?? 0} color="text-emerald-600" />
+              <SummaryCard label="Belum Check-in" value={today.summary?.not_checked_in ?? 0} color="text-rose-600" />
+              <SummaryCard label="Izin / Cuti" value={today.summary?.on_leave ?? 0} color="text-amber-600" />
             </div>
 
-            {/* Belum check-in */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
-              <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5 mb-3">
-                <Clock className="w-4 h-4" /> Belum Check-in ({today.not_checked_in?.length ?? 0})
-              </h4>
-              <div className="space-y-2 max-h-80 overflow-y-auto">
-                {(today.not_checked_in ?? []).length === 0 ? (
-                  <p className="text-[11px] text-slate-400 py-3 text-center">Semua sudah hadir.</p>
-                ) : (
-                  today.not_checked_in.map((p: any) => (
-                    <div key={p.user_id} className="border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                      <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                      <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
-                    </div>
-                  ))
-                )}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+              {/* Sudah check-in */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
+                <h4 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 mb-3">
+                  <CheckCircle2 className="w-4 h-4" /> Sudah Check-in ({today.checked_in?.length ?? 0})
+                </h4>
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {(today.checked_in ?? []).length === 0 ? (
+                    <p className="text-[11px] text-slate-400 py-3 text-center">Belum ada.</p>
+                  ) : (
+                    today.checked_in.map((p: any) => (
+                      <div key={p.user_id} className={`flex items-center justify-between border-b pb-2 ${p.is_cross_day ? 'border-indigo-100 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-lg px-1.5' : 'border-slate-50 dark:border-slate-800/60'}`}>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex items-center gap-1">
+                            {p.name}
+                            {p.is_cross_day && (
+                              <span title="Shift lintas tengah malam">
+                                <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[10px] text-slate-400">
+                            {p.department ?? '—'} ·{' '}
+                            {p.is_cross_day
+                              ? fmtDateRange(p.shift_date, p.checkout_date)
+                              : fmtTime(p.check_in_time)
+                            }
+                            {!p.is_cross_day && p.check_out_time ? ` – ${fmtTime(p.check_out_time)}` : ''}
+                            {p.is_cross_day && <span className="ml-1 text-indigo-400 font-medium">· shift malam</span>}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          {p.check_in_type === 'wfh' && <Home className="w-3 h-3 text-indigo-500" />}
+                          {p.check_in_type === 'field' && <MapPin className="w-3 h-3 text-amber-500" />}
+                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
-            </div>
 
-            {/* Izin/cuti */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
-              <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5 mb-3">
-                <ClipboardList className="w-4 h-4" /> Sedang Izin/Cuti ({today.on_leave?.length ?? 0})
-              </h4>
-              <div className="space-y-2 max-h-80 overflow-y-auto">
-                {(today.on_leave ?? []).length === 0 ? (
-                  <p className="text-[11px] text-slate-400 py-3 text-center">Tidak ada.</p>
-                ) : (
-                  today.on_leave.map((p: any) => (
-                    <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                      <div className="min-w-0">
+              {/* Belum check-in */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
+                <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5 mb-3">
+                  <Clock className="w-4 h-4" /> Belum Check-in ({today.not_checked_in?.length ?? 0})
+                </h4>
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {(today.not_checked_in ?? []).length === 0 ? (
+                    <p className="text-[11px] text-slate-400 py-3 text-center">Semua sudah hadir.</p>
+                  ) : (
+                    today.not_checked_in.map((p: any) => (
+                      <div key={p.user_id} className="border-b border-slate-50 dark:border-slate-800/60 pb-2">
                         <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
                         <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
                       </div>
-                      <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 capitalize shrink-0">{p.leave_type}</span>
-                    </div>
-                  ))
-                )}
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Izin/cuti */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
+                <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5 mb-3">
+                  <ClipboardList className="w-4 h-4" /> Sedang Izin/Cuti ({today.on_leave?.length ?? 0})
+                </h4>
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {(today.on_leave ?? []).length === 0 ? (
+                    <p className="text-[11px] text-slate-400 py-3 text-center">Tidak ada.</p>
+                  ) : (
+                    today.on_leave.map((p: any) => (
+                      <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                          <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
+                        </div>
+                        <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 capitalize shrink-0">{p.leave_type}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
         )
       )}
 
@@ -572,324 +603,321 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         loading ? <TabSkeleton tab="leaves" /> : (() => {
           const todayStr = new Date().toISOString().slice(0, 10);
 
-        // ── Filter lokal ──────────────────────────────────────
-        const displayedLeaves = (() => {
-          let result = leaves;
-          if (showUpcoming) {
-            // Mode mendatang: approved saja + belum selesai
-            result = leaves.filter((l: any) =>
-              l.status === 'approved' &&
-              (l.end_date ?? '').slice(0, 10) >= todayStr
-            );
-          } else {
-            if (leaveStatus)     result = result.filter((l: any) => l.status === l.status && l.status === leaveStatus);
-            if (leaveTypeFilter) result = result.filter((l: any) => l.leave_type === leaveTypeFilter);
-          }
-          return result.filter((l: any) =>
-            l.user_name.toLowerCase().includes(leaveSearch.toLowerCase())
-          );
-        })();
-
-        // ── Deteksi bentrok: hanya untuk baris pending ────────
-        // Cek apakah leave pending ini tumpang tindih tanggal dengan leave approved
-        // dari karyawan lain (range overlap sederhana).
-        const dateOverlaps = (s1: string, e1: string, s2: string, e2: string) =>
-          s1.slice(0, 10) <= e2.slice(0, 10) && e1.slice(0, 10) >= s2.slice(0, 10);
-
-        const getApprovedConflicts = (pendingLeave: any): string[] => {
-          if (pendingLeave.status !== 'pending') return [];
-          const found: string[] = [];
-          leaves.forEach((other: any) => {
-            if (other.id === pendingLeave.id) return;
-            if (other.user_name === pendingLeave.user_name) return;
-            if (other.status !== 'approved') return;
-            if (dateOverlaps(
-              pendingLeave.start_date, pendingLeave.end_date,
-              other.start_date, other.end_date
-            )) {
-              if (!found.includes(other.user_name)) found.push(other.user_name);
+          // ── Filter lokal ──────────────────────────────────────
+          const displayedLeaves = (() => {
+            let result = leaves;
+            if (showUpcoming) {
+              // Mode mendatang: approved saja + belum selesai
+              result = leaves.filter((l: any) =>
+                l.status === 'approved' &&
+                (l.end_date ?? '').slice(0, 10) >= todayStr
+              );
+            } else {
+              if (leaveStatus) result = result.filter((l: any) => l.status === l.status && l.status === leaveStatus);
+              if (leaveTypeFilter) result = result.filter((l: any) => l.leave_type === leaveTypeFilter);
             }
-          });
-          return found;
-        };
+            return result.filter((l: any) =>
+              l.user_name.toLowerCase().includes(leaveSearch.toLowerCase())
+            );
+          })();
 
-        const leaveTypeLabel = (t: string) =>
-          ({ cuti: 'Cuti', izin: 'Izin', sakit: 'Sakit', wfh: 'WFH' }[t] ?? t);
+          // ── Deteksi bentrok: hanya untuk baris pending ────────
+          // Cek apakah leave pending ini tumpang tindih tanggal dengan leave approved
+          // dari karyawan lain (range overlap sederhana).
+          const dateOverlaps = (s1: string, e1: string, s2: string, e2: string) =>
+            s1.slice(0, 10) <= e2.slice(0, 10) && e1.slice(0, 10) >= s2.slice(0, 10);
 
-        return (
-        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4">
+          const getApprovedConflicts = (pendingLeave: any): string[] => {
+            if (pendingLeave.status !== 'pending') return [];
+            const found: string[] = [];
+            leaves.forEach((other: any) => {
+              if (other.id === pendingLeave.id) return;
+              if (other.user_name === pendingLeave.user_name) return;
+              if (other.status !== 'approved') return;
+              if (dateOverlaps(
+                pendingLeave.start_date, pendingLeave.end_date,
+                other.start_date, other.end_date
+              )) {
+                if (!found.includes(other.user_name)) found.push(other.user_name);
+              }
+            });
+            return found;
+          };
 
-          {/* Filter bar */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
+          const leaveTypeLabel = (t: string) =>
+            ({ cuti: 'Cuti', izin: 'Izin', sakit: 'Sakit', wfh: 'WFH' }[t] ?? t);
 
-              {/* Dropdown status */}
-              <select
-                value={showUpcoming ? 'approved' : leaveStatus}
-                disabled={showUpcoming}
-                onChange={(e) => {
-                  setShowUpcoming(false);
-                  setLeaveStatus(e.target.value as any);
-                }}
-                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <option value="">Semua Status</option>
-                <option value="pending">Menunggu</option>
-                <option value="approved">Disetujui</option>
-                <option value="rejected">Ditolak</option>
-              </select>
+          return (
+            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4">
 
-              {/* Dropdown tipe */}
-              <select
-                value={showUpcoming ? '' : leaveTypeFilter}
-                disabled={showUpcoming}
-                onChange={(e) => setLeaveTypeFilter(e.target.value as any)}
-                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <option value="">Semua Tipe</option>
-                <option value="izin">Izin</option>
-                <option value="sakit">Sakit</option>
-                <option value="cuti">Cuti</option>
-                <option value="wfh">WFH</option>
-              </select>
+              {/* Filter bar */}
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
 
-              {/* Tombol Mendatang */}
-              <button
-                onClick={() => setShowUpcoming(v => !v)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${
-                  showUpcoming
-                    ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
-                    : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-700'
-                }`}
-                title="Tampilkan cuti/izin sudah disetujui yang belum terlaksana"
-              >
-                <CalendarClock className="w-3.5 h-3.5" />
-                Mendatang
-                {showUpcoming && (
-                  <span className="ml-1 bg-white/30 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">
-                    {displayedLeaves.length}
-                  </span>
-                )}
-              </button>
-            </div>
+                  {/* Dropdown status */}
+                  <select
+                    value={showUpcoming ? 'approved' : leaveStatus}
+                    disabled={showUpcoming}
+                    onChange={(e) => {
+                      setShowUpcoming(false);
+                      setLeaveStatus(e.target.value as any);
+                    }}
+                    className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="">Semua Status</option>
+                    <option value="pending">Menunggu</option>
+                    <option value="approved">Disetujui</option>
+                    <option value="rejected">Ditolak</option>
+                  </select>
 
-            {/* Search */}
-            <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-              <input
-                type="text"
-                placeholder="Cari nama karyawan..."
-                value={leaveSearch}
-                onChange={(e) => setLeaveSearch(e.target.value)}
-                className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-full sm:w-48"
-              />
-            </div>
-          </div>
+                  {/* Dropdown tipe */}
+                  <select
+                    value={showUpcoming ? '' : leaveTypeFilter}
+                    disabled={showUpcoming}
+                    onChange={(e) => setLeaveTypeFilter(e.target.value as any)}
+                    className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="">Semua Tipe</option>
+                    <option value="izin">Izin</option>
+                    <option value="sakit">Sakit</option>
+                    <option value="cuti">Cuti</option>
+                    <option value="wfh">WFH</option>
+                  </select>
 
-          {/* Label mode mendatang */}
-          {showUpcoming && (
-            <div className="flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
-              <CalendarClock className="w-3.5 h-3.5 shrink-0" />
-              Menampilkan <span className="font-bold mx-0.5">{displayedLeaves.length}</span> izin/cuti yang sudah disetujui dan belum terlaksana.
-              <span className="ml-auto text-amber-500 italic">HRD tetap berhak approve/tolak pengajuan baru.</span>
-            </div>
-          )}
+                  {/* Tombol Mendatang */}
+                  <button
+                    onClick={() => setShowUpcoming(v => !v)}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${showUpcoming
+                        ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-700'
+                      }`}
+                    title="Tampilkan cuti/izin sudah disetujui yang belum terlaksana"
+                  >
+                    <CalendarClock className="w-3.5 h-3.5" />
+                    Mendatang
+                    {showUpcoming && (
+                      <span className="ml-1 bg-white/30 text-white text-[9px] font-bold px-1.5 py-0.5 rounded-full">
+                        {displayedLeaves.length}
+                      </span>
+                    )}
+                  </button>
+                </div>
 
-          {/* Tabel */}
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs text-left">
-              <thead>
-                <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
-                  <th className="py-2 px-2 font-semibold">Karyawan</th>
-                  <th className="py-2 px-2 font-semibold">Tipe</th>
-                  <th className="py-2 px-2 font-semibold">Periode</th>
-                  <th className="py-2 px-2 font-semibold text-center">Hari</th>
-                  <th className="py-2 px-2 font-semibold">Alasan</th>
-                  <th className="py-2 px-2 font-semibold text-center">Status</th>
-                  <th className="py-2 px-2 font-semibold text-right">Aksi</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-                {displayedLeaves.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="text-center py-8 text-slate-400">
-                      {showUpcoming ? 'Tidak ada izin/cuti mendatang yang sudah disetujui.' : 'Tidak ada pengajuan.'}
-                    </td>
-                  </tr>
-                ) : (
-                  displayedLeaves.map((l: any) => {
-                    // Alert hanya muncul pada baris PENDING yang bentrok dengan approved lain
-                    const conflicts = getApprovedConflicts(l);
-                    const hasConflict = conflicts.length > 0;
+                {/* Search */}
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Cari nama karyawan..."
+                    value={leaveSearch}
+                    onChange={(e) => setLeaveSearch(e.target.value)}
+                    className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-full sm:w-48"
+                  />
+                </div>
+              </div>
 
-                    return (
-                      <tr
-                        key={l.id}
-                        className={`transition-colors ${
-                          hasConflict
-                            ? 'bg-amber-50/50 dark:bg-amber-950/10 hover:bg-amber-50/80'
-                            : 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30'
-                        }`}
-                      >
-                        <td className="py-2.5 px-2">
-                          <p className="font-semibold text-slate-800 dark:text-slate-200">{l.user_name}</p>
-                          <p className="text-[10px] text-slate-400">{l.department ?? '—'}</p>
-                          {/* Alert bentrok — hanya pada pending */}
-                          {hasConflict && (
-                            <div className="mt-1.5 flex items-start gap-1 bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-md px-2 py-1">
-                              <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                              <span className="text-[10px] text-amber-800 dark:text-amber-300 leading-tight">
-                                <span className="font-bold">{conflicts.join(', ')}</span> sudah cuti di periode yang sama.
-                              </span>
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-2">
-                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${
-                            l.leave_type === 'cuti'  ? 'bg-teal-50 text-teal-700' :
-                            l.leave_type === 'izin'  ? 'bg-purple-50 text-purple-700' :
-                            l.leave_type === 'sakit' ? 'bg-orange-50 text-orange-700' :
-                            'bg-indigo-50 text-indigo-700'
-                          }`}>
-                            {leaveTypeLabel(l.leave_type)}
-                          </span>
-                          {/* Tombol surat dokter — muncul jika ada lampiran */}
-                          {l.has_document && (
-                            <button
-                              onClick={() => openLeaveDocument(l.id, l.user_name)}
-                              disabled={docLoadingId === l.id}
-                              className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:text-sky-800 hover:underline disabled:opacity-50"
-                              title="Lihat surat dokter"
-                            >
-                              {docLoadingId === l.id ? (
-                                <span className="w-3 h-3 border-2 border-sky-300 border-t-sky-600 rounded-full animate-spin" />
-                              ) : (
-                                <FileText className="w-3 h-3" />
-                              )}
-                              Surat Dokter
-                            </button>
-                          )}
-                        </td>
-                        <td className="py-2.5 px-2 text-slate-500 whitespace-nowrap">
-                          {fmtDate(l.start_date)} – {fmtDate(l.end_date)}
-                        </td>
-                        <td className="py-2.5 px-2 text-center font-mono">{l.total_days}</td>
-                        <td className="py-2.5 px-2 max-w-[180px] truncate text-slate-500" title={l.reason}>{l.reason}</td>
-                        <td className="py-2.5 px-2 text-center">
-                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${leaveBadge(l.status)}`}>
-                            {l.status === 'approved' ? 'Disetujui' : l.status === 'rejected' ? 'Ditolak' : 'Menunggu'}
-                          </span>
-                        </td>
-                        <td className="py-2.5 px-2 text-right">
-                          {l.status === 'pending' ? (
-                            <div className="flex justify-end gap-1.5">
-                              <button
-                                onClick={() => handleApproveLeave(l.id, l.user_name)}
-                                className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
-                                title="Setujui"
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                              </button>
-                              <button
-                                onClick={() => handleRejectLeave(l.id, l.user_name)}
-                                className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100"
-                                title="Tolak"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-[10px] text-slate-400">
-                              {l.rejection_reason ? `Ditolak: ${l.rejection_reason}` : '—'}
-                            </span>
-                          )}
+              {/* Label mode mendatang */}
+              {showUpcoming && (
+                <div className="flex items-center gap-2 text-[11px] text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-800 rounded-lg px-3 py-2">
+                  <CalendarClock className="w-3.5 h-3.5 shrink-0" />
+                  Menampilkan <span className="font-bold mx-0.5">{displayedLeaves.length}</span> izin/cuti yang sudah disetujui dan belum terlaksana.
+                  <span className="ml-auto text-amber-500 italic">HRD tetap berhak approve/tolak pengajuan baru.</span>
+                </div>
+              )}
+
+              {/* Tabel */}
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs text-left">
+                  <thead>
+                    <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                      <th className="py-2 px-2 font-semibold">Karyawan</th>
+                      <th className="py-2 px-2 font-semibold">Tipe</th>
+                      <th className="py-2 px-2 font-semibold">Periode</th>
+                      <th className="py-2 px-2 font-semibold text-center">Hari</th>
+                      <th className="py-2 px-2 font-semibold">Alasan</th>
+                      <th className="py-2 px-2 font-semibold text-center">Status</th>
+                      <th className="py-2 px-2 font-semibold text-right">Aksi</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                    {displayedLeaves.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="text-center py-8 text-slate-400">
+                          {showUpcoming ? 'Tidak ada izin/cuti mendatang yang sudah disetujui.' : 'Tidak ada pengajuan.'}
                         </td>
                       </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
-        );
+                    ) : (
+                      displayedLeaves.map((l: any) => {
+                        // Alert hanya muncul pada baris PENDING yang bentrok dengan approved lain
+                        const conflicts = getApprovedConflicts(l);
+                        const hasConflict = conflicts.length > 0;
+
+                        return (
+                          <tr
+                            key={l.id}
+                            className={`transition-colors ${hasConflict
+                                ? 'bg-amber-50/50 dark:bg-amber-950/10 hover:bg-amber-50/80'
+                                : 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30'
+                              }`}
+                          >
+                            <td className="py-2.5 px-2">
+                              <p className="font-semibold text-slate-800 dark:text-slate-200">{l.user_name}</p>
+                              <p className="text-[10px] text-slate-400">{l.department ?? '—'}</p>
+                              {/* Alert bentrok — hanya pada pending */}
+                              {hasConflict && (
+                                <div className="mt-1.5 flex items-start gap-1 bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-md px-2 py-1">
+                                  <AlertTriangle className="w-3 h-3 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                                  <span className="text-[10px] text-amber-800 dark:text-amber-300 leading-tight">
+                                    <span className="font-bold">{conflicts.join(', ')}</span> sudah cuti di periode yang sama.
+                                  </span>
+                                </div>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-2">
+                              <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${l.leave_type === 'cuti' ? 'bg-teal-50 text-teal-700' :
+                                  l.leave_type === 'izin' ? 'bg-purple-50 text-purple-700' :
+                                    l.leave_type === 'sakit' ? 'bg-orange-50 text-orange-700' :
+                                      'bg-indigo-50 text-indigo-700'
+                                }`}>
+                                {leaveTypeLabel(l.leave_type)}
+                              </span>
+                              {/* Tombol surat dokter — muncul jika ada lampiran */}
+                              {l.has_document && (
+                                <button
+                                  onClick={() => openLeaveDocument(l.id, l.user_name)}
+                                  disabled={docLoadingId === l.id}
+                                  className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:text-sky-800 hover:underline disabled:opacity-50"
+                                  title="Lihat surat dokter"
+                                >
+                                  {docLoadingId === l.id ? (
+                                    <span className="w-3 h-3 border-2 border-sky-300 border-t-sky-600 rounded-full animate-spin" />
+                                  ) : (
+                                    <FileText className="w-3 h-3" />
+                                  )}
+                                  Surat Dokter
+                                </button>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-2 text-slate-500 whitespace-nowrap">
+                              {fmtDate(l.start_date)} – {fmtDate(l.end_date)}
+                            </td>
+                            <td className="py-2.5 px-2 text-center font-mono">{l.total_days}</td>
+                            <td className="py-2.5 px-2 max-w-[180px] truncate text-slate-500" title={l.reason}>{l.reason}</td>
+                            <td className="py-2.5 px-2 text-center">
+                              <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${leaveBadge(l.status)}`}>
+                                {l.status === 'approved' ? 'Disetujui' : l.status === 'rejected' ? 'Ditolak' : 'Menunggu'}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-2 text-right">
+                              {l.status === 'pending' ? (
+                                <div className="flex justify-end gap-1.5">
+                                  <button
+                                    onClick={() => handleApproveLeave(l.id, l.user_name)}
+                                    className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
+                                    title="Setujui"
+                                  >
+                                    <Check className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    onClick={() => handleRejectLeave(l.id, l.user_name)}
+                                    className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100"
+                                    title="Tolak"
+                                  >
+                                    <X className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              ) : (
+                                <span className="text-[10px] text-slate-400">
+                                  {l.rejection_reason ? `Ditolak: ${l.rejection_reason}` : '—'}
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          );
         })()
       )}
 
       {/* ─── TAB: Karyawan & WFH ─── */}
       {tab === 'users' && (
         loading ? <TabSkeleton tab="users" /> : (
-        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5">
-          <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 p-3 rounded-xl text-[11px] text-indigo-900 dark:text-indigo-400 flex items-start gap-2 mb-4">
-            <Home className="w-4 h-4 shrink-0 mt-0.5" />
-            <span>Mode WFH ON → karyawan bisa presensi dari rumah via aplikasi mobile. OFF → presensi hanya di kantor (perangkat presensi). Radius ON → presensi mobile wajib dalam radius area kerja (mode lapangan).</span>
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5">
+            <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 p-3 rounded-xl text-[11px] text-indigo-900 dark:text-indigo-400 flex items-start gap-2 mb-4">
+              <Home className="w-4 h-4 shrink-0 mt-0.5" />
+              <span>Mode WFH ON → karyawan bisa presensi dari rumah via aplikasi mobile. OFF → presensi hanya di kantor (perangkat presensi). Radius ON → presensi mobile wajib dalam radius area kerja (mode lapangan).</span>
+            </div>
+            <div className="relative mb-3">
+              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+              <input
+                type="text"
+                placeholder="Cari nama karyawan..."
+                value={userSearch}
+                onChange={(e) => setUserSearch(e.target.value)}
+                className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+              />
+            </div>
+            <div className="overflow-x-auto">
+              {(() => {
+                const filtered = users.filter(u =>
+                  u.name.toLowerCase().includes(userSearch.toLowerCase())
+                );
+                return (
+                  <table className="w-full text-xs text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                        <th className="py-2 px-2 font-semibold">Nama</th>
+                        <th className="py-2 px-2 font-semibold">Departemen</th>
+                        <th className="py-2 px-2 font-semibold">Role</th>
+                        <th className="py-2 px-2 font-semibold text-center">Mode WFH</th>
+                        <th className="py-2 px-2 font-semibold text-center">Radius Lapangan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                      {filtered.length === 0 ? (
+                        <tr><td colSpan={5} className="text-center py-8 text-slate-400">{userSearch ? `Tidak ada karyawan dengan nama "${userSearch}".` : 'Tidak ada karyawan.'}</td></tr>
+                      ) : (
+                        filtered.map((u) => (
+                          <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                            <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">{u.name}</td>
+                            <td className="py-2.5 px-2 text-slate-500">{u.department ?? '—'}</td>
+                            <td className="py-2.5 px-2 text-slate-500 capitalize">{u.role}</td>
+                            <td className="py-2.5 px-2 text-center">
+                              <button
+                                onClick={() => handleToggleWfh(u.id, u.name)}
+                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.wfh_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                title={u.wfh_enabled ? 'WFH aktif — klik untuk nonaktifkan' : 'WFH nonaktif — klik untuk aktifkan'}
+                              >
+                                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.wfh_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                              </button>
+                            </td>
+                            <td className="py-2.5 px-2 text-center">
+                              {u.wfh_enabled ? (
+                                <button
+                                  onClick={() => handleToggleRadius(u.id, u.name)}
+                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.radius_enabled ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                  title={u.radius_enabled ? 'Radius aktif (lapangan) — klik untuk nonaktifkan' : 'Radius nonaktif (WFH bebas) — klik untuk aktifkan'}
+                                >
+                                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.radius_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                                </button>
+                              ) : (
+                                <span className="text-[10px] text-slate-300 dark:text-slate-700">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                );
+              })()}
+            </div>
           </div>
-          <div className="relative mb-3">
-            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-            <input
-              type="text"
-              placeholder="Cari nama karyawan..."
-              value={userSearch}
-              onChange={(e) => setUserSearch(e.target.value)}
-              className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-            />
-          </div>
-          <div className="overflow-x-auto">
-            {(() => {
-              const filtered = users.filter(u =>
-                u.name.toLowerCase().includes(userSearch.toLowerCase())
-              );
-              return (
-            <table className="w-full text-xs text-left">
-              <thead>
-                <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
-                  <th className="py-2 px-2 font-semibold">Nama</th>
-                  <th className="py-2 px-2 font-semibold">Departemen</th>
-                  <th className="py-2 px-2 font-semibold">Role</th>
-                  <th className="py-2 px-2 font-semibold text-center">Mode WFH</th>
-                  <th className="py-2 px-2 font-semibold text-center">Radius Lapangan</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-                {filtered.length === 0 ? (
-                  <tr><td colSpan={5} className="text-center py-8 text-slate-400">{userSearch ? `Tidak ada karyawan dengan nama "${userSearch}".` : 'Tidak ada karyawan.'}</td></tr>
-                ) : (
-                  filtered.map((u) => (
-                    <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                      <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">{u.name}</td>
-                      <td className="py-2.5 px-2 text-slate-500">{u.department ?? '—'}</td>
-                      <td className="py-2.5 px-2 text-slate-500 capitalize">{u.role}</td>
-                      <td className="py-2.5 px-2 text-center">
-                        <button
-                          onClick={() => handleToggleWfh(u.id, u.name)}
-                          className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.wfh_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
-                          title={u.wfh_enabled ? 'WFH aktif — klik untuk nonaktifkan' : 'WFH nonaktif — klik untuk aktifkan'}
-                        >
-                          <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.wfh_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-                        </button>
-                      </td>
-                      <td className="py-2.5 px-2 text-center">
-                        {u.wfh_enabled ? (
-                          <button
-                            onClick={() => handleToggleRadius(u.id, u.name)}
-                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.radius_enabled ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'}`}
-                            title={u.radius_enabled ? 'Radius aktif (lapangan) — klik untuk nonaktifkan' : 'Radius nonaktif (WFH bebas) — klik untuk aktifkan'}
-                          >
-                            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.radius_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-                          </button>
-                        ) : (
-                          <span className="text-[10px] text-slate-300 dark:text-slate-700">—</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-              );
-            })()}
-          </div>
-        </div>
         )
       )}
 
@@ -897,150 +925,147 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       {tab === 'balances' && (
         loading ? <TabSkeleton tab="balances" /> : (() => {
           // Group baris flat per nama karyawan → 1 card per orang
-        type BalanceEntry = { cuti?: any; izin?: any };
-        const grouped = balances.reduce<Record<string, BalanceEntry>>((acc, b) => {
-          if (!acc[b.user_name]) acc[b.user_name] = {};
-          if (b.leave_type === 'cuti') acc[b.user_name].cuti = b;
-          else acc[b.user_name].izin = b;
-          return acc;
-        }, {});
+          type BalanceEntry = { cuti?: any; izin?: any };
+          const grouped = balances.reduce<Record<string, BalanceEntry>>((acc, b) => {
+            if (!acc[b.user_name]) acc[b.user_name] = {};
+            if (b.leave_type === 'cuti') acc[b.user_name].cuti = b;
+            else acc[b.user_name].izin = b;
+            return acc;
+          }, {});
 
-        const entries = Object.entries(grouped).filter(([name]) =>
-          name.toLowerCase().includes(balanceSearch.toLowerCase())
-        );
+          const entries = Object.entries(grouped).filter(([name]) =>
+            name.toLowerCase().includes(balanceSearch.toLowerCase())
+          );
 
-        const progressColor = (remaining: number, quota: number) => {
-          if (quota === 0) return 'bg-slate-300';
-          const pct = remaining / quota;
-          if (pct > 0.5) return 'bg-emerald-500';
-          if (pct > 0.25) return 'bg-amber-400';
-          return 'bg-rose-500';
-        };
+          const progressColor = (remaining: number, quota: number) => {
+            if (quota === 0) return 'bg-slate-300';
+            const pct = remaining / quota;
+            if (pct > 0.5) return 'bg-emerald-500';
+            if (pct > 0.25) return 'bg-amber-400';
+            return 'bg-rose-500';
+          };
 
-        const progressWidth = (remaining: number, quota: number) =>
-          quota > 0 ? `${Math.min(100, Math.round((remaining / quota) * 100))}%` : '0%';
+          const progressWidth = (remaining: number, quota: number) =>
+            quota > 0 ? `${Math.min(100, Math.round((remaining / quota) * 100))}%` : '0%';
 
-        return (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between gap-3">
-              <p className="text-[11px] text-slate-400">Saldo cuti karyawan tahun {new Date().getFullYear()}.</p>
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-                <input
-                  type="text"
-                  placeholder="Cari karyawan..."
-                  value={balanceSearch}
-                  onChange={(e) => setBalanceSearch(e.target.value)}
-                  className="pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-48"
-                />
+          return (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] text-slate-400">Saldo cuti karyawan tahun {new Date().getFullYear()}.</p>
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Cari karyawan..."
+                    value={balanceSearch}
+                    onChange={(e) => setBalanceSearch(e.target.value)}
+                    className="pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-48"
+                  />
+                </div>
               </div>
+
+              {entries.length === 0 ? (
+                <p className="text-center py-10 text-xs text-slate-400">
+                  {balanceSearch ? `Tidak ada karyawan dengan nama "${balanceSearch}".` : 'Belum ada data saldo.'}
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {entries.map(([name, data]: [string, BalanceEntry]) => {
+                    const cuti = data.cuti;
+                    const izin = data.izin;
+                    const userId = cuti?.user_id ?? izin?.user_id;
+                    const isActive = (cuti?.quota ?? 0) > 0;
+                    const isToggling = togglingUserId === userId;
+
+                    return (
+                      <div
+                        key={name}
+                        className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-opacity ${isActive
+                            ? 'border-slate-100 dark:border-slate-800'
+                            : 'border-slate-200 dark:border-slate-700 opacity-70'
+                          }`}
+                      >
+                        {/* Header karyawan + toggle */}
+                        <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+                          <div className="w-7 h-7 rounded-full bg-indigo-100 dark:bg-indigo-950/50 flex items-center justify-center shrink-0">
+                            <Users className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                          </div>
+                          <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate flex-1">{name}</p>
+
+                          {/* Toggle kuota cuti 12hr/thn */}
+                          <div className="flex items-center gap-2 shrink-0">
+                            <span className={`text-[9px] font-semibold ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
+                              Cuti 12hr/thn
+                            </span>
+                            <button
+                              disabled={isToggling || !userId}
+                              onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0)}
+                              title={isActive ? 'Nonaktifkan kuota cuti tahunan' : 'Aktifkan kuota cuti 12 hari/tahun'}
+                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
+                                }`}
+                            >
+                              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-4' : 'translate-x-1'
+                                }`} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Dua kolom: Cuti & Izin */}
+                        <div className="grid grid-cols-2 gap-3">
+                          {/* Blok Cuti Tahunan */}
+                          <div className="space-y-1.5">
+                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cuti Tahunan</p>
+                            {!isActive ? (
+                              <div className="flex items-center gap-1.5 py-1">
+                                <span className="text-[10px] text-slate-400 italic">Kuota nonaktif</span>
+                              </div>
+                            ) : cuti ? (
+                              <>
+                                <p className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                  {cuti.remaining}
+                                  <span className="text-[10px] font-normal text-slate-400 ml-1">/ {cuti.quota} hari</span>
+                                </p>
+                                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                                  <div
+                                    className={`h-full rounded-full transition-all ${progressColor(cuti.remaining, cuti.quota)}`}
+                                    style={{ width: progressWidth(cuti.remaining, cuti.quota) }}
+                                  />
+                                </div>
+                                <p className="text-[10px] text-slate-400">
+                                  Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
+                                </p>
+                              </>
+                            ) : (
+                              <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
+                            )}
+                          </div>
+
+                          {/* Blok Izin / Sakit */}
+                          <div className="space-y-1.5">
+                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin / Sakit</p>
+                            {izin ? (
+                              <>
+                                <p className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                  {izin.used}
+                                  <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
+                                </p>
+                                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+                                  <div className="h-full w-0 rounded-full bg-slate-300" />
+                                </div>
+                                <p className="text-[10px] text-slate-400">Tidak terbatas</p>
+                              </>
+                            ) : (
+                              <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-
-            {entries.length === 0 ? (
-              <p className="text-center py-10 text-xs text-slate-400">
-                {balanceSearch ? `Tidak ada karyawan dengan nama "${balanceSearch}".` : 'Belum ada data saldo.'}
-              </p>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {entries.map(([name, data]: [string, BalanceEntry]) => {
-                  const cuti      = data.cuti;
-                  const izin      = data.izin;
-                  const userId    = cuti?.user_id ?? izin?.user_id;
-                  const isActive  = (cuti?.quota ?? 0) > 0;
-                  const isToggling = togglingUserId === userId;
-
-                  return (
-                    <div
-                      key={name}
-                      className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-opacity ${
-                        isActive
-                          ? 'border-slate-100 dark:border-slate-800'
-                          : 'border-slate-200 dark:border-slate-700 opacity-70'
-                      }`}
-                    >
-                      {/* Header karyawan + toggle */}
-                      <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
-                        <div className="w-7 h-7 rounded-full bg-indigo-100 dark:bg-indigo-950/50 flex items-center justify-center shrink-0">
-                          <Users className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                        </div>
-                        <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate flex-1">{name}</p>
-
-                        {/* Toggle kuota cuti 12hr/thn */}
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className={`text-[9px] font-semibold ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
-                            Cuti 12hr/thn
-                          </span>
-                          <button
-                            disabled={isToggling || !userId}
-                            onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0)}
-                            title={isActive ? 'Nonaktifkan kuota cuti tahunan' : 'Aktifkan kuota cuti 12 hari/tahun'}
-                            className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${
-                              isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
-                            }`}
-                          >
-                            <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                              isActive ? 'translate-x-4' : 'translate-x-1'
-                            }`} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Dua kolom: Cuti & Izin */}
-                      <div className="grid grid-cols-2 gap-3">
-                        {/* Blok Cuti Tahunan */}
-                        <div className="space-y-1.5">
-                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cuti Tahunan</p>
-                          {!isActive ? (
-                            <div className="flex items-center gap-1.5 py-1">
-                              <span className="text-[10px] text-slate-400 italic">Kuota nonaktif</span>
-                            </div>
-                          ) : cuti ? (
-                            <>
-                              <p className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                {cuti.remaining}
-                                <span className="text-[10px] font-normal text-slate-400 ml-1">/ {cuti.quota} hari</span>
-                              </p>
-                              <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                                <div
-                                  className={`h-full rounded-full transition-all ${progressColor(cuti.remaining, cuti.quota)}`}
-                                  style={{ width: progressWidth(cuti.remaining, cuti.quota) }}
-                                />
-                              </div>
-                              <p className="text-[10px] text-slate-400">
-                                Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
-                              </p>
-                            </>
-                          ) : (
-                            <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
-                          )}
-                        </div>
-
-                        {/* Blok Izin / Sakit */}
-                        <div className="space-y-1.5">
-                          <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin / Sakit</p>
-                          {izin ? (
-                            <>
-                              <p className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                {izin.used}
-                                <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
-                              </p>
-                              <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                                <div className="h-full w-0 rounded-full bg-slate-300" />
-                              </div>
-                              <p className="text-[10px] text-slate-400">Tidak terbatas</p>
-                            </>
-                          ) : (
-                            <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        );
+          );
         })()
       )}
 
@@ -1156,7 +1181,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           return reportNameSort === 'asc' ? cmp : -cmp;
                         });
                       }
-                      
+
                       if (filteredReport.length === 0) {
                         return (
                           <tr>
@@ -1171,71 +1196,79 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           </tr>
                         );
                       }
-                      
+
                       return filteredReport.map((r: any, idx: number) => {
                         const isVirtual = r.id === null; // baris virtual absent/leave
                         return (
-                        <tr
-                          key={r.id ?? `v-${r.user_id}-${r.date}-${idx}`}
-                          className={`transition-colors ${
-                            isVirtual
-                              ? 'bg-slate-50/60 dark:bg-slate-800/20 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
-                              : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
-                          }`}
-                        >
-                          <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">{r.user_name}</td>
-                          <td className="py-3 px-2 text-slate-500 whitespace-nowrap">{r.department ?? '—'}</td>
-                          <td className="py-3 px-2 text-slate-500 whitespace-nowrap">{fmtDate(r.date)}</td>
-                          <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_in_time)}</td>
-                          <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_out_time)}</td>
-                          <td className="py-3 px-2 font-mono text-violet-600 dark:text-violet-400 font-medium whitespace-nowrap">
-                            {r.working_minutes != null ? fmtMinutes(r.working_minutes) : <span className="text-slate-300 dark:text-slate-600">—</span>}
-                          </td>
-                          <td className="py-3 px-2 font-mono whitespace-nowrap">
-                            {r.overtime_minutes > 0 ? (
-                              <span className="text-orange-600 dark:text-orange-400 font-medium">
-                                {fmtMinutes(r.overtime_minutes)}
-                                {r.is_holiday ? <span className="ml-1 text-[9px] font-bold text-rose-500">LIBUR</span> : null}
+                          <tr
+                            key={r.id ?? `v-${r.user_id}-${r.date}-${idx}`}
+                            className={`transition-colors ${isVirtual
+                                ? 'bg-slate-50/60 dark:bg-slate-800/20 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
+                                : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
+                              }`}
+                          >
+                            <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">{r.user_name}</td>
+                            <td className="py-3 px-2 text-slate-500 whitespace-nowrap">{r.department ?? '—'}</td>
+                            <td className="py-3 px-2 text-slate-500 whitespace-nowrap">
+                              <span className="inline-flex items-center gap-1">
+                                {fmtDateRange(r.date, r.is_cross_day ? r.checkout_date : null)}
+                                {r.is_cross_day && (
+                                  <span title="Shift lintas tengah malam">
+                                    <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
+                                  </span>
+                                )}
                               </span>
-                            ) : (
-                              <span className="text-slate-300 dark:text-slate-600">—</span>
-                            )}
-                          </td>
-                          <td className="py-3 px-2 whitespace-nowrap">
-                            {r.check_in_type ? (
-                              <span className="flex items-center gap-1.5">
-                                {r.check_in_type === 'wfh'    && <Home      className="w-3.5 h-3.5 text-indigo-500" />}
-                                {r.check_in_type === 'field'  && <MapPin    className="w-3.5 h-3.5 text-amber-500" />}
-                                {r.check_in_type === 'onsite' && <Building2 className="w-3.5 h-3.5 text-slate-400" />}
-                                {r.check_in_type === 'wfh' ? 'WFH' : r.check_in_type === 'field' ? 'Lapangan' : 'Kantor'}
+                            </td>
+                            <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_in_time)}</td>
+                            <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_out_time)}</td>
+                            <td className="py-3 px-2 font-mono text-violet-600 dark:text-violet-400 font-medium whitespace-nowrap">
+                              {r.working_minutes != null ? fmtMinutes(r.working_minutes) : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                            </td>
+                            <td className="py-3 px-2 font-mono whitespace-nowrap">
+                              {r.overtime_minutes > 0 ? (
+                                <span className="text-orange-600 dark:text-orange-400 font-medium">
+                                  {fmtMinutes(r.overtime_minutes)}
+                                  {r.is_holiday ? <span className="ml-1 text-[9px] font-bold text-rose-500">LIBUR</span> : null}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300 dark:text-slate-600">—</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-2 whitespace-nowrap">
+                              {r.check_in_type ? (
+                                <span className="flex items-center gap-1.5">
+                                  {r.check_in_type === 'wfh' && <Home className="w-3.5 h-3.5 text-indigo-500" />}
+                                  {r.check_in_type === 'field' && <MapPin className="w-3.5 h-3.5 text-amber-500" />}
+                                  {r.check_in_type === 'onsite' && <Building2 className="w-3.5 h-3.5 text-slate-400" />}
+                                  {r.check_in_type === 'wfh' ? 'WFH' : r.check_in_type === 'field' ? 'Lapangan' : 'Kantor'}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300 dark:text-slate-600">—</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-2 whitespace-nowrap">
+                              {(r.check_in_type === 'wfh' || r.check_in_type === 'field') && r.check_in_lat && r.check_in_lng ? (
+                                <a
+                                  href={`https://www.google.com/maps?q=${r.check_in_lat},${r.check_in_lng}`}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  title={`Buka di Google Maps: ${Number(r.check_in_lat).toFixed(6)}, ${Number(r.check_in_lng).toFixed(6)}`}
+                                  className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:underline text-[11px] font-mono transition-colors"
+                                >
+                                  <MapPin className="w-3 h-3 shrink-0" />
+                                  {Number(r.check_in_lat).toFixed(4)},
+                                  {Number(r.check_in_lng).toFixed(4)}
+                                </a>
+                              ) : (
+                                <span className="text-slate-300 dark:text-slate-600 text-[11px]">—</span>
+                              )}
+                            </td>
+                            <td className="py-3 px-2 text-center whitespace-nowrap">
+                              <span className={`inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${statusBadge(r.status)}`}>
+                                {statusLabel(r.status)}
                               </span>
-                            ) : (
-                              <span className="text-slate-300 dark:text-slate-600">—</span>
-                            )}
-                          </td>
-                          <td className="py-3 px-2 whitespace-nowrap">
-                            {(r.check_in_type === 'wfh' || r.check_in_type === 'field') && r.check_in_lat && r.check_in_lng ? (
-                              <a
-                                href={`https://www.google.com/maps?q=${r.check_in_lat},${r.check_in_lng}`}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                title={`Buka di Google Maps: ${Number(r.check_in_lat).toFixed(6)}, ${Number(r.check_in_lng).toFixed(6)}`}
-                                className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:underline text-[11px] font-mono transition-colors"
-                              >
-                                <MapPin className="w-3 h-3 shrink-0" />
-                                {Number(r.check_in_lat).toFixed(4)},
-                                {Number(r.check_in_lng).toFixed(4)}
-                              </a>
-                            ) : (
-                              <span className="text-slate-300 dark:text-slate-600 text-[11px]">—</span>
-                            )}
-                          </td>
-                          <td className="py-3 px-2 text-center whitespace-nowrap">
-                            <span className={`inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${statusBadge(r.status)}`}>
-                              {statusLabel(r.status)}
-                            </span>
-                          </td>
-                        </tr>
+                            </td>
+                          </tr>
                         );
                       });
                     })()}
@@ -1271,11 +1304,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           <button
                             key={pg}
                             onClick={() => setReportPage(pg)}
-                            className={`w-7 h-7 text-xs font-semibold rounded-lg transition ${
-                              pg === reportPage
+                            className={`w-7 h-7 text-xs font-semibold rounded-lg transition ${pg === reportPage
                                 ? 'bg-indigo-600 text-white'
                                 : 'border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300'
-                            }`}
+                              }`}
                           >
                             {pg}
                           </button>

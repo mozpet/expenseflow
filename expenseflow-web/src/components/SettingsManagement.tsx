@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo } from 'react';
 import {
   Building2,
   Settings,
@@ -6,7 +6,9 @@ import {
   MapPin,
   Plus,
   Trash2,
+  CalendarDays,
   X,
+  AlertTriangle,
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -113,18 +115,24 @@ const OfficesTab: React.FC<{
     radius_meters: 100,
     work_start_time: '08:00',
     work_end_time: '17:00',
+    work_days: [1, 2, 3, 4, 5] as number[],
     late_tolerance_minutes: 15,
     wfh_checkin_window_minutes: 120,
     overtime_enabled: true,
     min_overtime_minutes: 30,
     early_leave_tolerance_minutes: 30,
+    enforce_weekly_hours: false,
+    max_weekly_hours: 40,
+    custom_schedules: {} as Record<number, { start: string; end: string }>,
   };
   const [showForm, setShowForm] = useState(false);
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<any>(empty);
   const [saving, setSaving] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [expandedDays, setExpandedDays] = useState<number[]>([]);
 
-  const openAdd = () => { setForm(empty); setEditId(null); setShowForm(true); };
+  const openAdd = () => { setForm(empty); setEditId(null); setShowForm(true); setValidationError(null); setExpandedDays([]); };
   const openEdit = (o: any) => {
     setForm({
       office_name: o.office_name ?? '',
@@ -133,22 +141,57 @@ const OfficesTab: React.FC<{
       radius_meters: o.radius_meters ?? 100,
       work_start_time: (o.work_start_time ?? '08:00').slice(0, 5),
       work_end_time: (o.work_end_time ?? '17:00').slice(0, 5),
+      work_days: o.work_days ?? [1, 2, 3, 4, 5],
       late_tolerance_minutes: o.late_tolerance_minutes ?? 15,
       wfh_checkin_window_minutes: o.wfh_checkin_window_minutes ?? 120,
       overtime_enabled: o.overtime_enabled ?? true,
       min_overtime_minutes: o.min_overtime_minutes ?? 30,
       early_leave_tolerance_minutes: o.early_leave_tolerance_minutes ?? 30,
+      enforce_weekly_hours: o.enforce_weekly_hours ?? false,
+      max_weekly_hours: o.max_weekly_hours ?? 40,
+      custom_schedules: o.custom_schedules ?? {},
     });
     setEditId(o.id);
     setShowForm(true);
+    setExpandedDays(Object.keys(o.custom_schedules ?? {}).map(Number));
   };
+
+  const calculatedWeeklyHours = useMemo(() => {
+    let totalMinutes = 0;
+    for (const day of (form.work_days as number[])) {
+      const startStr = form.custom_schedules[day]?.start ?? form.work_start_time;
+      const endStr = form.custom_schedules[day]?.end ?? form.work_end_time;
+      if (startStr && endStr) {
+        const [sH, sM] = startStr.split(':').map(Number);
+        const [eH, eM] = endStr.split(':').map(Number);
+        let startMins = sH * 60 + sM;
+        let endMins = eH * 60 + eM;
+        if (endMins <= startMins) endMins += 24 * 60;
+        totalMinutes += (endMins - startMins);
+      }
+    }
+    return totalMinutes / 60;
+  }, [form.work_days, form.work_start_time, form.work_end_time, form.custom_schedules]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.office_name || form.office_latitude === '' || form.office_longitude === '') {
-      alert('Nama kantor, latitude, dan longitude wajib diisi.');
+      setValidationError('Nama kantor, latitude, dan longitude wajib diisi.');
       return;
     }
+    if (Array.isArray(form.work_days) && form.work_days.length > 6) {
+      setValidationError('Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur.');
+      return;
+    }
+
+    if (form.enforce_weekly_hours) {
+      const maxHours = Number(form.max_weekly_hours);
+      if (calculatedWeeklyHours > maxHours) {
+        setValidationError(`Total jam kerja per minggu (${calculatedWeeklyHours.toFixed(1)} jam) melebihi batas maksimal yang diatur (${maxHours} jam).`);
+        return;
+      }
+    }
+
     setSaving(true);
     try {
       const payload = {
@@ -158,11 +201,15 @@ const OfficesTab: React.FC<{
         radius_meters: Number(form.radius_meters),
         work_start_time: form.work_start_time,
         work_end_time: form.work_end_time,
+        work_days: form.work_days,
         late_tolerance_minutes: Number(form.late_tolerance_minutes),
         wfh_checkin_window_minutes: form.wfh_checkin_window_minutes === '' ? null : Number(form.wfh_checkin_window_minutes),
         overtime_enabled: !!form.overtime_enabled,
         min_overtime_minutes: Number(form.min_overtime_minutes),
         early_leave_tolerance_minutes: form.early_leave_tolerance_minutes === '' ? null : Number(form.early_leave_tolerance_minutes),
+        enforce_weekly_hours: !!form.enforce_weekly_hours,
+        max_weekly_hours: form.enforce_weekly_hours ? Number(form.max_weekly_hours) : null,
+        custom_schedules: form.custom_schedules,
       };
       if (editId) {
         await attendanceApi.settings.update(editId, payload);
@@ -221,6 +268,13 @@ const OfficesTab: React.FC<{
                 <span>Jam: {(o.work_start_time ?? '').slice(0, 5)} – {(o.work_end_time ?? '').slice(0, 5)}</span>
                 <span>Toleransi telat: {o.late_tolerance_minutes} mnt</span>
                 <span className="col-span-2 flex items-center gap-1">
+                  <CalendarDays className="w-3 h-3 text-indigo-500" />
+                  Hari kerja:{' '}
+                  <span className="text-indigo-600 dark:text-indigo-400 font-semibold">
+                    {(o.work_days ?? [1, 2, 3, 4, 5]).map((d: number) => ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'][d]).join(', ')}
+                  </span>
+                </span>
+                <span className="col-span-2 flex items-center gap-1">
                   <Clock className="w-3 h-3 text-violet-500" />
                   Window WFH:{' '}
                   {o.wfh_checkin_window_minutes != null
@@ -242,6 +296,14 @@ const OfficesTab: React.FC<{
                   {o.early_leave_tolerance_minutes != null
                     ? <span className="text-violet-600 dark:text-violet-400 font-semibold">Aktif ({o.early_leave_tolerance_minutes} mnt sebelum jam pulang)</span>
                     : <span className="italic">Nonaktif</span>
+                  }
+                </span>
+                <span className="col-span-2 flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-indigo-500" />
+                  Jam/minggu:{' '}
+                  {o.enforce_weekly_hours
+                    ? <span className="text-indigo-600 dark:text-indigo-400 font-semibold">Maks {o.max_weekly_hours ?? 40} jam/minggu (aktif)</span>
+                    : <span className="italic text-slate-400">Tidak dibatasi</span>
                   }
                 </span>
               </div>
@@ -286,6 +348,141 @@ const OfficesTab: React.FC<{
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 block">Pulang</label>
                   <input type="time" value={form.work_end_time} onChange={(e) => setForm({ ...form, work_end_time: e.target.value })} className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100" />
+                </div>
+              </div>
+              <div className="space-y-2">
+                <label className="text-[10px] font-bold text-slate-400 flex items-center justify-between mb-2">
+                  <span className="flex items-center gap-2">
+                    Hari Kerja & Jam per Hari
+                    <span className={`px-1.5 py-0.5 rounded font-mono text-[9px] ${
+                      form.enforce_weekly_hours && calculatedWeeklyHours > Number(form.max_weekly_hours)
+                        ? 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400'
+                        : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                    }`}>
+                      Total: {calculatedWeeklyHours.toFixed(1)} jam/mgg
+                    </span>
+                  </span>
+                  {(form.work_days as number[]).length > 6 && (
+                    <span className="text-rose-600 bg-rose-50 dark:bg-rose-900/30 dark:text-rose-400 px-1.5 py-0.5 rounded flex items-center gap-1 leading-none">
+                      <AlertTriangle className="w-3 h-3" /> Max 6 hari
+                    </span>
+                  )}
+                </label>
+                
+                <div className="space-y-2">
+                  {['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map((name, idx) => {
+                    const active = (form.work_days as number[]).includes(idx);
+                    const hasCustom = !!form.custom_schedules[idx];
+                    const isExpanded = expandedDays.includes(idx);
+                    
+                    return (
+                      <div key={idx} className={`border rounded-xl overflow-hidden transition ${active ? 'border-indigo-200 dark:border-indigo-800/50 bg-indigo-50/30 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/20'}`}>
+                        {/* Header Hari */}
+                        <div className="p-3 flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const days = active
+                                  ? (form.work_days as number[]).filter((d: number) => d !== idx)
+                                  : [...(form.work_days as number[]), idx].sort();
+                                
+                                // Jika nonaktifkan, hapus juga dari custom schedules
+                                const newCustom = { ...form.custom_schedules };
+                                if (active) {
+                                  delete newCustom[idx];
+                                  setExpandedDays(prev => prev.filter(d => d !== idx));
+                                }
+                                
+                                setForm({ ...form, work_days: days, custom_schedules: newCustom });
+                              }}
+                              className={`w-10 h-6 rounded-full transition-colors relative ${active ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-600'}`}
+                            >
+                              <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${active ? 'left-5' : 'left-1'}`} />
+                            </button>
+                            <div className="flex flex-col">
+                              <span className={`text-sm font-semibold ${active ? 'text-indigo-900 dark:text-indigo-300' : 'text-slate-500'}`}>{name}</span>
+                              {active && (
+                                <span className={`text-[9px] px-1.5 py-0.5 rounded w-max mt-0.5 ${hasCustom ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'}`}>
+                                  {hasCustom ? 'Jam khusus' : 'Ikut default'}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          
+                          {active && (
+                            <button
+                              type="button"
+                              onClick={() => setExpandedDays(prev => isExpanded ? prev.filter(d => d !== idx) : [...prev, idx])}
+                              className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${isExpanded ? 'bg-indigo-100 border-indigo-200 text-indigo-700 dark:bg-indigo-900/40 dark:border-indigo-800 dark:text-indigo-300' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300'}`}
+                            >
+                              {isExpanded ? 'Tutup' : 'Atur jam'}
+                            </button>
+                          )}
+                        </div>
+
+                        {/* Accordion Custom Jam */}
+                        {active && isExpanded && (
+                          <div className="p-3 border-t border-indigo-100 dark:border-indigo-800/30 bg-white/50 dark:bg-slate-900/50 space-y-3">
+                            <div className="grid grid-cols-2 gap-3">
+                              <div className="space-y-1">
+                                <label className="text-[10px] font-bold text-slate-500">Jam Masuk</label>
+                                <input
+                                  type="time"
+                                  value={form.custom_schedules[idx]?.start ?? form.work_start_time}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const curr = form.custom_schedules[idx] ?? { start: form.work_start_time, end: form.work_end_time };
+                                    setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { ...curr, start: val } } });
+                                  }}
+                                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[10px] font-bold text-slate-500">Jam Pulang</label>
+                                <input
+                                  type="time"
+                                  value={form.custom_schedules[idx]?.end ?? form.work_end_time}
+                                  onChange={(e) => {
+                                    const val = e.target.value;
+                                    const curr = form.custom_schedules[idx] ?? { start: form.work_start_time, end: form.work_end_time };
+                                    setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { ...curr, end: val } } });
+                                  }}
+                                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800"
+                                />
+                              </div>
+                            </div>
+                            
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { start: '08:00', end: '13:00' } } });
+                                }}
+                                className="flex-1 px-2 py-1.5 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400 border border-amber-200 dark:border-amber-800 rounded-lg text-[10px] font-bold hover:bg-amber-100 transition"
+                              >
+                                Set Setengah Hari (08:00-13:00)
+                              </button>
+                              
+                              {hasCustom && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const newCustom = { ...form.custom_schedules };
+                                    delete newCustom[idx];
+                                    setForm({ ...form, custom_schedules: newCustom });
+                                  }}
+                                  className="px-3 py-1.5 bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-bold hover:bg-slate-200 transition"
+                                >
+                                  Reset Default
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
               <div className="space-y-1">
@@ -371,6 +568,46 @@ const OfficesTab: React.FC<{
                   )}
                 </div>
               </div>
+
+              {/* Batas jam kerja per minggu (P0 #1 — opsional, toggle per kantor) */}
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                <label className="flex items-center justify-between gap-3 cursor-pointer">
+                  <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5 text-indigo-500" /> Batas jam kerja per minggu
+                    <span className="text-[9px] font-normal text-slate-400 normal-case">(UU 13/2003 Pasal 77)</span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={!!form.enforce_weekly_hours}
+                    onChange={(e) => setForm({ ...form, enforce_weekly_hours: e.target.checked })}
+                    className="w-4 h-4 accent-indigo-600"
+                  />
+                </label>
+                
+                {form.enforce_weekly_hours && (
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 block">
+                      Maksimal jam kerja per minggu
+                    </label>
+                    <input
+                      type="number"
+                      min={40}
+                      max={168}
+                      value={form.max_weekly_hours}
+                      onChange={(e) => setForm({ ...form, max_weekly_hours: e.target.value })}
+                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                    />
+                    <p className="text-[9px] text-slate-400">
+                      Standar UU: 40 jam/minggu. Profil yang melebihi batas ini akan ditolak saat dibuat/diubah.
+                    </p>
+                  </div>
+                )}
+                {!form.enforce_weekly_hours && (
+                  <p className="text-[9px] text-slate-400">
+                    Nonaktif — boleh melebihi 40 jam/minggu. Aktifkan jika perusahaan ingin menegakkan batas jam kerja.
+                  </p>
+                )}
+              </div>
             </div>
 
             <div className="flex gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
@@ -378,6 +615,29 @@ const OfficesTab: React.FC<{
               <button type="submit" disabled={saving} className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-bold rounded-xl text-xs">{saving ? 'Menyimpan...' : 'Simpan'}</button>
             </div>
           </form>
+
+          {validationError && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 duration-200 border border-slate-100 dark:border-slate-700">
+                <div className="flex items-center gap-3 text-rose-600 dark:text-rose-400 mb-4">
+                  <div className="p-2 bg-rose-50 dark:bg-rose-900/30 rounded-full">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <h3 className="font-bold text-base">Tindakan Ditolak</h3>
+                </div>
+                <p className="text-slate-600 dark:text-slate-300 text-sm mb-6 leading-relaxed">
+                  {validationError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setValidationError(null)}
+                  className="w-full py-2.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold rounded-xl text-xs transition-colors"
+                >
+                  Kembali Edit Form
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -389,7 +649,7 @@ type TabKey = 'offices' | 'rules';
 
 const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
   { key: 'offices', label: 'Kantor Presensi', icon: Building2 },
-  { key: 'rules',   label: 'Aturan Klaim & Invoice', icon: Settings },
+  { key: 'rules', label: 'Aturan Klaim & Invoice', icon: Settings },
 ];
 
 // ─── Komponen utama: Pengaturan Aturan ───────────────────────
@@ -436,11 +696,10 @@ export const SettingsManagement: React.FC<Props> = ({
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${
-              tab === key
+            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${tab === key
                 ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
                 : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
-            }`}
+              }`}
           >
             <Icon className="w-3.5 h-3.5" />
             {label}

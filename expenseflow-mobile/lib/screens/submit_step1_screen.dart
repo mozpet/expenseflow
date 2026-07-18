@@ -288,25 +288,6 @@ class _SubmitStep1ScreenState extends State<SubmitStep1Screen> {
                   ),
 
                   const SizedBox(height: 32),
-
-                  ElevatedButton(
-                    onPressed: () => _handlePickPhoto(photoProv),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Theme.of(context).primaryColor,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                    ),
-                    child: const Text(
-                      'Pilih Foto / File',
-                      style: TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ),
-                  ),
                 ],
               ),
             ),

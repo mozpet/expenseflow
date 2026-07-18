@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 import 'presensi_provider.dart';
 import 'providers/auth_provider.dart';
 import 'providers/receipt_provider.dart';
+import 'providers/shift_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/notification_service.dart';
@@ -28,6 +29,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => AuthProvider()),
         ChangeNotifierProvider(create: (_) => PresensiProvider()),
         ChangeNotifierProvider(create: (_) => ReceiptProvider()),
+        ChangeNotifierProvider(create: (_) => ShiftProvider()),
       ],
       child: const ExpenseFlowApp(),
     ),

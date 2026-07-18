@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import '../providers/receipt_provider.dart';
 import '../utils.dart';
 import 'detail_pengajuan_screen.dart';
+import 'submit_step1_screen.dart';
 
 class RiwayatScreen extends StatefulWidget {
   const RiwayatScreen({super.key});
@@ -32,6 +33,17 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      floatingActionButton: FloatingActionButton.extended(
+        heroTag: 'riwayat_fab',
+        onPressed: () => Navigator.push(
+          context,
+          MaterialPageRoute(builder: (_) => const SubmitStep1Screen()),
+        ),
+        backgroundColor: Theme.of(context).primaryColor,
+        foregroundColor: Colors.white,
+        icon: const Icon(Icons.photo_camera),
+        label: const Text('Scan Struk'),
+      ),
       appBar: AppBar(
         title: const Text('Struk Saya'),
         automaticallyImplyLeading: false,

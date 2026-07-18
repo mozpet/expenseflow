@@ -41,6 +41,7 @@ const NotificationsView = lazy(() => import('./components/NotificationsView').th
 const KaryawanManagement = lazy(() => import('./components/KaryawanManagement').then(m => ({ default: m.KaryawanManagement })));
 const MasterVendor = lazy(() => import('./components/MasterVendor').then(m => ({ default: m.MasterVendor })));
 const AttendanceManagement = lazy(() => import('./components/AttendanceManagement').then(m => ({ default: m.AttendanceManagement })));
+const ShiftManagement = lazy(() => import('./components/ShiftManagement').then(m => ({ default: m.ShiftManagement })));
 const OvertimeApprovalView = lazy(() => import('./components/OvertimeApprovalView').then(m => ({ default: m.OvertimeApprovalView })));
 const DeviceChangeApprovalView = lazy(() => import('./components/DeviceChangeApprovalView').then(m => ({ default: m.DeviceChangeApprovalView })));
 const SettingsManagement = lazy(() => import('./components/SettingsManagement').then(m => ({ default: m.SettingsManagement })));
@@ -66,6 +67,7 @@ import {
   LogOut,
   AlertCircle,
   CalendarCheck,
+  CalendarClock,
   Smartphone
 } from 'lucide-react';
 
@@ -78,7 +80,7 @@ export default function App() {
 
   // Finance tidak punya akses menu Manajemen (Karyawan & Presensi/Cuti = ranah HRD).
   const isFinance = user?.role === 'finance';
-  const MANAGEMENT_PAGES = ['karyawan', 'presensi', 'overtime', 'device-changes'];
+  const MANAGEMENT_PAGES = ['karyawan', 'presensi', 'shift', 'overtime', 'device-changes'];
 
   // Pengaturan Aturan hanya untuk admin & super_admin.
   const isAdminOrSuperAdmin = user?.role === 'admin' || user?.role === 'super_admin';
@@ -326,6 +328,7 @@ export default function App() {
     'karyawan': 'Manajemen Karyawan',
     'master-vendor': 'Master Data Vendor',
     'presensi': 'Manajemen Presensi & Cuti',
+    'shift': 'Manajemen Shift & Jadwal',
     'overtime': 'Approval Lembur Karyawan',
     'device-changes': 'Approval Pindah Perangkat'
   };
@@ -338,7 +341,9 @@ export default function App() {
           <ReceiptInbox 
             receipts={receipts} 
             onApprove={handleApproveReceipt} 
-            onReject={handleRejectReceipt} 
+            onReject={handleRejectReceipt}
+            currentSettings={settings}
+            onSaveSettings={handleSaveSettings}
           />
         );
       case 'riwayat-struk':
@@ -408,12 +413,22 @@ export default function App() {
             onAddNotification={handleAddNotificationDirect}
           />
         );
+      case 'shift':
+        return <ShiftManagement onAddAuditLog={handleAddAuditLogDirect} />;
       case 'overtime':
         return <OvertimeApprovalView />;
       case 'device-changes':
         return <DeviceChangeApprovalView />;
       default:
-        return <ReceiptInbox receipts={receipts} onApprove={handleApproveReceipt} onReject={handleRejectReceipt} />;
+        return (
+          <ReceiptInbox
+            receipts={receipts}
+            onApprove={handleApproveReceipt}
+            onReject={handleRejectReceipt}
+            currentSettings={settings}
+            onSaveSettings={handleSaveSettings}
+          />
+        );
     }
   };
 
@@ -670,6 +685,18 @@ export default function App() {
               >
                 <CalendarCheck className="w-4 h-4 opacity-80" />
                 <span>Presensi & Cuti</span>
+              </button>
+
+              <button
+                onClick={() => navigateTo('shift')}
+                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                  activePage === 'shift'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+              >
+                <CalendarClock className="w-4 h-4 opacity-80" />
+                <span>Shift & Jadwal</span>
               </button>
 
               <button

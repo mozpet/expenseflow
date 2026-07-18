@@ -43,11 +43,13 @@ class AutoCheckoutCommand extends Command
         $today  = now('Asia/Jakarta')->toDateString();
         $nowUtc = now(); // waktu UTC untuk perbandingan dengan datetime di DB
 
-        // Ambil semua karyawan yang:
-        //   - check-in hari ini
-        //   - belum check-out
-        //   - attendance_enabled = true (WFH / lapangan)
-        $openAttendances = Attendance::whereDate('date', $today)
+        // Ambil semua karyawan yang belum check-out:
+        //   - check-in HARI INI (shift normal), ATAU
+        //   - check-in KEMARIN (shift malam lintas hari yang menyeberang tengah malam)
+        // Keduanya perlu ditangani agar karyawan shift malam yang lupa checkout tetap di-auto-checkout.
+        $yesterday = Carbon::parse($today)->subDay()->toDateString();
+
+        $openAttendances = Attendance::whereIn('date', [$today, $yesterday])
             ->whereNotNull('check_in_time')
             ->whereNull('check_out_time')
             ->with('user')
@@ -77,11 +79,22 @@ class AutoCheckoutCommand extends Command
                 continue;
             }
 
-            // Ambil jadwal efektif karyawan hari ini (shift aktif atau default kantor).
+            // Tanggal shift asli record ini (bisa hari ini atau kemarin untuk shift malam)
+            $attDate = Carbon::parse($attendance->date)->toDateString();
+
+            // Ambil jadwal efektif karyawan pada tanggal shift-nya (shift aktif atau default kantor).
             // Jam pulang shift dipakai agar auto-checkout konsisten dengan checkOut manual.
             $schedule  = $attendance->user
-                ? ShiftController::resolveSchedule($attendance->user, $today)
+                ? ShiftController::resolveSchedule($attendance->user, $attDate)
                 : null;
+
+            $isCrossDay = $schedule && ! empty($schedule['is_cross_day']) && ! $schedule['is_off'];
+
+            // Record kemarin yang BUKAN shift cross-day → lewati (bukan urusan auto-checkout hari ini,
+            // seharusnya sudah ditangani command hari sebelumnya).
+            if ($attDate === $yesterday && ! $isCrossDay) {
+                continue;
+            }
 
             // Jika hari ini ditandai libur oleh shift (is_off) → jam pulang tidak relevan,
             // pakai jam pulang kantor sebagai acuan grace period auto-checkout.
@@ -92,13 +105,18 @@ class AutoCheckoutCommand extends Command
             $graceMins    = (int) ($office->auto_checkout_grace_minutes ?? 60);
             $reminderMins = (int) ($office->checkout_reminder_minutes ?? 30);
 
-            $workEnd         = Carbon::parse($today . ' ' . $jamPulang, 'Asia/Jakarta')->utc();
+            // Shift lintas hari: jam pulang berada di HARI BERIKUTNYA setelah tanggal shift.
+            $jamPulangDate = $isCrossDay
+                ? Carbon::parse($attDate, 'Asia/Jakarta')->addDay()->toDateString()
+                : $attDate;
+
+            $workEnd         = Carbon::parse($jamPulangDate . ' ' . $jamPulang, 'Asia/Jakarta')->utc();
             $reminderTime    = $workEnd->copy()->addMinutes($reminderMins);
             $autoCheckoutTime = $workEnd->copy()->addMinutes($graceMins);
 
             // Sudah lewat batas auto-checkout → lakukan auto-checkout
             if ($nowUtc->gte($autoCheckoutTime)) {
-                $this->doAutoCheckout($attendance, $office, $today, $nowUtc);
+                $this->doAutoCheckout($attendance, $office, $attDate, $nowUtc);
                 $totalAutoCheckout++;
                 continue;
             }
@@ -166,7 +184,9 @@ class AutoCheckoutCommand extends Command
     }
 
     // ─── Lakukan auto-checkout ────────────────────────────────────────────────
-    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $today, Carbon $nowUtc): void
+    // $attDate = tanggal shift asli (bisa kemarin untuk shift malam lintas hari),
+    //            bukan tanggal hari ini. Penting untuk resolveSchedule() yang benar.
+    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $attDate, Carbon $nowUtc): void
     {
         $user = $attendance->user;
 
@@ -174,17 +194,19 @@ class AutoCheckoutCommand extends Command
         $checkOutTime = $nowUtc;
         $workMinutes  = (int) $attendance->check_in_time->diffInMinutes($checkOutTime);
 
-        // Ambil jadwal efektif karyawan (shift aktif atau default kantor)
+        // Ambil jadwal efektif karyawan pada tanggal shift aslinya.
+        // Untuk shift malam (check-in kemarin, checkout pagi ini), $attDate = kemarin —
+        // sehingga resolveSchedule() membaca jadwal shift malam, bukan jadwal hari ini.
         $schedule = $user
-            ? ShiftController::resolveSchedule($user, $today)
+            ? ShiftController::resolveSchedule($user, $attDate)
             : null;
 
         // Tentukan hari libur/weekend menurut kalender (libur nasional/weekend).
         // Dipakai untuk field is_holiday — samakan persis dengan checkOut() manual.
-        $isNationalNonWorking = $this->isNonWorkingDay($today, $attendance->company_id);
+        $isNationalNonWorking = $this->isNonWorkingDay($attDate, $attendance->company_id);
 
         // Hitung overtime (sadar shift) — angka lembur konsisten dengan checkOut manual
-        $overtimeMinutes = $this->calculateOvertime($office, $schedule, $today, $checkOutTime, $workMinutes, $isNationalNonWorking);
+        $overtimeMinutes = $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking);
 
         $attendance->update([
             'check_out_time'   => $checkOutTime,
@@ -221,11 +243,12 @@ class AutoCheckoutCommand extends Command
                 'overtime_minutes' => $overtimeMinutes,
                 'status'           => 'pending',
                 'is_auto_checkout' => true,
+                'overtime_reason'  => 'Lupa checkout (auto-checkout oleh sistem)',
             ]);
 
             // Notifikasi ke HRD
             $overtimeFmt = $this->formatMinutes($overtimeMinutes);
-            $tanggal     = Carbon::parse($today)->format('d/m/Y');
+            $tanggal     = Carbon::parse($attDate)->format('d/m/Y');
 
             $approvers = DB::table('users')
                 ->where('company_id', $attendance->company_id)
@@ -248,6 +271,7 @@ class AutoCheckoutCommand extends Command
                         'user_name'        => $user ? $user->name : null,
                         'overtime_minutes' => $overtimeMinutes,
                         'is_auto_checkout' => true,
+                        'overtime_reason'  => 'Lupa checkout (auto-checkout oleh sistem)',
                         'date'             => $tanggal,
                     ]),
                     'entity_type' => 'overtime_approval',
@@ -335,7 +359,12 @@ class AutoCheckoutCommand extends Command
             return 0;
         }
 
-        $jamPulang = Carbon::parse($date . ' ' . $jamPulangStr, 'Asia/Jakarta')->utc();
+        // Shift lintas hari (cross-day): jam pulang berada di HARI BERIKUTNYA.
+        $jamPulangDate = ($schedule && ! empty($schedule['is_cross_day']) && ! $schedule['is_off'])
+            ? Carbon::parse($date, 'Asia/Jakarta')->addDay()->toDateString()
+            : $date;
+
+        $jamPulang = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta')->utc();
         $lewat     = $checkOutTime->greaterThan($jamPulang)
             ? (int) $jamPulang->diffInMinutes($checkOutTime)
             : 0;

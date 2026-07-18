@@ -15,6 +15,7 @@ class Shift extends Model
         'name',
         'description',
         'is_active',
+        'color',
     ];
 
     protected function casts(): array

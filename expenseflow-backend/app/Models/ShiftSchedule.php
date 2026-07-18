@@ -13,13 +13,15 @@ class ShiftSchedule extends Model
         'work_start_time',
         'work_end_time',
         'is_off',
+        'is_cross_day',
     ];
 
     protected function casts(): array
     {
         return [
-            'day_of_week' => 'integer',
-            'is_off'      => 'boolean',
+            'day_of_week'  => 'integer',
+            'is_off'       => 'boolean',
+            'is_cross_day' => 'boolean',
         ];
     }
 

@@ -1,11 +1,8 @@
 import React, { useState } from 'react';
 import { AppSettings } from '../types';
-import { 
-  Settings, 
-  Save, 
-  HelpCircle, 
-  CheckCircle2, 
-  AlertCircle 
+import {
+  Save,
+  CheckCircle2
 } from 'lucide-react';
 
 interface SettingsViewProps {
@@ -17,8 +14,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   currentSettings,
   onSaveSettings,
 }) => {
-  const [varianceLimit, setVarianceLimit] = useState(currentSettings.varianceLimit);
-  const [maxClaimLimit, setMaxClaimLimit] = useState(currentSettings.maxClaimLimit);
   const [thresholdSingle, setThresholdSingle] = useState(currentSettings.thresholdSingle);
   const [thresholdTwo, setThresholdTwo] = useState(currentSettings.thresholdTwo);
   const [thresholdThree, setThresholdThree] = useState(currentSettings.thresholdThree);
@@ -33,15 +28,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
     setTimeout(() => {
       onSaveSettings({
-        varianceLimit,
-        maxClaimLimit,
+        ...currentSettings,
         thresholdSingle,
         thresholdTwo,
         thresholdThree,
       });
       setSaving(false);
       setSavedSuccess(true);
-      
+
       // Reset success banner after 3 seconds
       setTimeout(() => setSavedSuccess(false), 3000);
     }, 1000);
@@ -61,56 +55,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        {/* Left Card: Variance Limit */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
-          <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
-            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 font-sans">
-              <Settings className="w-4 h-4 text-indigo-600" />
-              Batas Variance &amp; Klain Struk
-            </h3>
-          </div>
-
-          <div className="space-y-4 text-xs font-sans">
-            <div className="space-y-1">
-              <label className="text-slate-600 dark:text-slate-400 font-medium block">
-                Flag Otomatis Jika Variance Melebihi (%)
-              </label>
-              <div className="relative">
-                <input
-                  type="number"
-                  value={varianceLimit}
-                  onChange={(e) => setVarianceLimit(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full text-xs p-2.5 pr-8 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none"
-                  required
-                />
-                <span className="absolute right-3.5 top-3 text-slate-400 font-mono font-semibold">%</span>
-              </div>
-              <span className="text-[10px] text-slate-400 flex items-center gap-1 leading-relaxed">
-                <HelpCircle className="w-3.5 h-3.5 shrink-0" />
-                Memicu flag &quot;Review&quot; jika selisih angka klaim OCR vs angka kasir melebihi persentase ini.
-              </span>
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-slate-600 dark:text-slate-400 font-medium block">
-                Batas Maksimal Klaim per Struk (Rp)
-              </label>
-              <input
-                type="number"
-                value={maxClaimLimit}
-                onChange={(e) => setMaxClaimLimit(Math.max(1000, parseInt(e.target.value) || 1000))}
-                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none font-mono"
-                required
-              />
-              <span className="text-[10px] text-slate-400 flex items-center gap-1">
-                <AlertCircle className="w-3.5 h-3.5 text-amber-500 shrink-0" />
-                Klaim di atas Rp {new Intl.NumberFormat('id-ID').format(maxClaimLimit)} otomatis tertolak/flagged keras.
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Right Card: Invoice Thresholds */}
+        {/* Invoice Thresholds */}
         <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
           <div className="flex justify-between items-center pb-2 border-b border-slate-100 dark:border-slate-800">
             <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 font-sans">

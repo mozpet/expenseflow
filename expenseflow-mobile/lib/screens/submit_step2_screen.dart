@@ -30,7 +30,11 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
   String _selectedCategory = 'Lain-lain / Operasional';
   final _notesController = TextEditingController();
 
-  // Kolom manual (hanya dipakai saat OCR gagal)
+  // Kolom claimed_amount (bisa diedit karyawan, baik OCR sukses maupun gagal)
+  final _claimedAmountController = TextEditingController();
+  bool _claimedAmountEdited = false;
+
+  // Kolom manual tambahan (hanya dipakai saat OCR gagal)
   final _amountController = TextEditingController();
   final _merchantController = TextEditingController();
   final _dateController = TextEditingController();
@@ -52,6 +56,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
   @override
   void dispose() {
     _notesController.dispose();
+    _claimedAmountController.dispose();
     _amountController.dispose();
     _merchantController.dispose();
     _dateController.dispose();
@@ -73,6 +78,16 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
       if (!mounted) return;
       _ocrData = data;
       final ocrStatus = (data['ocr_status'] ?? 'pending').toString();
+
+      // Pre-fill claimed_amount dari OCR jika tersedia (tanpa desimal jika bulat)
+      final ocrAmount = data['ocr_raw_amount'];
+      if (ocrAmount != null && ocrStatus == 'done') {
+        final parsed = double.tryParse(ocrAmount.toString()) ?? 0;
+        _claimedAmountController.text = parsed == parsed.truncateToDouble()
+            ? parsed.toInt().toString()
+            : parsed.toString();
+      }
+
       setState(() => _phase =
           ocrStatus == 'done' ? _Phase.ready : _Phase.ocrFailed);
     } catch (e) {
@@ -87,23 +102,28 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
   Future<void> _submit() async {
     final notes = _notesController.text.trim();
     final prov = Provider.of<ReceiptProvider>(context, listen: false);
+    final wasOcrFailed = _ocrData?['ocr_status'] != 'done';
     setState(() => _phase = _Phase.submitting);
     try {
+      // Parse claimed_amount — selalu dikirim (baik OCR sukses maupun gagal)
+      final claimedText = wasOcrFailed
+          ? _amountController.text
+          : _claimedAmountController.text;
+      final claimedAmount = double.tryParse(
+          claimedText.replaceAll('.', '').replaceAll(',', '.'));
+
       final receipt = await prov.finalizeAndSubmit(
         id: _receiptId!,
         category: _selectedCategory,
         notes: notes.isEmpty ? null : notes,
-        // Manual fields hanya dikirim jika OCR gagal
-        claimedAmount: _phase == _Phase.ocrFailed
+        claimedAmount: claimedAmount,
+        totalAmount: wasOcrFailed
             ? double.tryParse(_amountController.text.replaceAll('.', '').replaceAll(',', '.'))
             : null,
-        totalAmount: _phase == _Phase.ocrFailed
-            ? double.tryParse(_amountController.text.replaceAll('.', '').replaceAll(',', '.'))
-            : null,
-        receiptDate: _phase == _Phase.ocrFailed && _dateController.text.isNotEmpty
+        receiptDate: wasOcrFailed && _dateController.text.isNotEmpty
             ? _dateController.text.trim()
             : null,
-        vendorName: _phase == _Phase.ocrFailed && _merchantController.text.isNotEmpty
+        vendorName: wasOcrFailed && _merchantController.text.isNotEmpty
             ? _merchantController.text.trim()
             : null,
       );
@@ -264,24 +284,13 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
         border: Border.all(color: Colors.blue.shade100),
       ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text('Data dari struk (terkunci)',
+              const Text('Data dari struk',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                    color: Colors.red.shade50,
-                    borderRadius: BorderRadius.circular(8)),
-                child: const Text('Tidak bisa diubah',
-                    style: TextStyle(
-                        color: Colors.red,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold)),
-              ),
             ],
           ),
           const SizedBox(height: 12),
@@ -290,12 +299,53 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
           _lockedRow('Merchant OCR', merchant.toString()),
           const Divider(height: 20),
           _lockedRow('Tanggal OCR', date.length >= 10 ? date.substring(0, 10) : date),
+          const Divider(height: 20),
+          const Text('Nominal klaim (bisa diubah)',
+              style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
           const SizedBox(height: 8),
-          const Text(
-            'Data ini dikirim langsung ke finance & tidak bisa diubah',
-            style: TextStyle(
-                color: Colors.grey, fontSize: 11, fontStyle: FontStyle.italic),
+          TextField(
+            controller: _claimedAmountController,
+            keyboardType: TextInputType.number,
+            onChanged: (v) {
+              final edited = v != (amount?.toString() ?? '');
+              if (edited != _claimedAmountEdited) {
+                setState(() => _claimedAmountEdited = edited);
+              }
+            },
+            decoration: InputDecoration(
+              labelText: 'Nominal klaim',
+              prefixText: 'Rp ',
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              contentPadding: const EdgeInsets.all(12),
+            ),
           ),
+          if (_claimedAmountEdited) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 16, color: Colors.orange.shade700),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Nominal klaim berbeda dari OCR. Finance akan melihat selisihnya.',
+                      style: TextStyle(
+                        color: Colors.orange.shade800,
+                        fontSize: 11,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ],
       ),
     );
@@ -409,7 +459,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
             border: Border.all(color: const Color(0xFFFFF59D)),
           ),
           child: const Text(
-            'Nominal, merchant, dan tanggal diambil dari foto struk dan tidak bisa diubah.',
+            'Merchant dan tanggal diambil dari foto struk (terkunci). Nominal klaim bisa diubah.',
             style: TextStyle(
                 color: Color(0xFF5D4037), fontSize: 12, height: 1.4),
           ),

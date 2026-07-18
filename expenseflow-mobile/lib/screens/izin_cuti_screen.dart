@@ -59,6 +59,7 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
+        heroTag: 'izin_cuti_fab',
         onPressed: () async {
           // Ambil provider sebelum await agar tidak pakai context lintas async
           final prov =

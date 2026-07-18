@@ -17,6 +17,7 @@ class OvertimeApproval extends Model
         'reviewed_at',
         'notes',
         'is_auto_checkout',
+        'overtime_reason',
     ];
 
     protected function casts(): array
