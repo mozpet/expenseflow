@@ -169,8 +169,10 @@ export const attendanceApi = {
     start_date?: string;
     end_date?: string;
     department?: string;
-    status?: 'present' | 'late' | 'absent' | 'early_leave' | 'cuti' | 'izin' | 'sakit' | 'wfh';
-    type?: 'onsite' | 'wfh' | 'field';
+    status?: 'present' | 'late' | 'absent' | 'early_leave' | 'cuti' | 'izin' | 'sakit' | 'wfh' | string;
+    type?: 'onsite' | 'wfh' | 'field' | string;
+    search?: string;
+    office_id?: number | string;
     page?: number;
   }) => apiGet('/dashboard/attendance/report', filters as Record<string, string | number | boolean>),
   exportReport: (filters?: {
@@ -179,6 +181,8 @@ export const attendanceApi = {
     department?: string;
     status?: string;
     type?: string;
+    search?: string;
+    office_id?: number | string;
   }) =>
     apiDownload(
       '/dashboard/attendance/report/export',

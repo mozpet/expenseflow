@@ -857,13 +857,15 @@ class AttendanceController extends Controller
         ?int $companyId,
         string $startDate,
         string $endDate,
-        ?string $department
+        ?string $department,
+        ?int $officeId = null
     ): array {
-        // 1. Semua karyawan aktif (filtered by company & department)
+        // 1. Semua karyawan aktif (filtered by company & department & office)
         $users = User::where('is_active', true)
             ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
             ->when($department, fn ($q, $d) => $q->where('department', $d))
-            ->select('id', 'name', 'department')
+            ->when($officeId, fn ($q, $o) => $q->where('attendance_setting_id', $o))
+            ->select('id', 'name', 'department', 'attendance_setting_id')
             ->get();
 
         if ($users->isEmpty()) {
@@ -1091,6 +1093,8 @@ class AttendanceController extends Controller
             'department' => 'nullable|string|max:100',
             'status'     => 'nullable|in:present,late,absent,early_leave,cuti,izin,sakit,wfh,libur',
             'type'       => 'nullable|in:onsite,wfh,field',
+            'search'     => 'nullable|string|max:100',
+            'office_id'  => 'nullable|integer',
         ]);
 
         $companyId  = $actor->role === 'super_admin' ? null : $actor->company_id;
@@ -1103,13 +1107,17 @@ class AttendanceController extends Controller
             }, 'error.txt', ['Content-Type' => 'text/plain']);
         }
 
-        $rows = $this->buildFullRows($companyId, $startDate, $endDate, $validated['department'] ?? null);
+        $rows = $this->buildFullRows($companyId, $startDate, $endDate, $validated['department'] ?? null, $validated['office_id'] ?? null);
 
         if ($validated['status'] ?? null) {
             $rows = array_values(array_filter($rows, fn ($r) => $r['status'] === $validated['status']));
         }
         if ($validated['type'] ?? null) {
             $rows = array_values(array_filter($rows, fn ($r) => $r['check_in_type'] === $validated['type']));
+        }
+        if (!empty($validated['search'])) {
+            $searchStr = strtolower($validated['search']);
+            $rows = array_values(array_filter($rows, fn ($r) => str_contains(strtolower($r['user_name'] ?? ''), $searchStr)));
         }
 
         $filename = 'laporan-presensi-' . now()->format('Ymd-His') . '.csv';
@@ -1155,6 +1163,8 @@ class AttendanceController extends Controller
             'department' => 'nullable|string|max:100',
             'status'     => 'nullable|in:present,late,absent,early_leave,cuti,izin,sakit,wfh,libur',
             'type'       => 'nullable|in:onsite,wfh,field',
+            'search'     => 'nullable|string|max:100',
+            'office_id'  => 'nullable|integer',
         ]);
 
         $companyId = $actor->role === 'super_admin' ? null : $actor->company_id;
@@ -1168,14 +1178,18 @@ class AttendanceController extends Controller
         }
 
         // Bangun semua baris: presensi nyata + virtual absent/leave
-        $rows = $this->buildFullRows($companyId, $startDate, $endDate, $validated['department'] ?? null);
+        $rows = $this->buildFullRows($companyId, $startDate, $endDate, $validated['department'] ?? null, $validated['office_id'] ?? null);
 
-        // Terapkan filter status & tipe lokasi
+        // Terapkan filter status, tipe lokasi, dan pencarian nama
         if ($validated['status'] ?? null) {
             $rows = array_values(array_filter($rows, fn ($r) => $r['status'] === $validated['status']));
         }
         if ($validated['type'] ?? null) {
             $rows = array_values(array_filter($rows, fn ($r) => $r['check_in_type'] === $validated['type']));
+        }
+        if (!empty($validated['search'])) {
+            $searchStr = strtolower($validated['search']);
+            $rows = array_values(array_filter($rows, fn ($r) => str_contains(strtolower($r['user_name'] ?? ''), $searchStr)));
         }
 
         // Hitung summary dari baris yang sudah difilter

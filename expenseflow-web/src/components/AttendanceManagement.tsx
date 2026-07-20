@@ -161,7 +161,48 @@ const TabSkeleton = ({ tab }: { tab: TabKey }) => {
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-11 gap-3">
           {[...Array(11)].map((_, i) => <div key={i} className="h-[84px] bg-slate-200 dark:bg-slate-800 rounded-2xl" />)}
         </div>
-        <div className="h-[400px] bg-slate-200 dark:bg-slate-800 rounded-2xl" />
+        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead>
+              <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400">
+                <th className="py-2 px-2 font-semibold">Nama</th>
+                <th className="py-2 px-2 font-semibold">Departemen</th>
+                <th className="py-2 px-2 font-semibold">Tanggal</th>
+                <th className="py-2 px-2 font-semibold">Masuk</th>
+                <th className="py-2 px-2 font-semibold">Pulang</th>
+                <th className="py-2 px-2 font-semibold">Jam Kerja</th>
+                <th className="py-2 px-2 font-semibold">Lembur</th>
+                <th className="py-2 px-2 font-semibold">Lokasi</th>
+                <th className="py-2 px-2 font-semibold">GPS (WFH)</th>
+                <th className="py-2 px-2 font-semibold text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+              {[...Array(10)].map((_, i) => (
+                <tr key={i}>
+                  <td className="py-3 px-2">
+                    <div className="flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-slate-200 dark:bg-slate-800 shrink-0" />
+                      <div className="space-y-1.5 w-full">
+                        <div className="h-3 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+                        <div className="h-2 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-3 px-2"><div className="h-3 w-16 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2"><div className="h-3 w-20 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2"><div className="h-3 w-12 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2"><div className="h-3 w-12 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2"><div className="h-3 w-16 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2"><div className="h-3 w-16 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2"><div className="h-3 w-12 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2"><div className="h-3 w-16 bg-slate-200 dark:bg-slate-800 rounded" /></td>
+                  <td className="py-3 px-2 text-center"><div className="h-5 w-16 bg-slate-200 dark:bg-slate-800 rounded-full mx-auto" /></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   }
@@ -242,14 +283,31 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [balanceSearch, setBalanceSearch] = useState('');
   const [togglingUserId, setTogglingUserId] = useState<number | null>(null);
   const [report, setReport] = useState<any | null>(null);
-  const [reportFilter, setReportFilter] = useState<{ start_date: string; end_date: string; status: string; type: string }>({
+  const [reportFilter, setReportFilter] = useState<{ start_date: string; end_date: string; status: string; type: string; search?: string; office_id?: string }>({
     start_date: '',
     end_date: '',
     status: '',
     type: '',
+    search: '',
+    office_id: '',
   });
   const [reportSearch, setReportSearch] = useState('');
   const [reportPage, setReportPage] = useState(1);
+  const [offices, setOffices] = useState<any[]>([]);
+
+  useEffect(() => {
+    attendanceApi.settings.list().then(res => setOffices((res as any)?.settings ?? [])).catch(() => { });
+  }, []);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (reportFilter.search !== reportSearch) {
+        setReportFilterAndReset({ ...reportFilter, search: reportSearch });
+      }
+    }, 500);
+    return () => clearTimeout(handler);
+  }, [reportSearch]);
+
   const [reportNameSort, setReportNameSort] = useState<'asc' | 'desc' | null>(null);
   const [holidays, setHolidays] = useState<any[]>([]);
 
@@ -325,6 +383,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       if (reportFilter.end_date) f.end_date = reportFilter.end_date;
       if (reportFilter.status) f.status = reportFilter.status;
       if (reportFilter.type) f.type = reportFilter.type;
+      if (reportFilter.search) f.search = reportFilter.search;
+      if (reportFilter.office_id) f.office_id = reportFilter.office_id;
       setReport(await attendanceApi.report(f));
     } catch (e) {
       reportApiError(e, 'Gagal memuat laporan presensi.');
@@ -462,6 +522,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       if (reportFilter.end_date) f.end_date = reportFilter.end_date;
       if (reportFilter.status) f.status = reportFilter.status;
       if (reportFilter.type) f.type = reportFilter.type;
+      if (reportFilter.search) f.search = reportFilter.search;
+      if (reportFilter.office_id) f.office_id = reportFilter.office_id;
       await attendanceApi.exportReport(f);
       onAddAuditLog('Export Laporan Presensi', 'Mengunduh laporan presensi (CSV)', 'bg-indigo-600');
     } catch (e) {
@@ -479,21 +541,39 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   return (
     <div className="space-y-5 font-sans">
-      {/* Tabs */}
-      <div className="flex gap-1.5 overflow-x-auto pb-1">
-        {TABS.map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            onClick={() => setTab(key)}
-            className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${tab === key
-              ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
-              : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
-              }`}
-          >
-            <Icon className="w-3.5 h-3.5" />
-            {label}
-          </button>
-        ))}
+      {/* Tabs & Refresh */}
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex gap-1.5 overflow-x-auto pb-1 flex-1">
+          {TABS.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${tab === key
+                ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
+                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+                }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              {label}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => {
+            if (tab === 'today') loadToday();
+            else if (tab === 'leaves') loadLeaves();
+            else if (tab === 'users') loadUsers();
+            else if (tab === 'balances') loadBalances();
+            else if (tab === 'report') loadReport(reportPage);
+            else if (tab === 'holidays') loadHolidays();
+          }}
+          disabled={loading}
+          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-xl text-xs font-bold transition shrink-0 disabled:opacity-50"
+          title="Refresh Data"
+        >
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+          <span className="hidden sm:inline">Refresh</span>
+        </button>
       </div>
 
       {error && (
@@ -1119,7 +1199,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         <div className="space-y-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4">
             <div className="flex justify-between items-center">
-              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Filter Data</h3>
+              <div className="flex items-center gap-3">
+                <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Filter Data</h3>
+                {(reportFilter.start_date || reportFilter.end_date) && (
+                  <button
+                    onClick={() => setReportFilterAndReset({ ...reportFilter, start_date: '', end_date: '' })}
+                    className="text-[10px] flex items-center gap-1 font-semibold text-rose-500 hover:text-rose-600 transition-colors bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 dark:hover:bg-rose-900/50 px-2 py-1 rounded-md"
+                  >
+                    <X className="w-3 h-3" />
+                    Reset Tanggal
+                  </button>
+                )}
+              </div>
               <div className="relative w-full sm:w-64 shrink-0">
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                 <input
@@ -1131,7 +1222,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 />
               </div>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-4 items-end">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-4 items-end">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Dari Tanggal</label>
                 <input type="date" value={reportFilter.start_date} onChange={(e) => setReportFilterAndReset({ ...reportFilter, start_date: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors" />
@@ -1163,6 +1254,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <option value="field">Lapangan</option>
                 </select>
               </div>
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor</label>
+                <select value={reportFilter.office_id || ''} onChange={(e) => setReportFilterAndReset({ ...reportFilter, office_id: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors">
+                  <option value="">Semua Kantor</option>
+                  {offices.map(o => (
+                    <option key={o.id} value={o.id}>{o.office_name}</option>
+                  ))}
+                </select>
+              </div>
               <div className="pt-2">
                 <button onClick={handleExport} className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition">
                   <Download className="w-3.5 h-3.5" /> Export CSV
@@ -1183,7 +1283,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <SummaryCard label="Cuti" value={report.summary?.cuti ?? 0} color="text-teal-600" />
                 <SummaryCard label="Izin" value={report.summary?.izin ?? 0} color="text-purple-600" />
                 <SummaryCard label="Sakit" value={report.summary?.sakit ?? 0} color="text-orange-500" />
-                <SummaryCard label="Kantor" value={report.by_type?.onsite ?? 0} color="text-slate-700 dark:text-white" />
+                <SummaryCard label="On site" value={report.by_type?.onsite ?? 0} color="text-slate-700 dark:text-white" />
                 <SummaryCard label="WFH" value={report.by_type?.wfh ?? 0} color="text-indigo-600" />
                 <SummaryCard label="Jam Kerja" value={fmtMinutes(report.summary?.total_working_minutes)} color="text-cyan-600" />
                 <SummaryCard label="Lembur" value={fmtMinutes(report.summary?.total_overtime_minutes)} color="text-orange-600" />
@@ -1218,9 +1318,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </thead>
                   <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
                     {(() => {
-                      let filteredReport = rows(report.report).filter((r: any) =>
-                        r.user_name?.toLowerCase().includes(reportSearch.toLowerCase())
-                      );
+                      let filteredReport = rows(report.report);
                       if (reportNameSort) {
                         filteredReport = [...filteredReport].sort((a: any, b: any) => {
                           const cmp = (a.user_name ?? '').localeCompare(b.user_name ?? '', 'id');

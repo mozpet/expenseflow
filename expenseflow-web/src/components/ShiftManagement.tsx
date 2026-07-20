@@ -1067,6 +1067,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [rosterBranch, setRosterBranch] = useState<string>('');
   const [rosterSearch, setRosterSearch] = useState('');
   const [rosterDayName, setRosterDayName] = useState('');
+  const [rosterShiftName, setRosterShiftName] = useState('');
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
@@ -1179,9 +1180,19 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       return next;
     });
 
+  const filteredRoster = useMemo(() => {
+    return roster.filter((r) => {
+      if (!rosterShiftName) return true;
+      if (rosterShiftName === 'DEFAULT') return r.source === 'office';
+      return r.shift_name === rosterShiftName;
+    });
+  }, [roster, rosterShiftName]);
+
   const toggleSelectAll = () =>
     setSelected((prev) =>
-      prev.size === roster.length ? new Set() : new Set(roster.map((r) => r.user_id)),
+      prev.size === filteredRoster.length && filteredRoster.length > 0
+        ? new Set()
+        : new Set(filteredRoster.map((r) => r.user_id)),
     );
 
   const selectedNames = roster.filter((r) => selected.has(r.user_id)).map((r) => r.name);
@@ -1257,7 +1268,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         <div className="space-y-4">
           {/* Filter bar */}
           <div className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+            <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
               <div>
                 <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Tanggal</label>
                 <input
@@ -1280,7 +1291,21 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   ))}
                 </select>
               </div>
-              <div className="lg:col-span-2">
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Shift</label>
+                <select
+                  value={rosterShiftName}
+                  onChange={(e) => setRosterShiftName(e.target.value)}
+                  className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
+                >
+                  <option value="">Semua shift</option>
+                  <option value="DEFAULT">Default Kantor</option>
+                  {shifts.map((s) => (
+                    <option key={s.id} value={s.name}>{s.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="sm:col-span-3 lg:col-span-2">
                 <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Cari Karyawan</label>
                 <div className="flex gap-2">
                   <div className="relative flex-1">
@@ -1334,7 +1359,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
               <p className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
                 <CalendarDays className="w-3.5 h-3.5 text-indigo-500" />
                 Jadwal {rosterDayName && <span className="text-indigo-600">{rosterDayName}</span>}, {fmtDate(rosterDate)}
-                <span className="text-slate-400">· {roster.length} karyawan</span>
+                <span className="text-slate-400">· {filteredRoster.length} karyawan</span>
               </p>
             </div>
 
@@ -1345,7 +1370,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     <th className="py-2.5 px-3 w-8">
                       <input
                         type="checkbox"
-                        checked={roster.length > 0 && selected.size === roster.length}
+                        checked={filteredRoster.length > 0 && selected.size === filteredRoster.length}
                         onChange={toggleSelectAll}
                         className="w-3.5 h-3.5 rounded accent-indigo-600 align-middle"
                       />
@@ -1381,17 +1406,19 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         <td className="py-3 px-3"><div className="h-6 w-16 bg-slate-200 rounded-lg mx-auto" /></td>
                       </tr>
                     ))
-                  ) : roster.length === 0 ? (
+                  ) : filteredRoster.length === 0 ? (
                     <tr>
                       <td colSpan={7} className="py-16 text-center">
                         <div className="flex flex-col items-center gap-2 text-slate-400">
                           <Users className="w-10 h-10 opacity-30" />
                           <p className="font-semibold text-sm">Tidak ada karyawan</p>
-                          <p className="text-xs">Menampilkan semua karyawan aktif. Pastikan sudah ada karyawan di perusahaan ini.</p>
+                          <p className="text-xs">
+                            {roster.length > 0 ? "Tidak ada karyawan yang cocok dengan filter." : "Menampilkan semua karyawan aktif. Pastikan sudah ada karyawan di perusahaan ini."}
+                          </p>
                         </div>
                       </td>
                     </tr>
-                  ) : roster.map((r) => {
+                  ) : filteredRoster.map((r) => {
                     const av = avatarFor(r.name);
                     const isSel = selected.has(r.user_id);
                     return (
@@ -1707,17 +1734,21 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           </div>
 
           {/* Legend shift */}
-          {shifts.filter(s => s.is_active).length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {shifts.filter(s => s.is_active).map(s => (
-                <span key={s.id} className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full border border-black/10"
-                  style={{ backgroundColor: (s.color ?? '#6366f1') + '20', color: s.color ?? '#6366f1', borderColor: (s.color ?? '#6366f1') + '40' }}>
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color ?? '#6366f1' }} />
-                  {s.name}
-                </span>
-              ))}
-            </div>
-          )}
+          {(() => {
+            const calShifts = shifts.filter(s => s.is_active && (!calBranch || s.attendance_setting_id === null || s.attendance_setting_id === Number(calBranch)));
+            if (calShifts.length === 0) return null;
+            return (
+              <div className="flex flex-wrap gap-2">
+                {calShifts.map(s => (
+                  <span key={s.id} className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full border border-black/10"
+                    style={{ backgroundColor: (s.color ?? '#6366f1') + '20', color: s.color ?? '#6366f1', borderColor: (s.color ?? '#6366f1') + '40' }}>
+                    <span className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color ?? '#6366f1' }} />
+                    {s.name}
+                  </span>
+                ))}
+              </div>
+            );
+          })()}
 
           {/* Grid kalender */}
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
