@@ -81,7 +81,7 @@ const fmtMinutes = (mins?: number | null): string => {
 
 const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
   { key: 'today', label: 'Hari Ini', icon: CalendarCheck },
-  { key: 'leaves', label: 'Izin & Cuti', icon: ClipboardList },
+  { key: 'leaves', label: 'Approval Izin & Cuti', icon: ClipboardList },
   { key: 'users', label: 'Karyawan & WFH', icon: Users },
   { key: 'balances', label: 'Saldo Cuti', icon: Wallet },
   { key: 'report', label: 'Laporan', icon: BarChart3 },
@@ -98,6 +98,7 @@ const statusBadge = (status: string) => {
     case 'izin': return 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400';
     case 'sakit': return 'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400';
     case 'wfh': return 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400';
+    case 'libur': return 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400';
     default: return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300';
   }
 };
@@ -112,6 +113,7 @@ const statusLabel = (status: string) => {
     case 'izin': return 'Izin';
     case 'sakit': return 'Sakit';
     case 'wfh': return 'WFH';
+    case 'libur': return 'Libur';
     default: return status;
   }
 };
@@ -484,8 +486,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             key={key}
             onClick={() => setTab(key)}
             className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${tab === key
-                ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
-                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+              ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
+              : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
               }`}
           >
             <Icon className="w-3.5 h-3.5" />
@@ -504,6 +506,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       {tab === 'today' && (
         loading ? <TabSkeleton tab="today" /> : today && (
           <div className="space-y-5">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <CalendarDays className="w-4 h-4 text-indigo-500" />
+                {new Intl.DateTimeFormat('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}
+              </h3>
+            </div>
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <SummaryCard label="Total Karyawan" value={today.summary?.total_employees ?? 0} color="text-slate-800 dark:text-white" />
               <SummaryCard label="Sudah Check-in" value={today.summary?.checked_in ?? 0} color="text-emerald-600" />
@@ -511,88 +519,125 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <SummaryCard label="Izin / Cuti" value={today.summary?.on_leave ?? 0} color="text-amber-600" />
             </div>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              {/* Sudah check-in */}
-              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
-                <h4 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 mb-3">
-                  <CheckCircle2 className="w-4 h-4" /> Sudah Check-in ({today.checked_in?.length ?? 0})
-                </h4>
-                <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {(today.checked_in ?? []).length === 0 ? (
-                    <p className="text-[11px] text-slate-400 py-3 text-center">Belum ada.</p>
-                  ) : (
-                    today.checked_in.map((p: any) => (
-                      <div key={p.user_id} className={`flex items-center justify-between border-b pb-2 ${p.is_cross_day ? 'border-indigo-100 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-lg px-1.5' : 'border-slate-50 dark:border-slate-800/60'}`}>
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex items-center gap-1">
-                            {p.name}
-                            {p.is_cross_day && (
-                              <span title="Shift lintas tengah malam">
-                                <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
-                              </span>
-                            )}
-                          </p>
-                          <p className="text-[10px] text-slate-400">
-                            {p.department ?? '—'} ·{' '}
-                            {p.is_cross_day
-                              ? fmtDateRange(p.shift_date, p.checkout_date)
-                              : fmtTime(p.check_in_time)
-                            }
-                            {!p.is_cross_day && p.check_out_time ? ` – ${fmtTime(p.check_out_time)}` : ''}
-                            {p.is_cross_day && <span className="ml-1 text-indigo-400 font-medium">· shift malam</span>}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          {p.check_in_type === 'wfh' && <Home className="w-3 h-3 text-indigo-500" />}
-                          {p.check_in_type === 'field' && <MapPin className="w-3 h-3 text-amber-500" />}
-                          <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+              {(() => {
+                const checkedIn = today.checked_in ?? [];
+                const notCheckedInRaw = today.not_checked_in ?? [];
+                const onLeave = today.on_leave ?? [];
 
-              {/* Belum check-in */}
-              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
-                <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5 mb-3">
-                  <Clock className="w-4 h-4" /> Belum Check-in ({today.not_checked_in?.length ?? 0})
-                </h4>
-                <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {(today.not_checked_in ?? []).length === 0 ? (
-                    <p className="text-[11px] text-slate-400 py-3 text-center">Semua sudah hadir.</p>
-                  ) : (
-                    today.not_checked_in.map((p: any) => (
-                      <div key={p.user_id} className="border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                        <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
+                const notCheckedIn = notCheckedInRaw.filter((p: any) => !p.is_off);
+                const offToday = notCheckedInRaw.filter((p: any) => p.is_off);
 
-              {/* Izin/cuti */}
-              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
-                <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5 mb-3">
-                  <ClipboardList className="w-4 h-4" /> Sedang Izin/Cuti ({today.on_leave?.length ?? 0})
-                </h4>
-                <div className="space-y-2 max-h-80 overflow-y-auto">
-                  {(today.on_leave ?? []).length === 0 ? (
-                    <p className="text-[11px] text-slate-400 py-3 text-center">Tidak ada.</p>
-                  ) : (
-                    today.on_leave.map((p: any) => (
-                      <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                        <div className="min-w-0">
-                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                          <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
-                        </div>
-                        <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 capitalize shrink-0">{p.leave_type}</span>
+                return (
+                  <>
+                    {/* Sudah check-in */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
+                      <h4 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 mb-3">
+                        <CheckCircle2 className="w-4 h-4" /> Sudah Check-in ({checkedIn.length})
+                      </h4>
+                      <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
+                        {checkedIn.length === 0 ? (
+                          <p className="text-[11px] text-slate-400 py-3 text-center">Belum ada.</p>
+                        ) : (
+                          checkedIn.map((p: any) => (
+                            <div key={p.user_id} className={`flex items-center justify-between border-b pb-2 ${p.is_cross_day ? 'border-indigo-100 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-lg px-1.5' : 'border-slate-50 dark:border-slate-800/60'}`}>
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex items-center gap-1">
+                                  {p.name}
+                                  {p.is_cross_day && (
+                                    <span title="Shift lintas tengah malam">
+                                      <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
+                                    </span>
+                                  )}
+                                </p>
+                                <p className="text-[10px] text-slate-400">
+                                  {p.department ?? '—'} ·{' '}
+                                  {p.is_cross_day
+                                    ? fmtDateRange(p.shift_date, p.checkout_date)
+                                    : fmtTime(p.check_in_time)
+                                  }
+                                  {!p.is_cross_day && p.check_out_time ? ` – ${fmtTime(p.check_out_time)}` : ''}
+                                  {p.is_cross_day && <span className="ml-1 text-indigo-400 font-medium">· shift malam</span>}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {p.check_in_type === 'wfh' && <Home className="w-3 h-3 text-indigo-500" />}
+                                {p.check_in_type === 'field' && <MapPin className="w-3 h-3 text-amber-500" />}
+                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
+                              </div>
+                            </div>
+                          ))
+                        )}
                       </div>
-                    ))
-                  )}
-                </div>
-              </div>
+                    </div>
+
+                    {/* Belum check-in */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
+                      <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5 mb-3">
+                        <Clock className="w-4 h-4" /> Belum Check-in ({notCheckedIn.length})
+                      </h4>
+                      <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
+                        {notCheckedIn.length === 0 ? (
+                          <p className="text-[11px] text-slate-400 py-3 text-center">Semua sudah hadir.</p>
+                        ) : (
+                          notCheckedIn.map((p: any) => (
+                            <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
+                              </div>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Sedang Libur */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
+                      <h4 className="text-xs font-bold text-slate-700 dark:text-slate-400 flex items-center gap-1.5 mb-3">
+                        <CalendarDays className="w-4 h-4" /> Sedang Libur ({offToday.length})
+                      </h4>
+                      <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
+                        {offToday.length === 0 ? (
+                          <p className="text-[11px] text-slate-400 py-3 text-center">Tidak ada.</p>
+                        ) : (
+                          offToday.map((p: any) => (
+                            <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
+                              </div>
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0 border border-slate-200 dark:border-slate-700">Libur</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Izin/cuti */}
+                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
+                      <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5 mb-3">
+                        <ClipboardList className="w-4 h-4" /> Sedang Izin/Cuti ({onLeave.length})
+                      </h4>
+                      <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
+                        {onLeave.length === 0 ? (
+                          <p className="text-[11px] text-slate-400 py-3 text-center">Tidak ada.</p>
+                        ) : (
+                          onLeave.map((p: any) => (
+                            <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                              <div className="min-w-0">
+                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
+                              </div>
+                              <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 capitalize shrink-0">{p.leave_type}</span>
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           </div>
         )
@@ -688,8 +733,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <button
                     onClick={() => setShowUpcoming(v => !v)}
                     className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-semibold border transition ${showUpcoming
-                        ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
-                        : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-700'
+                      ? 'bg-amber-500 text-white border-amber-500 shadow-sm'
+                      : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-amber-50 hover:border-amber-300 hover:text-amber-700'
                       }`}
                     title="Tampilkan cuti/izin sudah disetujui yang belum terlaksana"
                   >
@@ -756,8 +801,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           <tr
                             key={l.id}
                             className={`transition-colors ${hasConflict
-                                ? 'bg-amber-50/50 dark:bg-amber-950/10 hover:bg-amber-50/80'
-                                : 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30'
+                              ? 'bg-amber-50/50 dark:bg-amber-950/10 hover:bg-amber-50/80'
+                              : 'hover:bg-slate-50/50 dark:hover:bg-slate-800/30'
                               }`}
                           >
                             <td className="py-2.5 px-2">
@@ -775,9 +820,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                             </td>
                             <td className="py-2.5 px-2">
                               <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${l.leave_type === 'cuti' ? 'bg-teal-50 text-teal-700' :
-                                  l.leave_type === 'izin' ? 'bg-purple-50 text-purple-700' :
-                                    l.leave_type === 'sakit' ? 'bg-orange-50 text-orange-700' :
-                                      'bg-indigo-50 text-indigo-700'
+                                l.leave_type === 'izin' ? 'bg-purple-50 text-purple-700' :
+                                  l.leave_type === 'sakit' ? 'bg-orange-50 text-orange-700' :
+                                    'bg-indigo-50 text-indigo-700'
                                 }`}>
                                 {leaveTypeLabel(l.leave_type)}
                               </span>
@@ -981,8 +1026,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       <div
                         key={name}
                         className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-opacity ${isActive
-                            ? 'border-slate-100 dark:border-slate-800'
-                            : 'border-slate-200 dark:border-slate-700 opacity-70'
+                          ? 'border-slate-100 dark:border-slate-800'
+                          : 'border-slate-200 dark:border-slate-700 opacity-70'
                           }`}
                       >
                         {/* Header karyawan + toggle */}
@@ -1103,6 +1148,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <option value="late">Telat</option>
                   <option value="early_leave">Pulang Awal</option>
                   <option value="absent">Absen</option>
+                  <option value="libur">Libur</option>
                   <option value="cuti">Cuti</option>
                   <option value="izin">Izin</option>
                   <option value="sakit">Sakit</option>
@@ -1203,8 +1249,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           <tr
                             key={r.id ?? `v-${r.user_id}-${r.date}-${idx}`}
                             className={`transition-colors ${isVirtual
-                                ? 'bg-slate-50/60 dark:bg-slate-800/20 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
-                                : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
+                              ? 'bg-slate-50/60 dark:bg-slate-800/20 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
+                              : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
                               }`}
                           >
                             <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">{r.user_name}</td>
@@ -1305,8 +1351,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                             key={pg}
                             onClick={() => setReportPage(pg)}
                             className={`w-7 h-7 text-xs font-semibold rounded-lg transition ${pg === reportPage
-                                ? 'bg-indigo-600 text-white'
-                                : 'border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300'
+                              ? 'bg-indigo-600 text-white'
+                              : 'border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300'
                               }`}
                           >
                             {pg}

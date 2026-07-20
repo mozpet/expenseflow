@@ -184,6 +184,32 @@ const OfficesTab: React.FC<{
       return;
     }
 
+    // Validasi typo AM/PM
+    const checkAmPmTypo = (start: string, end: string, label: string) => {
+      const [sH] = start.split(':').map(Number);
+      const [eH] = end.split(':').map(Number);
+      if (sH >= 6 && sH <= 12 && eH >= 1 && eH <= 6) {
+        return `Jam pulang pada ${label} tidak wajar (${end}). Apakah Anda bermaksud ${eH + 12}:00? Gunakan format 24 jam.`;
+      }
+      return null;
+    };
+
+    const defaultTypo = checkAmPmTypo(form.work_start_time, form.work_end_time, 'jam kerja default');
+    if (defaultTypo) {
+      setValidationError(defaultTypo);
+      return;
+    }
+
+    for (const day of (form.work_days as number[])) {
+      if (form.custom_schedules[day]) {
+        const typo = checkAmPmTypo(form.custom_schedules[day].start, form.custom_schedules[day].end, 'jam khusus');
+        if (typo) {
+          setValidationError(typo);
+          return;
+        }
+      }
+    }
+
     if (form.enforce_weekly_hours) {
       const maxHours = Number(form.max_weekly_hours);
       if (calculatedWeeklyHours > maxHours) {

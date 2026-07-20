@@ -7,6 +7,10 @@ class ShiftScheduleDay {
   final String? workStartTime;
   final String? workEndTime;
   final bool isOff;
+  /// true = jam hari ini dikustomisasi berbeda dari default kantor
+  final bool isCustom;
+  /// true = jam pulang hari berikutnya (shift malam lintas hari)
+  final bool isCrossDay;
 
   ShiftScheduleDay({
     required this.dayOfWeek,
@@ -14,6 +18,8 @@ class ShiftScheduleDay {
     this.workStartTime,
     this.workEndTime,
     required this.isOff,
+    this.isCustom = false,
+    this.isCrossDay = false,
   });
 
   factory ShiftScheduleDay.fromJson(Map<String, dynamic> json) {
@@ -23,6 +29,8 @@ class ShiftScheduleDay {
       workStartTime: json['work_start_time'],
       workEndTime: json['work_end_time'],
       isOff: json['is_off'] ?? false,
+      isCustom: json['is_custom'] == true,
+      isCrossDay: json['is_cross_day'] == true,
     );
   }
 }

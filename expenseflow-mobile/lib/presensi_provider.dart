@@ -236,31 +236,49 @@ class PresensiProvider extends ChangeNotifier {
     final att = status['attendance'] as Map<String, dynamic>?;
     if (att == null) return;
 
+    final checkedIn    = status['checked_in'] == true;
     final checkedOut   = status['checked_out'] == true;
     final isAutoCheckout = att['is_auto_checkout'] == true;
 
-    // Jika backend sudah checkout tapi state lokal belum
-    if (checkedOut && _todayPulang == null) {
-      _todayMasuk  = _extractTime(att['check_in_time'])  ?? _todayMasuk;
-      _todayPulang = _extractTime(att['check_out_time']) ?? _nowTime();
-      _todayOvertimeMinutes = (att['overtime_minutes'] as num?)?.toInt() ?? 0;
-
-      if (_records.isNotEmpty && _records.first.date == todayDateFormatted) {
-        _records[0] = _records[0].copyWith(
-          pulangTime: _todayPulang!,
-          overtimeMinutes: _todayOvertimeMinutes,
-        );
+    // Selalu sinkronkan state lokal dengan backend (baik sudah checkout maupun masih berjalan)
+    if (checkedIn) {
+      final newMasuk = _extractTime(att['check_in_time']);
+      final newPulang = _extractTime(att['check_out_time']);
+      
+      bool changed = false;
+      if (_todayMasuk != newMasuk) {
+        _todayMasuk = newMasuk;
+        changed = true;
+      }
+      if (_todayPulang != newPulang) {
+        _todayPulang = newPulang;
+        changed = true;
+      }
+      
+      final newOvertime = (att['overtime_minutes'] as num?)?.toInt() ?? 0;
+      if (_todayOvertimeMinutes != newOvertime) {
+        _todayOvertimeMinutes = newOvertime;
+        changed = true;
       }
 
-      // Batalkan reminder
-      await notifSvc.cancelCheckoutNotifications();
-
-      // Tampilkan notifikasi jika auto-checkout
-      if (isAutoCheckout) {
-        await notifSvc.showAutoCheckoutConfirm(_todayPulang!);
+      if (changed) {
+        if (_records.isNotEmpty) {
+           _records[0] = _records[0].copyWith(
+             masukTime: _todayMasuk ?? '-',
+             pulangTime: _todayPulang ?? '-',
+             overtimeMinutes: _todayOvertimeMinutes,
+           );
+        }
+        notifyListeners();
       }
-
-      notifyListeners();
+      
+      // Jika backend menyatakan sudah checkout, batalkan reminder
+      if (checkedOut) {
+        await notifSvc.cancelCheckoutNotifications();
+        if (isAutoCheckout) {
+          await notifSvc.showAutoCheckoutConfirm(_todayPulang ?? _nowTime());
+        }
+      }
     }
 
     // Cek status overtime approval (approved/rejected oleh HRD)

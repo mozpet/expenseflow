@@ -8,7 +8,9 @@ import '../config/api_config.dart';
 class ApiException implements Exception {
   final String message;
   final int? statusCode;
-  ApiException(this.message, [this.statusCode]);
+  /// Payload JSON lengkap dari response error (jika tersedia).
+  final Map<String, dynamic>? data;
+  ApiException(this.message, [this.statusCode, this.data]);
 
   @override
   String toString() => message;
@@ -112,7 +114,7 @@ class ApiService {
     // Ambil pesan error dari backend
     final msg = (data['message'] as String?) ??
         'Terjadi kesalahan (${res.statusCode}).';
-    throw ApiException(msg, res.statusCode);
+    throw ApiException(msg, res.statusCode, data);
   }
 
   // ─── Generic GET ──────────────────────────────────────────

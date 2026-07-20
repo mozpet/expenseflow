@@ -6,6 +6,7 @@ import 'package:latlong2/latlong.dart';
 import 'package:permission_handler/permission_handler.dart' show openAppSettings;
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../services/api_service.dart';
 
 enum _LocationState { requesting, loading, ready, denied, disabled }
 
@@ -25,6 +26,8 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   final MapController _mapController = MapController();
   // Flag: true setelah onMapReady dipanggil flutter_map (late field sudah init)
   bool _mapReady = false;
+  // Flag: true saat sedang menyinkronkan status dari backend
+  bool _syncingStatus = true;
 
   /// Memanggil _mapController.move() hanya jika map sudah siap.
   /// try-catch sebagai safety net untuk kasus edge (hot-reload, dll).
@@ -37,11 +40,26 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
     }
   }
 
-
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _initLocation());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _initLocation();
+      // Sync status presensi dari backend agar shift lintas hari terdeteksi
+      _syncBackendStatus();
+    });
+  }
+
+  /// Sinkronkan status dari backend saat halaman dibuka.
+  /// Ini memastikan karyawan shift lintas hari mendapat tombol check-out yang benar.
+  Future<void> _syncBackendStatus() async {
+    final prov = Provider.of<PresensiProvider>(context, listen: false);
+    try {
+      await prov.syncStatusFromBackend();
+    } catch (_) {
+      // gagal sync — tidak crash, hanya tampilkan tombol sesuai state lokal
+    }
+    if (mounted) setState(() => _syncingStatus = false);
   }
 
   @override
@@ -114,6 +132,93 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
         ),
       );
       Navigator.pop(context);
+    } on ApiException catch (e) {
+      if (!mounted) return;
+      setState(() => _submitting = false);
+      // 409 = ada presensi masuk shift malam kemarin yang belum di-check-out
+      if (e.statusCode == 409) {
+        final prov = Provider.of<PresensiProvider>(context, listen: false);
+        // Sinkronkan dulu dari backend agar state lokal menampilkan tombol check-out
+        await prov.syncStatusFromBackend();
+        if (!mounted) return;
+        
+        // Jika setelah sync, canCheckOut sudah true, beritahu user untuk klik check-out
+        if (prov.canCheckOut) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: const Text('Anda memiliki shift malam yang belum di-checkout. Silakan klik "Simpan Presensi Pulang".'),
+              backgroundColor: Colors.indigo.shade600,
+              duration: const Duration(seconds: 4),
+            ),
+          );
+        } else {
+          await showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (ctx) => AlertDialog(
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+              title: Row(
+                children: [
+                  Icon(Icons.nightlight_round, color: Colors.indigo.shade600, size: 22),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Text('Shift Malam Belum Selesai',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                  ),
+                ],
+              ),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.shade50,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: Colors.indigo.shade100),
+                    ),
+                    child: Text(
+                      e.message,
+                      style: TextStyle(color: Colors.indigo.shade800, height: 1.5),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'Kamu masih memiliki presensi shift malam dari kemarin yang terbuka. Lakukan check-out terlebih dahulu sebelum presensi masuk hari ini.',
+                    style: TextStyle(color: Colors.grey.shade600, fontSize: 13, height: 1.5),
+                  ),
+                ],
+              ),
+              actions: [
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.indigo.shade600,
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    onPressed: () => Navigator.of(ctx).pop(),
+                    icon: const Icon(Icons.logout, size: 18),
+                    label: const Text('Mengerti, Akan Check-Out Dulu',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(e.message),
+            backgroundColor: Colors.red,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() => _submitting = false);
@@ -130,6 +235,24 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   @override
   Widget build(BuildContext context) {
     final prov = Provider.of<PresensiProvider>(context);
+    
+    // Tampilkan loading spinner saat sedang sinkronisasi status dari backend
+    if (_syncingStatus) {
+      return Scaffold(
+        appBar: AppBar(title: const Text('Presensi')),
+        body: const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: Color(0xFF0088FF)),
+              SizedBox(height: 16),
+              Text('Memeriksa status presensi...', style: TextStyle(color: Colors.grey)),
+            ],
+          ),
+        ),
+      );
+    }
+    
     final isCompleted = !prov.canCheckIn && !prov.canCheckOut;
     final actionLabel = prov.canCheckIn
         ? 'Simpan Presensi Masuk'

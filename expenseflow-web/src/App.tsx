@@ -471,7 +471,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-50/50 text-slate-805 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans antialiased">
+    <div className="h-screen overflow-hidden bg-slate-50/50 text-slate-805 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans antialiased">
       
       {/* Mobile Top Header navbar */}
       <header className="lg:hidden h-14 bg-[#0f172a] text-slate-300 border-b border-slate-800 px-4 flex items-center justify-between sticky top-0 z-40 select-none shadow-sm">
@@ -510,7 +510,7 @@ export default function App() {
         </div>
       </header>
 
-      <div className="flex flex-1 relative">
+      <div className="flex flex-1 relative overflow-hidden">
         
         {/* SIDEBAR NAVIGATION PANEL (Responsive overlay on mobile, fixed left panel on desk) */}
         <aside className={`

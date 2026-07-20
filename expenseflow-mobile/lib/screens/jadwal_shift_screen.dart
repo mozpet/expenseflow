@@ -341,10 +341,10 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                               fontWeight: FontWeight.w600,
                               color: shiftColor),
                         )
-                      else
-                        Text('-',
-                            style: TextStyle(
-                                fontSize: 8, color: Colors.grey.shade400)),
+                       else
+                         Text('-',
+                             style: TextStyle(
+                                 fontSize: 8, color: Colors.grey.shade400)),
                     ],
                   ),
                 ),
@@ -399,11 +399,77 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               color: Colors.red,
             )
           else ...[
+            // Badge jam kustom
+            if (schedule.isCustom) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: Colors.amber.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.amber.shade200),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.tune, size: 13, color: Colors.amber.shade700),
+                    const SizedBox(width: 4),
+                    Text('Jam Kustom',
+                        style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.amber.shade800)),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             _timeRow(Icons.login, 'Jam Masuk',
                 _fmtTime(schedule.workStartTime), Colors.green),
             const SizedBox(height: 10),
-            _timeRow(Icons.logout, 'Jam Pulang',
-                _fmtTime(schedule.workEndTime), Colors.orange),
+            // Jam pulang dengan label +1 hari jika cross-day
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.logout, size: 20, color: Colors.orange),
+                ),
+                const SizedBox(width: 12),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Jam Pulang',
+                        style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                    Row(
+                      children: [
+                        Text(_fmtTime(schedule.workEndTime),
+                            style: const TextStyle(
+                                fontSize: 16, fontWeight: FontWeight.bold)),
+                        if (schedule.isCrossDay) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.indigo.shade50,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: Colors.indigo.shade200),
+                            ),
+                            child: Text('+1 hari',
+                                style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.indigo.shade700)),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ],
+            ),
             const SizedBox(height: 10),
             _statusBanner(
               icon: Icons.check_circle,
