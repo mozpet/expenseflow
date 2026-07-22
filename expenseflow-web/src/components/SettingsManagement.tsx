@@ -513,7 +513,16 @@ const OfficesTab: React.FC<{
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 block">Toleransi Telat (menit)</label>
-                <input type="number" value={form.late_tolerance_minutes} onChange={(e) => setForm({ ...form, late_tolerance_minutes: e.target.value })} className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono" />
+                <input 
+                  type="number" 
+                  min={0}
+                  value={form.late_tolerance_minutes} 
+                  onChange={(e) => {
+                    const val = parseInt(e.target.value);
+                    setForm({ ...form, late_tolerance_minutes: isNaN(val) ? '' : Math.max(0, val) });
+                  }} 
+                  className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono" 
+                />
               </div>
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 block">

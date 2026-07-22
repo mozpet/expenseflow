@@ -519,14 +519,28 @@ class AttendanceController extends Controller
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
             ->get()->keyBy('user_id');
 
-        // Presensi shift malam kemarin yang belum checkout (cross-day, masih aktif bekerja hari ini)
+        // Presensi shift malam kemarin yang belum checkout ATAU sudah checkout hari ini (cross-day)
         $attendancesYesterday = Attendance::where('date', $yesterday)
-            ->whereNull('check_out_time')
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
-            ->get()->keyBy('user_id');
+            ->get()
+            ->filter(function ($att) use ($today) {
+                if (is_null($att->check_out_time)) return true;
+                
+                $checkoutCarbon = \Carbon\Carbon::parse($att->check_out_time)->timezone('Asia/Jakarta');
+                $checkoutDateLocal = $checkoutCarbon->format('Y-m-d');
+                
+                if ($checkoutDateLocal !== $today) return false;
+
+                // Threshold auto-update: jika sudah lewat 4 jam sejak check-out, 
+                // data shift malam ini tidak lagi masuk ke "Sudah Check-In" 
+                // agar karyawan bisa masuk ke status jadwal barunya di hari ini (Belum Check-In / Libur).
+                $hoursSinceCheckout = $checkoutCarbon->diffInHours(\Carbon\Carbon::now('Asia/Jakarta'));
+                return $hoursSinceCheckout < 4;
+            })
+            ->keyBy('user_id');
 
         // Gabungkan: record hari ini mengalahkan kemarin untuk user yang sama
-        $attendances = $attendancesYesterday->merge($attendancesToday);
+        $attendances = $attendancesYesterday->replace($attendancesToday);
 
         // Izin/cuti disetujui yang mencakup hari ini, di-index per user_id
         $onLeave = LeaveRequest::where('status', 'approved')
@@ -550,9 +564,8 @@ class AttendanceController extends Controller
             $att = $attendances[$emp->id] ?? null;
 
             if ($att && $att->check_in_time) {
-                // Shift malam kemarin yang masih aktif (cross-day, belum checkout)
-                $isCrossDay = Carbon::parse($att->date)->format('Y-m-d') === $yesterday
-                              && is_null($att->check_out_time);
+                // Shift malam kemarin (cross-day)
+                $isCrossDay = \Carbon\Carbon::parse($att->date)->format('Y-m-d') === $yesterday;
                 $checkedIn[] = [
                     'user_id'        => $emp->id,
                     'name'           => $emp->name,
@@ -964,6 +977,18 @@ class AttendanceController extends Controller
                         ? Carbon::parse($att->check_out_time)->timezone('Asia/Jakarta')->format('Y-m-d')
                         : null;
                     $isCrossDay = $checkoutDate && $checkoutDate > $dateStr;
+                    $lateMinutes = null;
+                    if ($att->status === 'late' && $att->check_in_time) {
+                        $schedule = $this->getWorkSchedule($fullUser, $dateStr);
+                        if ($schedule['work_start_time']) {
+                            $startSchedule = Carbon::parse($dateStr . ' ' . $schedule['work_start_time'], 'Asia/Jakarta');
+                            $checkInWib = Carbon::parse($att->check_in_time)->timezone('Asia/Jakarta');
+                            if ($checkInWib->greaterThan($startSchedule)) {
+                                $lateMinutes = $startSchedule->diffInMinutes($checkInWib);
+                            }
+                        }
+                    }
+
                     $rows[] = [
                         'id'               => $att->id,
                         'user_id'          => $att->user_id,
@@ -978,6 +1003,7 @@ class AttendanceController extends Controller
                         'check_in_lat'     => $att->check_in_lat,
                         'check_in_lng'     => $att->check_in_lng,
                         'status'           => $att->status,
+                        'late_minutes'     => $lateMinutes,
                         'overtime_minutes' => (int) ($att->overtime_minutes ?? 0),
                         'is_holiday'       => (bool) $att->is_holiday,
                         'working_minutes'  => $att->working_minutes,
@@ -1040,6 +1066,7 @@ class AttendanceController extends Controller
                             'check_in_lat'     => null,
                             'check_in_lng'     => null,
                             'status'           => 'libur',
+                            'late_minutes'     => null,
                             'overtime_minutes' => 0,
                             'is_holiday'       => $isHoliday,
                             'working_minutes'  => null,
@@ -1063,6 +1090,7 @@ class AttendanceController extends Controller
                         'check_in_lat'     => null,
                         'check_in_lng'     => null,
                         'status'           => $leaveType ?? 'absent',
+                        'late_minutes'     => null,
                         'overtime_minutes' => 0,
                         'is_holiday'       => false,
                         'working_minutes'  => null,
@@ -1124,7 +1152,7 @@ class AttendanceController extends Controller
 
         return response()->streamDownload(function () use ($rows) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['Nama', 'Departemen', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Status', 'Jam Kerja', 'Lembur', 'Hari Libur']);
+            fputcsv($out, ['Nama', 'Departemen', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
             foreach ($rows as $r) {
                 $mins     = $r['working_minutes'];
                 $jamKerja = $mins !== null
@@ -1143,6 +1171,7 @@ class AttendanceController extends Controller
                     $r['check_out_time'] ? Carbon::parse($r['check_out_time'])->timezone('Asia/Jakarta')->format('H:i') : '-',
                     $r['check_in_type'] ?? '-',
                     $r['status'],
+                    $r['late_minutes'] !== null ? $r['late_minutes'] : '-',
                     $jamKerja,
                     $lembur,
                     $r['is_holiday'] ? 'Ya' : 'Tidak',

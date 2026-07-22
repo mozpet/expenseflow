@@ -25,6 +25,7 @@ import {
   FileText,
   ExternalLink,
   Moon,
+  Info,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
@@ -267,6 +268,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [tab, setTab] = useState<TabKey>('today');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  
+  // Panduan/Legend Modal
+  const [showLegend, setShowLegend] = useState(false);
 
   // Data per tab
   const [today, setToday] = useState<any | null>(null);
@@ -558,22 +562,34 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             </button>
           ))}
         </div>
-        <button
-          onClick={() => {
-            if (tab === 'today') loadToday();
-            else if (tab === 'leaves') loadLeaves();
-            else if (tab === 'users') loadUsers();
-            else if (tab === 'balances') loadBalances();
-            else if (tab === 'report') loadReport(reportPage);
-            else if (tab === 'holidays') loadHolidays();
-          }}
-          disabled={loading}
-          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-xl text-xs font-bold transition shrink-0 disabled:opacity-50"
-          title="Refresh Data"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-          <span className="hidden sm:inline">Refresh</span>
-        </button>
+        <div className="flex items-center gap-2">
+          {tab === 'report' && (
+            <button
+              onClick={() => setShowLegend(true)}
+              className="flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-xl text-xs font-bold transition shrink-0"
+              title="Panduan Laporan"
+            >
+              <Info className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Panduan</span>
+            </button>
+          )}
+          <button
+            onClick={() => {
+              if (tab === 'today') loadToday();
+              else if (tab === 'leaves') loadLeaves();
+              else if (tab === 'users') loadUsers();
+              else if (tab === 'balances') loadBalances();
+              else if (tab === 'report') loadReport(reportPage);
+              else if (tab === 'holidays') loadHolidays();
+            }}
+            disabled={loading}
+            className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-xl text-xs font-bold transition shrink-0 disabled:opacity-50"
+            title="Refresh Data"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -1249,7 +1265,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Lokasi</label>
                 <select value={reportFilter.type} onChange={(e) => setReportFilterAndReset({ ...reportFilter, type: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors">
                   <option value="">Semua Lokasi</option>
-                  <option value="onsite">Kantor</option>
+                  <option value="onsite">On Site</option>
                   <option value="wfh">WFH</option>
                   <option value="field">Lapangan</option>
                 </select>
@@ -1263,8 +1279,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   ))}
                 </select>
               </div>
-              <div className="pt-2">
-                <button onClick={handleExport} className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition">
+              <div className="pt-2 flex gap-2">
+                <button onClick={() => setShowLegend(true)} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-xs font-bold transition">
+                  <Info className="w-3.5 h-3.5" /> Panduan
+                </button>
+                <button onClick={handleExport} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition">
                   <Download className="w-3.5 h-3.5" /> Export CSV
                 </button>
               </div>
@@ -1310,6 +1329,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       <th className="py-2 px-2 font-semibold">Masuk</th>
                       <th className="py-2 px-2 font-semibold">Pulang</th>
                       <th className="py-2 px-2 font-semibold">Jam Kerja</th>
+                      <th className="py-2 px-2 font-semibold">Telat</th>
                       <th className="py-2 px-2 font-semibold">Lembur</th>
                       <th className="py-2 px-2 font-semibold">Lokasi</th>
                       <th className="py-2 px-2 font-semibold">GPS (WFH)</th>
@@ -1367,6 +1387,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                             <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_out_time)}</td>
                             <td className="py-3 px-2 font-mono text-violet-600 dark:text-violet-400 font-medium whitespace-nowrap">
                               {r.working_minutes != null ? fmtMinutes(r.working_minutes) : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                            </td>
+                            <td className="py-3 px-2 font-mono whitespace-nowrap">
+                              {r.late_minutes ? (
+                                <span className="text-rose-600 dark:text-rose-400 font-medium">
+                                  {fmtMinutes(r.late_minutes)}
+                                </span>
+                              ) : (
+                                <span className="text-slate-300 dark:text-slate-600">—</span>
+                              )}
                             </td>
                             <td className="py-3 px-2 font-mono whitespace-nowrap">
                               {r.overtime_minutes > 0 ? (
@@ -1532,6 +1561,104 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   className="max-w-full max-h-[70vh] object-contain rounded-lg"
                 />
               )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── Modal: Panduan/Legend ─── */}
+      {showLegend && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+          <div onClick={() => setShowLegend(false)} className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm" />
+          <div className="relative z-10 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2">
+                <Info className="w-5 h-5 text-indigo-500" />
+                <h3 className="font-bold text-slate-800 dark:text-slate-100">Panduan Membaca Laporan</h3>
+              </div>
+              <button onClick={() => setShowLegend(false)} className="p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-5 overflow-y-auto max-h-[70vh]">
+              <div className="space-y-6">
+                
+                {/* Bagian Status */}
+                <div>
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Indikator Status</h4>
+                  <ul className="space-y-3 text-sm text-slate-700 dark:text-slate-300">
+                    <li className="flex gap-3 items-start">
+                      <span className="inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400 min-w-[70px]">HADIR</span>
+                      <span className="flex-1">Karyawan masuk kerja (baik sesuai jam masuk maupun telat).</span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <span className="inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400 min-w-[70px]">ALPHA</span>
+                      <span className="flex-1">Karyawan tidak masuk tanpa keterangan pada hari kerja.</span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <span className="inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-400 min-w-[70px]">CUTI/IZIN</span>
+                      <span className="flex-1">Karyawan sedang libur karena pengajuan cuti, izin, atau sakit yang disetujui.</span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <span className="inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300 min-w-[70px]">LIBUR</span>
+                      <span className="flex-1">Hari tersebut adalah hari libur nasional atau weekend (akhir pekan) untuk kantor bersangkutan.</span>
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Bagian Waktu */}
+                <div>
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Indikator Waktu & Shift</h4>
+                  <ul className="space-y-3 text-sm text-slate-700 dark:text-slate-300">
+                    <li className="flex gap-3 items-start">
+                      <Moon className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                      <span className="flex-1">
+                        <strong>Shift Lintas Hari:</strong> Icon bulan menandakan karyawan masuk hari ini dan pulang keesokan harinya (Shift Malam).
+                      </span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <span className="text-rose-600 dark:text-rose-400 font-medium whitespace-nowrap min-w-[70px] mt-0.5">15m</span>
+                      <span className="flex-1">
+                        <strong>Kolom Telat:</strong> Menampilkan durasi telat warna merah (contoh: 15 menit) dari jam jadwal masuk aslinya.
+                      </span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <span className="text-[9px] font-bold text-rose-500 bg-rose-50/50 px-1 py-0.5 rounded mt-0.5">LIBUR</span>
+                      <span className="flex-1">
+                        Di dalam kolom <strong>Lembur</strong>, label merah menandakan bahwa lembur tersebut dilakukan pada saat hari libur / weekend (uang lembur biasanya berbeda).
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Bagian Lokasi */}
+                <div>
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Lokasi (GPS)</h4>
+                  <ul className="space-y-3 text-sm text-slate-700 dark:text-slate-300">
+                    <li className="flex gap-3 items-start">
+                      <Home className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                      <span className="flex-1">
+                        <strong>WFH:</strong> Bekerja dari rumah (Work From Home). Koordinat GPS akan ditangkap otomatis.
+                      </span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <MapPin className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+                      <span className="flex-1">
+                        <strong>Lapangan:</strong> Bekerja di luar kantor (Dinas luar/lapangan).
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+
+              </div>
+            </div>
+            <div className="px-5 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900 flex justify-end">
+              <button
+                onClick={() => setShowLegend(false)}
+                className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold transition"
+              >
+                Mengerti
+              </button>
             </div>
           </div>
         </div>
