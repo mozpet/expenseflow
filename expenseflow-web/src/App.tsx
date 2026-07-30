@@ -875,17 +875,21 @@ export default function App() {
           <div className="flex-1 p-6 md:p-8 overflow-y-auto space-y-6">
             
             {/* Real responsive Header Title block on Desktop/Mobile */}
-            <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
-              <div>
-                <h2 className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight leading-none font-sans flex items-center gap-2">
-                  {activePage === 'inbox' && <ReceiptIcon className="w-5 h-5 text-indigo-500 shrink-0" />}
-                  {pageTitles[activePage] || 'ExpenseFlow Portal'}
-                </h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-sans">
-                  Sistem verifikasi otomatis multi-channel berbasis OCR &amp; fraud alert flag
-                </p>
+            {activePage !== 'shifts' && (
+              <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-slate-800">
+                <div>
+                  <h2 className="text-lg md:text-xl font-bold text-slate-900 dark:text-white tracking-tight leading-none font-sans flex items-center gap-2">
+                    {activePage === 'inbox' && <ReceiptIcon className="w-5 h-5 text-indigo-500 shrink-0" />}
+                    {pageTitles[activePage] || 'ExpenseFlow Portal'}
+                  </h2>
+                  {activePage === 'inbox' && (
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1.5 font-sans">
+                      Sistem verifikasi otomatis multi-channel berbasis OCR &amp; fraud alert flag
+                    </p>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {/* Banner error koneksi/data */}
             {dataError && (

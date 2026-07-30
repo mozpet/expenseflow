@@ -383,6 +383,11 @@ class ShiftController extends Controller
     // ═══════════════════════════════════════════════════════════
     // 2d. toggleActive() — aktifkan / nonaktifkan template shift
     //     POST /api/v1/dashboard/attendance/shifts/{id}/toggle-active
+    //
+    //     PENTING: Endpoint ini HANYA mengubah is_active (nonaktifkan/aktifkan).
+    //     Data shift (schedules) dan assignment karyawan (user_shifts) TIDAK dihapus.
+    //     Jika shift dinonaktifkan → karyawan terdampak otomatis pakai jadwal default kantor
+    //     (via resolveSchedule() yang sudah mengecek optional($userShift->shift)->is_active).
     // ═══════════════════════════════════════════════════════════
     public function toggleActive(Request $request, int $id): JsonResponse
     {
@@ -412,6 +417,30 @@ class ShiftController extends Controller
             'shift',
             $shift->id
         );
+
+        // Jika shift DINONAKTIFKAN, kirim notifikasi ke karyawan yang assignment-nya
+        // masih aktif agar mereka tahu jadwalnya sementara kembali ke default kantor.
+        // Data assignment (user_shifts) TIDAK dihapus — shift bisa diaktifkan kembali kapan saja.
+        if (! $willBeActive) {
+            $today = now('Asia/Jakarta')->toDateString();
+
+            $terdampak = UserShift::with('user')
+                ->where('shift_id', $shift->id)
+                ->where('start_date', '<=', $today)
+                ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $today))
+                ->get();
+
+            foreach ($terdampak as $assignment) {
+                if ($assignment->user) {
+                    $this->notifyEmployee(
+                        $assignment->user,
+                        'shift_deactivated',
+                        "Shift '{$shift->name}' dinonaktifkan oleh HRD. Jadwal kerja Anda sementara kembali ke jam kantor default.",
+                        $assignment->id
+                    );
+                }
+            }
+        }
 
         return response()->json([
             'message' => "Shift '{$shift->name}' berhasil {$status}.",
@@ -518,6 +547,11 @@ class ShiftController extends Controller
                 'new_start_at'   => $k3['new_start_at'],
                 'earliest_start' => $k3['earliest_start'],
             ], 422);
+        }
+
+        // Validasi minimum notice period (HARD ERROR: blokir jika kurang dari N hari notice)
+        if ($noticeErr = $this->checkNoticeError($targetUser, $validated['start_date'])) {
+            return response()->json(['message' => $noticeErr], 422);
         }
 
         $userShift = UserShift::create([
@@ -721,6 +755,37 @@ class ShiftController extends Controller
         return null;
     }
 
+    // ─── Helper: cek minimum notice period perubahan jadwal shift ─────────
+    //     Memeriksa apakah start_date memenuhi minimum notice N hari (shift_notice_days).
+    //     Return string error (422) jika kurang dari N hari, atau null jika valid/fitur off.
+    private function checkNoticeError(User $user, string $startDate): ?string
+    {
+        $office = $user->office
+            ?? AttendanceSetting::where('company_id', $user->company_id)
+                ->orderBy('id')
+                ->first();
+
+        if (! $office || empty($office->shift_notice_days) || $office->shift_notice_days <= 0) {
+            return null;
+        }
+
+        $noticeDays = (int) $office->shift_notice_days;
+        $today = Carbon::now('Asia/Jakarta')->startOfDay();
+        $start = Carbon::parse($startDate, 'Asia/Jakarta')->startOfDay();
+
+        $diffDays = (int) $today->diffInDays($start, false);
+
+        if ($diffDays < $noticeDays) {
+            $safeDateStr = $today->copy()->addDays($noticeDays)->translatedFormat('d F Y');
+            if ($diffDays < 0) {
+                return "Tanggal mulai shift tidak boleh berlaku mundur ({$start->translatedFormat('d F Y')}). Perusahaan menetapkan minimum notice {$noticeDays} hari (seharusnya mulai tanggal {$safeDateStr} atau setelahnya).";
+            }
+            return "Tanggal mulai shift minimal harus {$noticeDays} hari dari hari ini (mulai tanggal {$safeDateStr} atau setelahnya).";
+        }
+
+        return null;
+    }
+
     // ═══════════════════════════════════════════════════════════
     // 4b. updateAssignment() — ubah assignment shift karyawan
     //     PUT/PATCH /api/v1/dashboard/attendance/assignments/{id}
@@ -798,6 +863,11 @@ class ShiftController extends Controller
                 ], 422);
             }
             $k3Warnings = $k3['warnings'];
+        }
+
+        // Validasi minimum notice period (HARD ERROR)
+        if ($noticeErr = $this->checkNoticeError($targetUser, $newStart)) {
+            return response()->json(['message' => $noticeErr], 422);
         }
 
         $userShift->fill(collect($validated)->only(['shift_id', 'start_date', 'end_date', 'notes'])->toArray());
@@ -976,9 +1046,16 @@ class ShiftController extends Controller
                     $userShift->id
                 );
 
+                // Validasi minimum notice period (HARD ERROR)
+                if ($noticeErr = $this->checkNoticeError($user, $validated['start_date'])) {
+                    $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $noticeErr];
+                    continue;
+                }
+
                 $entry = ['user_id' => $uid, 'name' => $user->name, 'assignment_id' => $userShift->id];
                 if (! empty($k3['warnings'])) {
-                    $entry['warning'] = $k3['warnings'][0];
+                    $entry['warnings'] = $k3['warnings'];
+                    $entry['warning']  = $k3['warnings'][0];
                 }
                 $berhasil[] = $entry;
             }
@@ -1086,7 +1163,7 @@ class ShiftController extends Controller
 
         // Semua assignment hingga akhir bulan (bisa mulai bulan-bulan sebelumnya)
         // Diurutkan desc agar pencarian "shift terbaru ≤ tanggal" cukup ambil first()
-        $assignments = UserShift::with('shift:id,name,color')
+        $assignments = UserShift::with('shift:id,name,color,is_active')
             ->whereIn('user_id', $users->pluck('id'))
             ->where('start_date', '<=', $endOfMonth->toDateString())
             ->orderBy('user_id')
@@ -1105,12 +1182,14 @@ class ShiftController extends Controller
 
             foreach ($users as $user) {
                 $userAssignments = $byUser->get($user->id, collect());
-                // Assignment aktif = start_date terbaru yang ≤ tanggal ini
+                // Assignment aktif = start_date terbaru yang ≤ tanggal ini DAN (end_date === null || end_date >= tanggal ini)
                 $active = $userAssignments->first(
                     fn ($a) => $a->start_date->toDateString() <= $dateStr
+                        && ($a->end_date === null || $a->end_date->toDateString() >= $dateStr)
                 );
 
-                if ($active && $active->shift_id && $active->shift) {
+                // Tampilkan hanya jika template shift masih AKTIF (is_active = true)
+                if ($active && $active->shift_id && $active->shift && $active->shift->is_active) {
                     $sid = $active->shift_id;
                     if (! isset($shiftMap[$sid])) {
                         $shiftMap[$sid] = [
@@ -1360,8 +1439,9 @@ class ShiftController extends Controller
                 ->orderBy('id')
                 ->first();
 
-        // Jika ada shift khusus dengan template
-        if ($userShift && $userShift->shift_id && $userShift->shift) {
+        // Jika ada shift khusus dengan template DAN template masih aktif
+        // (konsisten dengan resolveSchedule() yang juga cek is_active)
+        if ($userShift && $userShift->shift_id && $userShift->shift && $userShift->shift->is_active) {
             $shift = $userShift->shift;
             $schedules = $shift->schedules->map(fn (ShiftSchedule $s) => [
                 'day_of_week'     => $s->day_of_week,

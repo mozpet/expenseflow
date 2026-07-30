@@ -57,6 +57,8 @@ interface CalDayEntry {
   shift_name: string;
   color: string;
   user_count: number;
+  /** true jika shift ini lintas tengah malam pada hari kalender yang bersangkutan */
+  is_cross_day?: boolean;
   users: { user_id: number; name: string; department: string | null }[];
 }
 
@@ -140,21 +142,21 @@ function computeTemplateGaps(
   const result: Record<number, { status: 'error' | 'warning'; hours: number; nextDayName: string }> = {};
 
   for (let d = 0; d < 7; d++) {
-    const today    = byDay[d];
+    const today = byDay[d];
     const tomorrow = byDay[(d + 1) % 7];
 
     if (!today || today.is_off || !today.work_end_time || !today.work_start_time) continue;
     if (!tomorrow || tomorrow.is_off || !tomorrow.work_start_time) continue;
 
-    const endMins      = timeToMins(today.work_end_time);
-    const isCrossDay   = today.work_end_time <= today.work_start_time;
+    const endMins = timeToMins(today.work_end_time);
+    const isCrossDay = today.work_end_time <= today.work_start_time;
     // Jam pulang cross-day jatuh di +1440 menit (hari berikutnya)
-    const adjEndMins   = isCrossDay ? endMins + 1440 : endMins;
+    const adjEndMins = isCrossDay ? endMins + 1440 : endMins;
     // Jam mulai shift berikutnya selalu di hari +1 (daysBetween=1).
     // Untuk cross-day: endDt sudah di hari+1, startDt juga di hari+1 → perbandingan benar.
     const nextStartMins = 1440 + timeToMins(tomorrow.work_start_time);
 
-    const gapMins  = nextStartMins - adjEndMins;
+    const gapMins = nextStartMins - adjEndMins;
     const gapHours = gapMins / 60;
 
     if (gapHours < K3_MIN_REST_HOURS) {
@@ -173,12 +175,43 @@ function computeWeeklyHours(schedules: ScheduleRow[]): number {
   for (const s of schedules) {
     if (s.is_off || !s.work_start_time || !s.work_end_time) continue;
     const start = timeToMins(s.work_start_time);
-    const end   = timeToMins(s.work_end_time);
+    const end = timeToMins(s.work_end_time);
     const isCross = end <= start;
     totalMins += isCross ? (1440 - start + end) : (end - start);
   }
   return Math.round((totalMins / 60) * 10) / 10;
 }
+
+/**
+ * Cek apakah shift template merupakan shift lintas hari pada hari tertentu (day_of_week 0-6).
+ * Lintas hari = work_end_time <= work_start_time.
+ */
+function isCrossDayOnDate(
+  shiftId: number,
+  dayOfWeek: number,
+  shiftsData: ShiftTemplate[],
+): boolean {
+  const tmpl = shiftsData.find((s) => s.id === shiftId);
+  if (!tmpl) return false;
+  const sch = tmpl.schedules?.find((s) => s.day_of_week === dayOfWeek);
+  if (!sch || sch.is_off || !sch.work_start_time || !sch.work_end_time) return false;
+  return sch.work_end_time <= sch.work_start_time;
+}
+
+/**
+ * Cek apakah shift template merupakan hari libur (is_off) pada hari tertentu (day_of_week 0-6).
+ */
+function isOffOnDate(
+  shiftId: number,
+  dayOfWeek: number,
+  shiftsData: ShiftTemplate[],
+): boolean {
+  const tmpl = shiftsData.find((s) => s.id === shiftId);
+  if (!tmpl) return false;
+  const sch = tmpl.schedules?.find((s) => s.day_of_week === dayOfWeek);
+  return sch?.is_off ?? false;
+}
+
 // ═══════════════════════════════════════════════════════════════
 function SourceBadge({ source, isOff }: { source: string; isOff: boolean }) {
   if (isOff)
@@ -378,40 +411,51 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1.5">Warna Shift</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="color"
-                  value={color}
-                  onChange={(e) => setColor(e.target.value)}
-                  className="w-10 h-10 rounded-lg border border-slate-200 cursor-pointer p-0.5 bg-white"
-                />
-                <div className="flex-1 space-y-0.5">
-                  <input
-                    type="text"
-                    value={color}
-                    onChange={(e) => {
-                      const v = e.target.value;
-                      if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) setColor(v);
-                    }}
-                    maxLength={7}
-                    placeholder="#6366f1"
-                    className="w-full text-xs p-2 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none font-mono"
+              {/* 20 preset warna kontras untuk kalender — pilih satu */}
+              <div className="flex flex-wrap gap-2">
+                {[
+                  '#e53e3e', // merah
+                  '#dd6b20', // oranye tua
+                  '#d69e2e', // kuning keemasan
+                  '#38a169', // hijau
+                  '#2b6cb0', // biru tua
+                  '#6b46c1', // ungu
+                  '#d53f8c', // pink magenta
+                  '#319795', // teal
+                  '#00b5d8', // cyan
+                  '#84cc16', // hijau lime
+                  '#c05621', // burnt orange
+                  '#285e61', // teal gelap
+                  '#44337a', // ungu gelap
+                  '#702459', // pink tua
+                  '#234e52', // hijau tua
+                  '#2a4365', // biru navy
+                  '#7b341e', // coklat merah
+                  '#1a365d', // biru midnight
+                  '#f6ad55', // oranye muda
+                  '#48bb78', // hijau muda
+                ].map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setColor(c)}
+                    title={c}
+                    className={`w-7 h-7 rounded-full border-[3px] transition-all ${color === c
+                        ? 'border-slate-800 scale-125 shadow-md'
+                        : 'border-transparent hover:scale-110 hover:border-slate-300'
+                      }`}
+                    style={{ backgroundColor: c }}
                   />
-                  <p className="text-[10px] text-slate-400">Digunakan untuk tampilan kalender</p>
-                </div>
-                {/* Preset warna cepat */}
-                <div className="flex flex-wrap gap-1.5">
-                  {['#6366f1','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#f97316','#ec4899'].map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => setColor(c)}
-                      title={c}
-                      className={`w-6 h-6 rounded-full border-2 transition ${color === c ? 'border-slate-500 scale-110' : 'border-transparent hover:scale-110'}`}
-                      style={{ backgroundColor: c }}
-                    />
-                  ))}
-                </div>
+                ))}
+              </div>
+              {/* Preview warna terpilih */}
+              <div className="mt-2 flex items-center gap-2">
+                <span
+                  className="w-4 h-4 rounded-full border border-black/10 shrink-0"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="text-[11px] font-mono text-slate-500">{color}</span>
+                <span className="text-[10px] text-slate-400">— tampilan di kalender</span>
               </div>
             </div>
             <div className="sm:col-span-2">
@@ -439,12 +483,11 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
                 <CalendarDays className="w-3.5 h-3.5" /> Jadwal per Hari
               </label>
               {/* Chip indikator total jam/minggu */}
-              <div className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full ${
-                weeklyStatus === 'error'   ? 'bg-rose-100 text-rose-700' :
-                weeklyStatus === 'warning' ? 'bg-amber-100 text-amber-700' :
-                weeklyStatus === 'safe'    ? 'bg-emerald-100 text-emerald-700' :
-                'bg-slate-100 text-slate-500'
-              }`}>
+              <div className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full ${weeklyStatus === 'error' ? 'bg-rose-100 text-rose-700' :
+                  weeklyStatus === 'warning' ? 'bg-amber-100 text-amber-700' :
+                    weeklyStatus === 'safe' ? 'bg-emerald-100 text-emerald-700' :
+                      'bg-slate-100 text-slate-500'
+                }`}>
                 <Clock className="w-3 h-3" />
                 {weeklyHours}j/minggu
                 {selectedOffice?.enforce_weekly_hours && (
@@ -456,9 +499,8 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
               {schedules.map((s) => (
                 <div
                   key={s.day_of_week}
-                  className={`flex items-center gap-2 sm:gap-3 p-2 rounded-lg border ${
-                    s.is_off ? 'bg-rose-50/50 border-rose-100' : 'bg-slate-50/60 border-slate-100'
-                  }`}
+                  className={`flex items-center gap-2 sm:gap-3 p-2 rounded-lg border ${s.is_off ? 'bg-rose-50/50 border-rose-100' : 'bg-slate-50/60 border-slate-100'
+                    }`}
                 >
                   <span className="w-14 sm:w-16 text-xs font-bold text-slate-700 shrink-0">
                     {DAY_NAMES[s.day_of_week]}
@@ -500,11 +542,10 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
                       {/* Badge K3 jeda istirahat ke hari berikutnya */}
                       {k3Gaps[s.day_of_week] && (
                         <span
-                          className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${
-                            k3Gaps[s.day_of_week].status === 'error'
+                          className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${k3Gaps[s.day_of_week].status === 'error'
                               ? 'bg-rose-100 text-rose-700'
                               : 'bg-amber-100 text-amber-700'
-                          }`}
+                            }`}
                           title={`Jeda ke ${k3Gaps[s.day_of_week].nextDayName}: ${k3Gaps[s.day_of_week].hours}j`}
                         >
                           <AlertCircle className="w-3 h-3" />
@@ -826,7 +867,7 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
             ) : (
               <div className="space-y-1.5">
                 {history.map((h) => (
-              <div key={h.id} className="flex items-start justify-between gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+                  <div key={h.id} className="flex items-start justify-between gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-100">
                     <div className="min-w-0 flex-1">
                       <p className="text-xs font-semibold text-slate-700 truncate">
                         {h.shift?.name ?? 'Default Kantor'}
@@ -1077,11 +1118,11 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
 
   // ── Kalender state ──
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth() + 1); // 1-12
-  const [calYear, setCalYear]   = useState(() => new Date().getFullYear());
+  const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calBranch, setCalBranch] = useState<string>('');
-  const [calData, setCalData]   = useState<Record<string, CalDayEntry[]>>({});
+  const [calData, setCalData] = useState<Record<string, CalDayEntry[]>>({});
   const [loadingCal, setLoadingCal] = useState(false);
-  const [calDetail, setCalDetail]   = useState<{ date: string; entries: CalDayEntry[] } | null>(null);
+  const [calDetail, setCalDetail] = useState<{ date: string; entries: CalDayEntry[] } | null>(null);
 
   // ── Modals ──
   const [assignUser, setAssignUser] = useState<RosterRow | null>(null);
@@ -1239,11 +1280,10 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition ${
-              tab === t.key
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition ${tab === t.key
                 ? 'border-indigo-500 text-indigo-600'
                 : 'border-transparent text-slate-400 hover:text-slate-600'
-            }`}
+              }`}
           >
             {t.icon}
             {t.label}
@@ -1449,7 +1489,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         </td>
                         <td className="py-3 px-3 text-center font-mono text-slate-700">
                           {r.is_off ? (
-                            <span className="text-rose-400">Libur</span>
+                            <span className="text-rose-400 font-semibold">Libur</span>
                           ) : r.work_start_time ? (
                             <span className="inline-flex items-center gap-1 justify-center">
                               {hhmm(r.work_start_time)}–{hhmm(r.work_end_time)}
@@ -1587,90 +1627,89 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
             </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {filteredShifts.map((s) => (
-              <div key={s.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 space-y-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      {/* Bulatan warna shift untuk kalender */}
-                      <span
-                        className="w-3.5 h-3.5 rounded-full shrink-0 border border-black/10"
-                        style={{ backgroundColor: s.color ?? '#6366f1' }}
-                      />
-                      <p className="font-bold text-sm text-slate-800">{s.name}</p>
-                      {s.is_active ? (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Aktif</span>
-                      ) : (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Nonaktif</span>
-                      )}
-                    </div>
-                    <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
-                      <Building2 className="w-3 h-3" />
-                      {s.office?.office_name ?? 'Semua cabang'}
-                    </p>
-                    {s.description && <p className="text-[11px] text-slate-400 mt-1">{s.description}</p>}
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      onClick={() => handleToggleActive(s)}
-                      className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
-                      style={{ backgroundColor: s.is_active ? '#10b981' : '#cbd5e1' }}
-                      title={s.is_active ? 'Nonaktifkan' : 'Aktifkan'}
-                    >
-                      <span
-                        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${s.is_active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}
-                      />
-                    </button>
-                    <button
-                      onClick={() => setShiftForm({ editing: s })}
-                      className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 transition"
-                      title="Ubah"
-                    >
-                      <Pencil className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      onClick={() => handleDeleteShift(s)}
-                      className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 transition"
-                      title="Hapus"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Mini jadwal 7 hari */}
-                <div className="grid grid-cols-7 gap-1">
-                  {Array.from({ length: 7 }, (_, d) => {
-                    const sch = s.schedules?.find((x) => x.day_of_week === d);
-                    const off = sch?.is_off ?? true;
-                    return (
-                      <div
-                        key={d}
-                        className={`rounded-lg p-1.5 text-center border ${
-                          off ? 'bg-rose-50/60 border-rose-100' : 'bg-indigo-50/60 border-indigo-100'
-                        }`}
-                        title={off ? 'Libur' : `${hhmm(sch?.work_start_time)}–${hhmm(sch?.work_end_time)}`}
-                      >
-                        <p className="text-[9px] font-bold text-slate-500">{DAY_SHORT[d]}</p>
-                        {off ? (
-                          <p className="text-[9px] text-rose-400 font-semibold mt-0.5">Off</p>
+              {filteredShifts.map((s) => (
+                <div key={s.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Bulatan warna shift untuk kalender */}
+                        <span
+                          className="w-3.5 h-3.5 rounded-full shrink-0 border border-black/10"
+                          style={{ backgroundColor: s.color ?? '#6366f1' }}
+                        />
+                        <p className="font-bold text-sm text-slate-800">{s.name}</p>
+                        {s.is_active ? (
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Aktif</span>
                         ) : (
-                          <>
-                            <p className="text-[9px] font-mono text-indigo-700 mt-0.5 leading-tight">{hhmm(sch?.work_start_time)}</p>
-                            <p className="text-[9px] font-mono text-slate-400 leading-tight flex items-center justify-center gap-0.5">
-                              {hhmm(sch?.work_end_time)}
-                              {sch && !sch.is_off && sch.work_start_time && sch.work_end_time && sch.work_end_time <= sch.work_start_time && (
-                                <Moon className="w-2 h-2 text-violet-500" />
-                              )}
-                            </p>
-                          </>
+                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Nonaktif</span>
                         )}
                       </div>
-                    );
-                  })}
-              </div>
-            </div>
-            ))}
+                      <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
+                        <Building2 className="w-3 h-3" />
+                        {s.office?.office_name ?? 'Semua cabang'}
+                      </p>
+                      {s.description && <p className="text-[11px] text-slate-400 mt-1">{s.description}</p>}
+                    </div>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        onClick={() => handleToggleActive(s)}
+                        className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none"
+                        style={{ backgroundColor: s.is_active ? '#10b981' : '#cbd5e1' }}
+                        title={s.is_active ? 'Nonaktifkan' : 'Aktifkan'}
+                      >
+                        <span
+                          className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${s.is_active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}
+                        />
+                      </button>
+                      <button
+                        onClick={() => setShiftForm({ editing: s })}
+                        className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 transition"
+                        title="Ubah"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        onClick={() => handleDeleteShift(s)}
+                        className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 transition"
+                        title="Hapus"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Mini jadwal 7 hari */}
+                  <div className="grid grid-cols-7 gap-1">
+                    {Array.from({ length: 7 }, (_, d) => {
+                      const sch = s.schedules?.find((x) => x.day_of_week === d);
+                      const off = sch?.is_off ?? true;
+                      return (
+                        <div
+                          key={d}
+                          className={`rounded-lg p-1.5 text-center border ${off ? 'bg-rose-50/60 border-rose-100' : 'bg-indigo-50/60 border-indigo-100'
+                            }`}
+                          title={off ? 'Libur' : `${hhmm(sch?.work_start_time)}–${hhmm(sch?.work_end_time)}`}
+                        >
+                          <p className="text-[9px] font-bold text-slate-500">{DAY_SHORT[d]}</p>
+                          {off ? (
+                            <p className="text-[9px] text-rose-400 font-semibold mt-0.5">Off</p>
+                          ) : (
+                            <>
+                              <p className="text-[9px] font-mono text-indigo-700 mt-0.5 leading-tight">{hhmm(sch?.work_start_time)}</p>
+                              <p className="text-[9px] font-mono text-slate-400 leading-tight flex items-center justify-center gap-0.5">
+                                {hhmm(sch?.work_end_time)}
+                                {sch && !sch.is_off && sch.work_start_time && sch.work_end_time && sch.work_end_time <= sch.work_start_time && (
+                                  <Moon className="w-2 h-2 text-violet-500" />
+                                )}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
@@ -1691,7 +1730,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 }}
                 className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition text-slate-600"
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7"/></svg>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" /></svg>
               </button>
               <span className="text-sm font-bold text-slate-800 w-36 text-center">
                 {new Date(calYear, calMonth - 1, 1).toLocaleDateString('id-ID', { month: 'long', year: 'numeric' })}
@@ -1704,7 +1743,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 }}
                 className="p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition text-slate-600"
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7"/></svg>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
               </button>
               <button
                 onClick={() => { setCalMonth(new Date().getMonth() + 1); setCalYear(new Date().getFullYear()); }}
@@ -1733,12 +1772,12 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
             </div>
           </div>
 
-          {/* Legend shift */}
+          {/* Legend shift + keterangan lintas hari */}
           {(() => {
             const calShifts = shifts.filter(s => s.is_active && (!calBranch || s.attendance_setting_id === null || s.attendance_setting_id === Number(calBranch)));
             if (calShifts.length === 0) return null;
             return (
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 {calShifts.map(s => (
                   <span key={s.id} className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full border border-black/10"
                     style={{ backgroundColor: (s.color ?? '#6366f1') + '20', color: s.color ?? '#6366f1', borderColor: (s.color ?? '#6366f1') + '40' }}>
@@ -1746,6 +1785,15 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     {s.name}
                   </span>
                 ))}
+                {/* Keterangan simbol libur & lintas hari */}
+                <span className="inline-flex items-center gap-1.5 text-[11px] font-semibold px-2.5 py-1 rounded-full border"
+                  style={{ backgroundColor: '#71809618', color: '#718096', borderColor: '#71809640' }}>
+                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: '#718096' }} />
+                  Libur / Off
+                </span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold px-2.5 py-1 rounded-full bg-violet-50 text-violet-600 border border-violet-200">
+                  <Moon className="w-3 h-3" /> = Lintas hari
+                </span>
               </div>
             );
           })()}
@@ -1754,10 +1802,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
             {/* Header hari */}
             <div className="grid grid-cols-7 border-b border-slate-100">
-              {['Min','Sen','Sel','Rab','Kam','Jum','Sab'].map((d, i) => (
-                <div key={d} className={`py-3 text-center text-[11px] font-bold tracking-wide ${
-                  i === 0 || i === 6 ? 'text-rose-400' : 'text-slate-500'
-                }`}>
+              {['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'].map((d, i) => (
+                <div key={d} className={`py-3 text-center text-[11px] font-bold tracking-wide ${i === 0 || i === 6 ? 'text-rose-400' : 'text-slate-500'
+                  }`}>
                   {d}
                 </div>
               ))}
@@ -1784,18 +1831,16 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 cells.push(
                   <div
                     key={i}
-                    className={`min-h-[110px] border-b border-r border-slate-100 p-1.5 flex flex-col gap-1 ${
-                      !isCurrentMonth ? 'bg-slate-50/40' : isWeekend ? 'bg-rose-50/20' : 'bg-white'
-                    } ${isToday ? 'ring-2 ring-inset ring-indigo-400' : ''}`}
+                    className={`min-h-[110px] border-b border-r border-slate-100 p-1.5 flex flex-col gap-1 ${!isCurrentMonth ? 'bg-slate-50/40' : isWeekend ? 'bg-rose-50/20' : 'bg-white'
+                      } ${isToday ? 'ring-2 ring-inset ring-indigo-400' : ''}`}
                   >
                     {/* Nomor tanggal */}
                     <div className="flex items-center justify-between px-0.5">
-                      <span className={`text-xs font-bold leading-none ${
-                        !isCurrentMonth ? 'text-slate-300'
-                        : isToday ? 'w-5 h-5 rounded-full bg-indigo-500 text-white flex items-center justify-center text-[10px]'
-                        : isWeekend ? 'text-rose-400'
-                        : 'text-slate-700'
-                      }`}>
+                      <span className={`text-xs font-bold leading-none ${!isCurrentMonth ? 'text-slate-300'
+                          : isToday ? 'w-5 h-5 rounded-full bg-indigo-500 text-white flex items-center justify-center text-[10px]'
+                            : isWeekend ? 'text-rose-400'
+                              : 'text-slate-700'
+                        }`}>
                         {isCurrentMonth ? dayNum : ''}
                       </span>
                     </div>
@@ -1807,22 +1852,41 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                           <div key={`cal-skel-${idx}`} className="w-full h-4 bg-slate-200 rounded animate-pulse" />
                         ))
                       ) : (
-                        dayEntries.slice(0, 3).map((entry) => (
-                          <button
-                            key={entry.shift_id}
-                            onClick={() => dateStr && setCalDetail({ date: dateStr, entries: dayEntries })}
-                            className="w-full text-left rounded px-1.5 py-1 text-[10px] font-bold leading-tight truncate transition hover:brightness-90 active:scale-95"
-                            style={{
-                              backgroundColor: entry.color + '25',
-                              color: entry.color,
-                              borderLeft: `3px solid ${entry.color}`,
-                            }}
-                            title={`${entry.shift_name} — ${entry.user_count} karyawan`}
-                          >
-                            {entry.shift_name}
-                            <span className="ml-1 font-normal opacity-70">({entry.user_count})</span>
-                          </button>
-                        ))
+                        dayEntries.slice(0, 3).map((entry) => {
+                          // Cek libur & lintas hari pada tanggal tersebut
+                          const dayOfWeek = dateStr ? new Date(dateStr + 'T00:00:00').getDay() : -1;
+                          const isOff = dayOfWeek >= 0 && isOffOnDate(entry.shift_id, dayOfWeek, shifts);
+                          const crossDay = entry.is_cross_day ?? (dayOfWeek >= 0 && isCrossDayOnDate(entry.shift_id, dayOfWeek, shifts));
+                          const entryColor = isOff ? '#718096' : (entry.color || '#6366f1');
+
+                          return (
+                            <button
+                              key={entry.shift_id}
+                              onClick={() => dateStr && setCalDetail({ date: dateStr, entries: dayEntries })}
+                              className="w-full text-left rounded px-1.5 py-1 text-[10px] font-bold leading-tight transition hover:brightness-90 active:scale-95"
+                              style={{
+                                backgroundColor: entryColor + '25',
+                                color: entryColor,
+                                borderLeft: `3px solid ${entryColor}`,
+                              }}
+                              title={`${entry.shift_name}${isOff ? ' (Libur)' : crossDay ? ' (lintas hari)' : ''} — ${entry.user_count} karyawan`}
+                            >
+                              <span className="flex items-center gap-1 min-w-0">
+                                <span className="truncate flex-1">{entry.shift_name}</span>
+                                <span className="font-normal opacity-70 shrink-0">({entry.user_count})</span>
+                                {isOff ? (
+                                  <span className="text-[9px] font-semibold opacity-80 shrink-0">(Off)</span>
+                                ) : crossDay && (
+                                  <Moon
+                                    className="w-2.5 h-2.5 shrink-0"
+                                    style={{ color: entryColor }}
+                                    title="Shift lintas hari (berakhir keesokan harinya)"
+                                  />
+                                )}
+                              </span>
+                            </button>
+                          );
+                        })
                       )}
                       {dayEntries.length > 3 && (
                         <button
@@ -1875,33 +1939,74 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
             </div>
 
             <div className="p-4 space-y-3">
-              {calDetail.entries.map((entry) => (
-                <div key={entry.shift_id} className="rounded-xl border overflow-hidden" style={{ borderColor: entry.color + '40' }}>
-                  {/* Judul shift */}
-                  <div className="flex items-center gap-2 px-3 py-2.5" style={{ backgroundColor: entry.color + '15' }}>
-                    <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: entry.color }} />
-                    <span className="font-bold text-xs" style={{ color: entry.color }}>{entry.shift_name}</span>
-                    <span className="ml-auto text-[11px] font-semibold text-slate-500">{entry.user_count} karyawan</span>
-                  </div>
-                  {/* Daftar karyawan */}
-                  <div className="divide-y divide-slate-50">
-                    {entry.users.map((u) => {
-                      const av = avatarFor(u.name);
-                      return (
-                        <div key={u.user_id} className="flex items-center gap-2.5 px-3 py-2">
-                          <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${av.bg} ${av.text}`}>
-                            {initialsOf(u.name)}
+              {calDetail.entries.map((entry) => {
+                const detailDayOfWeek = new Date(calDetail.date + 'T00:00:00').getDay();
+                const isOff = isOffOnDate(entry.shift_id, detailDayOfWeek, shifts);
+                const crossDay = entry.is_cross_day ?? isCrossDayOnDate(entry.shift_id, detailDayOfWeek, shifts);
+                const entryColor = isOff ? '#718096' : (entry.color || '#6366f1');
+                const tmpl = shifts.find((s) => s.id === entry.shift_id);
+                const sch = tmpl?.schedules?.find((s) => s.day_of_week === detailDayOfWeek);
+                const jamKerja = sch && !sch.is_off && sch.work_start_time && sch.work_end_time
+                  ? `${hhmm(sch.work_start_time)} – ${hhmm(sch.work_end_time)}${crossDay ? ' (+1 hari)' : ''}`
+                  : null;
+
+                return (
+                  <div key={entry.shift_id} className="rounded-xl border overflow-hidden" style={{ borderColor: entryColor + '40' }}>
+                    {/* Judul shift + indikator libur/lintas hari */}
+                    <div className="flex items-center gap-2 px-3 py-2.5" style={{ backgroundColor: entryColor + '15' }}>
+                      <span className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: entryColor }} />
+                      <span className="font-bold text-xs" style={{ color: entryColor }}>{entry.shift_name}</span>
+                      {isOff ? (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full border shrink-0"
+                          style={{ backgroundColor: '#71809618', color: '#718096', borderColor: '#71809640' }}
+                        >
+                          Libur / Off (#718096)
+                        </span>
+                      ) : crossDay && (
+                        <span
+                          className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700 shrink-0"
+                          title="Shift ini melewati tengah malam (berakhir keesokan hari)"
+                        >
+                          <Moon className="w-3 h-3" /> Lintas hari
+                        </span>
+                      )}
+                      <span className="ml-auto text-[11px] font-semibold text-slate-500">{entry.user_count} karyawan</span>
+                    </div>
+                    {/* Jam kerja shift */}
+                    <div className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-50/60 border-b border-slate-100">
+                      <Clock className="w-3 h-3 text-slate-400" />
+                      {isOff ? (
+                        <span className="text-[11px] font-medium text-slate-500 italic">Hari Libur (Tidak ada jam kerja)</span>
+                      ) : (
+                        <>
+                          <span className="text-[11px] font-mono text-slate-600">{jamKerja}</span>
+                          {crossDay && (
+                            <span className="text-[10px] text-violet-500 font-semibold">— selesai esok hari</span>
+                          )}
+                        </>
+                      )}
+                    </div>
+                    {/* Daftar karyawan */}
+                    <div className="divide-y divide-slate-50">
+                      {entry.users.map((u) => {
+                        const av = avatarFor(u.name);
+                        return (
+                          <div key={u.user_id} className="flex items-center gap-2.5 px-3 py-2">
+                            <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${av.bg} ${av.text}`}>
+                              {initialsOf(u.name)}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="text-xs font-semibold text-slate-700 truncate">{u.name}</p>
+                              {u.department && <p className="text-[10px] text-slate-400 truncate">{u.department}</p>}
+                            </div>
                           </div>
-                          <div className="min-w-0">
-                            <p className="text-xs font-semibold text-slate-700 truncate">{u.name}</p>
-                            {u.department && <p className="text-[10px] text-slate-400 truncate">{u.department}</p>}
-                          </div>
-                        </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

@@ -29,6 +29,7 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Presensi (attendance)  : SELESAI (check-in/out WFH, leave, report, CSV export)
   - Custom Shift/Scheduling: SELESAI (shift per karyawan & cabang, override jam kerja, roster, bulk assign) — 2026-07-04
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
+  - Custom Role Management  : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
   - Sedang di              : (tambahkan fitur baru di sini)
 
 ---
@@ -144,7 +145,16 @@ bootstrap/
 
 ## Role System — SANGAT PENTING
 
-### Role yang Tersedia
+### Arsitektur Role (Sistem Hybrid: Built-in + Custom)
+
+Sistem role ExpenseFlow menggunakan **dua lapis**:
+
+1. **Built-in Role** — role bawaan sistem yang tidak bisa dihapus, permission-nya sudah terdefinisi sebagai *baseline* dan bisa dijadikan template.
+2. **Custom Role** — role tambahan yang dibuat oleh `admin`/`super_admin` per perusahaan, permission-nya bisa dikonfigurasi penuh oleh user.
+
+---
+
+### Built-in Role (Tidak Bisa Dihapus)
 | Role | Platform | Scan Struk (Mobile) | Approval Struk (Web) | Akses Presensi | Approval Invoice |
 |------|----------|---------------------|----------------------|----------------|-----------------|
 | `employee` | HANYA mobile | ✅ CRUD struk sendiri | ❌ | ✅ (jika attendance_enabled) | ❌ |
@@ -163,6 +173,105 @@ bootstrap/
 > **HRD/admin/super_admin**. **Finance dikecualikan** — route `admin/users*` dan `dashboard/attendance*`
 > sudah memakai middleware `role:hrd,admin,super_admin` (tanpa `finance`), dan kedua menu disembunyikan
 > di web untuk finance. Finance fokus ke approval struk & invoice.
+
+---
+
+### Custom Role — Fitur Manajemen Role (Roadmap)
+
+> **Status:** BELUM DIIMPLEMENTASI — dicatat sebagai rencana fitur ke depan.
+
+`admin` dan `super_admin` dapat membuat role baru sesuai kebutuhan perusahaan (mis. `operational_manager`, `branch_head`, `it_support`), kemudian mengatur permission apa saja yang bisa diakses oleh role tersebut.
+
+#### Konsep Permission Granular
+Setiap permission merepresentasikan satu aksi spesifik yang bisa di-toggle ON/OFF per role:
+
+| Grup | Permission Key | Keterangan |
+|------|---------------|------------|
+| **Receipt** | `receipt.view_own` | Lihat struk milik sendiri |
+| | `receipt.upload` | Upload & scan struk |
+| | `receipt.submit` | Submit struk ke finance |
+| | `receipt.approve` | Approve struk karyawan |
+| | `receipt.reject` | Reject struk karyawan |
+| | `receipt.view_all` | Lihat semua struk perusahaan |
+| **Invoice** | `invoice.create` | Buat invoice baru |
+| | `invoice.approve_l1` | Approve invoice Level 1 |
+| | `invoice.approve_l2` | Approve invoice Level 2 |
+| | `invoice.approve_l3` | Approve invoice Level 3 |
+| | `invoice.view` | Lihat daftar invoice |
+| **Vendor** | `vendor.create` | Tambah vendor |
+| | `vendor.edit` | Edit vendor |
+| | `vendor.toggle` | Aktif/nonaktif vendor |
+| **Karyawan** | `user.view` | Lihat daftar karyawan |
+| | `user.create` | Tambah karyawan |
+| | `user.edit` | Edit karyawan |
+| | `user.deactivate` | Nonaktifkan karyawan |
+| | `user.delete` | Hapus karyawan (user nonaktif) |
+| | `user.reset_password` | Reset password karyawan |
+| **Presensi** | `attendance.view_all` | Lihat presensi semua karyawan |
+| | `attendance.manage` | Kelola pengaturan presensi |
+| | `attendance.leave_approve` | Approve/reject cuti |
+| | `attendance.overtime_approve` | Approve/reject lembur |
+| | `attendance.shift_manage` | Kelola shift & roster |
+| | `attendance.holiday_manage` | Kelola kalender libur |
+| **Payroll** | `payroll.generate` | Generate payroll |
+| | `payroll.approve` | Approve payroll |
+| | `payroll.view` | Lihat rekap payroll |
+| **Role** | `role.create` | Buat role baru |
+| | `role.edit` | Edit permission role |
+| | `role.delete` | Hapus custom role |
+| | `role.assign` | Assign role ke karyawan |
+| **Settings** | `settings.view` | Lihat pengaturan perusahaan |
+| | `settings.edit` | Ubah pengaturan perusahaan |
+
+#### Aturan Custom Role
+- Custom role bersifat **per company** — tidak bisa dipakai lintas perusahaan.
+- Custom role **tidak bisa menghapus atau mengubah built-in role** (`employee`, `finance`, `hrd`, `admin`, `super_admin`).
+- Hanya `admin` dan `super_admin` yang bisa membuat/mengedit/menghapus custom role.
+- Saat role dihapus: karyawan yang memakai role tersebut wajib di-assign ulang ke role lain (tidak boleh rolenya menjadi null/kosong).
+- Built-in role tetap memakai logika middleware berbasis string (`role:finance,hrd,...`); custom role menggunakan permission check (`hasPermission('receipt.approve')`).
+- `super_admin` **selalu bypass** semua permission check (sama seperti sekarang).
+- Platform restriction (mobile-only untuk `employee`) tetap berlaku untuk built-in role; custom role bisa dikonfigurasi platform aksesnya (mobile / web / keduanya).
+
+#### Tabel Database yang Dibutuhkan (Belum Dibuat)
+```
+roles
+  - id, company_id (nullable → NULL = built-in), name, slug, description,
+    is_builtin (bool), platform [mobile/web/both], is_active
+
+role_permissions
+  - id, role_id, permission_key (varchar, mis. 'receipt.approve'), granted (bool)
+
+user_roles (jika 1 user bisa punya >1 role, opsional)
+  - id, user_id, role_id
+  (Alternatif: tetap 1 role per user di tabel users.role, tambahkan FK role_id)
+```
+
+#### API Endpoint yang Direncanakan
+```
+# Role Management (admin/super_admin)
+GET    /api/v1/admin/roles                    → index (list semua role: built-in + custom)
+POST   /api/v1/admin/roles                    → store (buat custom role baru)
+GET    /api/v1/admin/roles/{id}               → show (detail role + permissions)
+PUT    /api/v1/admin/roles/{id}               → update (edit nama/deskripsi/platform)
+DELETE /api/v1/admin/roles/{id}               → destroy (hanya custom role, karyawan sudah re-assign)
+
+# Permission Management (admin/super_admin)
+GET    /api/v1/admin/roles/{id}/permissions   → listPermissions (daftar permission per role)
+PUT    /api/v1/admin/roles/{id}/permissions   → syncPermissions (set ulang semua permission role)
+PATCH  /api/v1/admin/roles/{id}/permissions/{key} → togglePermission (toggle satu permission)
+
+# Assign Role ke User (admin/super_admin)
+PATCH  /api/v1/admin/users/{id}/role          → assignRole (ganti role karyawan)
+```
+
+#### Keputusan yang Perlu Ditanyakan Sebelum Implementasi
+1. **1 user = 1 role atau bisa multi-role?** — Saat ini 1 user 1 role; multi-role menambah kompleksitas permission conflict.
+2. **Apakah built-in role permission-nya bisa di-override per perusahaan?** — Atau murni hardcode di middleware?
+3. **Platform restriction untuk custom role**: apakah user bisa pilih role X hanya bisa login di mobile atau web atau keduanya?
+4. **Approval invoice untuk custom role**: apakah custom role bisa di-set sebagai approver level berapa?
+5. **Urutan implementasi**: apakah custom role dibuat dulu UI-nya di web, atau API-nya dulu?
+
+---
 
 ### Cara Cek Platform
 Header `X-Platform: mobile` atau `web`
@@ -787,9 +896,9 @@ buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu h
 
 ### P1 — Penting (Operasional & K3)
 - [ ] **Batas shift malam berturut-turut** (max 5–7 malam berurutan) — standar K3 ritme sirkadian; perlu counter shift malam per karyawan
-- [ ] **Minimum notice perubahan jadwal** (H-1 atau H-2 sebelum berlaku) — saat ini HRD bisa assign shift untuk hari yang sudah berjalan tanpa peringatan
+- ✅ **Minimum notice perubahan jadwal** (H-N hari sebelum berlaku) — HRD dapat peringatan warning jika assign/ubah shift < N hari (N diatur per kantor, default 0=off)
 - [ ] **Shift swap antar karyawan** — request tukar shift + approval HRD; saat ini semua perubahan harus lewat HRD manual
-- [ ] **Roster jadwal shift di mobile** — karyawan bisa lihat jadwal shift mereka ke depan; saat ini hanya ada `/my-schedule` statis
+- ✅ **Roster jadwal shift di mobile** — karyawan bisa lihat jadwal shift mereka ke depan; saat ini hanya ada `/my-schedule` statis
 
 ### P2 — Nilai Tambah
 - [ ] **Rotasi shift otomatis periodik** — sistem 3-roster saat ini assign manual; rotasi setiap N minggu perlu scheduling otomatis
@@ -804,5 +913,23 @@ buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu h
 ### Bug / Isu Aktif
 - [x] **Discrepancy Status Roster & Hari Ini di UI**: Telah diperbaiki di backend (`ShiftController::resolveSchedule()`). Sebelumnya `resolveSchedule` tidak mengecek tabel `Holiday` (sehingga roster menampilkan hari kerja di hari libur), dan pencarian shift aktif (mengabaikan shift kedaluwarsa) tidak setara dengan endpoint `today`. Sekarang keduanya 100% tersinkronisasi sehingga frontend (react) menampilkan status yang sama di 'Hari Ini' dan 'Roster Harian'.
 
+fitur baru: - tambahkan tipe kontrak user karyawan Tetap / Kontrak / Freelance / Magang
+            - Tanggal bergabung user untuk menghitung masa kerja 
+            - foto dan avatar 
 
+Atasan langsung (Direct Manager)
+Untuk approval chain — siapa yang approve cuti/lembur karyawan ini. <-- ini skip dulu di buatkan terakhir karna di buat untuk pembuatan role dan jabatan yang lebih kompleks 
+
+---
+
+## Ketentuan & Matriks Tipe Hubungan Kerja (Employment Type)
+
+Berikut adalah panduan aturan bisnis, tindakan sistem, dan benefit untuk setiap jenis tipe hubungan kerja pada modul Manajemen Karyawan HRIS ExpenseFlow:
+
+| Tipe Kerja | Deskripsi | Aturan Tanggal | Indikator / Tindakan Sistem | Hak Cuti & Benefit |
+|---|---|---|---|---|
+| **PKWTT** *(Tetap)* | Karyawan Perjanjian Kerja Waktu Tidak Pertentu. | Cukup `joined_date` (tanpa tanggal berakhir kontrak). | Bebas pengingat masa kontrak. Akun aktif tanpa batas waktu. | • Hak kuota cuti tahunan penuh (12 hari/tahun)<br>• Batas klaim bulanan standar/penuh<br>• Akses WFH & presensi mobile sesuai persetujuan HRD |
+| **PKWT** *(Kontrak)* | Karyawan Perjanjian Kerja Waktu Pertentu (Kontrak). | Wajib mengisi `contract_start_date` & `contract_end_date`. | **Indikator Masa Kontrak:**<br>• 🟢 **Aktif**: Sisa kontrak > 30 hari<br>• 🟡 **Mendekati Expired**: Sisa kontrak ≤ 30 hari (Peringatan HRD untuk evaluasi/perpanjangan)<br>• 🔴 **Expired**: Tanggal kontrak telah lewat | • Hak cuti & klaim sesuai durasi kontrak<br>• Notifikasi/peringatan perpanjangan kontrak bagi HRD |
+| **Probation** *(Probasi)* | Karyawan dalam masa percobaan (biasanya 3–6 bulan). | Memiliki `joined_date` & target tanggal lulus probasi. | Indicator status **Probasi** (Badge Amber). Pengingat HRD untuk evaluasi kelulusan probasi karyawan. | • Akses presensi dasar & klaim struk<br>• Kuota cuti tahunan ditangguhkan hingga lulus probasi (opsional)<br>• Evaluasi konversi ke PKWTT / PKWT |
+| **Internship** *(Magang)* | Siswa / Mahasiswa / Tenaga Magang / Freelance. | Berdurasi terbatas sesuai proyek/periode magang. | Indicator status **Magang** (Badge Purple). Filter khusus peserta magang. | • Presensi harian mobile/onsite<br>• Limit klaim opsional/terbatas<br>• Tanpa akumulasi kuota cuti tahunan |
 

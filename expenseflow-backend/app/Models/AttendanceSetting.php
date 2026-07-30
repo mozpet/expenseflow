@@ -30,6 +30,7 @@ class AttendanceSetting extends Model
         // validasi jam kerja mingguan
         'enforce_weekly_hours',
         'max_weekly_hours',
+        'shift_notice_days',
     ];
 
     protected function casts(): array
@@ -51,6 +52,7 @@ class AttendanceSetting extends Model
             'auto_checkout_grace_minutes'   => 'integer',
             'enforce_weekly_hours'          => 'boolean',
             'max_weekly_hours'              => 'integer',
+            'shift_notice_days'             => 'integer',
         ];
     }
 

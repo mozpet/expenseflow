@@ -36,7 +36,12 @@ class UserController extends Controller
 
         $users = User::where('company_id', $companyId)
             ->with('office:id,office_name')
-            ->select(['id', 'company_id', 'employee_code', 'name', 'email', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'created_at', 'updated_at'])
+            ->select([
+                'id', 'company_id', 'employee_code', 'name', 'email', 'phone',
+                'role', 'department', 'attendance_setting_id', 'monthly_claim_limit',
+                'is_active', 'employment_type', 'joined_date',
+                'contract_start_date', 'contract_end_date', 'created_at', 'updated_at',
+            ])
             ->latest()
             ->paginate(20);
 
@@ -58,12 +63,18 @@ class UserController extends Controller
             'role'                  => ['required', Rule::in(['employee', 'finance', 'hrd', 'admin', 'super_admin'])],
             'employee_code'         => 'nullable|string|max:50|unique:users,employee_code',
             'department'            => 'nullable|string|max:100',
+            'phone'                 => 'nullable|string|max:20',
             // Kantor penempatan — harus milik perusahaan yang sama.
             'attendance_setting_id' => [
                 'nullable',
                 Rule::exists('attendance_settings', 'id')->where('company_id', $companyId),
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
+            // Tipe hubungan kerja
+            'employment_type'       => ['nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
+            'joined_date'           => 'nullable|date',
+            'contract_start_date'   => 'nullable|date',
+            'contract_end_date'     => 'nullable|date|after_or_equal:contract_start_date',
         ]);
 
         $user = User::create([
@@ -74,14 +85,23 @@ class UserController extends Controller
             'password'              => Hash::make($validated['password']),
             'role'                  => $validated['role'],
             'department'            => $validated['department'] ?? null,
+            'phone'                 => $validated['phone'] ?? null,
             'attendance_setting_id' => $validated['attendance_setting_id'] ?? null,
             'monthly_claim_limit'   => $validated['monthly_claim_limit'] ?? 0,
             'is_active'             => true,
+            'employment_type'       => $validated['employment_type'] ?? null,
+            'joined_date'           => $validated['joined_date'] ?? null,
+            'contract_start_date'   => $validated['contract_start_date'] ?? null,
+            'contract_end_date'     => $validated['contract_end_date'] ?? null,
         ]);
 
         return response()->json([
             'message' => 'Karyawan berhasil ditambahkan.',
-            'user'    => $user->only(['id', 'employee_code', 'name', 'email', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id']),
+            'user'    => $user->only([
+                'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
+                'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
+                'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
+            ]),
         ], 201);
     }
 
@@ -104,6 +124,7 @@ class UserController extends Controller
             'role'                  => ['sometimes', 'required', Rule::in(['employee', 'finance', 'hrd', 'admin', 'super_admin'])],
             'employee_code'         => ['nullable', 'string', 'max:50', Rule::unique('users')->ignore($user->id)],
             'department'            => 'nullable|string|max:100',
+            'phone'                 => 'nullable|string|max:20',
             // Kantor penempatan — harus milik perusahaan karyawan tsb.
             'attendance_setting_id' => [
                 'sometimes',
@@ -111,6 +132,11 @@ class UserController extends Controller
                 Rule::exists('attendance_settings', 'id')->where('company_id', $user->company_id),
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
+            // Tipe hubungan kerja
+            'employment_type'       => ['sometimes', 'nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
+            'joined_date'           => 'sometimes|nullable|date',
+            'contract_start_date'   => 'sometimes|nullable|date',
+            'contract_end_date'     => 'sometimes|nullable|date|after_or_equal:contract_start_date',
         ]);
 
         // Hanya super_admin yang boleh menetapkan role super_admin (cegah escalation).
@@ -124,7 +150,11 @@ class UserController extends Controller
 
         return response()->json([
             'message' => 'Data karyawan berhasil diperbarui.',
-            'user'    => $user->only(['id', 'employee_code', 'name', 'email', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id']),
+            'user'    => $user->only([
+                'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
+                'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
+                'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
+            ]),
         ]);
     }
 

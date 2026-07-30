@@ -1726,3 +1726,87 @@ P0#1 no-enforce 54j : LOLOS ✓   ← enforce=false → selalu lolos
 Roadmap Fitur Shift Lanjutan sudah ditambahkan di `rules.md`:
 - P1: Batas shift malam berturut-turut, minimum notice perubahan jadwal, shift swap, roster mobile
 - P2: Rotasi otomatis periodik, notifikasi libur nasional terdampak, unavailability karyawan
+
+---
+
+# Perubahan — Perbaikan Bug `POST /shifts/{id}/toggle-active` (2026-07-26)
+
+## Masalah
+Endpoint toggle-active dilaporkan "menghapus semua data shift" — padahal method `toggleActive()` di backend sudah benar (hanya flip `is_active`). Setelah analisis mendalam, ditemukan dua bug terpisah:
+
+### Bug 1 — `mySchedule()` tidak cek `is_active` shift
+**File:** `app/Http/Controllers/API/ShiftController.php` — method `mySchedule()`
+
+**Sebelumnya:** kondisi hanya cek `$userShift->shift_id && $userShift->shift` → jika template shift di-nonaktifkan, mobile karyawan tetap menampilkan jadwal shift yang sudah nonaktif (bukan fallback ke default kantor).
+
+**Sesudahnya:** tambah pengecekan `&& $userShift->shift->is_active` → konsisten dengan `resolveSchedule()` yang sudah melakukan pengecekan ini.
+
+### Bug 2 — `toggleActive()` tidak notifikasi karyawan terdampak
+**File:** `app/Http/Controllers/API/ShiftController.php` — method `toggleActive()`
+
+**Sebelumnya:** saat shift dinonaktifkan, karyawan yang assignment-nya masih aktif tidak mendapat notifikasi apapun.
+
+**Sesudahnya:** setelah toggle, jika shift dinonaktifkan (`!$willBeActive`):
+- Query `user_shifts` yang masih aktif (start_date ≤ hari ini, end_date null atau ≥ hari ini)
+- Kirim notifikasi DB + FCM ke setiap karyawan terdampak: *"Shift '{nama}' dinonaktifkan. Jadwal Anda kembali ke jam kantor default."*
+- Data assignment (user_shifts) **TIDAK dihapus** — shift bisa diaktifkan kembali kapan saja
+
+## Perilaku yang Diharapkan
+
+| Kondisi | `resolveSchedule()` | `mySchedule()` |
+|---|---|---|
+| Shift aktif, karyawan punya assignment | Pakai jadwal shift | Pakai jadwal shift |
+| Shift **nonaktif**, karyawan masih punya assignment | Fallback ke default kantor ✅ | Fallback ke default kantor ✅ (fix) |
+| Shift dihapus (destroy) | Fallback ke default kantor | Fallback ke default kantor |
+
+## Catatan Penting
+- Endpoint `DELETE /shifts/{id}` (destroy) **berbeda** dengan `POST /shifts/{id}/toggle-active`:
+  - `destroy` = hapus data permanen (diblokir jika masih dipakai assignment)
+  - `toggle-active` = nonaktifkan sementara tanpa hapus data
+- Karyawan yang shift-nya dinonaktifkan **otomatis** memakai jadwal default kantor tanpa perlu mengubah assignment
+
+---
+
+# Perubahan — Fitur Minimum Notice Perubahan Shift (2026-07-26)
+
+## Tujuan
+Memastikan HRD memberikan notice minimal **N hari** sebelum jadwal shift baru berlaku bagi karyawan (minimum notice period).
+
+- **N hari** diatur per kantor di **Pengaturan Kantor** (`shift_notice_days`, 0–14 hari).
+- `0` = fitur nonaktif / bebas (default).
+- **Aturan Ketat (Hard Rule)**: Jika HRD melakukan assignment/update shift dengan tanggal mulai kurang dari N hari dari hari ini (misal hari ini tgl 26, N = 2 hari → minimal tanggal 28), sistem akan **MENOLAK (HTTP 422)** dan menampilkan pesan kesalahan:
+  > *"Tanggal mulai shift minimal harus N hari dari hari ini (mulai tanggal DD MMMM YYYY atau setelahnya)."*
+
+## Perubahan Kode Backend
+
+1. **Migration**: `2026_07_26_000001_add_shift_notice_days_to_attendance_settings_table.php`
+   - Kolom `shift_notice_days TINYINT UNSIGNED DEFAULT 0` di tabel `attendance_settings`.
+2. **Model `AttendanceSetting`**:
+   - Fillable `'shift_notice_days'` & Cast `'shift_notice_days' => 'integer'`.
+3. **`AttendanceController@settingRules`**:
+   - Validasi `'shift_notice_days' => 'sometimes|integer|min:0|max:14'`.
+4. **`ShiftController`**:
+   - Helper private `checkNoticeError(User $user, string $startDate): ?string`.
+   - Diintegrasikan sebagai **Hard Error (HTTP 422)** di endpoint `assignShift()`, `updateAssignment()`, dan `bulkAssign()`.
+   - Jika `start_date` < `hari_ini + shift_notice_days`, request diblokir dan mengembalikan error 422.
+
+## Perubahan Kode Frontend Web
+- **`SettingsManagement.tsx` (`OfficesTab`)**:
+  - Tambah input angka "Minimum Notice Perubahan Shift (H-N Hari)" di form tambah & edit kantor.
+- **`ShiftManagement.tsx`**:
+  - Menampilkan pesan error HTTP 422 secara langsung di modal assign jika tanggal tidak memenuhi syarat notice.
+
+---
+
+# Perubahan — Sembunyikan Shift Nonaktif dari Kalender Shift (2026-07-26)
+
+## Tujuan
+Memastikan saat template shift di-nonaktifkan oleh HRD (`is_active = false`), jadwal shift tersebut **otomatis hilang / disembunyikan** dari tampilan kalender (`GET /shifts/calendar`). Jika HRD mengaktifkan kembali shift tersebut (`is_active = true`), jadwal shift akan **muncul kembali** di kalender.
+
+## Perubahan Kode
+- **`ShiftController.php` — method `calendar()`**:
+  - Mengikutsertakan kolom `is_active` saat query relation shift (`with('shift:id,name,color,is_active')`).
+  - Menambahkan pengecekan `$active->shift->is_active` saat menyusun data kalender harian. Shift nonaktif otomatis dilewati dari kalender.
+  - Menambahkan validasi `end_date` assignment agar shift yang sudah berakhir sesuai `end_date` tidak tampil di tanggal-tanggal setelahnya.
+
+

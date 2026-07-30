@@ -350,7 +350,7 @@ export function OvertimeApprovalView() {
     : records;
 
   return (
-    <div className="p-4 md:p-6 space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
+    <div className="p-1 sm:p-2 md:p-3 space-y-3 animate-in fade-in slide-in-from-bottom-2 duration-300">
 
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -412,7 +412,7 @@ export function OvertimeApprovalView() {
       </div>
 
       {/* ── Filter bar ── */}
-      <div className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm space-y-3">
+      <div className="bg-white rounded-xl border border-slate-100 p-3 shadow-sm space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-600">
           <Filter className="w-3.5 h-3.5" /> Filter
         </div>

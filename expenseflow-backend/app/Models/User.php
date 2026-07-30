@@ -12,7 +12,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['company_id', 'employee_code', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at'])]
+#[Fillable(['company_id', 'employee_code', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -27,14 +27,17 @@ class User extends Authenticatable
     protected function casts(): array
     {
         return [
-            'email_verified_at' => 'datetime',
-            'password' => 'hashed',
-            'is_active' => 'boolean',
-            'attendance_enabled' => 'boolean',
-            'wfh_enabled' => 'boolean',
-            'radius_enabled' => 'boolean',
-            'monthly_claim_limit' => 'decimal:2',
-            'device_bound_at' => 'datetime',
+            'email_verified_at'    => 'datetime',
+            'password'             => 'hashed',
+            'is_active'            => 'boolean',
+            'attendance_enabled'   => 'boolean',
+            'wfh_enabled'          => 'boolean',
+            'radius_enabled'       => 'boolean',
+            'monthly_claim_limit'  => 'decimal:2',
+            'device_bound_at'      => 'datetime',
+            'joined_date'          => 'date',
+            'contract_start_date'  => 'date',
+            'contract_end_date'    => 'date',
         ];
     }
 

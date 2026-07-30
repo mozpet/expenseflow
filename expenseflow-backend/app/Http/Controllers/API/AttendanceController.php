@@ -878,7 +878,7 @@ class AttendanceController extends Controller
             ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
             ->when($department, fn ($q, $d) => $q->where('department', $d))
             ->when($officeId, fn ($q, $o) => $q->where('attendance_setting_id', $o))
-            ->select('id', 'name', 'department', 'attendance_setting_id')
+            ->select('id', 'name', 'department', 'attendance_setting_id', 'employee_code')
             ->get();
 
         if ($users->isEmpty()) {
@@ -893,7 +893,7 @@ class AttendanceController extends Controller
             ->whereBetween('attendances.date', [$startDate, $endDate])
             ->select([
                 'attendances.id', 'attendances.user_id',
-                'users.name as user_name', 'users.department',
+                'users.name as user_name', 'users.department', 'users.employee_code',
                 'attendances.date', 'attendances.check_in_time', 'attendances.check_out_time',
                 'attendances.check_in_type', 'attendances.status',
                 'attendances.overtime_minutes', 'attendances.is_holiday',
@@ -984,7 +984,7 @@ class AttendanceController extends Controller
                             $startSchedule = Carbon::parse($dateStr . ' ' . $schedule['work_start_time'], 'Asia/Jakarta');
                             $checkInWib = Carbon::parse($att->check_in_time)->timezone('Asia/Jakarta');
                             if ($checkInWib->greaterThan($startSchedule)) {
-                                $lateMinutes = $startSchedule->diffInMinutes($checkInWib);
+                                $lateMinutes = (int) $startSchedule->diffInMinutes($checkInWib);
                             }
                         }
                     }
@@ -993,6 +993,7 @@ class AttendanceController extends Controller
                         'id'               => $att->id,
                         'user_id'          => $att->user_id,
                         'user_name'        => $att->user_name,
+                        'employee_code'    => $att->employee_code,
                         'department'       => $att->department,
                         'date'             => $dateStr,
                         'checkout_date'    => $checkoutDate,
@@ -1056,6 +1057,7 @@ class AttendanceController extends Controller
                             'id'               => null,
                             'user_id'          => $user->id,
                             'user_name'        => $user->name,
+                            'employee_code'    => $user->employee_code,
                             'department'       => $user->department,
                             'date'             => $dateStr,
                             'checkout_date'    => null,
@@ -1080,6 +1082,7 @@ class AttendanceController extends Controller
                         'id'               => null,
                         'user_id'          => $user->id,
                         'user_name'        => $user->name,
+                        'employee_code'    => $user->employee_code,
                         'department'       => $user->department,
                         'date'             => $dateStr,
                         'checkout_date'    => null,
@@ -1145,14 +1148,17 @@ class AttendanceController extends Controller
         }
         if (!empty($validated['search'])) {
             $searchStr = strtolower($validated['search']);
-            $rows = array_values(array_filter($rows, fn ($r) => str_contains(strtolower($r['user_name'] ?? ''), $searchStr)));
+            $rows = array_values(array_filter($rows, fn ($r) => 
+                str_contains(strtolower($r['user_name'] ?? ''), $searchStr) ||
+                str_contains(strtolower($r['employee_code'] ?? ''), $searchStr)
+            ));
         }
 
         $filename = 'laporan-presensi-' . now()->format('Ymd-His') . '.csv';
 
         return response()->streamDownload(function () use ($rows) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['Nama', 'Departemen', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
+            fputcsv($out, ['NIK', 'Nama', 'Departemen', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
             foreach ($rows as $r) {
                 $mins     = $r['working_minutes'];
                 $jamKerja = $mins !== null
@@ -1164,6 +1170,7 @@ class AttendanceController extends Controller
                     : Carbon::parse($r['date'])->format('d M Y');
 
                 fputcsv($out, [
+                    $r['employee_code'] ?? '-',
                     $r['user_name'],
                     $r['department'] ?? '-',
                     $dateExport,
@@ -1218,7 +1225,10 @@ class AttendanceController extends Controller
         }
         if (!empty($validated['search'])) {
             $searchStr = strtolower($validated['search']);
-            $rows = array_values(array_filter($rows, fn ($r) => str_contains(strtolower($r['user_name'] ?? ''), $searchStr)));
+            $rows = array_values(array_filter($rows, fn ($r) => 
+                str_contains(strtolower($r['user_name'] ?? ''), $searchStr) ||
+                str_contains(strtolower($r['employee_code'] ?? ''), $searchStr)
+            ));
         }
 
         // Hitung summary dari baris yang sudah difilter
@@ -1292,6 +1302,7 @@ class AttendanceController extends Controller
             // Validasi jam kerja mingguan (opsional, bisa di-toggle per kantor)
             'enforce_weekly_hours'           => 'sometimes|boolean',
             'max_weekly_hours'               => 'sometimes|nullable|integer|min:40|max:168',
+            'shift_notice_days'              => 'sometimes|integer|min:0|max:14',
             // Validasi custom_schedules (override per hari)
             'custom_schedules'               => 'sometimes|nullable|array',
             'custom_schedules.*.start'       => 'required_with:custom_schedules|date_format:H:i',
@@ -2498,7 +2509,7 @@ class AttendanceController extends Controller
     {
         $user = $request->user();
 
-        $approvals = OvertimeApproval::where('user_id', $user->id)
+        $approvals = OvertimeApproval::where('overtime_approvals.user_id', $user->id)
             ->join('attendances', 'overtime_approvals.attendance_id', '=', 'attendances.id')
             ->select([
                 'overtime_approvals.id',

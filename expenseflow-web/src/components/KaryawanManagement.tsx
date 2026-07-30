@@ -43,6 +43,11 @@ interface Employee {
   tanggalMasuk?: string;
   officeId: number | null; // attendance_setting_id — kantor penempatan
   officeName: string; // nama kantor untuk tampilan
+  // Tipe hubungan kerja & kontrak
+  employmentType: string | null; // 'PKWTT' | 'PKWT' | 'Probation' | 'Internship' | null
+  joinedDate: string | null;
+  contractStartDate: string | null;
+  contractEndDate: string | null;
 }
 
 // Kantor perusahaan (dari attendance_settings) untuk dropdown penempatan.
@@ -72,7 +77,7 @@ function mapEmployee(u: any): Employee {
     dept: u.department ?? '—',
     jabatan: u.role ?? '—',
     role: u.role ?? 'employee',
-    hp: '—',
+    hp: u.phone ?? '—',
     limit: Number(u.monthly_claim_limit ?? 0),
     loginTerakhir: '—',
     status: u.is_active === false ? 'Nonaktif' : 'Aktif',
@@ -80,11 +85,36 @@ function mapEmployee(u: any): Employee {
     avatarBg: palette.slice(0, 2).join(' '),
     avatarColor: palette.slice(2).join(' '),
     atasan: undefined,
-    tanggalMasuk: u.created_at ? String(u.created_at).split('T')[0] : undefined,
+    tanggalMasuk: u.joined_date ?? (u.created_at ? String(u.created_at).split('T')[0] : undefined),
     officeId: u.attendance_setting_id ?? null,
     officeName: u.office?.office_name ?? '—',
+    employmentType: u.employment_type ?? null,
+    joinedDate: u.joined_date ?? null,
+    contractStartDate: u.contract_start_date ?? null,
+    contractEndDate: u.contract_end_date ?? null,
   };
 }
+
+// ─── Helper: status kontrak PKWT berdasarkan contract_end_date ─────────────
+function contractStatus(endDate: string | null): 'active' | 'near' | 'expired' | null {
+  if (!endDate) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const end = new Date(endDate);
+  end.setHours(0, 0, 0, 0);
+  const diffDays = Math.floor((end.getTime() - today.getTime()) / 86400000);
+  if (diffDays < 0) return 'expired';
+  if (diffDays <= 30) return 'near';
+  return 'active';
+}
+
+// ─── Helper: config badge employment type ──────────────────────────────────
+const EMPLOYMENT_BADGE: Record<string, { label: string; cls: string }> = {
+  PKWTT:      { label: 'Tetap',    cls: 'bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400' },
+  PKWT:       { label: 'Kontrak',  cls: 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400' },
+  Probation:  { label: 'Probasi',  cls: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400' },
+  Internship: { label: 'Magang',   cls: 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400' },
+};
 
 interface ActivityLog {
   waktu: string;
@@ -141,6 +171,8 @@ export const KaryawanManagement: React.FC<{
   // State Variables
   const [activeTab, setActiveTab] = useState<'all' | 'Aktif' | 'Nonaktif' | 'Belum login'>('all');
   const [selectedDept, setSelectedDept] = useState<string>('Semua dept');
+  const [selectedOffice, setSelectedOffice] = useState<string>('Semua kantor');
+  const [selectedEmploymentType, setSelectedEmploymentType] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
   
   // Views/Forms controllers
@@ -151,11 +183,16 @@ export const KaryawanManagement: React.FC<{
   const [editModalTab, setEditModalTab] = useState<'info' | 'limit' | 'log'>('info');
   const [editForm, setEditForm] = useState({
     nama: '',
+    nik: '',
     dept: '',
     jabatan: '',
     hp: '',
     limit: 2000000,
-    officeId: '' as number | '' // '' = belum ditentukan
+    officeId: '' as number | '', // '' = belum ditentukan
+    employmentType: '' as string,
+    joinedDate: '',
+    contractStartDate: '',
+    contractEndDate: '',
   });
 
   const [resetPwdEmployee, setResetPwdEmployee] = useState<Employee | null>(null);
@@ -188,7 +225,11 @@ export const KaryawanManagement: React.FC<{
     limit: 2000000,
     password: 'Maju2026!',
     confirmPassword: 'Maju2026!',
-    showPassword: false
+    showPassword: false,
+    employmentType: '',
+    joinedDate: new Date().toISOString().split('T')[0],
+    contractStartDate: '',
+    contractEndDate: '',
   });
 
   // Reusable General Confirmation Dialog state
@@ -225,9 +266,12 @@ export const KaryawanManagement: React.FC<{
                           e.email.toLowerCase().includes(searchQuery.toLowerCase());
       const matchDept = selectedDept === 'Semua dept' || e.dept === selectedDept;
       const matchStatus = activeTab === 'all' || e.status === activeTab;
-      return matchSearch && matchDept && matchStatus;
+      const matchOffice = selectedOffice === 'Semua kantor' ||
+                          (selectedOffice === 'tanpa_kantor' ? !e.officeId : e.officeId === Number(selectedOffice));
+      const matchEmploymentType = !selectedEmploymentType || e.employmentType === selectedEmploymentType;
+      return matchSearch && matchDept && matchStatus && matchOffice && matchEmploymentType;
     });
-  }, [employees, searchQuery, selectedDept, activeTab]);
+  }, [employees, searchQuery, selectedDept, activeTab, selectedOffice, selectedEmploymentType]);
 
   // Currency utility formatting helper
   const formatCurrency = (val: number) => {
@@ -297,6 +341,10 @@ export const KaryawanManagement: React.FC<{
         department: addForm.dept || undefined,
         attendance_setting_id: addForm.officeId === '' ? null : addForm.officeId,
         monthly_claim_limit: addForm.limit,
+        employment_type: addForm.employmentType || null,
+        joined_date: addForm.joinedDate || null,
+        contract_start_date: addForm.employmentType === 'PKWT' ? (addForm.contractStartDate || null) : null,
+        contract_end_date: addForm.employmentType === 'PKWT' ? (addForm.contractEndDate || null) : null,
       });
       await loadEmployees();
       onAddAuditLog('Karyawan Baru Terdaftar', `Menambahkan karyawan baru: ${addForm.nama} - Role: ${addForm.role}`, 'bg-indigo-600');
@@ -317,7 +365,11 @@ export const KaryawanManagement: React.FC<{
         limit: 2000000,
         password: 'Maju2026!',
         confirmPassword: 'Maju2026!',
-        showPassword: false
+        showPassword: false,
+        employmentType: '',
+        joinedDate: new Date().toISOString().split('T')[0],
+        contractStartDate: '',
+        contractEndDate: '',
       });
       setViewMode('list');
     } catch (err) {
@@ -333,11 +385,16 @@ export const KaryawanManagement: React.FC<{
     setEditModalTab('info');
     setEditForm({
       nama: emp.nama,
+      nik: emp.id.startsWith('EMP-') ? '' : emp.id,
       dept: emp.dept,
-      jabatan: emp.jabatan,
-      hp: emp.hp,
+      jabatan: emp.role,
+      hp: emp.hp === '—' ? '' : emp.hp,
       limit: emp.limit,
-      officeId: emp.officeId ?? ''
+      officeId: emp.officeId ?? '',
+      employmentType: emp.employmentType ?? '',
+      joinedDate: emp.joinedDate ?? '',
+      contractStartDate: emp.contractStartDate ?? '',
+      contractEndDate: emp.contractEndDate ?? '',
     });
   };
 
@@ -348,9 +405,16 @@ export const KaryawanManagement: React.FC<{
     try {
       await userApi.update(editEmployee.backendId, {
         name: editForm.nama,
+        employee_code: editForm.nik || undefined,
+        phone: editForm.hp || undefined,
+        role: editForm.jabatan || undefined,
         department: editForm.dept || undefined,
         attendance_setting_id: editForm.officeId === '' ? null : editForm.officeId,
         monthly_claim_limit: editForm.limit,
+        employment_type: editForm.employmentType || null,
+        joined_date: editForm.joinedDate || null,
+        contract_start_date: editForm.employmentType === 'PKWT' ? (editForm.contractStartDate || null) : null,
+        contract_end_date: editForm.employmentType === 'PKWT' ? (editForm.contractEndDate || null) : null,
       });
       await loadEmployees();
       onAddAuditLog('Update Profil Karyawan', `Profil ${editForm.nama} (${editEmployee.id}) diperbarui`, 'bg-indigo-600');
@@ -573,17 +637,41 @@ export const KaryawanManagement: React.FC<{
                 </button>
               </div>
 
-              {/* Department and Search query inputs */}
-              <div className="flex items-center gap-2">
+              {/* Department, Office and Search query inputs */}
+              <div className="flex flex-wrap items-center gap-2">
+                <select 
+                  value={selectedOffice}
+                  onChange={(e) => setSelectedOffice(e.target.value)}
+                  className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                >
+                  <option value="Semua kantor">Semua kantor</option>
+                  {offices.map(o => (
+                    <option key={o.id} value={o.id}>{o.office_name}</option>
+                  ))}
+                  <option value="tanpa_kantor">Tanpa Kantor</option>
+                </select>
+
                 <select 
                   value={selectedDept}
                   onChange={(e) => setSelectedDept(e.target.value)}
-                  className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                 >
                   <option value="Semua dept">Semua dept</option>
                   {departments.map(d => (
                     <option key={d} value={d}>{d}</option>
                   ))}
+                </select>
+
+                <select 
+                  value={selectedEmploymentType}
+                  onChange={(e) => setSelectedEmploymentType(e.target.value)}
+                  className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
+                >
+                  <option value="">Semua Tipe Kerja</option>
+                  <option value="PKWTT">PKWTT (Tetap)</option>
+                  <option value="PKWT">PKWT (Kontrak)</option>
+                  <option value="Probation">Probasi</option>
+                  <option value="Internship">Magang</option>
                 </select>
 
                 <div className="relative flex-1 min-w-[160px]">
@@ -610,8 +698,8 @@ export const KaryawanManagement: React.FC<{
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Departemen</th>
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Jabatan</th>
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '120px' }}>Batas Klaim</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '120px' }}>Login Terakhir</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '90px' }}>Status</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '120px' }}>Nomor HP</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '130px' }}>Status & Kontrak</th>
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '220px' }}>Aksi</th>
                   </tr>
                 </thead>
@@ -663,80 +751,117 @@ export const KaryawanManagement: React.FC<{
                       </td>
                     </tr>
                   ) : (
-                    filteredEmployees.map((emp) => (
-                      <tr 
-                        key={emp.id} 
-                        className="hover:bg-slate-50/40 dark:hover:bg-slate-850/10 border-b border-slate-100 dark:border-slate-805/40 transition last:border-b-0"
-                      >
-                        {/* Karyawan Profile */}
-                        <td className="py-3 px-4">
-                          <div className="flex items-center gap-2.5">
-                            <span className={`w-7.5 h-7.5 rounded-full flex items-center justify-center font-bold text-xs shrink-0 select-none ${emp.avatarBg} ${emp.avatarColor}`}>
-                              {emp.initials}
-                            </span>
-                            <div className="min-w-0">
-                              <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{emp.nama}</p>
-                              <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate mt-0.5">{emp.email}</p>
+                    filteredEmployees.map((emp) => {
+                      const cStat = contractStatus(emp.contractEndDate);
+                      const badgeInfo = emp.employmentType ? EMPLOYMENT_BADGE[emp.employmentType] : null;
+
+                      return (
+                        <tr 
+                          key={emp.id} 
+                          className="hover:bg-slate-50/40 dark:hover:bg-slate-850/10 border-b border-slate-100 dark:border-slate-805/40 transition last:border-b-0"
+                        >
+                          {/* Karyawan Profile */}
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2.5">
+                              <span className={`w-7.5 h-7.5 rounded-full flex items-center justify-center font-bold text-xs shrink-0 select-none ${emp.avatarBg} ${emp.avatarColor}`}>
+                                {emp.initials}
+                              </span>
+                              <div className="min-w-0">
+                                <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate leading-tight">{emp.nama}</p>
+                                <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate mt-0.5">{emp.email}</p>
+                              </div>
                             </div>
-                          </div>
-                        </td>
+                          </td>
 
-                        {/* NIK */}
-                        <td className="py-3 px-4">
-                          <span className="text-[11px] font-semibold text-slate-500 font-mono tracking-tight">{emp.id}</span>
-                        </td>
+                          {/* NIK */}
+                          <td className="py-3 px-4">
+                            <span className="text-[11px] font-semibold text-slate-500 font-mono tracking-tight">{emp.id}</span>
+                          </td>
 
-                        {/* Dept + Kantor */}
-                        <td className="py-3 px-4">
-                          <span className="text-xs font-semibold text-slate-700 dark:text-slate-350 block">{emp.dept}</span>
-                          {emp.officeId && (
-                            <span className="text-[10px] text-indigo-500 dark:text-indigo-400 flex items-center gap-1 mt-0.5">
-                              <Building className="w-3 h-3 shrink-0" />
-                              {emp.officeName}
-                            </span>
-                          )}
-                        </td>
+                          {/* Dept + Kantor */}
+                          <td className="py-3 px-4">
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-350 block">{emp.dept}</span>
+                            {emp.officeId && (
+                              <span className="text-[10px] text-indigo-500 dark:text-indigo-400 flex items-center gap-1 mt-0.5">
+                                <Building className="w-3 h-3 shrink-0" />
+                                {emp.officeName}
+                              </span>
+                            )}
+                          </td>
 
-                        {/* Jabatan */}
-                        <td className="py-3 px-4">
-                          <span className="text-[11px] text-slate-500 dark:text-slate-400">{emp.jabatan}</span>
-                        </td>
+                          {/* Jabatan */}
+                          <td className="py-3 px-4">
+                            <span className="text-[11px] text-slate-500 dark:text-slate-400">{emp.jabatan}</span>
+                          </td>
 
-                        {/* Limit */}
-                        <td className="py-3 px-4">
-                          <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono">{formatCurrency(emp.limit)}</span>
-                        </td>
+                          {/* Limit */}
+                          <td className="py-3 px-4">
+                            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono">{formatCurrency(emp.limit)}</span>
+                          </td>
 
-                        {/* Last Login */}
-                        <td className="py-3 px-4">
-                          {emp.loginTerakhir === 'Belum pernah' ? (
-                            <span className="text-[10px] text-amber-600 dark:text-amber-500 font-semibold">{emp.loginTerakhir}</span>
-                          ) : (
-                            <span className="text-[10px] text-slate-500 dark:text-slate-400">{emp.loginTerakhir}</span>
-                          )}
-                        </td>
+                          {/* Nomor HP */}
+                          <td className="py-3 px-4 whitespace-nowrap">
+                            <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">{emp.hp}</span>
+                          </td>
 
-                        {/* Status badge */}
-                        <td className="py-3 px-4">
-                          {emp.status === 'Aktif' && (
-                            <span className="inline-flex items-center gap-1.5 px-2 py-1 text-[10px] font-bold text-emerald-600 dark:text-emerald-450 bg-emerald-50 dark:bg-emerald-950/20 rounded-full">
-                              <Check className="w-3 h-3 shrink-0" />
-                              <span>Aktif</span>
-                            </span>
-                          )}
-                          {emp.status === 'Nonaktif' && (
-                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold text-rose-600 dark:text-rose-450 bg-rose-50 dark:bg-rose-950/20 rounded-full">
-                              <Ban className="w-3 h-3 shrink-0" />
-                              <span>Nonaktif</span>
-                            </span>
-                          )}
-                          {emp.status === 'Belum login' && (
-                            <span className="inline-flex items-center gap-1.5 px-2 py-0.5 text-[10px] font-bold text-amber-600 dark:text-amber-450 bg-amber-50 dark:bg-amber-950/20 rounded-full whitespace-nowrap">
-                              <Clock className="w-3 h-3 shrink-0" />
-                              <span>Belum login</span>
-                            </span>
-                          )}
-                        </td>
+                          {/* Status & Tipe Kerja / Kontrak */}
+                          <td className="py-3 px-4 space-y-1">
+                            <div className="flex flex-wrap items-center gap-1">
+                              {/* Status Akun */}
+                              {emp.status === 'Aktif' && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-450 bg-emerald-50 dark:bg-emerald-950/20 rounded-full">
+                                  <Check className="w-2.5 h-2.5 shrink-0" />
+                                  <span>Aktif</span>
+                                </span>
+                              )}
+                              {emp.status === 'Nonaktif' && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-rose-600 dark:text-rose-450 bg-rose-50 dark:bg-rose-950/20 rounded-full">
+                                  <Ban className="w-2.5 h-2.5 shrink-0" />
+                                  <span>Nonaktif</span>
+                                </span>
+                              )}
+                              {emp.status === 'Belum login' && (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-amber-600 dark:text-amber-450 bg-amber-50 dark:bg-amber-950/20 rounded-full whitespace-nowrap">
+                                  <Clock className="w-2.5 h-2.5 shrink-0" />
+                                  <span>Belum login</span>
+                                </span>
+                              )}
+
+                              {/* Badge Tipe Kerja */}
+                              {badgeInfo && (
+                                <span className={`inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full ${badgeInfo.cls}`}>
+                                  {badgeInfo.label}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Indikator Status Kontrak PKWT */}
+                            {emp.employmentType === 'PKWT' && (
+                              <div className="mt-0.5">
+                                {cStat === 'active' && (
+                                  <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50/80 dark:bg-emerald-950/30 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-800/40">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                    s.d {emp.contractEndDate} (Aktif)
+                                  </span>
+                                )}
+                                {cStat === 'near' && (
+                                  <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-200 dark:border-amber-800/40" title="Kontrak berakhir <= 30 hari lagi">
+                                    <AlertTriangle className="w-2.5 h-2.5 shrink-0 text-amber-600" />
+                                    Hampir Expired ({emp.contractEndDate})
+                                  </span>
+                                )}
+                                {cStat === 'expired' && (
+                                  <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 px-1.5 py-0.5 rounded border border-rose-200 dark:border-rose-800/40">
+                                    <Ban className="w-2.5 h-2.5 shrink-0 text-rose-600" />
+                                    Expired ({emp.contractEndDate})
+                                  </span>
+                                )}
+                                {!cStat && (
+                                  <span className="text-[9px] text-slate-400 italic">Kontrak: Tgl belum diset</span>
+                                )}
+                              </div>
+                            )}
+                          </td>
 
                         {/* Action Buttons */}
                         <td className="py-3 px-4">
@@ -780,8 +905,9 @@ export const KaryawanManagement: React.FC<{
                         </td>
 
                       </tr>
-                    ))
-                  )}
+                    );
+                  })
+                )}
                 </tbody>
               </table>
             </div>
@@ -925,6 +1051,63 @@ export const KaryawanManagement: React.FC<{
                   <option value="super_admin">Super Admin</option>
                 </select>
               </div>
+
+              <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">Tipe Hubungan Kerja & Kontrak</span>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tipe Kerja</label>
+                  <select
+                    value={addForm.employmentType}
+                    onChange={(e) => setAddForm({ ...addForm, employmentType: e.target.value })}
+                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                  >
+                    <option value="">Belum ditentukan</option>
+                    <option value="PKWTT">PKWTT (Karyawan Tetap)</option>
+                    <option value="PKWT">PKWT (Karyawan Kontrak)</option>
+                    <option value="Probation">Probasi (Masa Percobaan)</option>
+                    <option value="Internship">Magang / Internship</option>
+                  </select>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Bergabung</label>
+                  <input
+                    type="date"
+                    value={addForm.joinedDate}
+                    onChange={(e) => setAddForm({ ...addForm, joinedDate: e.target.value, tanggalMasuk: e.target.value })}
+                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-801/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                  />
+                </div>
+              </div>
+
+              {/* Conditional dates for PKWT (Kontrak) */}
+              {addForm.employmentType === 'PKWT' && (
+                <div className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 rounded-xl space-y-3">
+                  <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
+                    <Clock className="w-3.5 h-3.5" /> Masa Berlaku Kontrak (PKWT)
+                  </p>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Mulai Kontrak</label>
+                      <input
+                        type="date"
+                        value={addForm.contractStartDate}
+                        onChange={(e) => setAddForm({ ...addForm, contractStartDate: e.target.value })}
+                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Selesai Kontrak</label>
+                      <input
+                        type="date"
+                        value={addForm.contractEndDate}
+                        onChange={(e) => setAddForm({ ...addForm, contractEndDate: e.target.value })}
+                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
 
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Atasan Langsung</label>
@@ -1121,12 +1304,12 @@ export const KaryawanManagement: React.FC<{
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-505 block">NIK (tidak bisa diubah)</label>
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-505 block">NIK (sementara dapat diubah)</label>
                       <input 
                         type="text" 
-                        value={editEmployee.id}
-                        disabled
-                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 text-slate-505 dark:text-slate-450 font-mono focus:outline-none"
+                        value={editForm.nik}
+                        onChange={(e) => setEditForm({...editForm, nik: e.target.value})}
+                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                       />
                     </div>
                   </div>
@@ -1155,13 +1338,18 @@ export const KaryawanManagement: React.FC<{
                       </select>
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Jabatan *</label>
-                      <input 
-                        type="text" 
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Role/Jabatan *</label>
+                      <select 
                         value={editForm.jabatan}
                         onChange={(e) => setEditForm({...editForm, jabatan: e.target.value})}
                         className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                      />
+                      >
+                        <option value="employee">Employee</option>
+                        <option value="finance">Finance</option>
+                        <option value="hrd">HRD</option>
+                        <option value="admin">Admin</option>
+                        <option value="super_admin">Super Admin</option>
+                      </select>
                     </div>
                   </div>
 
@@ -1185,13 +1373,68 @@ export const KaryawanManagement: React.FC<{
                       type="text"
                       value={editForm.hp}
                       onChange={(e) => setEditForm({...editForm, hp: e.target.value})}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
 
+                  <div className="grid grid-cols-2 gap-3.5 pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tipe Kerja</label>
+                      <select
+                        value={editForm.employmentType}
+                        onChange={(e) => setEditForm({...editForm, employmentType: e.target.value})}
+                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      >
+                        <option value="">Belum ditentukan</option>
+                        <option value="PKWTT">PKWTT (Tetap)</option>
+                        <option value="PKWT">PKWT (Kontrak)</option>
+                        <option value="Probation">Probasi</option>
+                        <option value="Internship">Magang</option>
+                      </select>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Bergabung</label>
+                      <input
+                        type="date"
+                        value={editForm.joinedDate}
+                        onChange={(e) => setEditForm({...editForm, joinedDate: e.target.value})}
+                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Conditional dates for PKWT in Edit modal */}
+                  {editForm.employmentType === 'PKWT' && (
+                    <div className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 rounded-xl space-y-3">
+                      <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5" /> Masa Berlaku Kontrak (PKWT)
+                      </p>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Mulai Kontrak</label>
+                          <input
+                            type="date"
+                            value={editForm.contractStartDate}
+                            onChange={(e) => setEditForm({...editForm, contractStartDate: e.target.value})}
+                            className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Selesai Kontrak</label>
+                          <input
+                            type="date"
+                            value={editForm.contractEndDate}
+                            onChange={(e) => setEditForm({...editForm, contractEndDate: e.target.value})}
+                            className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="p-3 bg-indigo-50/40 dark:bg-indigo-950/15 border border-indigo-100 dark:border-indigo-900/30 rounded-xl text-[11px] text-indigo-900 dark:text-indigo-400 flex items-start gap-1.5 leading-relaxed">
                     <Info className="w-4.5 h-4.5 shrink-0 text-indigo-600" />
-                    <span>Email dan NIK tidak bisa diubah karena digunakan sebagai identitas audit log dan otentikasi login mobile app. Jika ada kesalahan input, hubungi Super Admin.</span>
+                    <span>Email tidak bisa diubah karena digunakan sebagai otentikasi login mobile app. NIK dibuka sementara untuk dapat diedit. Jika ada kesalahan input email, hubungi Super Admin.</span>
                   </div>
                 </div>
               )}

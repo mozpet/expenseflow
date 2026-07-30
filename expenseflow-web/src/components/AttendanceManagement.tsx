@@ -283,6 +283,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [docModal, setDocModal] = useState<{ url: string; isPdf: boolean; userName: string } | null>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [userSearch, setUserSearch] = useState('');
+  const [userOfficeFilter, setUserOfficeFilter] = useState('');
   const [balances, setBalances] = useState<any[]>([]);
   const [balanceSearch, setBalanceSearch] = useState('');
   const [togglingUserId, setTogglingUserId] = useState<number | null>(null);
@@ -993,27 +994,46 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <Home className="w-4 h-4 shrink-0 mt-0.5" />
               <span>Mode WFH ON → karyawan bisa presensi dari rumah via aplikasi mobile. OFF → presensi hanya di kantor (perangkat presensi). Radius ON → presensi mobile wajib dalam radius area kerja (mode lapangan).</span>
             </div>
-            <div className="relative mb-3">
-              <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-              <input
-                type="text"
-                placeholder="Cari nama karyawan..."
-                value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
-                className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-              />
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mb-3">
+              <div className="relative flex-1">
+                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Cari nama karyawan..."
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                />
+              </div>
+              <select
+                value={userOfficeFilter}
+                onChange={(e) => setUserOfficeFilter(e.target.value)}
+                className="py-2 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+              >
+                <option value="">Semua Kantor</option>
+                {offices.map(o => (
+                  <option key={o.id} value={o.id}>{o.office_name}</option>
+                ))}
+                <option value="null">Tanpa Kantor</option>
+              </select>
             </div>
             <div className="overflow-x-auto">
               {(() => {
-                const filtered = users.filter(u =>
-                  u.name.toLowerCase().includes(userSearch.toLowerCase())
-                );
+                const filtered = users.filter(u => {
+                  const matchSearch = u.name.toLowerCase().includes(userSearch.toLowerCase());
+                  const matchOffice = !userOfficeFilter ||
+                    (userOfficeFilter === 'null'
+                      ? !u.attendance_setting_id
+                      : String(u.attendance_setting_id) === String(userOfficeFilter));
+                  return matchSearch && matchOffice;
+                });
                 return (
                   <table className="w-full text-xs text-left">
                     <thead>
                       <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
                         <th className="py-2 px-2 font-semibold">Nama</th>
                         <th className="py-2 px-2 font-semibold">Departemen</th>
+                        <th className="py-2 px-2 font-semibold">Kantor</th>
                         <th className="py-2 px-2 font-semibold">Role</th>
                         <th className="py-2 px-2 font-semibold text-center">Mode WFH</th>
                         <th className="py-2 px-2 font-semibold text-center">Radius Lapangan</th>
@@ -1021,12 +1041,13 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     </thead>
                     <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
                       {filtered.length === 0 ? (
-                        <tr><td colSpan={5} className="text-center py-8 text-slate-400">{userSearch ? `Tidak ada karyawan dengan nama "${userSearch}".` : 'Tidak ada karyawan.'}</td></tr>
+                        <tr><td colSpan={6} className="text-center py-8 text-slate-400">{userSearch || userOfficeFilter ? 'Tidak ada karyawan yang cocok dengan filter.' : 'Tidak ada karyawan.'}</td></tr>
                       ) : (
                         filtered.map((u) => (
                           <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
                             <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">{u.name}</td>
                             <td className="py-2.5 px-2 text-slate-500">{u.department ?? '—'}</td>
+                            <td className="py-2.5 px-2 text-slate-500">{u.office?.office_name ?? u.office_name ?? '—'}</td>
                             <td className="py-2.5 px-2 text-slate-500 capitalize">{u.role}</td>
                             <td className="py-2.5 px-2 text-center">
                               <button
@@ -1280,10 +1301,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 </select>
               </div>
               <div className="pt-2 flex gap-2">
-                <button onClick={() => setShowLegend(true)} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-xs font-bold transition">
-                  <Info className="w-3.5 h-3.5" /> Panduan
-                </button>
-                <button onClick={handleExport} className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition">
+                <button onClick={handleExport} className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition">
                   <Download className="w-3.5 h-3.5" /> Export CSV
                 </button>
               </div>
@@ -1312,6 +1330,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <table className="w-full text-xs text-left">
                   <thead>
                     <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                      <th className="py-2 px-2 font-semibold">NIK</th>
                       <th className="py-2 px-2 font-semibold">
                         <button
                           onClick={() => setReportNameSort(s => s === 'asc' ? 'desc' : 'asc')}
@@ -1371,6 +1390,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                               : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
                               }`}
                           >
+                            <td className="py-3 px-2 text-slate-500 whitespace-nowrap font-mono text-[11px]">{r.employee_code ?? '—'}</td>
                             <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">{r.user_name}</td>
                             <td className="py-3 px-2 text-slate-500 whitespace-nowrap">{r.department ?? '—'}</td>
                             <td className="py-3 px-2 text-slate-500 whitespace-nowrap">

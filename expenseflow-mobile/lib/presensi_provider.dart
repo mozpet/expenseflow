@@ -353,37 +353,29 @@ class PresensiProvider extends ChangeNotifier {
           _todayOvertimeMinutes = (m['overtime_minutes'] as num?)?.toInt() ?? 0;
         }
       }
-      // Muat status approval lembur dan pasang ke masing-masing record
-      await _loadOvertimeStatuses();
-    } catch (_) {
-      // diamkan — UI tetap tampil dengan data yang ada
+      // overtimeStatus sudah diambil dari overtime_approval di response myAttendance()
+      // — tidak perlu request tambahan ke my-overtime
+    } catch (e, st) {
+      // Tampilkan error di debug console agar mudah dideteksi saat development
+      debugPrint('[PresensiProvider] fetchMyAttendance error: $e');
+      debugPrint('$st');
     }
     _loadingHistory = false;
     notifyListeners();
   }
 
-  // ─── Muat status overtime approval & pasang ke records ────────────────
-  Future<void> _loadOvertimeStatuses() async {
+  // ─── Fetch daftar overtime approval (untuk halaman riwayat lembur tersendiri) ──
+  /// Mengembalikan list raw dari endpoint my-overtime.
+  /// overtimeStatus di PresensiRecord sudah diisi dari myAttendance() —
+  /// method ini hanya dipakai jika ada halaman dedicated riwayat lembur.
+  Future<List<Map<String, dynamic>>> fetchOvertimeApprovals({int page = 1}) async {
     try {
-      final res = await ApiService.myOvertimeApprovals();
-      final approvals = (res['data'] as List?) ?? [];
-      // Map: attendance_id -> status
-      final statusMap = <int, String>{};
-      for (final e in approvals) {
-        final m = e as Map<String, dynamic>;
-        final attId = (m['attendance_id'] as num?)?.toInt() ?? 0;
-        final status = (m['status'] ?? '').toString();
-        if (attId > 0) statusMap[attId] = status;
-      }
-      if (statusMap.isEmpty) return;
-      for (var i = 0; i < _records.length; i++) {
-        final r = _records[i];
-        if (r.id > 0 && statusMap.containsKey(r.id)) {
-          _records[i] = r.copyWith(overtimeStatus: statusMap[r.id]);
-        }
-      }
-    } catch (_) {
-      // gagal ambil status — tidak perlu crash
+      final res = await ApiService.myOvertimeApprovals(page: page);
+      return (res['data'] as List? ?? []).cast<Map<String, dynamic>>();
+    } catch (e, st) {
+      debugPrint('[PresensiProvider] fetchOvertimeApprovals error: $e');
+      debugPrint('$st');
+      return [];
     }
   }
 
