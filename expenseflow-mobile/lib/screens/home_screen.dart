@@ -29,6 +29,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Provider.of<ReceiptProvider>(context, listen: false).fetchMyReceipts();
       Provider.of<ShiftProvider>(context, listen: false).fetchMySchedule();
+      // Cek apakah shift diubah HRD → tampilkan banner di beranda
+      Provider.of<ShiftProvider>(
+        context,
+        listen: false,
+      ).checkShiftUpdates();
       // Sync status presensi saat pertama buka app
       Provider.of<PresensiProvider>(
         context,
@@ -322,7 +327,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                   ),
                 ),
-                const SizedBox(height: 32),
+                const SizedBox(height: 24),
+                // Banner: shift baru diubah oleh HRD
+                if (shiftProv.hasShiftUpdate) ...[
+                  _buildShiftUpdateBanner(shiftProv),
+                  const SizedBox(height: 12),
+                ],
                 // Card jadwal hari ini
                 _buildTodayScheduleCard(shiftProv),
               ],
@@ -456,6 +466,69 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  // ─── Banner: notifikasi shift diubah oleh HRD ──────────────────────────
+  Widget _buildShiftUpdateBanner(ShiftProvider prov) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFE3F2FD),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFF90CAF9)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.campaign, color: Color(0xFF1E88E5), size: 22),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Jadwal shift Anda diperbarui!',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFF0D47A1),
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  prov.shiftUpdateNote ?? '',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Color(0xFF1565C0),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          // Tombol dismiss — tandai sudah dilihat
+          GestureDetector(
+            onTap: () => prov.dismissShiftUpdate(),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E88E5),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Text(
+                'OK',
+                style: TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

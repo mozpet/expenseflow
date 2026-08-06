@@ -50,6 +50,13 @@ interface RosterRow {
   work_end_time: string | null;
   is_off: boolean;
   is_cross_day?: boolean;
+  /** Shift yang sudah di-assign tapi belum aktif (start_date di masa depan) */
+  upcoming_shift?: {
+    shift_id: number;
+    shift_name: string;
+    color: string | null;
+    start_date: string;
+  } | null;
 }
 
 interface CalDayEntry {
@@ -441,8 +448,8 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
                     onClick={() => setColor(c)}
                     title={c}
                     className={`w-7 h-7 rounded-full border-[3px] transition-all ${color === c
-                        ? 'border-slate-800 scale-125 shadow-md'
-                        : 'border-transparent hover:scale-110 hover:border-slate-300'
+                      ? 'border-slate-800 scale-125 shadow-md'
+                      : 'border-transparent hover:scale-110 hover:border-slate-300'
                       }`}
                     style={{ backgroundColor: c }}
                   />
@@ -484,9 +491,9 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
               </label>
               {/* Chip indikator total jam/minggu */}
               <div className={`inline-flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1 rounded-full ${weeklyStatus === 'error' ? 'bg-rose-100 text-rose-700' :
-                  weeklyStatus === 'warning' ? 'bg-amber-100 text-amber-700' :
-                    weeklyStatus === 'safe' ? 'bg-emerald-100 text-emerald-700' :
-                      'bg-slate-100 text-slate-500'
+                weeklyStatus === 'warning' ? 'bg-amber-100 text-amber-700' :
+                  weeklyStatus === 'safe' ? 'bg-emerald-100 text-emerald-700' :
+                    'bg-slate-100 text-slate-500'
                 }`}>
                 <Clock className="w-3 h-3" />
                 {weeklyHours}j/minggu
@@ -543,8 +550,8 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
                       {k3Gaps[s.day_of_week] && (
                         <span
                           className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${k3Gaps[s.day_of_week].status === 'error'
-                              ? 'bg-rose-100 text-rose-700'
-                              : 'bg-amber-100 text-amber-700'
+                            ? 'bg-rose-100 text-rose-700'
+                            : 'bg-amber-100 text-amber-700'
                             }`}
                           title={`Jeda ke ${k3Gaps[s.day_of_week].nextDayName}: ${k3Gaps[s.day_of_week].hours}j`}
                         >
@@ -700,6 +707,10 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!shiftId) {
+      setErr('Silakan pilih shift terlebih dahulu.');
+      return;
+    }
     if (endDate && endDate < startDate) {
       setErr('Tanggal berakhir tidak boleh sebelum tanggal mulai.');
       return;
@@ -780,7 +791,7 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
                 onChange={(e) => setShiftId(e.target.value)}
                 className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
               >
-                <option value="">Default Kantor (ikut jam kantor)</option>
+                <option value="" disabled>— Pilih Shift —</option>
                 {relevantShifts.map((s) => (
                   <option key={s.id} value={s.id}>
                     {s.name}{s.office ? ` — ${s.office.office_name}` : ' — Semua cabang'}
@@ -925,6 +936,10 @@ function BulkAssignModal({ userIds, userNames, shifts, onClose, onSaved }: BulkM
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!shiftId) {
+      setErr('Silakan pilih shift terlebih dahulu.');
+      return;
+    }
     if (endDate && endDate < startDate) {
       setErr('Tanggal berakhir tidak boleh sebelum tanggal mulai.');
       return;
@@ -991,7 +1006,7 @@ function BulkAssignModal({ userIds, userNames, shifts, onClose, onSaved }: BulkM
                   onChange={(e) => setShiftId(e.target.value)}
                   className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
                 >
-                  <option value="">Default Kantor (ikut jam kantor)</option>
+                  <option value="" disabled>— Pilih Shift —</option>
                   {shifts.filter((s) => s.is_active).map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name}{s.office ? ` — ${s.office.office_name}` : ' — Semua cabang'}
@@ -1221,13 +1236,30 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       return next;
     });
 
+  // ID cabang dari karyawan yang sedang dipilih (untuk auto-filter roster).
+  const selectedBranchIds = useMemo(() => {
+    const ids = new Set<number>();
+    roster.forEach((r) => {
+      if (selected.has(r.user_id) && r.attendance_setting_id != null) {
+        ids.add(r.attendance_setting_id);
+      }
+    });
+    return ids;
+  }, [roster, selected]);
+
   const filteredRoster = useMemo(() => {
     return roster.filter((r) => {
+      // Auto-filter: jika ada karyawan yang dicentang, hanya tampilkan karyawan
+      // dengan kantor cabang yang sama (memudahkan bulk assign per tim cabang).
+      if (selectedBranchIds.size > 0) {
+        if (r.attendance_setting_id == null) return false;
+        if (!selectedBranchIds.has(r.attendance_setting_id)) return false;
+      }
       if (!rosterShiftName) return true;
       if (rosterShiftName === 'DEFAULT') return r.source === 'office';
       return r.shift_name === rosterShiftName;
     });
-  }, [roster, rosterShiftName]);
+  }, [roster, rosterShiftName, selectedBranchIds]);
 
   const toggleSelectAll = () =>
     setSelected((prev) =>
@@ -1237,6 +1269,15 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     );
 
   const selectedNames = roster.filter((r) => selected.has(r.user_id)).map((r) => r.name);
+
+  // Nama cabang dari karyawan yang sedang dipilih — untuk keterangan auto-filter.
+  const selectedBranchNames = useMemo(() => {
+    if (selectedBranchIds.size === 0) return '';
+    return offices
+      .filter((o) => selectedBranchIds.has(o.id))
+      .map((o) => o.office_name)
+      .join(', ');
+  }, [selectedBranchIds, offices]);
 
   // ── Filter template berdasarkan cabang (client-side, tanpa request baru) ──
   // Shift company-wide (attendance_setting_id = null) selalu tampil di semua pilihan cabang.
@@ -1253,15 +1294,6 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     <div className="p-4 md:p-6 space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-            <CalendarClock className="w-5 h-5 text-indigo-500" />
-            Manajemen Shift &amp; Jadwal Kerja
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Atur jam kerja khusus per karyawan &amp; cabang (mis. masuk Sabtu/Minggu) menimpa jam kantor default.
-          </p>
-        </div>
         <button
           onClick={() => { loadShifts(); if (tab === 'roster') loadRoster(); }}
           className="self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
@@ -1281,8 +1313,8 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
             key={t.key}
             onClick={() => setTab(t.key)}
             className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition ${tab === t.key
-                ? 'border-indigo-500 text-indigo-600'
-                : 'border-transparent text-slate-400 hover:text-slate-600'
+              ? 'border-indigo-500 text-indigo-600'
+              : 'border-transparent text-slate-400 hover:text-slate-600'
               }`}
           >
             {t.icon}
@@ -1308,6 +1340,15 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         <div className="space-y-4">
           {/* Filter bar */}
           <div className="bg-white rounded-2xl border border-slate-100 p-4 shadow-sm">
+            {/* Auto-filter info: centang karyawan → daftar menyaring ke cabang yang sama */}
+            {selectedBranchIds.size > 0 && (
+              <div className="flex items-center gap-2 bg-indigo-50 border border-indigo-200 rounded-lg px-3 py-2 mb-3 text-[11px] text-indigo-700 animate-in fade-in duration-200">
+                <Users className="w-3.5 h-3.5 shrink-0" />
+                <span>
+                  <strong>Auto-filter cabang aktif:</strong> daftar menampilkan karyawan dengan cabang <strong>{selectedBranchNames}</strong> ({selected.size} dipilih). Hapus centang atau tekan <em>Batal pilih</em> untuk melihat semua.
+                </span>
+              </div>
+            )}
             <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
               <div>
                 <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Tanggal</label>
@@ -1485,7 +1526,27 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         <td className="py-3 px-3 text-slate-600">{r.branch ?? <span className="text-slate-300">—</span>}</td>
                         <td className="py-3 px-3"><SourceBadge source={r.source} isOff={r.is_off} /></td>
                         <td className="py-3 px-3 text-slate-700">
-                          {r.shift_name ?? <span className="text-slate-300">—</span>}
+                          {r.shift_name ?? (
+                            r.upcoming_shift
+                              ? null // ada shift coming soon → jangan tampilkan strip
+                              : <span className="text-slate-300">—</span>
+                          )}
+                          {/* Shift yang sudah di-assign tapi belum aktif (coming soon) */}
+                          {r.upcoming_shift && (
+                            <div className="mt-1 space-y-0.5">
+                              <span
+                                className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                                title={`Shift '${r.upcoming_shift.shift_name}' aktif mulai ${fmtDate(r.upcoming_shift.start_date)}`}
+                              >
+                                <Clock className="w-2.5 h-2.5 shrink-0" />
+                                Coming Soon
+                              </span>
+                              <p className="text-[10px] font-semibold text-amber-700 leading-tight">
+                                {r.upcoming_shift.shift_name}
+                                <span className="text-slate-400 font-normal"> · Aktif {fmtDate(r.upcoming_shift.start_date)}</span>
+                              </p>
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 px-3 text-center font-mono text-slate-700">
                           {r.is_off ? (
@@ -1837,9 +1898,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     {/* Nomor tanggal */}
                     <div className="flex items-center justify-between px-0.5">
                       <span className={`text-xs font-bold leading-none ${!isCurrentMonth ? 'text-slate-300'
-                          : isToday ? 'w-5 h-5 rounded-full bg-indigo-500 text-white flex items-center justify-center text-[10px]'
-                            : isWeekend ? 'text-rose-400'
-                              : 'text-slate-700'
+                        : isToday ? 'w-5 h-5 rounded-full bg-indigo-500 text-white flex items-center justify-center text-[10px]'
+                          : isWeekend ? 'text-rose-400'
+                            : 'text-slate-700'
                         }`}>
                         {isCurrentMonth ? dayNum : ''}
                       </span>

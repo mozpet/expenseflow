@@ -190,16 +190,18 @@ class AutoCheckoutCommand extends Command
     {
         $user = $attendance->user;
 
-        // Hitung jam kerja
-        $checkOutTime = $nowUtc;
-        $workMinutes  = (int) $attendance->check_in_time->diffInMinutes($checkOutTime);
-
         // Ambil jadwal efektif karyawan pada tanggal shift aslinya.
         // Untuk shift malam (check-in kemarin, checkout pagi ini), $attDate = kemarin —
         // sehingga resolveSchedule() membaca jadwal shift malam, bukan jadwal hari ini.
+        $checkOutTime = $nowUtc;
         $schedule = $user
             ? ShiftController::resolveSchedule($user, $attDate)
             : null;
+
+        // Hitung jam kerja dari jam JADWAL masuk (bukan jam check-in).
+        // Konsisten dengan manual checkOut() di AttendanceController.
+        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate);
+        $workMinutes = (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta'));
 
         // Tentukan hari libur/weekend menurut kalender (libur nasional/weekend).
         // Dipakai untuk field is_holiday — samakan persis dengan checkOut() manual.
@@ -382,4 +384,24 @@ class AutoCheckoutCommand extends Command
         $sisa = $minutes % 60;
         return $sisa === 0 ? "{$jam}j" : "{$jam}j {$sisa}m";
     }
+
+    // ─── Helper: tentukan titik awal perhitungan jam kerja ───────────────────
+    //     Sama persis dengan resolveWorkStart() di AttendanceController.
+    //     Jam kerja dihitung mulai dari jam JADWAL masuk, bukan jam check-in.
+    //     Jika check-in sebelum jadwal → titik awal = jadwal (tidak ada bonus jam).
+    //     Jika check-in terlambat     → titik awal = jam check-in aktual.
+    private function resolveWorkStart(Carbon $checkInTime, ?array $schedule, string $date): Carbon
+    {
+        $workStartStr = $schedule['work_start_time'] ?? null;
+
+        if (! $workStartStr) {
+            return $checkInTime->copy()->setTimezone('Asia/Jakarta');
+        }
+
+        $workStart  = Carbon::parse($date . ' ' . $workStartStr, 'Asia/Jakarta');
+        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
+
+        return $checkInWib->greaterThan($workStart) ? $checkInWib : $workStart;
+    }
 }
+

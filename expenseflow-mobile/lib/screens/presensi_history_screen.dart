@@ -242,8 +242,10 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                   // Total jam kerja + lembur hari ini
                   if (presensiProv.todayTotalJamKerja != '-') ...[
                     const SizedBox(height: 16),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                    Wrap(
+                      alignment: WrapAlignment.center,
+                      spacing: 8,
+                      runSpacing: 8,
                       children: [
                         // Chip jam kerja
                         Container(
@@ -271,8 +273,7 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                           ),
                         ),
                         // Chip lembur — hanya tampil jika ada lembur
-                        if (presensiProv.todayOvertimeMinutes > 0) ...[
-                          const SizedBox(width: 8),
+                        if (presensiProv.todayOvertimeMinutes > 0)
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 12, vertical: 6),
@@ -297,7 +298,32 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                               ],
                             ),
                           ),
-                        ],
+                        // Chip telat
+                        if (presensiProv.todayLateMinutes > 0)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.red.withValues(alpha: 0.85),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                const Icon(Icons.warning_amber_outlined,
+                                    size: 14, color: Colors.white),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Telat: ${presensiProv.todayLateMinutes}m',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                       ],
                     ),
                   ],
@@ -410,6 +436,8 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                             _badge('Hari Libur', Colors.red.shade600, Colors.red.shade50),
                           if (record.isAutoCheckout)
                             _badge('Auto-Checkout', Colors.purple.shade600, Colors.purple.shade50),
+                          if (record.lateMinutes > 0)
+                            _badge('Telat ${record.lateMinutes}m', Colors.orange.shade700, Colors.orange.shade50),
                         ],
                       ),
                     ],

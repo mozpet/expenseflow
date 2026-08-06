@@ -73,7 +73,7 @@ const avatarColors = [
 ];
 const avatarFor = (name: string) =>
   avatarColors[
-    name.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % avatarColors.length
+  name.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % avatarColors.length
   ];
 
 const deviceLabel = (name: string | null, id: string | null) =>
@@ -195,11 +195,10 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
             <button
               type="submit"
               disabled={busy}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg text-white transition flex items-center justify-center gap-1.5 ${
-                isReject
+              className={`flex-1 py-2 text-xs font-bold rounded-lg text-white transition flex items-center justify-center gap-1.5 ${isReject
                   ? 'bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300'
                   : 'bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300'
-              }`}
+                }`}
             >
               {busy && <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
               {isReject ? 'Tolak' : 'Setujui'}
@@ -331,11 +330,11 @@ export function DeviceChangeApprovalView() {
   // Filter pencarian nama (client-side dari halaman saat ini)
   const displayed = search.trim()
     ? records.filter((r) => {
-        const q = search.trim().toLowerCase();
-        return nameOf(r).toLowerCase().includes(q)
-          || (r.user?.department?.toLowerCase().includes(q) ?? false)
-          || (r.user?.employee_code?.toLowerCase().includes(q) ?? false);
-      })
+      const q = search.trim().toLowerCase();
+      return nameOf(r).toLowerCase().includes(q)
+        || (r.user?.department?.toLowerCase().includes(q) ?? false)
+        || (r.user?.employee_code?.toLowerCase().includes(q) ?? false);
+    })
     : records;
 
   return (
@@ -343,15 +342,6 @@ export function DeviceChangeApprovalView() {
 
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-            <ShieldCheck className="w-5 h-5 text-indigo-500" />
-            Approval Pindah Perangkat
-          </h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Setiap akun terikat 1 perangkat. Pindah perangkat wajib disetujui HR untuk mencegah titip absen.
-          </p>
-        </div>
         <button
           onClick={() => { loadRecords(page); loadSummary(); }}
           className="self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
@@ -600,17 +590,16 @@ export function DeviceChangeApprovalView() {
               {Array.from({ length: Math.min(meta.last_page, 5) }, (_, i) => {
                 const pg = meta.last_page <= 5 ? i + 1
                   : meta.current_page <= 3 ? i + 1
-                  : meta.current_page >= meta.last_page - 2 ? meta.last_page - 4 + i
-                  : meta.current_page - 2 + i;
+                    : meta.current_page >= meta.last_page - 2 ? meta.last_page - 4 + i
+                      : meta.current_page - 2 + i;
                 return (
                   <button
                     key={pg}
                     onClick={() => loadRecords(pg)}
-                    className={`w-7 h-7 rounded-lg text-xs font-semibold transition ${
-                      pg === meta.current_page
+                    className={`w-7 h-7 rounded-lg text-xs font-semibold transition ${pg === meta.current_page
                         ? 'bg-indigo-600 text-white'
                         : 'border border-slate-200 hover:bg-slate-50 text-slate-600'
-                    }`}
+                      }`}
                   >
                     {pg}
                   </button>

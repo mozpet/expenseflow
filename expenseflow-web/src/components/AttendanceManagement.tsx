@@ -264,6 +264,19 @@ const TabSkeleton = ({ tab }: { tab: TabKey }) => {
   );
 };
 
+const CardSearch = ({ value, onChange }: { value: string; onChange: (v: string) => void }) => (
+  <div className="relative mt-2 mb-1">
+    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400 pointer-events-none" />
+    <input
+      type="text"
+      placeholder="Cari nama / NIK..."
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="w-full pl-7 pr-3 py-1.5 text-[11px] border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+    />
+  </div>
+);
+
 export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNotification }) => {
   const [tab, setTab] = useState<TabKey>('today');
   const [error, setError] = useState<string | null>(null);
@@ -299,6 +312,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [reportSearch, setReportSearch] = useState('');
   const [reportPage, setReportPage] = useState(1);
   const [offices, setOffices] = useState<any[]>([]);
+  const [todayOfficeFilter, setTodayOfficeFilter] = useState('');
+  const [searchCheckedIn, setSearchCheckedIn] = useState('');
+  const [searchNotCheckedIn, setSearchNotCheckedIn] = useState('');
+  const [searchOffToday, setSearchOffToday] = useState('');
+  const [searchOnLeave, setSearchOnLeave] = useState('');
 
   useEffect(() => {
     attendanceApi.settings.list().then(res => setOffices((res as any)?.settings ?? [])).catch(() => { });
@@ -544,6 +562,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     </div>
   );
 
+
   return (
     <div className="space-y-5 font-sans">
       {/* Tabs & Refresh */}
@@ -603,12 +622,28 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       {tab === 'today' && (
         loading ? <TabSkeleton tab="today" /> : today && (
           <div className="space-y-5">
-            <div className="flex items-center justify-between">
+            <div className="flex flex-wrap items-center justify-between gap-3">
               <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                 <CalendarDays className="w-4 h-4 text-indigo-500" />
                 {new Intl.DateTimeFormat('id-ID', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(new Date())}
               </h3>
+              {/* Filter kantor */}
+              <div className="flex items-center gap-2">
+                <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                <select
+                  value={todayOfficeFilter}
+                  onChange={(e) => setTodayOfficeFilter(e.target.value)}
+                  className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                >
+                  <option value="">Semua Kantor</option>
+                  {offices.map(o => (
+                    <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                  ))}
+                  <option value="null">Tanpa Kantor</option>
+                </select>
+              </div>
             </div>
+
             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
               <SummaryCard label="Total Karyawan" value={today.summary?.total_employees ?? 0} color="text-slate-800 dark:text-white" />
               <SummaryCard label="Sudah Check-in" value={today.summary?.checked_in ?? 0} color="text-emerald-600" />
@@ -618,23 +653,40 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
               {(() => {
-                const checkedIn = today.checked_in ?? [];
-                const notCheckedInRaw = today.not_checked_in ?? [];
-                const onLeave = today.on_leave ?? [];
+                // Helper: filter kantor + search
+                const filterPerson = (p: any, search: string) => {
+                  const matchOffice = !todayOfficeFilter ||
+                    (todayOfficeFilter === 'null'
+                      ? !p.attendance_setting_id
+                      : String(p.attendance_setting_id) === todayOfficeFilter);
+                  const q = search.toLowerCase();
+                  const matchSearch = !q ||
+                    p.name.toLowerCase().includes(q) ||
+                    (p.employee_code && p.employee_code.toLowerCase().includes(q));
+                  return matchOffice && matchSearch;
+                };
 
-                const notCheckedIn = notCheckedInRaw.filter((p: any) => !p.is_off);
-                const offToday = notCheckedInRaw.filter((p: any) => p.is_off);
+                const checkedInRaw = today.checked_in ?? [];
+                const notCheckedInRaw = (today.not_checked_in ?? []).filter((p: any) => !p.is_off);
+                const offTodayRaw = (today.not_checked_in ?? []).filter((p: any) => p.is_off);
+                const onLeaveRaw = today.on_leave ?? [];
+
+                const checkedIn = checkedInRaw.filter((p: any) => filterPerson(p, searchCheckedIn));
+                const notCheckedIn = notCheckedInRaw.filter((p: any) => filterPerson(p, searchNotCheckedIn));
+                const offToday = offTodayRaw.filter((p: any) => filterPerson(p, searchOffToday));
+                const onLeave = onLeaveRaw.filter((p: any) => filterPerson(p, searchOnLeave));
 
                 return (
                   <>
                     {/* Sudah check-in */}
                     <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
-                      <h4 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5 mb-3">
+                      <h4 className="text-xs font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
                         <CheckCircle2 className="w-4 h-4" /> Sudah Check-in ({checkedIn.length})
                       </h4>
+                      <CardSearch value={searchCheckedIn} onChange={setSearchCheckedIn} />
                       <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
                         {checkedIn.length === 0 ? (
-                          <p className="text-[11px] text-slate-400 py-3 text-center">Belum ada.</p>
+                          <p className="text-[11px] text-slate-400 py-3 text-center">{searchCheckedIn || todayOfficeFilter ? 'Tidak ditemukan.' : 'Belum ada.'}</p>
                         ) : (
                           checkedIn.map((p: any) => (
                             <div key={p.user_id} className={`flex items-center justify-between border-b pb-2 ${p.is_cross_day ? 'border-indigo-100 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-lg px-1.5' : 'border-slate-50 dark:border-slate-800/60'}`}>
@@ -648,6 +700,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   )}
                                 </p>
                                 <p className="text-[10px] text-slate-400">
+                                  {p.employee_code && <span className="font-mono mr-1">{p.employee_code} ·</span>}
                                   {p.department ?? '—'} ·{' '}
                                   {p.is_cross_day
                                     ? fmtDateRange(p.shift_date, p.checkout_date)
@@ -670,18 +723,22 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                     {/* Belum check-in */}
                     <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
-                      <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5 mb-3">
+                      <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5">
                         <Clock className="w-4 h-4" /> Belum Check-in ({notCheckedIn.length})
                       </h4>
+                      <CardSearch value={searchNotCheckedIn} onChange={setSearchNotCheckedIn} />
                       <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
                         {notCheckedIn.length === 0 ? (
-                          <p className="text-[11px] text-slate-400 py-3 text-center">Semua sudah hadir.</p>
+                          <p className="text-[11px] text-slate-400 py-3 text-center">{searchNotCheckedIn || todayOfficeFilter ? 'Tidak ditemukan.' : 'Semua sudah hadir.'}</p>
                         ) : (
                           notCheckedIn.map((p: any) => (
                             <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
                               <div className="min-w-0">
                                 <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                                <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
+                                <p className="text-[10px] text-slate-400">
+                                  {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
+                                  {p.department ?? '—'}
+                                </p>
                               </div>
                             </div>
                           ))
@@ -691,18 +748,22 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                     {/* Sedang Libur */}
                     <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
-                      <h4 className="text-xs font-bold text-slate-700 dark:text-slate-400 flex items-center gap-1.5 mb-3">
+                      <h4 className="text-xs font-bold text-slate-700 dark:text-slate-400 flex items-center gap-1.5">
                         <CalendarDays className="w-4 h-4" /> Sedang Libur ({offToday.length})
                       </h4>
+                      <CardSearch value={searchOffToday} onChange={setSearchOffToday} />
                       <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
                         {offToday.length === 0 ? (
-                          <p className="text-[11px] text-slate-400 py-3 text-center">Tidak ada.</p>
+                          <p className="text-[11px] text-slate-400 py-3 text-center">{searchOffToday || todayOfficeFilter ? 'Tidak ditemukan.' : 'Tidak ada.'}</p>
                         ) : (
                           offToday.map((p: any) => (
                             <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
                               <div className="min-w-0">
                                 <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                                <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
+                                <p className="text-[10px] text-slate-400">
+                                  {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
+                                  {p.department ?? '—'}
+                                </p>
                               </div>
                               <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0 border border-slate-200 dark:border-slate-700">Libur</span>
                             </div>
@@ -713,18 +774,22 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                     {/* Izin/cuti */}
                     <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
-                      <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5 mb-3">
+                      <h4 className="text-xs font-bold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
                         <ClipboardList className="w-4 h-4" /> Sedang Izin/Cuti ({onLeave.length})
                       </h4>
+                      <CardSearch value={searchOnLeave} onChange={setSearchOnLeave} />
                       <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
                         {onLeave.length === 0 ? (
-                          <p className="text-[11px] text-slate-400 py-3 text-center">Tidak ada.</p>
+                          <p className="text-[11px] text-slate-400 py-3 text-center">{searchOnLeave || todayOfficeFilter ? 'Tidak ditemukan.' : 'Tidak ada.'}</p>
                         ) : (
                           onLeave.map((p: any) => (
                             <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
                               <div className="min-w-0">
                                 <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                                <p className="text-[10px] text-slate-400">{p.department ?? '—'}</p>
+                                <p className="text-[10px] text-slate-400">
+                                  {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
+                                  {p.department ?? '—'}
+                                </p>
                               </div>
                               <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 capitalize shrink-0">{p.leave_type}</span>
                             </div>
@@ -999,7 +1064,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                 <input
                   type="text"
-                  placeholder="Cari nama karyawan..."
+                  placeholder="Cari nama atau NIK karyawan..."
                   value={userSearch}
                   onChange={(e) => setUserSearch(e.target.value)}
                   className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
@@ -1020,7 +1085,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             <div className="overflow-x-auto">
               {(() => {
                 const filtered = users.filter(u => {
-                  const matchSearch = u.name.toLowerCase().includes(userSearch.toLowerCase());
+                  const q = userSearch.toLowerCase();
+                  const matchSearch = u.name.toLowerCase().includes(q) ||
+                    (u.employee_code && u.employee_code.toLowerCase().includes(q)) ||
+                    (u.nik && u.nik.toLowerCase().includes(q));
                   const matchOffice = !userOfficeFilter ||
                     (userOfficeFilter === 'null'
                       ? !u.attendance_setting_id
@@ -1045,7 +1113,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       ) : (
                         filtered.map((u) => (
                           <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                            <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">{u.name}</td>
+                            <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">
+                              {u.name}
+                              {(u.employee_code || u.nik) && (
+                                <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({u.employee_code || u.nik})</span>
+                              )}
+                            </td>
                             <td className="py-2.5 px-2 text-slate-500">{u.department ?? '—'}</td>
                             <td className="py-2.5 px-2 text-slate-500">{u.office?.office_name ?? u.office_name ?? '—'}</td>
                             <td className="py-2.5 px-2 text-slate-500 capitalize">{u.role}</td>
@@ -1087,17 +1160,20 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       {tab === 'balances' && (
         loading ? <TabSkeleton tab="balances" /> : (() => {
           // Group baris flat per nama karyawan → 1 card per orang
-          type BalanceEntry = { cuti?: any; izin?: any };
+          type BalanceEntry = { cuti?: any; izin?: any; employeeCode?: string };
           const grouped = balances.reduce<Record<string, BalanceEntry>>((acc, b) => {
-            if (!acc[b.user_name]) acc[b.user_name] = {};
+            if (!acc[b.user_name]) {
+              acc[b.user_name] = { employeeCode: b.employee_code || b.nik || b.user?.employee_code || '' };
+            }
             if (b.leave_type === 'cuti') acc[b.user_name].cuti = b;
             else acc[b.user_name].izin = b;
             return acc;
           }, {});
 
-          const entries = Object.entries(grouped).filter(([name]) =>
-            name.toLowerCase().includes(balanceSearch.toLowerCase())
-          );
+          const entries = Object.entries(grouped).filter(([name, data]: [string, any]) => {
+            const q = balanceSearch.toLowerCase();
+            return name.toLowerCase().includes(q) || (data.employeeCode && data.employeeCode.toLowerCase().includes(q));
+          });
 
           const progressColor = (remaining: number, quota: number) => {
             if (quota === 0) return 'bg-slate-300';
@@ -1118,7 +1194,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                   <input
                     type="text"
-                    placeholder="Cari karyawan..."
+                    placeholder="Cari nama atau NIK..."
                     value={balanceSearch}
                     onChange={(e) => setBalanceSearch(e.target.value)}
                     className="pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-48"
@@ -1128,7 +1204,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
               {entries.length === 0 ? (
                 <p className="text-center py-10 text-xs text-slate-400">
-                  {balanceSearch ? `Tidak ada karyawan dengan nama "${balanceSearch}".` : 'Belum ada data saldo.'}
+                  {balanceSearch ? `Tidak ada karyawan yang cocok dengan "${balanceSearch}".` : 'Belum ada data saldo.'}
                 </p>
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1152,7 +1228,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           <div className="w-7 h-7 rounded-full bg-indigo-100 dark:bg-indigo-950/50 flex items-center justify-center shrink-0">
                             <Users className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
                           </div>
-                          <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate flex-1">{name}</p>
+                          <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate flex-1">
+                            {name}
+                            {data.employeeCode && (
+                              <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({data.employeeCode})</span>
+                            )}
+                          </p>
 
                           {/* Toggle kuota cuti 12hr/thn */}
                           <div className="flex items-center gap-2 shrink-0">

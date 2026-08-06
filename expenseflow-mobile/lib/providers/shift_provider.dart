@@ -65,11 +65,17 @@ class ShiftProvider extends ChangeNotifier {
   ShiftInfo? _shiftInfo;
   List<ShiftScheduleDay> _schedules = [];
 
+  // Banner shift update di beranda
+  bool _hasShiftUpdate = false;
+  String? _shiftUpdateNote;
+
   bool get loading => _loading;
   String? get error => _error;
   String get source => _source;
   ShiftInfo? get shiftInfo => _shiftInfo;
   List<ShiftScheduleDay> get schedules => _schedules;
+  bool get hasShiftUpdate => _hasShiftUpdate;
+  String? get shiftUpdateNote => _shiftUpdateNote;
 
   ShiftScheduleDay? getScheduleForDayOfWeek(int dayOfWeek) {
     try {
@@ -106,6 +112,35 @@ class ShiftProvider extends ChangeNotifier {
     } finally {
       _loading = false;
       notifyListeners();
+    }
+  }
+
+  // ─── Cek notifikasi shift terbaru (untuk banner "Shift Diperbarui" di beranda) ──
+  Future<void> checkShiftUpdates() async {
+    try {
+      final data = await ApiService.get('/attendance/shift-updates');
+      _hasShiftUpdate = data['has_update'] == true;
+      if (_hasShiftUpdate) {
+        final latest = data['latest'] as Map<String, dynamic>?;
+        _shiftUpdateNote = latest?['note'] as String? ?? 'Jadwal shift Anda telah diperbarui.';
+      } else {
+        _shiftUpdateNote = null;
+      }
+      notifyListeners();
+    } catch (_) {
+      // Diam – gagal cek notifikasi tidak perlu error ke user
+    }
+  }
+
+  // ─── Tandai notifikasi shift sudah "dilihat" — hilangkan banner ──────────────
+  Future<void> dismissShiftUpdate() async {
+    _hasShiftUpdate = false;
+    _shiftUpdateNote = null;
+    notifyListeners();
+    try {
+      await ApiService.post('/attendance/dismiss-shift-update');
+    } catch (_) {
+      // Jika gagal, banner akan muncul lagi di next fetch — aman
     }
   }
 }

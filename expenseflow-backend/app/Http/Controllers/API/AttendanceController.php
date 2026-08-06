@@ -75,6 +75,33 @@ class AttendanceController extends Controller
         return \App\Http\Controllers\API\ShiftController::resolveSchedule($user, $date);
     }
 
+    // ─── Helper: tentukan titik awal perhitungan jam kerja ──────────────────
+    //     Jam kerja dihitung mulai dari jam JADWAL masuk (bukan jam check-in).
+    //     Jika karyawan check-in lebih awal dari jadwal → titik awal = jadwal.
+    //     Jika karyawan check-in terlambat → titik awal = jam check-in aktual.
+    //
+    //     Juga mempertimbangkan shift lintas hari (cross-day): jam mulai shift
+    //     malam bisa berada di hari sebelumnya.
+    private function resolveWorkStart(Carbon $checkInTime, array $schedule, string $date): Carbon
+    {
+        $workStartStr = $schedule['work_start_time'];
+
+        // Tidak ada jadwal → pakai waktu check-in aktual sebagai titik awal
+        if (! $workStartStr) {
+            return $checkInTime->copy();
+        }
+
+        // Shift lintas hari (cross-day, mis. 22:00 malam): jam mulai ada di hari $date,
+        // bukan hari berikutnya. Gunakan $date langsung.
+        $workStart = Carbon::parse($date . ' ' . $workStartStr, 'Asia/Jakarta');
+
+        // Titik awal = jadwal ATAU check-in aktual — mana yang lebih lambat
+        // (karyawan terlambat → hitung dari check-in; datang awal → hitung dari jadwal)
+        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
+
+        return $checkInWib->greaterThan($workStart) ? $checkInWib : $workStart;
+    }
+
     // ─── Helper: tentukan status hadir/telat berdasarkan jam kerja ────
     //     Mempertimbangkan shift aktif karyawan; fallback ke kantor default.
     private function determineStatus(User $user, Carbon $checkInTime, string $date): string
@@ -292,7 +319,7 @@ class AttendanceController extends Controller
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
             )
-            ->select(['id', 'name', 'email', 'role', 'department', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'is_active']);
+            ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'is_active']);
 
         if ($filter === 'enabled') {
             $query->where('attendance_enabled', true);
@@ -506,7 +533,7 @@ class AttendanceController extends Controller
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
             ->where('is_active', true)
             ->whereIn('role', ['employee', 'finance', 'hrd', 'admin'])
-            ->select(['id', 'name', 'department', 'wfh_enabled', 'radius_enabled', 'company_id'])
+            ->select(['id', 'name', 'department', 'employee_code', 'attendance_setting_id', 'wfh_enabled', 'radius_enabled', 'company_id'])
             ->orderBy('name')
             ->get();
 
@@ -567,23 +594,27 @@ class AttendanceController extends Controller
                 // Shift malam kemarin (cross-day)
                 $isCrossDay = \Carbon\Carbon::parse($att->date)->format('Y-m-d') === $yesterday;
                 $checkedIn[] = [
-                    'user_id'        => $emp->id,
-                    'name'           => $emp->name,
-                    'department'     => $emp->department,
-                    'check_in_time'  => $att->check_in_time,
-                    'check_out_time' => $att->check_out_time,
-                    'check_in_type'  => $att->check_in_type,
-                    'status'         => $att->status,
-                    'shift_date'     => Carbon::parse($att->date)->format('Y-m-d'),
-                    'checkout_date'  => $isCrossDay ? $today : null,
-                    'is_cross_day'   => $isCrossDay,
+                    'user_id'               => $emp->id,
+                    'name'                  => $emp->name,
+                    'department'            => $emp->department,
+                    'employee_code'         => $emp->employee_code,
+                    'attendance_setting_id' => $emp->attendance_setting_id,
+                    'check_in_time'         => $att->check_in_time,
+                    'check_out_time'        => $att->check_out_time,
+                    'check_in_type'         => $att->check_in_type,
+                    'status'                => $att->status,
+                    'shift_date'            => Carbon::parse($att->date)->format('Y-m-d'),
+                    'checkout_date'         => $isCrossDay ? $today : null,
+                    'is_cross_day'          => $isCrossDay,
                 ];
             } elseif (isset($onLeave[$emp->id])) {
                 $leaveList[] = [
-                    'user_id'    => $emp->id,
-                    'name'       => $emp->name,
-                    'department' => $emp->department,
-                    'leave_type' => $onLeave[$emp->id]->leave_type,
+                    'user_id'               => $emp->id,
+                    'name'                  => $emp->name,
+                    'department'            => $emp->department,
+                    'employee_code'         => $emp->employee_code,
+                    'attendance_setting_id' => $emp->attendance_setting_id,
+                    'leave_type'            => $onLeave[$emp->id]->leave_type,
                 ];
             } else {
                 // Cek apakah hari ini hari libur sesuai jadwal karyawan
@@ -602,10 +633,12 @@ class AttendanceController extends Controller
                 }
 
                 $notCheckedIn[] = [
-                    'user_id'    => $emp->id,
-                    'name'       => $emp->name,
-                    'department' => $emp->department,
-                    'is_off'     => $isOff,
+                    'user_id'               => $emp->id,
+                    'name'                  => $emp->name,
+                    'department'            => $emp->department,
+                    'employee_code'         => $emp->employee_code,
+                    'attendance_setting_id' => $emp->attendance_setting_id,
+                    'is_off'                => $isOff,
                 ];
             }
         }
@@ -643,7 +676,7 @@ class AttendanceController extends Controller
             ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('id', $u))
             ->orderBy('name');
 
-        $users = $usersQuery->get(['id', 'name', 'company_id']);
+        $users = $usersQuery->get(['id', 'name', 'company_id', 'employee_code']);
 
         $existingBalances = LeaveBalance::where('year', $year)
             ->whereIn('user_id', $users->pluck('id'))
@@ -662,22 +695,24 @@ class AttendanceController extends Controller
 
                 if ($existing) {
                     $balances->push([
-                        'id'         => $existing->id,
-                        'user_id'    => $user->id,
-                        'user_name'  => $user->name,
-                        'year'       => $year,
-                        'leave_type' => $type,
-                        'quota'      => $existing->quota,
-                        'used'       => $existing->used,
-                        'remaining'  => $existing->quota - $existing->used,
+                        'id'            => $existing->id,
+                        'user_id'       => $user->id,
+                        'user_name'     => $user->name,
+                        'employee_code' => $user->employee_code,
+                        'year'          => $year,
+                        'leave_type'    => $type,
+                        'quota'         => $existing->quota,
+                        'used'          => $existing->used,
+                        'remaining'     => $existing->quota - $existing->used,
                     ]);
                 } else {
                     $balances->push([
-                        'id'         => null,
-                        'user_id'    => $user->id,
-                        'user_name'  => $user->name,
-                        'year'       => $year,
-                        'leave_type' => $type,
+                        'id'            => null,
+                        'user_id'       => $user->id,
+                        'user_name'     => $user->name,
+                        'employee_code' => $user->employee_code,
+                        'year'          => $year,
+                        'leave_type'    => $type,
                         'quota'      => $defaultQuotas[$type],
                         'used'       => 0,
                         'remaining'  => $defaultQuotas[$type],
@@ -898,7 +933,7 @@ class AttendanceController extends Controller
                 'attendances.check_in_type', 'attendances.status',
                 'attendances.overtime_minutes', 'attendances.is_holiday',
                 'attendances.check_in_lat', 'attendances.check_in_lng',
-                DB::raw('TIMESTAMPDIFF(MINUTE, attendances.check_in_time, attendances.check_out_time) as working_minutes'),
+                'attendances.work_minutes as working_minutes',
             ])
             ->get()
             ->keyBy(fn ($a) => $a->user_id . '_' . Carbon::parse($a->date)->format('Y-m-d'));
@@ -1814,9 +1849,12 @@ class AttendanceController extends Controller
         $checkOutTime = now();
 
         // ─── Hitung jam kerja & lembur otomatis ──────────────────
-        $workMinutes = $attendance->check_in_time
-            ? (int) $attendance->check_in_time->diffInMinutes($checkOutTime)
-            : 0;
+        // Titik awal jam kerja = jam jadwal masuk (bukan jam check-in).
+        // Jika karyawan terlambat → titik awal = jam check-in aktual.
+        // Jika karyawan datang sebelum jadwal → titik awal = jam jadwal.
+        $schedule    = $this->getWorkSchedule($user, $scheduleDate);
+        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate);
+        $workMinutes = (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta'));
 
         // isNonWorkingDay: apakah tanggal shift libur nasional/weekend secara kalender
         $nonWorking      = $this->isNonWorkingDay($scheduleDate, $user->company_id);

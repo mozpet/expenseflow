@@ -95,12 +95,24 @@ function mapEmployee(u: any): Employee {
   };
 }
 
+// ─── Helper: format tanggal ISO menjadi "26 Juni 2029" (ramah baca) ────
+function formatDateId(raw: string | null): string {
+  if (!raw) return '';
+  // Potong hanya bagian tanggalnya saja: "YYYY-MM-DD" (abaikan waktu)
+  const dateStr = raw.slice(0, 10);
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return raw; // fallback ke string asli
+  return d.toLocaleDateString('id-ID', {
+    day: '2-digit', month: 'long', year: 'numeric',
+  });
+}
+
 // ─── Helper: status kontrak PKWT berdasarkan contract_end_date ─────────────
 function contractStatus(endDate: string | null): 'active' | 'near' | 'expired' | null {
   if (!endDate) return null;
   const today = new Date();
   today.setHours(0, 0, 0, 0);
-  const end = new Date(endDate);
+  const end = new Date(endDate.slice(0, 10) + 'T00:00:00');
   end.setHours(0, 0, 0, 0);
   const diffDays = Math.floor((end.getTime() - today.getTime()) / 86400000);
   if (diffDays < 0) return 'expired';
@@ -841,19 +853,19 @@ export const KaryawanManagement: React.FC<{
                                 {cStat === 'active' && (
                                   <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50/80 dark:bg-emerald-950/30 px-1.5 py-0.5 rounded border border-emerald-200 dark:border-emerald-800/40">
                                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                    s.d {emp.contractEndDate} (Aktif)
+                                    s.d {formatDateId(emp.contractEndDate)} (Aktif)
                                   </span>
                                 )}
                                 {cStat === 'near' && (
                                   <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-amber-700 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-1.5 py-0.5 rounded border border-amber-200 dark:border-amber-800/40" title="Kontrak berakhir <= 30 hari lagi">
                                     <AlertTriangle className="w-2.5 h-2.5 shrink-0 text-amber-600" />
-                                    Hampir Expired ({emp.contractEndDate})
+                                    Hampir Expired ({formatDateId(emp.contractEndDate)})
                                   </span>
                                 )}
                                 {cStat === 'expired' && (
                                   <span className="inline-flex items-center gap-1 text-[9px] font-semibold text-rose-700 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 px-1.5 py-0.5 rounded border border-rose-200 dark:border-rose-800/40">
                                     <Ban className="w-2.5 h-2.5 shrink-0 text-rose-600" />
-                                    Expired ({emp.contractEndDate})
+                                    Expired ({formatDateId(emp.contractEndDate)})
                                   </span>
                                 )}
                                 {!cStat && (
@@ -1304,12 +1316,12 @@ export const KaryawanManagement: React.FC<{
                       />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-505 block">NIK (sementara dapat diubah)</label>
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK (tidak bisa diubah)</label>
                       <input 
                         type="text" 
                         value={editForm.nik}
-                        onChange={(e) => setEditForm({...editForm, nik: e.target.value})}
-                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                        disabled
+                        className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 focus:outline-none font-mono cursor-not-allowed"
                       />
                     </div>
                   </div>

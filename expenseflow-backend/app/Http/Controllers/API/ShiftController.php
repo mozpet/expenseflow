@@ -1262,9 +1262,39 @@ class ShiftController extends Controller
             ->orderBy('name')
             ->get();
 
+        // Pre-load semua assignment shift MASA DEPAN (start_date > tanggal roster)
+        // sekaligus relasi template shift — satu query untuk semua user (hindari N+1).
+        $upcomingShifts = \App\Models\UserShift::with('shift:id,name,color,is_active')
+            ->whereIn('user_id', $users->pluck('id'))
+            ->where('start_date', '>', $date)
+            ->orderBy('start_date')
+            ->get()
+            ->groupBy('user_id');
+
         // Susun baris roster: identitas karyawan + jadwal efektif tanggal tsb
-        $roster = $users->map(function (User $user) use ($date) {
+        $roster = $users->map(function (User $user) use ($date, $upcomingShifts) {
             $schedule = self::resolveSchedule($user, $date);
+
+            // Cari shift berikutnya yang belum aktif (coming soon):
+            // - shift_id terisi (bukan kembali ke default kantor)
+            // - template shift masih aktif
+            // - end_date (jika ada) masih >= start_date
+            $upcoming = null;
+            foreach ($upcomingShifts->get($user->id, collect()) as $us) {
+                if (! $us->shift_id || ! optional($us->shift)->is_active) {
+                    continue;
+                }
+                if ($us->end_date && $us->end_date->lt($us->start_date)) {
+                    continue;
+                }
+                $upcoming = [
+                    'shift_id'   => $us->shift_id,
+                    'shift_name' => $us->shift->name,
+                    'color'      => $us->shift->color,
+                    'start_date' => $us->start_date->toDateString(),
+                ];
+                break; // ambil yang paling dekat
+            }
 
             return [
                 'user_id'                => $user->id,
@@ -1278,6 +1308,7 @@ class ShiftController extends Controller
                 'work_end_time'          => $schedule['work_end_time'],
                 'is_off'                 => $schedule['is_off'],
                 'is_cross_day'           => $schedule['is_cross_day'] ?? false,
+                'upcoming_shift'         => $upcoming, // shift yang belum aktif (coming soon)
             ];
         });
 
@@ -1504,5 +1535,60 @@ class ShiftController extends Controller
             'shift'     => null,
             'schedules' => [],
         ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // shiftUpdates() — cek notifikasi shift-assigned terbaru
+    //   GET /api/v1/attendance/shift-updates
+    //   Dipanggil Flutter untuk banner "Shift Diperbarui" di beranda.
+    //   Cari notifikasi shift_assigned / shift_removed 7 hari terakhir
+    //   yang BELUM dibaca (read_at null).
+    // ═══════════════════════════════════════════════════════════
+    public function shiftUpdates(Request $request): JsonResponse
+    {
+        $user   = $request->user();
+        $cutoff = now()->subDays(7);
+
+        $notif = DB::table('notifications')
+            ->where('user_id', $user->id)
+            ->whereNull('read_at')
+            ->whereIn('type', ['shift_assigned', 'shift_removed'])
+            ->where('created_at', '>=', $cutoff)
+            ->orderByDesc('created_at')
+            ->first();
+
+        if (! $notif) {
+            return response()->json(['has_update' => false, 'latest' => null]);
+        }
+
+        $data = json_decode($notif->data, true);
+
+        return response()->json([
+            'has_update' => true,
+            'latest'     => [
+                'id'         => $notif->id,
+                'type'       => $notif->type,
+                'note'       => $data['message'] ?? '',
+                'created_at' => $notif->created_at,
+            ],
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // dismissShiftUpdate() — tandai notifikasi shift sudah dibaca.
+    //   POST /api/v1/attendance/dismiss-shift-update
+    //   Flutter panggil ini saat user klik "OK, Saya Lihat".
+    // ═══════════════════════════════════════════════════════════
+    public function dismissShiftUpdate(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        DB::table('notifications')
+            ->where('user_id', $user->id)
+            ->whereNull('read_at')
+            ->whereIn('type', ['shift_assigned', 'shift_removed'])
+            ->update(['read_at' => now()]);
+
+        return response()->json(['message' => 'Notifikasi shift telah ditandai dibaca.']);
     }
 }

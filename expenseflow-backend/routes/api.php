@@ -211,5 +211,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/my-overtime', [AttendanceController::class, 'myOvertimeApprovals']);
             // Simpan FCM token device (dipanggil saat login/buka app)
             Route::post('/fcm-token', [AttendanceController::class, 'registerFcmToken']);
+            // Notifikasi shift baru (Flutter: banner di beranda)
+            Route::get('/shift-updates', [ShiftController::class, 'shiftUpdates']);
+            Route::post('/dismiss-shift-update', [ShiftController::class, 'dismissShiftUpdate']);
         });
 });

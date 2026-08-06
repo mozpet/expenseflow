@@ -120,6 +120,7 @@ const OfficesTab: React.FC<{
     wfh_checkin_window_minutes: 120,
     overtime_enabled: true,
     min_overtime_minutes: 30,
+    early_leave_enabled: true,
     early_leave_tolerance_minutes: 30,
     enforce_weekly_hours: false,
     max_weekly_hours: 40,
@@ -135,6 +136,7 @@ const OfficesTab: React.FC<{
 
   const openAdd = () => { setForm(empty); setEditId(null); setShowForm(true); setValidationError(null); setExpandedDays([]); };
   const openEdit = (o: any) => {
+    const isEarlyLeaveEnabled = o.early_leave_tolerance_minutes !== null && o.early_leave_tolerance_minutes !== undefined;
     setForm({
       office_name: o.office_name ?? '',
       office_latitude: o.office_latitude ?? '',
@@ -147,7 +149,8 @@ const OfficesTab: React.FC<{
       wfh_checkin_window_minutes: o.wfh_checkin_window_minutes ?? 120,
       overtime_enabled: o.overtime_enabled ?? true,
       min_overtime_minutes: o.min_overtime_minutes ?? 30,
-      early_leave_tolerance_minutes: o.early_leave_tolerance_minutes ?? 30,
+      early_leave_enabled: isEarlyLeaveEnabled,
+      early_leave_tolerance_minutes: isEarlyLeaveEnabled ? o.early_leave_tolerance_minutes : 30,
       enforce_weekly_hours: o.enforce_weekly_hours ?? false,
       max_weekly_hours: o.max_weekly_hours ?? 40,
       shift_notice_days: o.shift_notice_days ?? 0,
@@ -234,7 +237,9 @@ const OfficesTab: React.FC<{
         wfh_checkin_window_minutes: form.wfh_checkin_window_minutes === '' ? null : Number(form.wfh_checkin_window_minutes),
         overtime_enabled: !!form.overtime_enabled,
         min_overtime_minutes: Number(form.min_overtime_minutes),
-        early_leave_tolerance_minutes: form.early_leave_tolerance_minutes === '' ? null : Number(form.early_leave_tolerance_minutes),
+        early_leave_tolerance_minutes: form.early_leave_enabled
+          ? (form.early_leave_tolerance_minutes === '' || form.early_leave_tolerance_minutes === null ? 30 : Number(form.early_leave_tolerance_minutes))
+          : null,
         enforce_weekly_hours: !!form.enforce_weekly_hours,
         max_weekly_hours: form.enforce_weekly_hours ? Number(form.max_weekly_hours) : null,
         shift_notice_days: Number(form.shift_notice_days ?? 0),
@@ -581,12 +586,12 @@ const OfficesTab: React.FC<{
                     </span>
                     <input
                       type="checkbox"
-                      checked={form.early_leave_tolerance_minutes !== '' && form.early_leave_tolerance_minutes !== null}
-                      onChange={(e) => setForm({ ...form, early_leave_tolerance_minutes: e.target.checked ? 30 : '' })}
+                      checked={!!form.early_leave_enabled}
+                      onChange={(e) => setForm({ ...form, early_leave_enabled: e.target.checked })}
                       className="w-4 h-4 accent-violet-600"
                     />
                   </label>
-                  {form.early_leave_tolerance_minutes !== '' && form.early_leave_tolerance_minutes !== null && (
+                  {form.early_leave_enabled && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 block">
                         Toleransi pulang awal (menit sebelum jam pulang)

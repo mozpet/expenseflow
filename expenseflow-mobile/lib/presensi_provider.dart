@@ -13,6 +13,7 @@ class PresensiRecord {
   final int overtimeMinutes;
   final bool isHoliday;
   final bool isAutoCheckout;
+  final int lateMinutes;
   // null = belum ada lembur / belum diproses; 'pending'/'approved'/'rejected'
   final String? overtimeStatus;
 
@@ -25,6 +26,7 @@ class PresensiRecord {
     this.overtimeMinutes = 0,
     this.isHoliday = false,
     this.isAutoCheckout = false,
+    this.lateMinutes = 0,
     this.overtimeStatus,
   });
 
@@ -37,6 +39,7 @@ class PresensiRecord {
     int? overtimeMinutes,
     bool? isHoliday,
     bool? isAutoCheckout,
+    int? lateMinutes,
     String? overtimeStatus,
   }) {
     return PresensiRecord(
@@ -48,6 +51,7 @@ class PresensiRecord {
       overtimeMinutes: overtimeMinutes ?? this.overtimeMinutes,
       isHoliday: isHoliday ?? this.isHoliday,
       isAutoCheckout: isAutoCheckout ?? this.isAutoCheckout,
+      lateMinutes: lateMinutes ?? this.lateMinutes,
       overtimeStatus: overtimeStatus ?? this.overtimeStatus,
     );
   }
@@ -71,8 +75,10 @@ String _hitungDurasi(String masuk, String pulang) {
   final mp = masuk.split(':');
   final pp = pulang.split(':');
   if (mp.length < 2 || pp.length < 2) return '-';
-  final masukMenit = (int.tryParse(mp[0]) ?? 0) * 60 + (int.tryParse(mp[1]) ?? 0);
-  final pulangMenit = (int.tryParse(pp[0]) ?? 0) * 60 + (int.tryParse(pp[1]) ?? 0);
+  final masukMenit =
+      (int.tryParse(mp[0]) ?? 0) * 60 + (int.tryParse(mp[1]) ?? 0);
+  final pulangMenit =
+      (int.tryParse(pp[0]) ?? 0) * 60 + (int.tryParse(pp[1]) ?? 0);
   var diff = pulangMenit - masukMenit;
   // Shift lintas tengah malam (mis. masuk 23:00, pulang 07:00): tambah 24 jam.
   if (diff < 0) diff += 24 * 60;
@@ -144,18 +150,22 @@ class PresensiProvider extends ChangeNotifier {
   String? _todayMasuk;
   String? _todayPulang;
   int _todayOvertimeMinutes = 0;
+  int _todayLateMinutes = 0;
   bool _loadingHistory = false;
   bool _loadingBalance = false;
   bool _loadingLeaves = false;
   bool _loadingHolidays = false;
 
   List<PresensiRecord> get records => List.unmodifiable(_records);
-  List<LeaveRequestRecord> get leaveRequests => List.unmodifiable(_leaveRequests);
-  List<LeaveBalanceRecord> get leaveBalances => List.unmodifiable(_leaveBalances);
+  List<LeaveRequestRecord> get leaveRequests =>
+      List.unmodifiable(_leaveRequests);
+  List<LeaveBalanceRecord> get leaveBalances =>
+      List.unmodifiable(_leaveBalances);
   List<HolidayRecord> get holidays => List.unmodifiable(_holidays);
   String? get todayMasuk => _todayMasuk;
   String? get todayPulang => _todayPulang;
   int get todayOvertimeMinutes => _todayOvertimeMinutes;
+  int get todayLateMinutes => _todayLateMinutes;
   bool get loadingHistory => _loadingHistory;
   bool get loadingBalance => _loadingBalance;
   bool get loadingLeaves => _loadingLeaves;
@@ -168,10 +178,28 @@ class PresensiProvider extends ChangeNotifier {
 
   String get todayDateFormatted {
     final now = DateTime.now();
-    const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+    const days = [
+      'Minggu',
+      'Senin',
+      'Selasa',
+      'Rabu',
+      'Kamis',
+      'Jumat',
+      'Sabtu',
+    ];
     const months = [
-      'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+      'Januari',
+      'Februari',
+      'Maret',
+      'April',
+      'Mei',
+      'Juni',
+      'Juli',
+      'Agustus',
+      'September',
+      'Oktober',
+      'November',
+      'Desember',
     ];
     final dayName = days[now.weekday % 7];
     final monthName = months[now.month - 1];
@@ -188,14 +216,15 @@ class PresensiProvider extends ChangeNotifier {
       _records.insert(
         0,
         PresensiRecord(
-            date: todayDateFormatted,
-            masukTime: _todayMasuk!,
-            pulangTime: '-'),
+          date: todayDateFormatted,
+          masukTime: _todayMasuk!,
+          pulangTime: '-',
+        ),
       );
 
       // Jadwalkan notifikasi reminder & peringatan auto-checkout
       // Backend mengirim reminder_at dan auto_checkout_at dalam ISO format
-      final reminderAt     = res['reminder_at'] as String?;
+      final reminderAt = res['reminder_at'] as String?;
       final autoCheckoutAt = res['auto_checkout_at'] as String?;
       final notifSvc = NotificationService();
       if (reminderAt != null) {
@@ -236,15 +265,18 @@ class PresensiProvider extends ChangeNotifier {
     final att = status['attendance'] as Map<String, dynamic>?;
     if (att == null) return;
 
-    final checkedIn    = status['checked_in'] == true;
-    final checkedOut   = status['checked_out'] == true;
+    final checkedIn = status['checked_in'] == true;
+    final checkedOut = status['checked_out'] == true;
     final isAutoCheckout = att['is_auto_checkout'] == true;
+
+    final overtimeApproval =
+        status['overtime_approval'] as Map<String, dynamic>?;
 
     // Selalu sinkronkan state lokal dengan backend (baik sudah checkout maupun masih berjalan)
     if (checkedIn) {
       final newMasuk = _extractTime(att['check_in_time']);
       final newPulang = _extractTime(att['check_out_time']);
-      
+
       bool changed = false;
       if (_todayMasuk != newMasuk) {
         _todayMasuk = newMasuk;
@@ -254,8 +286,11 @@ class PresensiProvider extends ChangeNotifier {
         _todayPulang = newPulang;
         changed = true;
       }
-      
-      final newOvertime = (att['overtime_minutes'] as num?)?.toInt() ?? 0;
+
+      final newOvertime =
+          (overtimeApproval?['overtime_minutes'] as num?)?.toInt() ??
+          (att['overtime_minutes'] as num?)?.toInt() ??
+          0;
       if (_todayOvertimeMinutes != newOvertime) {
         _todayOvertimeMinutes = newOvertime;
         changed = true;
@@ -263,15 +298,15 @@ class PresensiProvider extends ChangeNotifier {
 
       if (changed) {
         if (_records.isNotEmpty) {
-           _records[0] = _records[0].copyWith(
-             masukTime: _todayMasuk ?? '-',
-             pulangTime: _todayPulang ?? '-',
-             overtimeMinutes: _todayOvertimeMinutes,
-           );
+          _records[0] = _records[0].copyWith(
+            masukTime: _todayMasuk ?? '-',
+            pulangTime: _todayPulang ?? '-',
+            overtimeMinutes: _todayOvertimeMinutes,
+          );
         }
         notifyListeners();
       }
-      
+
       // Jika backend menyatakan sudah checkout, batalkan reminder
       if (checkedOut) {
         await notifSvc.cancelCheckoutNotifications();
@@ -282,16 +317,18 @@ class PresensiProvider extends ChangeNotifier {
     }
 
     // Cek status overtime approval (approved/rejected oleh HRD)
-    final overtimeApproval = status['overtime_approval'] as Map<String, dynamic>?;
     if (overtimeApproval != null) {
       final approvalStatus = overtimeApproval['status'] as String?;
-      final overtimeMins   = (overtimeApproval['overtime_minutes'] as num?)?.toInt() ?? 0;
-      final reviewedAt     = overtimeApproval['reviewed_at'];
+      final overtimeMins =
+          (overtimeApproval['overtime_minutes'] as num?)?.toInt() ?? 0;
+      final reviewedAt = overtimeApproval['reviewed_at'];
 
       // Hanya notifikasi jika baru saja di-review (dalam 5 menit terakhir)
-      if (reviewedAt != null && (approvalStatus == 'approved' || approvalStatus == 'rejected')) {
+      if (reviewedAt != null &&
+          (approvalStatus == 'approved' || approvalStatus == 'rejected')) {
         final reviewTime = DateTime.tryParse(reviewedAt.toString());
-        final isRecent = reviewTime != null &&
+        final isRecent =
+            reviewTime != null &&
             DateTime.now().difference(reviewTime).inMinutes <= 5;
         if (isRecent) {
           final durasi = _formatMinutes(overtimeMins);
@@ -328,21 +365,32 @@ class PresensiProvider extends ChangeNotifier {
       final list = (res['data'] as List?) ?? [];
       _records
         ..clear()
-        ..addAll(list.map((e) {
-          final m = e as Map<String, dynamic>;
-          final overtimeApproval = m['overtime_approval'] as Map<String, dynamic>?;
-          return PresensiRecord(
-            id: (m['id'] as num?)?.toInt() ?? 0,
-            date: _formatDate(m['date']),
-            masukTime: _extractTime(m['check_in_time']) ?? '-',
-            pulangTime: _extractTime(m['check_out_time']) ?? '-',
-            checkInType: (m['check_in_type'] ?? '').toString(),
-            overtimeMinutes: (m['overtime_minutes'] as num?)?.toInt() ?? 0,
-            isHoliday: m['is_holiday'] == true || m['is_holiday'] == 1,
-            isAutoCheckout: m['is_auto_checkout'] == true || m['is_auto_checkout'] == 1,
-            overtimeStatus: overtimeApproval?['status'] as String?,
-          );
-        }));
+        ..addAll(
+          list.map((e) {
+            final m = e as Map<String, dynamic>;
+            final overtimeApproval =
+                m['overtime_approval'] as Map<String, dynamic>?;
+            return PresensiRecord(
+              id: (m['id'] as num?)?.toInt() ?? 0,
+              date: _formatDate(m['date']),
+              masukTime: _extractTime(m['check_in_time']) ?? '-',
+              pulangTime: _extractTime(m['check_out_time']) ?? '-',
+              checkInType: (m['check_in_type'] ?? '').toString(),
+              overtimeMinutes:
+                  (overtimeApproval?['overtime_minutes'] as num?)?.toInt() ??
+                  (m['overtime_minutes'] as num?)?.toInt() ??
+                  0,
+              isHoliday: m['is_holiday'] == true || m['is_holiday'] == 1,
+              isAutoCheckout:
+                  m['is_auto_checkout'] == true || m['is_auto_checkout'] == 1,
+              lateMinutes: _calculateLateMinutes(
+                m['check_in_time'],
+                m['status'],
+              ),
+              overtimeStatus: overtimeApproval?['status'] as String?,
+            );
+          }),
+        );
       // Set status hari ini bila ada record tanggal hari ini
       final todayIso = DateTime.now().toIso8601String().substring(0, 10);
       for (final e in list) {
@@ -350,7 +398,15 @@ class PresensiProvider extends ChangeNotifier {
         if ((m['date'] ?? '').toString().startsWith(todayIso)) {
           _todayMasuk = _extractTime(m['check_in_time']);
           _todayPulang = _extractTime(m['check_out_time']);
-          _todayOvertimeMinutes = (m['overtime_minutes'] as num?)?.toInt() ?? 0;
+          final oa = m['overtime_approval'] as Map<String, dynamic>?;
+          _todayOvertimeMinutes =
+              (oa?['overtime_minutes'] as num?)?.toInt() ??
+              (m['overtime_minutes'] as num?)?.toInt() ??
+              0;
+          _todayLateMinutes = _calculateLateMinutes(
+            m['check_in_time'],
+            m['status'],
+          );
         }
       }
       // overtimeStatus sudah diambil dari overtime_approval di response myAttendance()
@@ -368,7 +424,9 @@ class PresensiProvider extends ChangeNotifier {
   /// Mengembalikan list raw dari endpoint my-overtime.
   /// overtimeStatus di PresensiRecord sudah diisi dari myAttendance() —
   /// method ini hanya dipakai jika ada halaman dedicated riwayat lembur.
-  Future<List<Map<String, dynamic>>> fetchOvertimeApprovals({int page = 1}) async {
+  Future<List<Map<String, dynamic>>> fetchOvertimeApprovals({
+    int page = 1,
+  }) async {
     try {
       final res = await ApiService.myOvertimeApprovals(page: page);
       return (res['data'] as List? ?? []).cast<Map<String, dynamic>>();
@@ -388,14 +446,16 @@ class PresensiProvider extends ChangeNotifier {
       final list = (res['balances'] as List?) ?? [];
       _leaveBalances
         ..clear()
-        ..addAll(list.map((e) {
-          final m = e as Map<String, dynamic>;
-          return LeaveBalanceRecord(
-            leaveType: (m['leave_type'] ?? '').toString(),
-            quota: (m['quota'] ?? 0) as int,
-            used: (m['used'] ?? 0) as int,
-          );
-        }));
+        ..addAll(
+          list.map((e) {
+            final m = e as Map<String, dynamic>;
+            return LeaveBalanceRecord(
+              leaveType: (m['leave_type'] ?? '').toString(),
+              quota: (m['quota'] ?? 0) as int,
+              used: (m['used'] ?? 0) as int,
+            );
+          }),
+        );
     } catch (_) {}
     _loadingBalance = false;
     notifyListeners();
@@ -410,20 +470,22 @@ class PresensiProvider extends ChangeNotifier {
       final list = (res['leaves'] as List?) ?? [];
       _leaveRequests
         ..clear()
-        ..addAll(list.map((e) {
-          final m = e as Map<String, dynamic>;
-          return LeaveRequestRecord(
-            id: (m['id'] ?? 0) as int,
-            leaveType: (m['leave_type'] ?? '').toString(),
-            // Backend mengirim ISO ("2026-06-26T00:00:00..."), ambil tanggalnya saja
-            startDate: _dateOnly(m['start_date']),
-            endDate: _dateOnly(m['end_date']),
-            totalDays: (m['total_days'] ?? 0) as int,
-            reason: (m['reason'] ?? '').toString(),
-            status: (m['status'] ?? 'pending').toString(),
-            rejectionReason: m['rejection_reason'] as String?,
-          );
-        }));
+        ..addAll(
+          list.map((e) {
+            final m = e as Map<String, dynamic>;
+            return LeaveRequestRecord(
+              id: (m['id'] ?? 0) as int,
+              leaveType: (m['leave_type'] ?? '').toString(),
+              // Backend mengirim ISO ("2026-06-26T00:00:00..."), ambil tanggalnya saja
+              startDate: _dateOnly(m['start_date']),
+              endDate: _dateOnly(m['end_date']),
+              totalDays: (m['total_days'] ?? 0) as int,
+              reason: (m['reason'] ?? '').toString(),
+              status: (m['status'] ?? 'pending').toString(),
+              rejectionReason: m['rejection_reason'] as String?,
+            );
+          }),
+        );
     } catch (_) {}
     _loadingLeaves = false;
     notifyListeners();
@@ -473,20 +535,37 @@ class PresensiProvider extends ChangeNotifier {
       final list = (res['holidays'] as List?) ?? [];
       _holidays
         ..clear()
-        ..addAll(list.map((e) {
-          final m = e as Map<String, dynamic>;
-          return HolidayRecord(
-            id: (m['id'] ?? 0) as int,
-            date: _dateOnly(m['date']),
-            name: (m['name'] ?? '').toString(),
-            isNational: m['is_national'] == true || m['is_national'] == 1,
-          );
-        }));
+        ..addAll(
+          list.map((e) {
+            final m = e as Map<String, dynamic>;
+            return HolidayRecord(
+              id: (m['id'] ?? 0) as int,
+              date: _dateOnly(m['date']),
+              name: (m['name'] ?? '').toString(),
+              isNational: m['is_national'] == true || m['is_national'] == 1,
+            );
+          }),
+        );
       // Urutkan dari tanggal terkecil
       _holidays.sort((a, b) => a.date.compareTo(b.date));
     } catch (_) {}
     _loadingHolidays = false;
     notifyListeners();
+  }
+
+  // ─── Utility Methods ────────────────────────────────────────────────────────
+
+  static int _calculateLateMinutes(String? checkInStr, String? status) {
+    if (status != 'late' || checkInStr == null) return 0;
+    try {
+      final dt = DateTime.parse(checkInStr).toLocal();
+      // Assume default start time is 08:00 for calculation if we don't have shift info
+      final defaultStart = DateTime(dt.year, dt.month, dt.day, 8, 0);
+      if (dt.isAfter(defaultStart)) {
+        return dt.difference(defaultStart).inMinutes;
+      }
+    } catch (_) {}
+    return 0;
   }
 
   // ─── Helper ───────────────────────────────────────────────

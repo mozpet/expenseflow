@@ -122,6 +122,15 @@ class ApiService {
     return _request('GET', path, query: query);
   }
 
+  // ─── Generic POST ─────────────────────────────────────────
+  static Future<Map<String, dynamic>> post(
+    String path, {
+    Map<String, dynamic>? body,
+    Map<String, String>? query,
+  }) async {
+    return _request('POST', path, body: body, query: query);
+  }
+
   // ─── Auth ─────────────────────────────────────────────────
   static Future<Map<String, dynamic>> login(
       String email, String password) async {
