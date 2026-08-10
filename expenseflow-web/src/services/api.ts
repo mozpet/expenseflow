@@ -122,6 +122,25 @@ export async function request<T = any>(
   return data as T;
 }
 
+// Ambil waktu tunggu (detik) dari error rate-limit (429) — dipakai LoginPage
+// untuk menampilkan countdown. Nilai bersumber dari body `retry_after`.
+export const getRetryAfterSeconds = (err: unknown): number | null => {
+  if (err instanceof ApiError) {
+    const v = err.data?.retry_after;
+    if (typeof v === 'number' && v > 0) return v;
+  }
+  return null;
+};
+
+// Format detik → "X menit Y detik" (atau "Y detik" bila < 60).
+export const formatWaitTime = (seconds: number): string => {
+  const s = Math.max(1, Math.ceil(seconds));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  if (m > 0) return r > 0 ? `${m} menit ${r} detik` : `${m} menit`;
+  return `${s} detik`;
+};
+
 // Shortcut helpers
 export const apiGet = <T = any>(path: string, query?: RequestOptions['query']) =>
   request<T>(path, { method: 'GET', query });

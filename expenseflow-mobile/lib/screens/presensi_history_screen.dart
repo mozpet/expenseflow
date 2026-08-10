@@ -59,7 +59,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Muat ulang riwayat',
-              onPressed: () => presensiProv.fetchMyAttendance(),
+              onPressed: () {
+                // Muat ulang riwayat + status WFH (menentukan tombol Catat Presensi)
+                presensiProv.fetchMyAttendance();
+                presensiProv.syncStatusFromBackend();
+              },
             ),
         ],
       ),

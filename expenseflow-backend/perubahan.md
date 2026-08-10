@@ -1810,3 +1810,542 @@ Memastikan saat template shift di-nonaktifkan oleh HRD (`is_active = false`), ja
   - Menambahkan validasi `end_date` assignment agar shift yang sudah berakhir sesuai `end_date` tidak tampil di tanggal-tanggal setelahnya.
 
 
+
+---
+
+# Perbaikan — Kalender "Jadwal Kerja Saya" Berdasarkan Tanggal (2026-08-07)
+
+## Masalah
+Kalender karyawan (`/my-schedule`) hanya menampilkan template shift yang **aktif hari ini** —
+bukan jadwal per-tanggal. Akibatnya, ketika HRD mengganti shift karyawan dengan tanggal efektif
+di masa depan (misal: Shift B mulai 9 Agustus), kalender masih menampilkan Shift A untuk
+semua tanggal sampai tanggal 9 Agustus benar-benar tiba.
+
+### Root Cause
+`mySchedule()` menggunakan `$today` hardcode untuk mencari assignment:
+```php
+// SEBELUM (salah): menggunakan tanggal hari ini, bukan tanggal yang dilihat
+->where('start_date', '<=', $today)
+```
+Tidak ada parameter tanggal, sehingga tidak bisa menampilkan jadwal untuk tanggal mendatang.
+Selain itu, tidak ada cek `end_date` sehingga shift yang sudah kadaluarsa tetap tampil.
+
+### Mengapa resolveSchedule() sudah benar
+`resolveSchedule(User, $date)` sudah menerima parameter `$date` dan sudah mengecek `end_date`.
+Fungsi ini dipakai dengan benar di: check-in, check-out, auto-checkout, roster, effective-schedule.
+Masalah hanya di `mySchedule()` yang tidak menggunakan logika yang sama.
+
+## Solusi
+Dua perbaikan dilakukan:
+
+### 1. Perbaiki `mySchedule()` — tambah cek `end_date`
+**File:** `app/Http/Controllers/API/ShiftController.php`
+
+Query lama tidak memfilter `end_date`:
+```php
+// SEBELUM
+->where('start_date', '<=', $today)
+->orderByDesc('start_date')
+->first();
+```
+Query baru menambah filter `end_date`:
+```php
+// SESUDAH
+->where('start_date', '<=', $today)
+->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $today))
+->orderByDesc('start_date')
+->first();
+```
+Response juga ditambahkan field `end_date` sehingga Flutter bisa menampilkan batas berlakunya shift.
+
+### 2. Tambah endpoint `myScheduleCalendar()` — kalender bulanan per-hari
+**File:** `app/Http/Controllers/API/ShiftController.php` — method baru `myScheduleCalendar()`
+**Route:** `GET /api/v1/attendance/my-schedule-calendar?month=&year=`
+
+Endpoint ini mengembalikan jadwal **per-hari** selama satu bulan, sesuai tanggal yang dilihat:
+```json
+{
+  "month": 8, "year": 2026,
+  "days": {
+    "2026-08-07": {"source":"shift","shift_name":"Shift A","work_start_time":"08:00",...},
+    "2026-08-08": {"source":"shift","shift_name":"Shift A",...},
+    "2026-08-09": {"source":"shift","shift_name":"Shift B","work_start_time":"22:00",...},
+    "2026-08-10": {"source":"shift","shift_name":"Shift B",...}
+  }
+}
+```
+
+**Logika:** Untuk setiap tanggal, cari assignment yang berlaku:
+- `start_date <= tanggal` DAN `(end_date NULL ATAU end_date >= tanggal)`
+- Diurutkan DESC start_date → ambil yang pertama (paling baru yang mencakup tanggal)
+- Perubahan jadwal HRD langsung terlihat tanpa menunggu tanggal tiba
+
+**Efisiensi:** Satu query untuk seluruh bulan (pre-load semua assignment), iterasi per hari
+dari Collection — tidak ada N+1 query.
+
+## File yang Diubah
+| File | Perubahan |
+|------|-----------|
+| `app/Http/Controllers/API/ShiftController.php` | Perbaiki `mySchedule()` (cek end_date) + tambah `myScheduleCalendar()` |
+| `routes/api.php` | Tambah route `GET /api/v1/attendance/my-schedule-calendar` |
+| `rules.md` | Perbarui deskripsi tabel `user_shifts` + tambah endpoint ke API Route Map |
+
+## Dampak
+- ✅ Perubahan jadwal HRD langsung terlihat di kalender Flutter
+- ✅ Shift A tampil 7–8 Agustus, Shift B tampil 9 Agustus ke depan (sesuai harapan)
+- ✅ Shift yang sudah berakhir (`end_date` terlewati) tidak tampil di tanggal setelahnya
+- ✅ Tidak ada perubahan database (struktur kolom `end_date` sudah ada sejak migrasi 2026-07-17)
+- ✅ Histori jadwal, presensi, lembur, attendance — tidak terpengaruh sama sekali
+- ✅ `resolveSchedule()` tidak diubah (sudah benar sejak awal)
+- ✅ Endpoint lama `/my-schedule` tetap ada (backward compatible)
+
+---
+
+# Perbaikan — Status Assignment Shift di Modal Assign (2026-08-07)
+
+## Masalah
+Bagian "Riwayat Assignment" di modal **Assign Shift** (web HRD, `ShiftManagement.tsx`)
+menampilkan semua assignment secara datar tanpa status. HRD tidak bisa membedakan:
+- assignment yang **sedang aktif** (karyawan saat ini dalam shift itu)
+- assignment yang **belum dimulai** (masa depan)
+- assignment yang **sudah berakhir**
+
+Selain itu, tombol hapus (`destroyAssignment`) **menghapus permanen** assignment yang
+sedang aktif → histori shift karyawan hilang. Ini bertentangan dengan aturan
+"Jangan merusak histori jadwal".
+
+## Perubahan
+
+### 1. Backend — `shiftHistory()` beri status tiap assignment
+**File:** `app/Http/Controllers/API/ShiftController.php`
+
+Setiap assignment kini diberi atribut `status`:
+- `active`   → start_date <= hari ini DAN (end_date null ATAU end_date >= hari ini) — sedang berlaku
+- `upcoming` → start_date > hari ini — belum dimulai
+- `expired`  → end_date < hari ini — sudah berakhir
+
+### 2. Backend — `destroyAssignment()` soft-end assignment aktif
+**File:** `app/Http/Controllers/API/ShiftController.php`
+
+Perilaku baru berdasarkan status:
+| Status | Aksi |
+|--------|------|
+| `active` | **SOFT-END**: set `end_date = kemarin`. Karyawan otomatis pindah ke jadwal kantor default mulai hari ini. Histori shift tetap tersimpan. |
+| `upcoming` | Hapus permanen (belum pernah aktif, tidak merusak histori) |
+| `expired` | Hapus permanen (sudah berakhir, tidak berpengaruh pada jadwal aktif) |
+
+Response untuk soft-end menyertakan flag `soft_end: true`.
+
+### 3. Frontend web — tampilkan status + sesuaikan konfirmasi hapus
+**File:** `src/components/ShiftManagement.tsx`
+
+- Tipe `AssignmentRow` ditambah field `status`.
+- Setiap assignment kini menampilkan **badge status**:
+  - 🟢 **AKTIF** (emerald) — shift sedang berlaku
+  - 🔵 **SEGERA** (sky) — belum dimulai
+  - ⚪ **BERAKHIR** (slate) — sudah selesai
+- Label bagian diubah dari "Riwayat Assignment" → "Assignment Shift Karyawan".
+- Konfirmasi hapus disesuaikan dengan status:
+  - Aktif: "Mengakhiri akan mengembalikan karyawan ke jadwal kantor default... histori tetap tersimpan"
+  - Segera/Berakhir: konfirmasi hapus permanen
+- Tooltip tombol hapus disesuaikan.
+
+## File yang Diubah
+| File | Perubahan |
+|------|-----------|
+| `app/Http/Controllers/API/ShiftController.php` | `shiftHistory()` + status; `destroyAssignment()` + soft-end |
+| `src/components/ShiftManagement.tsx` | Badge status, label bagian, konfirmasi hapus |
+
+## Dampak
+- ✅ HRD tahu karyawan sedang dalam shift apa (badge AKTIF)
+- ✅ Hapus assignment aktif → karyawan pindah ke jadwal kantor default, histori aman
+- ✅ Assignment masa depan yang salah bisa dihapus permanen tanpa jejak
+- ✅ Tidak mengubah endpoint kalender mobile (`mySchedule`, `myScheduleCalendar`)
+- ✅ Tidak mengubah struktur database
+
+---
+
+# Integrasi Mobile — Kalender "Jadwal Kerja Saya" Per-Tanggal (2026-08-07)
+
+## Latar Belakang
+Backend sudah punya endpoint `GET /attendance/my-schedule-calendar` (per-tanggal), tapi
+Flutter masih memakai endpoint lama `/employee/my-schedule` yang hanya mengembalikan
+SATU template shift (7 hari) untuk "shift aktif hari ini". Akibatnya kalender mobile
+menampilkan shift yang sama untuk SEMUA hari bulan itu — perubahan shift HRD
+(misal Shift B mulai 9 Agustus) tidak terlihat sampai tanggal tersebut tiba.
+
+## Perubahan Mobile
+
+### 1. `lib/providers/shift_provider.dart`
+- Tambah model `ShiftCalendarDay` (jadwal satu tanggal: date, source, shift_id, shift_name,
+  color, work_start_time, work_end_time, is_off, is_cross_day).
+- Tambah state `_calendarDays` (Map<String, ShiftCalendarDay>), `_calendarYear`, `_calendarMonth`.
+- Tambah method `fetchScheduleCalendar(year, month)` — memanggil
+  `GET /attendance/my-schedule-calendar?month=&year=`, menyimpan jadwal per-tanggal.
+  (Cache: tidak refetch jika bulan yang sama sudah dimuat.)
+- Tambah getter `getScheduleForDate(DateTime)` dan `calendarDays`.
+
+### 2. `lib/screens/jadwal_shift_screen.dart`
+- `initState`: selain `fetchMySchedule()`, juga panggil `fetchScheduleCalendar` untuk bulan berjalan.
+- Navigasi bulan (`_prevMonth`/`_nextMonth`): panggil `fetchScheduleCalendar` untuk bulan baru.
+- Grid kalender (`_buildWeekRows`): untuk tiap tanggal, pakai `getScheduleForDate(date)`
+  (jadwal PER-TANGGAL) sebagai prioritas; fallback ke template shift hanya jika kalender
+  belum dimuat. Warna sel mengikuti warna shift tanggal tsb (bisa beda per hari).
+- Detail hari (`_buildDayDetail`): pakai jadwal per-tanggal + menampilkan badge
+  nama shift tanggal tsb ("Shift: X") atau "Jam Kantor Default" sesuai `source`.
+- `RefreshIndicator` reload info shift + kalender bulan yang sedang dilihat.
+- State kosong ditampilkan hanya jika benar-benar tidak ada jadwal
+  (shiftInfo null DAN calendarDays kosong).
+
+## Hasil
+- ✅ Perubahan jadwal HRD langsung terlihat di kalender mobile tanpa menunggu tanggal tiba.
+- ✅ Tanggal 1–8 Agustus → Shift A, 9 Agustus dst → Shift B (contoh skenario).
+- ✅ Shift yang diakhiri HRD (end_date) → otomatis jadwal kantor default setelahnya.
+- ✅ Shift malam (cross-day) & warna per-shift tetap tampil dengan benar.
+- ✅ Endpoint lama `/employee/my-schedule` tetap dipakai untuk info "shift hari ini" di beranda.
+
+## Validasi
+- `flutter analyze` → No issues found (seluruh project).
+- Backend: route `GET api/v1/attendance/my-schedule-calendar` terdaftar, `php -l` OK.
+
+---
+
+# Validasi — Hapus/Nonaktifkan Template Shift (2026-08-08)
+
+## Masalah
+Saat HRD ingin menghapus (`DELETE /shifts/{id}`) atau menonaktifkan
+(`POST /shifts/{id}/toggle-active`) sebuah template shift, tidak ada proteksi yang
+memaksa HRD memindahkan karyawan terlebih dahulu:
+- `destroy()` memblokir bila ada assignment (semua, termasuk expired), pesan kurang jelas.
+- `toggleActive()` sama sekali tidak memblokir — menonaktifkan langsung membuat
+  karyawan jatuh ke jadwal default kantor tanpa sepengetahuan HRD.
+
+## Permintaan
+Sebelum shift bisa dihapus/dinonaktifkan, HRD harus terlebih dahulu:
+1. memindahkan karyawan ke shift lain, ATAU
+2. menghapus/mengakhiri assignment karyawan dari shift tersebut.
+
+## Perubahan
+
+### Backend — `app/Http/Controllers/API/ShiftController.php`
+
+**Helper baru `liveAssignmentsForShift($shiftId)`**
+Mengambil assignment yang MASIH BERLAKU untuk sebuah shift:
+- `start_date <= hari ini` (aktif) ATAU `start_date > hari ini` (akan datang)
+- DAN `(end_date NULL ATAU end_date >= hari ini)`
+- Assignment yang sudah berakhir (`end_date < hari ini`) TIDAK termasuk → tidak memblokir.
+
+**`destroy()`**
+- Cek `liveAssignmentsForShift()` — jika ada yang masih berlaku → **409** dengan daftar
+  karyawan terdampak (`affected`, `affected_names`) dan pesan petunjuk pemindahan.
+- Assignment expired tidak memblokir hapus.
+
+**`toggleActive()`**
+- Saat akan menonaktifkan (`willBeActive == false`): cek `liveAssignmentsForShift()`.
+  Jika ada → **409** dengan daftar karyawan terdampak.
+- Notifikasi `shift_deactivated` tetap dikirim hanya jika penonaktifan berhasil.
+
+### Frontend web — `src/components/ShiftManagement.tsx`
+- `handleDeleteShift` & `handleToggleActive` menangkap `ApiError`, membaca
+  `e.data.affected_names` dan menampilkan pesan lengkap + nama karyawan terdampak.
+- Elemen error diberi `whitespace-pre-line` agar baris baru (`\n`) tampil rapi.
+
+## Hasil
+- ✅ Shift tidak bisa dihapus/dinonaktifkan selama masih ada karyawan yang memakainya.
+- ✅ HRD mendapat daftar nama karyawan yang masih memakai shift → tahu siapa yang
+  harus dipindahkan.
+- ✅ Assignment yang sudah berakhir tidak memblokir (bersih dari histori).
+- ✅ Notifikasi deaktivasi hanya dikirim jika penonaktifan benar-benar berhasil.
+- ✅ Tidak mengubah struktur database.
+
+---
+
+# Validasi — Warna Template Shift Harus Unik (2026-08-08)
+
+## Masalah
+HRD bisa membuat dua template shift dengan warna yang sama. Akibatnya di kalender
+& roster, dua shift berbeda tampil dengan warna identik — membingungkan karyawan.
+
+## Perubahan
+
+### Backend — `app/Http/Controllers/API/ShiftController.php`
+**Helper baru `colorAlreadyUsed($actor, $color, $exceptShiftId = null)`**
+- Mengecek apakah `$color` sudah dipakai shift lain di PERUSAHAAN yang sama
+  (bukan per cabang, agar konsisten di seluruh tampilan kalender).
+- `$exceptShiftId` dipakai saat edit agar shift itu sendiri tidak dihitung.
+
+**`store()`** — jika `color` diisi dan sudah dipakai shift lain → **422**:
+```
+"Warna #e53e3e sudah dipakai oleh shift 'Shift A'. Pilih warna yang berbeda..."
+```
+
+**`update()`** — validasi sama, dengan `$exceptShiftId = $shift->id` (shift sendiri
+boleh memakai warnanya). Jika warna baru bentrok → **422**.
+
+### Frontend web — `src/components/ShiftManagement.tsx`
+- `ShiftFormModal` menerima prop `shifts`.
+- Color picker: warna yang sudah dipakai shift lain **dinonaktifkan** (opacity 40%,
+  cursor not-allowed, tidak bisa diklik) dengan tooltip
+  `"Sudah dipakai oleh shift 'X'"`. Shift yang sedang diedit tetap bisa memakai
+  warnanya sendiri.
+
+## Hasil
+- ✅ Warna shift unik per perusahaan — tidak ada dua template shift dengan warna sama.
+- ✅ HRD langsung tahu warna mana yang tersedia di UI (yang pudar = sudah dipakai).
+- ✅ Edit shift tetap bisa mempertahankan warnanya sendiri.
+- ✅ Tidak mengubah struktur database.
+
+---
+
+# Validasi — Warna Shift Unik PER KANTOR (2026-08-08)
+
+## Revisi Aturan
+Sebelumnya warna shift dibuat unik PER PERUSAHAAN (company-wide). Ini terlalu ketat —
+kantor A dan kantor B tidak bisa memakai warna yang sama padahal shift-nya tidak
+pernah tampil bersamaan.
+
+**Aturan baru:** warna unik **PER KANTOR** (`attendance_setting_id`).
+- Kantor berbeda BOLEH memakai warna yang sama.
+- Dalam SATU kantor, tidak boleh ada dua shift dengan warna yang sama.
+- Shift **company-wide** (`attendance_setting_id = null`) berlaku di semua kantor,
+  sehingga warnanya bentrok dengan SEMUA shift lain.
+- Shift **cabang** bentrok dengan shift cabang yang sama + shift company-wide.
+
+## Perubahan
+
+### Backend — `app/Http/Controllers/API/ShiftController.php`
+**`colorAlreadyUsed()`** — signature baru `($actor, $color, $exceptShiftId, $attendanceSettingId)`:
+- `$attendanceSettingId === null` → shift company-wide → bentrok dengan semua.
+- `$attendanceSettingId` terisi → bentrok dengan shift cabang yang sama
+  + shift company-wide.
+
+**`store()`** — validasi warna dilakukan SETELAH `resolveBranch()` (agar tahu kantor
+tujuannya), dengan `$attendanceSettingId = $branch->id`. Pesan error menyebut lingkup
+bentrok: "(berlaku semua kantor)" atau "(kantor yang sama)".
+
+**`update()`** — menghitung kantor efektif TERLEBIH DAHULU (dari `$validated` jika ada,
+atau `$shift->attendance_setting_id`) sebelum validasi warna, karena keunikan warna
+bersifat per kantor. Shift yang sedang diedit dikecualikan.
+
+### Frontend web — `src/components/ShiftManagement.tsx`
+Color picker kini menonaktifkan warna yang **bentrok dalam kantor yang sama**:
+- Shift lain company-wide → selalu bentrok.
+- Shift yang sedang diedit company-wide → semua cabang bentrok.
+- Cabang yang sama → bentrok.
+- Belum pilih cabang (saat membuat) → warna tidak di-disable, backend yang memvalidasi.
+- Tooltip: "Sudah dipakai oleh shift 'X' (kantor ini)".
+
+## Hasil
+- ✅ Kantor A & B boleh memakai warna sama (sesuai permintaan).
+- ✅ Dalam satu kantor, warna tidak bisa dobel.
+- ✅ Shift company-wide tetap diproteksi (warnanya unik global).
+- ✅ UI langsung menunjukkan warna mana yang tersedia untuk kantor yang dipilih.
+- ✅ Tidak mengubah struktur database.
+
+---
+
+# Fix Bug — Color Picker Warna Shift Per Kantor (2026-08-08)
+
+## Bug yang Dilaporkan
+1. **Warna tidak bisa dipilih padahal di cabang yang berbeda** — seharusnya bisa.
+2. **Warna bisa dipilih padahal dalam cabang yang sama** — seharusnya tidak bisa.
+
+## Root Cause
+### Frontend — logika `editingIsCompanyWide` salah saat mode CREATE
+```ts
+// SEBELUM (salah):
+const editingIsCompanyWide = editing?.attendance_setting_id == null;
+// Saat create (editing == null) → null == null → TRUE
+// → semua warna yang sama dengan shift lain (di cabang mana pun) di-disable!
+```
+Saat **buat shift baru**, `editing == null` membuat variabel dianggap company-wide,
+sehingga semua warna yang dipakai shift lain ikut dinonaktifkan — padahal seharusnya
+hanya yang di kantor yang SAMA yang diblokir.
+
+### Perbandingan warna case-sensitive
+`#E53E3E` dan `#e53e3e` dianggap berbeda padahal warna yang sama.
+
+## Perbaikan
+
+### Frontend — `src/components/ShiftManagement.tsx`
+Logika diganti menjadi berbasis **kantor yang dipilih di form** (`targetBranch`), bukan
+status editing:
+- `targetBranch = branchId (jika dipilih) ?? editing.attendance_setting_id ?? null`
+- Shift lain company-wide → selalu bentrok (berlaku semua kantor).
+- `targetBranch == null` (belum pilih cabang saat buat) → jangan disable apa pun,
+  biarkan backend memvalidasi.
+- `targetBranch` terisi → bentrok hanya bila shift lain di cabang yang sama.
+- Perbandingan warna **case-insensitive** (`toLowerCase()`).
+
+### Backend — `app/Http/Controllers/API/ShiftController.php`
+- `colorAlreadyUsed()`: perbandingan warna **case-insensitive** via `LOWER(color) = ?`.
+- `store()` & `update()`: warna **dinormalisasi ke lowercase** saat disimpan,
+  agar konsisten di database & mudah dibandingkan.
+
+## Hasil
+- ✅ Kantor A & B boleh memakai warna yang sama.
+- ✅ Dalam satu kantor, warna tidak bisa dobel (color picker men-disable + backend 422).
+- ✅ Warna yang sama tapi beda casing (mis. `#E53E3E` vs `#e53e3e`) dianggap bentrok.
+- ✅ Tidak mengubah struktur database (data lama sudah lowercase — terverifikasi 0 mixed-case).
+
+---
+
+# Verifikasi & Safety Net — Duplikat Warna Per Kantor (2026-08-08)
+
+## Temuan
+Setelah uji menyeluruh terhadap backend yang BERJALAN, **validasi backend sudah
+berfungsi 100% benar**:
+
+| Test (via HTTP nyata ke `POST /dashboard/attendance/shifts`) | Hasil |
+|------|------|
+| Create shift warna `#6366f1` di cabang 4 (dipakai Shift Alfamart) | ✅ **DITOLAK 422** |
+| Create shift warna `#6366f1` di cabang 1 (beda cabang) | ✅ **DITERIMA** |
+| Edit shift tetap warna sendiri | ✅ DITERIMA (shift dikecualikan) |
+| Edit shift ganti ke warna shift lain di cabang sama | ✅ **DITOLAK 422** |
+
+Artinya: jika masih ada yang bisa membuat 2 template shift warna sama dalam satu
+cabang, penyebabnya BUKAN validasi backend — melainkan **frontend yang berjalan
+memakai kode lama** (Vite belum hot-reload / cache browser), ATAU modal terbuka
+sebelum daftar `shifts` selesai dimuat sehingga color picker tidak men-disable.
+
+## Perbaikan Tambahan — Safety Net Frontend
+**File:** `src/components/ShiftManagement.tsx`
+
+`handleSubmit()` kini melakukan **validasi duplikat warna secara lokal** sebelum
+request dikirim ke backend (sama logikanya dengan backend: per-kantor, company-wide
+bentrok semua). Jika bentrok, langsung menampilkan error tanpa perlu request ke server.
+
+Ini menutup:
+- Modal terbuka sebelum `loadShifts()` selesai (warna tidak di-disable di picker).
+- Memastikan user tidak melihat "request terkirim lalu gagal" — error muncul instan.
+
+## Cara Refresh Frontend
+Karena backend sudah benar, pastikan frontend memakai kode terbaru:
+1. Restart Vite dev server (`npm run dev`), atau
+2. Hard-refresh browser (Ctrl+Shift+R) untuk clear cache.
+
+---
+
+# Validasi — Hapus/Ubah Assignment Shift di Tengah Jam Kerja (2026-08-08)
+
+## Masalah / Bug yang Dihindari
+HRD menghapus assignment shift di tengah jam kerja karyawan. Contoh:
+- Karyawan sedang shift A (jam kerja 08:00–15:00).
+- HRD pada jam 12:00 menghapus shift karyawan → jadwal hari itu berubah ke
+  **default kantor** (checkout 17:00).
+- Karyawan checkout 15:00 (sesuai shift asli) → **terdeteksi pulang cepat**,
+  padahal itu bukan salah karyawan.
+
+## Solusi
+Tambahkan validasi di **3 endpoint** yang bisa mengubah jadwal hari ini:
+
+### 1. `destroyAssignment()` (hapus/akhiri assignment)
+- Jika assignment sedang **aktif hari ini** DAN karyawan **sedang dalam jam kerja
+  shift** → **422 DITOLAK** dengan pesan jelas.
+- Assignment yang belum mulai / sudah berakhir tetap bisa dihapus.
+- Assignment aktif di luar jam kerja (belum masuk / sudah pulang) tetap bisa diakhiri.
+
+### 2. `assignShift()` (assign shift baru)
+- Jika assignment baru **mulai/berlaku hari ini** (mencakup hari ini) DAN karyawan
+  sedang dalam jam kerja shift **lama yang akan digantikan** → **422 DITOLAK**.
+
+### 3. `updateAssignment()` (ubah assignment)
+- Jika assignment aktif hari ini diubah (`shift_id`/`start_date`/`end_date`) DAN
+  karyawan sedang dalam jam kerja → **422 DITOLAK**.
+
+## Helper baru `checkWithinWorkingHours(UserShift $userShift)`
+- Memeriksa apakah "sekarang" (Asia/Jakarta) berada dalam rentang jam kerja shift
+  assignment yang sedang berlaku hari ini.
+- **Menangani shift malam (cross-day)**: shift 22:00–05:00 dianggap jam kerja jika
+  sekarang >= 22:00 ATAU <= 05:00.
+- Return `null` bila bukan jam kerja / hari libur / shift nonaktif; return string
+  pesan blokir (dengan rentang jam) bila sedang jam kerja.
+
+## Frontend web — `src/components/ShiftManagement.tsx`
+Pesan konfirmasi hapus assignment aktif ditambahkan catatan bahwa aksi ditolak
+sistem jika karyawan sedang dalam jam kerja.
+
+## Hasil Uji (via HTTP nyata)
+| Kasus | Hasil |
+|-------|-------|
+| Hapus assignment aktif saat jam kerja (08:37, shift 08:00-17:00) | ✅ **DITOLAK 422** |
+| Hapus assignment yang belum mulai (besok) | ✅ **BERHASIL** |
+
+## Catatan
+- Saat pengujian, assignment test milik user (ID 24) ikut terhapus — sudah
+  dikembalikan dengan data yang sama (ID 29).
+- Tidak mengubah struktur database.
+
+---
+
+# Versioning — Edit Jam Kerja Shift Berlaku Mulai Tanggal Efektif (2026-08-08)
+
+## Masalah
+Saat HRD mengedit template shift yang sedang dipakai karyawan aktif, perubahan jam
+kerja langsung menimpa jadwal lama → mengubah jadwal karyawan yang sedang bekerja
+(bahkan di tengah jam kerja) → bug pulang cepat / telat yang salah.
+
+## Solusi — Versioning `shift_schedules`
+Tambah kolom `effective_date` ke `shift_schedules`. Setiap perubahan jam kerja
+membuat **VERSI BARU** (baris baru), bukan menimpa.
+
+### Aturan
+- **store()** (buat shift): `effective_date = hari ini` (versi pertama).
+- **update()** (edit jam kerja): `effective_date = hari ini + max(1, shift_notice_days)`
+  sesuai setting "Minimum Notice Perubahan Shift (H-N Hari)" di pengaturan kantor.
+- **Nama/deskripsi/warna** diupdate() → langsung (tidak membuat versi baru).
+- Versi yang berlaku pada tanggal T = baris dengan `effective_date ≤ T` terbesar.
+  Fallback: jika T sebelum versi pertama → pakai versi terbaru (MAX id).
+
+### Notifikasi
+Edit jam kerja mengirim notifikasi `shift_schedule_changed` ke karyawan yang
+ter-assign shift itu (DB + FCM), dengan pesan "akan berlaku mulai {tanggal}".
+`shiftUpdates()` & `dismissShiftUpdate()` kini mencakup tipe `shift_schedule_changed`.
+
+## Perubahan File
+
+### Database
+- **Migration baru** `2026_08_08_000001_add_effective_date_to_shift_schedules_table.php`:
+  tambah `effective_date`, backfill data lama ke `1970-01-01`, ganti unique constraint
+  ke `(shift_id, day_of_week, effective_date)`.
+
+### Backend — `app/Models/`
+- `ShiftSchedule.php`: fillable + cast `effective_date`.
+- `Shift.php`: relasi `schedules()` kini memilih versi PALING BARU per hari (untuk
+  tampilan template saat ini); tambah `allSchedules()` (semua versi) dan
+  `schedulesForDate($date)` (versi yang berlaku pada tanggal tertentu).
+
+### Backend — `app/Http/Controllers/API/ShiftController.php`
+- `syncSchedules(shift, schedules, effectiveDate)` — membuat versi baru, tidak menimpa.
+- `store()` → effective_date hari ini.
+- `update()` → hitung effective_date sesuai notice, buat versi baru, kirim notifikasi
+  ke karyawan ter-assign. Response menyertakan `effective_date` & `notified_users`.
+- Helper statis `scheduleForDate(shiftId, dayOfWeek, date)` — pilih versi yang berlaku.
+- Query version-aware: `resolveSchedule()`, `checkWithinWorkingHours()`,
+  `checkAssignRestGap()`, `myScheduleCalendar()`, `mySchedule()`.
+- Helper `shiftNotificationTypes()` untuk daftar tipe notifikasi shift.
+
+### Backend — `app/Http/Controllers/API/AttendanceController.php`
+- Cache `shiftScheduleCache` diurutkan DESC effective_date; saat dipakai per tanggal,
+  pilih versi dengan `effective_date <= tanggal` (fallback versi terbaru).
+  Memengaruhi `monthlySummary` & `reportAttendance`.
+
+### Frontend web — `src/components/ShiftManagement.tsx`
+- `OfficeOpt` + `shift_notice_days`.
+- Deteksi perubahan jam kerja (`scheduleChanged`).
+- Hitung `effectiveDate` = hari ini + max(1, shift_notice_days).
+- Saat edit jam kerja → modal konfirmasi "jam kerja baru berlaku mulai {tanggal}" +
+  info karyawan akan dinotifikasi di mobile. Nama/warna tetap langsung.
+
+## Hasil Uji (via HTTP nyata)
+| Kasus | Hasil |
+|-------|-------|
+| Edit jam kerja shift 3 (notice 2) | ✅ Versi baru effective 10/8, `notified_users: 1` |
+| Senin 3/8 (sebelum efektif) | ✅ Shift lama 22:00-06:00 (cross) |
+| Senin 17/8 (sesudah efektif) | ✅ Shift baru 08:00-17:00 |
+| Edit nama saja | ✅ Tanpa versi baru, tanpa notifikasi |
+| store shift baru | ✅ effective_date = hari ini |
+| monthlySummary / report / my-schedule-calendar | ✅ Tanpa error, konsisten |
+
+> Catatan: seluruh data test yang dibuat sudah dibersihkan. `shifts` & `shift_schedules`
+> kembali ke kondisi awal.

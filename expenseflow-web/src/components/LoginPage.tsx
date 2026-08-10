@@ -1,7 +1,7 @@
-import React, { useState } from 'react';
-import { Lock, Mail, Eye, EyeOff, AlertCircle, LogIn } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Lock, Mail, Eye, EyeOff, AlertCircle, LogIn, Timer } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
-import { ApiError } from '../services/api';
+import { ApiError, getRetryAfterSeconds, formatWaitTime } from '../services/api';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
@@ -10,18 +10,51 @@ export const LoginPage: React.FC = () => {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Countdown rate-limit (detik tersisa). Saat > 0, tombol Masuk di-disable.
+  const [retryCountdown, setRetryCountdown] = useState(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Bersihkan interval saat unmount / saat countdown selesai.
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (retryCountdown <= 0) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      return;
+    }
+    if (!timerRef.current) {
+      timerRef.current = setInterval(() => {
+        setRetryCountdown((s) => (s > 1 ? s - 1 : 0));
+      }, 1000);
+    }
+  }, [retryCountdown]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (retryCountdown > 0) return; // masih menunggu — abaikan klik
     setError(null);
     setSubmitting(true);
     try {
       await login(email.trim(), password);
     } catch (err) {
       if (err instanceof ApiError) {
-        // Pesan validasi Laravel: { errors: { email: [...] } }
-        const validation = err.data?.errors?.email?.[0];
-        setError(validation ?? err.message);
+        // Rate limit (429) → tampilkan waktu tunggu & mulai countdown.
+        const retryAfter = getRetryAfterSeconds(err);
+        if (err.status === 429 && retryAfter != null) {
+          setRetryCountdown(retryAfter);
+          setError(`Terlalu banyak percobaan login. Coba lagi dalam ${formatWaitTime(retryAfter)}.`);
+        } else {
+          // Pesan validasi Laravel: { errors: { email: [...] } }
+          const validation = err.data?.errors?.email?.[0];
+          setError(validation ?? err.message);
+        }
       } else {
         setError('Terjadi kesalahan tak terduga.');
       }
@@ -56,7 +89,11 @@ export const LoginPage: React.FC = () => {
 
           {error && (
             <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-3 py-2.5 text-xs">
-              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              {retryCountdown > 0 ? (
+                <Timer className="w-4 h-4 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              )}
               <span>{error}</span>
             </div>
           )}
@@ -102,13 +139,18 @@ export const LoginPage: React.FC = () => {
 
           <button
             type="submit"
-            disabled={submitting}
+            disabled={submitting || retryCountdown > 0}
             className="w-full flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-60 text-white font-semibold text-sm rounded-lg py-2.5 transition"
           >
             {submitting ? (
               <>
                 <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
                 Memproses...
+              </>
+            ) : retryCountdown > 0 ? (
+              <>
+                <Timer className="w-4 h-4" />
+                Tunggu {formatWaitTime(retryCountdown)}
               </>
             ) : (
               <>

@@ -14,11 +14,14 @@ import {
   Loader2,
   ZoomIn,
   AlertCircle,
+  RefreshCw,
 } from 'lucide-react';
 import { receiptApi } from '../services/endpoints';
 
 interface ReceiptHistoryProps {
   approvals: StrukApproval[];
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }
 
 // Tombol thumbnail per baris — hanya fetch saat diklik, tidak auto-load.
@@ -62,7 +65,7 @@ const ReceiptImageCell: React.FC<{
   );
 };
 
-export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals }) => {
+export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRefresh, refreshing }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('semua');
   const [startDate, setStartDate] = useState('');
@@ -157,9 +160,19 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals }) => 
               )}
             </div>
 
-            <button className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 transition ml-auto sm:ml-0">
+            <button className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 transition">
               <Download className="w-3.5 h-3.5" />
               <span className="hidden xs:inline">Export Excel</span>
+            </button>
+
+            <button
+              onClick={onRefresh}
+              disabled={refreshing}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition shrink-0 disabled:opacity-50"
+              title="Refresh Data"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden xs:inline">Refresh</span>
             </button>
           </div>
         </div>

@@ -38,6 +38,22 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
       appBar: AppBar(
         title: const Text('Izin & Cuti'),
         automaticallyImplyLeading: false,
+        actions: [
+          // Refresh manual di pojok kanan atas
+          IconButton(
+            onPressed: () {
+              final prov = Provider.of<PresensiProvider>(
+                context,
+                listen: false,
+              );
+              prov.fetchLeaveRequests();
+              prov.fetchLeaveBalance();
+              prov.fetchHolidays(DateTime.now().year);
+            },
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+          ),
+        ],
         bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white,

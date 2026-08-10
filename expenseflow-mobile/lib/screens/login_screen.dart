@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
@@ -15,15 +16,48 @@ class _LoginScreenState extends State<LoginScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   bool _obscurePassword = true;
+  int _retryCountdown = 0; // detik tunggu saat rate-limit (429)
+  Timer? _countdownTimer;
 
   @override
   void dispose() {
+    _countdownTimer?.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     super.dispose();
   }
 
+  /// Mulai countdown tunggu (detik) — disable tombol login sampai selesai.
+  void _startRetryCountdown(int seconds) {
+    _countdownTimer?.cancel();
+    setState(() => _retryCountdown = seconds);
+    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      setState(() {
+        _retryCountdown--;
+        if (_retryCountdown <= 0) {
+          timer.cancel();
+          _retryCountdown = 0;
+        }
+      });
+    });
+  }
+
+  /// Format detik → "X menit Y detik" (atau "Y detik" bila < 60).
+  String _formatWaitTime(int seconds) {
+    final s = seconds < 1 ? 1 : seconds;
+    final m = s ~/ 60;
+    final r = s % 60;
+    if (m > 0) return r > 0 ? '$m menit $r detik' : '$m menit';
+    return '$s detik';
+  }
+
   Future<void> _handleLogin() async {
+    if (_retryCountdown > 0) return; // masih menunggu — abaikan
+
     final email = _emailController.text.trim();
     final password = _passwordController.text;
 
@@ -47,7 +81,15 @@ class _LoginScreenState extends State<LoginScreen> {
         ),
       );
     } else {
-      _showError(auth.error ?? 'Login gagal. Periksa email & password.');
+      // Rate-limit → tampilkan waktu tunggu & jalankan countdown.
+      final retryAfter = auth.retryAfter;
+      if (retryAfter != null && retryAfter > 0) {
+        _startRetryCountdown(retryAfter);
+        _showError(
+            'Terlalu banyak percobaan login. Coba lagi dalam ${_formatWaitTime(retryAfter)}.');
+      } else {
+        _showError(auth.error ?? 'Login gagal. Periksa email & password.');
+      }
     }
   }
 
@@ -212,8 +254,10 @@ class _LoginScreenState extends State<LoginScreen> {
               // Submit Button
               Consumer<AuthProvider>(
                 builder: (context, auth, _) {
+                  final disabled =
+                      auth.isLoading || _retryCountdown > 0;
                   return ElevatedButton(
-                    onPressed: auth.isLoading ? null : _handleLogin,
+                    onPressed: disabled ? null : _handleLogin,
                     style: ElevatedButton.styleFrom(
                       backgroundColor: Theme.of(context).primaryColor,
                       foregroundColor: Colors.white,
@@ -229,11 +273,17 @@ class _LoginScreenState extends State<LoginScreen> {
                             child: CircularProgressIndicator(
                                 strokeWidth: 2, color: Colors.white),
                           )
-                        : const Text(
-                            'Masuk',
-                            style: TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold),
-                          ),
+                        : _retryCountdown > 0
+                            ? Text(
+                                'Tunggu ${_formatWaitTime(_retryCountdown)}',
+                                style: const TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.bold),
+                              )
+                            : const Text(
+                                'Masuk',
+                                style: TextStyle(
+                                    fontSize: 16, fontWeight: FontWeight.bold),
+                              ),
                   );
                 },
               ),

@@ -131,8 +131,8 @@ bootstrap/
 | 20b | `holidays` | Kalender libur (company_id **nullable** → NULL = libur nasional semua company, date, name, is_national). Unique (company_id, date). Dipakai untuk hitung hari kerja cuti & lembur hari libur. |
 | 20c | `overtime_approvals` | Approval lembur (attendance_id, user_id, company_id, overtime_minutes, status [pending/approved/rejected], reviewed_by, reviewed_at, notes, is_auto_checkout). Dibuat saat checkout jika ada lembur. |
 | 20d | `shifts` | Template shift (company_id, **attendance_setting_id** nullable=milik cabang/null=company-wide, name, description, is_active). Ditambah 2026-07-04. |
-| 20e | `shift_schedules` | Detail 7 hari per shift (shift_id, day_of_week 0=Minggu–6=Sabtu, work_start_time, work_end_time, is_off). Unique(shift_id, day_of_week). |
-| 20f | `user_shifts` | Assignment shift ke karyawan (user_id, shift_id **nullable**=default kantor, start_date, notes). Unique(user_id, start_date). **Shift aktif = start_date terbaru yang ≤ hari ini.** |
+| 20e | `shift_schedules` | Detail 7 hari per shift dengan **VERSIONING** (shift_id, **effective_date**, day_of_week 0=Minggu–6=Sabtu, work_start_time, work_end_time, is_off, is_cross_day). Unique(shift_id, day_of_week, effective_date). **Versi yang berlaku pada tanggal T = baris dengan effective_date ≤ T terbesar.** Edit jam kerja shift membuat VERSI BARU (effective_date = hari ini + max(1, shift_notice_days)); versi lama tetap berlaku sebelum tanggal efektif. |
+| 20f | `user_shifts` | Assignment shift ke karyawan (user_id, shift_id **nullable**=default kantor, start_date, **end_date nullable**, notes). Unique(user_id, start_date). **Shift berlaku pada tanggal T jika: start_date ≤ T DAN (end_date NULL ATAU end_date ≥ T).** Diurutkan DESC start_date → ambil first() = assignment terbaru yang mencakup tanggal T. |
 
 ### Laravel Defaults
 | # | Tabel | Keterangan |
@@ -499,6 +499,9 @@ POST /api/v1/attendance/leave-request       → requestLeave (total_days = HARI 
 GET  /api/v1/attendance/holidays            → listHolidays (read-only, untuk kalender mobile)
 GET  /api/v1/attendance/my-overtime         → myOvertimeApprovals (riwayat status lembur karyawan)
 POST /api/v1/attendance/fcm-token           → registerFcmToken (simpan FCM token device untuk push notif)
+GET  /api/v1/attendance/shift-updates       → shiftUpdates (notifikasi shift terbaru belum dibaca, untuk banner Flutter)
+POST /api/v1/attendance/dismiss-shift-update → dismissShiftUpdate (tandai notifikasi shift sudah dibaca)
+GET  /api/v1/attendance/my-schedule-calendar → myScheduleCalendar (kalender jadwal bulanan per-hari; ?month=&year=)
 ```
 
 ---
@@ -932,3 +935,5 @@ Berikut adalah panduan aturan bisnis, tindakan sistem, dan benefit untuk setiap 
 | **PKWT** *(Kontrak)* | Karyawan Perjanjian Kerja Waktu Pertentu (Kontrak). | Wajib mengisi `contract_start_date` & `contract_end_date`. | **Indikator Masa Kontrak:**<br>• 🟢 **Aktif**: Sisa kontrak > 30 hari<br>• 🟡 **Mendekati Expired**: Sisa kontrak ≤ 30 hari (Peringatan HRD untuk evaluasi/perpanjangan)<br>• 🔴 **Expired**: Tanggal kontrak telah lewat | • Hak cuti & klaim sesuai durasi kontrak<br>• Notifikasi/peringatan perpanjangan kontrak bagi HRD |
 | **Probation** *(Probasi)* | Karyawan dalam masa percobaan (biasanya 3–6 bulan). | Memiliki `joined_date` & target tanggal lulus probasi. | Indicator status **Probasi** (Badge Amber). Pengingat HRD untuk evaluasi kelulusan probasi karyawan. | • Akses presensi dasar & klaim struk<br>• Kuota cuti tahunan ditangguhkan hingga lulus probasi (opsional)<br>• Evaluasi konversi ke PKWTT / PKWT |
 | **Internship** *(Magang)* | Siswa / Mahasiswa / Tenaga Magang / Freelance. | Berdurasi terbatas sesuai proyek/periode magang. | Indicator status **Magang** (Badge Purple). Filter khusus peserta magang. | • Presensi harian mobile/onsite<br>• Limit klaim opsional/terbatas<br>• Tanpa akumulasi kuota cuti tahunan |
+
+refaktoring code untuk terakhir saja

@@ -9,6 +9,7 @@ class ShiftSchedule extends Model
 {
     protected $fillable = [
         'shift_id',
+        'effective_date',
         'day_of_week',
         'work_start_time',
         'work_end_time',
@@ -19,9 +20,10 @@ class ShiftSchedule extends Model
     protected function casts(): array
     {
         return [
-            'day_of_week'  => 'integer',
-            'is_off'       => 'boolean',
-            'is_cross_day' => 'boolean',
+            'effective_date' => 'date',
+            'day_of_week'    => 'integer',
+            'is_off'         => 'boolean',
+            'is_cross_day'   => 'boolean',
         ];
     }
 

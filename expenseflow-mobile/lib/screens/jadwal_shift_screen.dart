@@ -29,8 +29,16 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     _displayedMonth = DateTime(now.year, now.month);
     _selectedDate = now;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<ShiftProvider>(context, listen: false).fetchMySchedule();
+      final prov = Provider.of<ShiftProvider>(context, listen: false);
+      // Info shift "hari ini" + kalender bulan berjalan (per-tanggal)
+      prov.fetchMySchedule();
+      prov.fetchScheduleCalendar(now.year, now.month);
     });
+  }
+
+  /// Muat kalender saat berpindah bulan (pastikan jadwal per-tanggal akurat).
+  void _loadMonth(ShiftProvider prov) {
+    prov.fetchScheduleCalendar(_displayedMonth.year, _displayedMonth.month);
   }
 
   void _prevMonth() {
@@ -42,6 +50,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         _displayedMonth.month == 1 ? 12 : _displayedMonth.month - 1,
       );
     });
+    _loadMonth(Provider.of<ShiftProvider>(context, listen: false));
   }
 
   void _nextMonth() {
@@ -53,6 +62,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         _displayedMonth.month == 12 ? 1 : _displayedMonth.month + 1,
       );
     });
+    _loadMonth(Provider.of<ShiftProvider>(context, listen: false));
   }
 
   /// day_of_week API: 0=Minggu, 1=Senin ... 6=Sabtu
@@ -64,6 +74,83 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     } catch (_) {
       return const Color(0xFF6366f1);
     }
+  }
+
+  /// Ambil info shift yang relevan berdasarkan tanggal yang dipilih.
+  /// Jika tanggal dipilih punya shift berbeda dari "hari ini", tampilkan info shift tersebut.
+  /// Jika tidak ada data kalender untuk tanggal itu, fallback ke shiftInfo dari mySchedule.
+  _ShiftDisplayInfo _resolveDisplayInfo(ShiftProvider prov) {
+    // Prioritaskan tanggal yang dipilih
+    final date = _selectedDate;
+    if (date != null) {
+      final calDay = prov.getScheduleForDate(date);
+      if (calDay != null) {
+        if (calDay.source == 'shift' && calDay.shiftName != null) {
+          return _ShiftDisplayInfo(
+            name: calDay.shiftName!,
+            color: calDay.color ?? '#6366f1',
+            source: 'shift',
+            // Cari start_date dari calendarDays (tanggal pertama shift ini muncul berurutan)
+            startDate: _findShiftStartDate(prov, date, calDay.shiftId),
+          );
+        } else if (calDay.source == 'office') {
+          return _ShiftDisplayInfo(
+            name: 'Jam Kantor Default',
+            color: '#6366f1',
+            source: 'office',
+            startDate: null,
+          );
+        }
+      }
+    }
+
+    // Fallback ke shiftInfo dari /my-schedule (shift berlaku hari ini)
+    if (prov.shiftInfo != null) {
+      return _ShiftDisplayInfo(
+        name: prov.shiftInfo!.name,
+        color: prov.shiftInfo!.color,
+        source: prov.source,
+        startDate: prov.shiftInfo!.startDate,
+        officeName: prov.shiftInfo!.officeName,
+      );
+    }
+
+    return const _ShiftDisplayInfo(
+      name: 'Jam Kantor Default',
+      color: '#6366f1',
+      source: 'office',
+    );
+  }
+
+  /// Cari tanggal pertama shift dengan shiftId tertentu muncul di kalender
+  /// (mundur dari tanggal yang dipilih hingga shift berganti atau awal bulan).
+  String? _findShiftStartDate(ShiftProvider prov, DateTime selectedDate, int? shiftId) {
+    if (shiftId == null) return null;
+    
+    // Cari tanggal pertama shift ini dari calendarDays yang ter-load
+    // Iterasi mundur dari tanggal dipilih
+    DateTime cursor = selectedDate;
+    String? firstDate;
+    
+    while (true) {
+      final key = _dateKeyStr(cursor);
+      final day = prov.calendarDays[key];
+      if (day != null && day.shiftId == shiftId) {
+        firstDate = key;
+        cursor = cursor.subtract(const Duration(days: 1));
+      } else {
+        break;
+      }
+    }
+    
+    return firstDate;
+  }
+
+  String _dateKeyStr(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
   }
 
   @override
@@ -82,20 +169,33 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           if (prov.error != null) {
             return _buildError(prov);
           }
-          if (prov.source == 'none') {
+
+          // Tidak ada shift khusus DAN kalender belum memuat apa pun
+          // → benar-benar belum ada jadwal untuk ditampilkan.
+          if (prov.shiftInfo == null && prov.calendarDays.isEmpty) {
             return _buildEmpty();
           }
 
-          final shiftColor = _parseColor(prov.shiftInfo?.color ?? '#6366f1');
+          // Tentukan info shift yang relevan berdasarkan tanggal dipilih
+          final displayInfo = _resolveDisplayInfo(prov);
+          final shiftColor = _parseColor(displayInfo.color);
+
+          // Refresh: muat ulang info shift + kalender bulan yang sedang dilihat
+          Future<void> refresh() async {
+            await prov.fetchMySchedule();
+            // Force reload bulan yang sedang ditampilkan
+            prov.clearCalendarCache();
+            await prov.fetchScheduleCalendar(_displayedMonth.year, _displayedMonth.month);
+          }
 
           return RefreshIndicator(
-            onRefresh: () => prov.fetchMySchedule(),
+            onRefresh: refresh,
             child: SingleChildScrollView(
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
               child: Column(
                 children: [
-                  _buildShiftInfoCard(prov, shiftColor),
+                  _buildShiftInfoCard(displayInfo, shiftColor),
                   const SizedBox(height: 16),
                   _buildCalendarCard(prov, shiftColor),
                   const SizedBox(height: 16),
@@ -110,8 +210,9 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
   }
 
   // ─── Shift info card ────────────────────────────────────────
-  Widget _buildShiftInfoCard(ShiftProvider prov, Color c) {
-    final info = prov.shiftInfo!;
+  // Menampilkan info shift yang relevan dengan tanggal yang dipilih.
+  // Jika tanggal sebelum perubahan → shift lama; sesudah → shift baru.
+  Widget _buildShiftInfoCard(_ShiftDisplayInfo info, Color c) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -135,7 +236,11 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               color: Colors.white.withValues(alpha: 0.2),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.schedule, color: Colors.white, size: 22),
+            child: Icon(
+              info.source == 'shift' ? Icons.schedule : Icons.apartment,
+              color: Colors.white,
+              size: 22,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -264,7 +369,19 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             final day = cellIndex - leadingBlanks + 1;
             final date = DateTime(year, month, day);
             final apiDow = _toApiDow(date);
-            final schedule = prov.getScheduleForDayOfWeek(apiDow);
+            // Gunakan jadwal PER-TANGGAL (akurat untuk perubahan shift masa depan).
+            // Fallback ke template shift (perilaku lama) jika kalender belum siap.
+            final calDay = prov.getScheduleForDate(date);
+            final schedule = calDay != null
+                ? ShiftScheduleDay(
+                    dayOfWeek: apiDow,
+                    dayName: '',
+                    workStartTime: calDay.workStartTime,
+                    workEndTime: calDay.workEndTime,
+                    isOff: calDay.isOff,
+                    isCrossDay: calDay.isCrossDay,
+                  )
+                : prov.getScheduleForDayOfWeek(apiDow);
             final isOff = schedule?.isOff ?? false;
             final isToday = date.year == now.year &&
                 date.month == now.month &&
@@ -273,6 +390,11 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 date.year == _selectedDate!.year &&
                 date.month == _selectedDate!.month &&
                 date.day == _selectedDate!.day;
+
+            // Warna shift per tanggal (bisa beda-beda dalam satu bulan — inilah fitur utamanya)
+            final cellColor = calDay?.color != null
+                ? _parseColor(calDay!.color!)
+                : shiftColor;
 
             return Expanded(
               child: GestureDetector(
@@ -283,14 +405,14 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                   margin: const EdgeInsets.all(1.5),
                   decoration: BoxDecoration(
                     color: isSelected
-                        ? shiftColor.withValues(alpha: 0.12)
+                        ? cellColor.withValues(alpha: 0.12)
                         : isOff
                             ? Colors.red.shade50.withValues(alpha: 0.5)
                             : Colors.transparent,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: isSelected
-                          ? shiftColor
+                          ? cellColor
                           : isToday
                               ? const Color(0xFF1E88E5)
                               : Colors.transparent,
@@ -339,7 +461,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                           style: TextStyle(
                               fontSize: 8,
                               fontWeight: FontWeight.w600,
-                              color: shiftColor),
+                              color: cellColor),
                         )
                        else
                          Text('-',
@@ -362,9 +484,24 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
 
     final date = _selectedDate!;
     final apiDow = _toApiDow(date);
-    final schedule = prov.getScheduleForDayOfWeek(apiDow);
+    // Jadwal per-tanggal (akurat untuk shift yang berubah di tengah bulan).
+    final calDay = prov.getScheduleForDate(date);
+    final schedule = calDay != null
+        ? ShiftScheduleDay(
+            dayOfWeek: apiDow,
+            dayName: '',
+            workStartTime: calDay.workStartTime,
+            workEndTime: calDay.workEndTime,
+            isOff: calDay.isOff,
+            isCrossDay: calDay.isCrossDay,
+          )
+        : prov.getScheduleForDayOfWeek(apiDow);
     final dayIdx = date.weekday - 1; // 0=Senin
     final dayName = _fullDayNames[dayIdx];
+    // Warna shift tanggal terpilih
+    final detailColor = calDay?.color != null
+        ? _parseColor(calDay!.color!)
+        : shiftColor;
 
     return Container(
       width: double.infinity,
@@ -379,7 +516,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         children: [
           Row(
             children: [
-              Icon(Icons.calendar_today, size: 18, color: shiftColor),
+              Icon(Icons.calendar_today, size: 18, color: detailColor),
               const SizedBox(width: 8),
               Text(
                 '$dayName, ${date.day} ${_monthNames[date.month]} ${date.year}',
@@ -392,13 +529,30 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           if (schedule == null)
             Text('Tidak ada jadwal.',
                 style: TextStyle(color: Colors.grey.shade500))
-          else if (schedule.isOff)
-            _statusBanner(
-              icon: Icons.weekend,
-              label: 'Hari Libur Shift',
-              color: Colors.red,
-            )
           else ...[
+            // Nama shift pada tanggal ini (jika berbeda dari shift hari ini)
+            if (calDay != null && calDay.source == 'shift' && calDay.shiftName != null) ...[
+              _statusBanner(
+                icon: Icons.badge,
+                label: 'Shift: ${calDay.shiftName}',
+                color: Colors.indigo,
+              ),
+              const SizedBox(height: 10),
+            ] else if (calDay != null && calDay.source == 'office') ...[
+              _statusBanner(
+                icon: Icons.apartment,
+                label: 'Jam Kantor Default',
+                color: Colors.blueGrey,
+              ),
+              const SizedBox(height: 10),
+            ],
+            if (schedule.isOff)
+              _statusBanner(
+                icon: Icons.weekend,
+                label: 'Hari Libur Shift',
+                color: Colors.red,
+              )
+            else ...[
             // Badge jam kustom
             if (schedule.isCustom) ...[
               Container(
@@ -478,6 +632,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             ),
           ],
         ],
+      ],
       ),
     );
   }
@@ -595,4 +750,22 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
       return s;
     }
   }
+}
+
+/// Model ringkas info shift untuk kartu header.
+/// Digunakan agar kartu info berubah sesuai tanggal yang dipilih.
+class _ShiftDisplayInfo {
+  final String name;
+  final String color;
+  final String source;
+  final String? startDate;
+  final String? officeName;
+
+  const _ShiftDisplayInfo({
+    required this.name,
+    required this.color,
+    required this.source,
+    this.startDate,
+    this.officeName,
+  });
 }

@@ -17,6 +17,7 @@ interface OfficeOpt {
   work_end_time?: string | null;
   enforce_weekly_hours?: boolean;
   max_weekly_hours?: number | null;
+  shift_notice_days?: number | null;
 }
 
 interface ScheduleRow {
@@ -75,7 +76,20 @@ interface AssignmentRow {
   start_date: string;
   end_date: string | null;
   notes: string | null;
+  /** Status assignment: 'active' (sedang berlaku) | 'upcoming' (belum mulai) | 'expired' (sudah berakhir) */
+  status?: 'active' | 'upcoming' | 'expired';
   shift?: { id: number; name: string } | null;
+}
+
+interface ShiftUserRow {
+  user_id: number;
+  name: string;
+  department: string | null;
+  branch: string | null;
+  assignment_id: number;
+  status: 'active' | 'upcoming' | 'expired';
+  start_date: string;
+  end_date: string | null;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -220,43 +234,17 @@ function isOffOnDate(
 }
 
 // ═══════════════════════════════════════════════════════════════
-function SourceBadge({ source, isOff }: { source: string; isOff: boolean }) {
-  if (isOff)
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">
-        <Moon className="w-3 h-3" /> Libur
-      </span>
-    );
-  if (source === 'shift')
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
-        <Layers className="w-3 h-3" /> Shift Khusus
-      </span>
-    );
-  if (source === 'office')
-    return (
-      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-        <Building2 className="w-3 h-3" /> Jam Kantor
-      </span>
-    );
-  return (
-    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
-      <AlertCircle className="w-3 h-3" /> Belum Diatur
-    </span>
-  );
-}
-
-// ═══════════════════════════════════════════════════════════════
 // MODAL: Form Template Shift (create / edit)
 // ═══════════════════════════════════════════════════════════════
 interface ShiftFormProps {
   offices: OfficeOpt[];
+  shifts: ShiftTemplate[];
   editing: ShiftTemplate | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) {
+function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFormProps) {
   const [name, setName] = useState(editing?.name ?? '');
   const [description, setDescription] = useState(editing?.description ?? '');
   const [color, setColor] = useState(editing?.color ?? '#6366f1');
@@ -284,17 +272,48 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
   const [k3Warnings, setK3Warnings] = useState<string[]>([]);
   const [showK3Confirm, setShowK3Confirm] = useState(false);
 
+  // Konfirmasi perubahan jam kerja shift yang berlaku mulai tanggal efektif
+  const [pendingScheduleSave, setPendingScheduleSave] = useState<(() => void) | null>(null);
+
+  // Ambil setting kantor yang dipilih (untuk validasi & hitung tanggal efektif)
+  const selectedOffice = useMemo(
+    () => offices.find((o) => String(o.id) === branchId) ?? null,
+    [offices, branchId],
+  );
+
+  // Deteksi apakah jam kerja (schedules) berubah vs jadwal shift saat ini
+  const scheduleChanged = useMemo(() => {
+    if (!editing) return false; // create → tidak perlu konfirmasi (langsung berlaku)
+    const current = editing.schedules ?? [];
+    const sameCount = current.length === schedules.length;
+    if (!sameCount) return true;
+    return schedules.some((s) => {
+      const old = current.find((c) => c.day_of_week === s.day_of_week);
+      if (!old) return true;
+      return (
+        (s.is_off || false) !== (old.is_off || false) ||
+        (s.work_start_time ?? null) !== (old.work_start_time ?? null) ||
+        (s.work_end_time ?? null) !== (old.work_end_time ?? null)
+      );
+    });
+  }, [editing, schedules]);
+
+  // Tanggal efektif jam kerja baru = hari ini + max(1, shift_notice_days kantor)
+  const effectiveDate = useMemo(() => {
+    if (!editing || !scheduleChanged) return null;
+    const notice = selectedOffice?.shift_notice_days && selectedOffice.shift_notice_days > 0
+      ? selectedOffice.shift_notice_days
+      : 1;
+    const d = new Date();
+    d.setDate(d.getDate() + notice);
+    return d.toISOString().slice(0, 10);
+  }, [editing, scheduleChanged, selectedOffice]);
+
   // Hitung jeda K3 antar hari secara real-time saat user ubah jam
   const k3Gaps = useMemo(() => computeTemplateGaps(schedules), [schedules]);
 
   // Hitung total jam kerja per minggu secara real-time
   const weeklyHours = useMemo(() => computeWeeklyHours(schedules), [schedules]);
-
-  // Ambil setting kantor yang dipilih untuk validasi batas jam/minggu
-  const selectedOffice = useMemo(
-    () => offices.find((o) => String(o.id) === branchId) ?? null,
-    [offices, branchId],
-  );
 
   // Status indikator jam/minggu
   const weeklyStatus = useMemo(() => {
@@ -333,10 +352,28 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
     return null;
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const v = validate();
-    if (v) { setErr(v); return; }
+  // Validasi duplikat warna lokal (sama logika backend, per-kantor)
+  const validateColorLocal = (): string | null => {
+    if (!color) return null;
+    const targetBranchLocal =
+      branchId !== '' ? Number(branchId) : editing?.attendance_setting_id ?? null;
+    const editingIsCompanyWideLocal =
+      editing != null && editing.attendance_setting_id == null;
+    const clash = shifts.find((s) => {
+      if (s.id === editing?.id) return false;
+      if (s.color == null || s.color.toLowerCase() !== color.toLowerCase()) return false;
+      if (s.attendance_setting_id == null) return true;
+      if (editingIsCompanyWideLocal) return true;
+      if (targetBranchLocal == null) return false;
+      return s.attendance_setting_id === targetBranchLocal;
+    });
+    return clash
+      ? `Warna ${color} sudah dipakai oleh shift '${clash.name}' (kantor ini). Pilih warna yang berbeda dalam kantor ini.`
+      : null;
+  };
+
+  // Kirim ke backend (dipanggil langsung atau setelah konfirmasi)
+  const doSave = async () => {
     setBusy(true);
     setErr('');
     const payload = {
@@ -365,6 +402,30 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
       setErr(ex instanceof ApiError ? ex.message : 'Gagal menyimpan shift.');
       setBusy(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const v = validate();
+    if (v) { setErr(v); return; }
+
+    const colorErr = validateColorLocal();
+    if (colorErr) { setErr(colorErr); return; }
+
+    // Saat EDIT dan jam kerja (schedules) berubah → konfirmasi tanggal efektif.
+    // Nama/warna/deskripsi saja → langsung simpan (tidak mengubah jadwal karyawan).
+    if (editing && scheduleChanged && effectiveDate) {
+      setPendingScheduleSave(() => doSave);
+      return; // tampilkan modal konfirmasi
+    }
+
+    await doSave();
+  };
+
+  const confirmScheduleSave = () => {
+    const fn = pendingScheduleSave;
+    setPendingScheduleSave(null);
+    if (fn) fn();
   };
 
   return (
@@ -418,7 +479,8 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1.5">Warna Shift</label>
-              {/* 20 preset warna kontras untuk kalender — pilih satu */}
+              {/* 20 preset warna kontras untuk kalender — pilih satu.
+                  Warna yang sudah dipakai shift lain dinonaktifkan (unused) */}
               <div className="flex flex-wrap gap-2">
                 {[
                   '#e53e3e', // merah
@@ -441,19 +503,55 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
                   '#1a365d', // biru midnight
                   '#f6ad55', // oranye muda
                   '#48bb78', // hijau muda
-                ].map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    onClick={() => setColor(c)}
-                    title={c}
-                    className={`w-7 h-7 rounded-full border-[3px] transition-all ${color === c
-                      ? 'border-slate-800 scale-125 shadow-md'
-                      : 'border-transparent hover:scale-110 hover:border-slate-300'
-                      }`}
-                    style={{ backgroundColor: c }}
-                  />
-                ))}
+                ].map((c) => {
+                  // Warna unik PER KANTOR. Lingkup bentrok mengikuti kantor yang
+                  // DIPILIH di form (bukan status editing):
+                  // - Shift lain company-wide (attendance_setting_id null) selalu
+                  //   bentrok, karena berlaku di semua kantor.
+                  // - Jika user sudah pilih cabang: warna bentrok bila dipakai
+                  //   shift lain di cabang yang sama.
+                  // - Jika user belum pilih cabang (khusus saat BUAT): jangan
+                  //   disable apa pun — biarkan backend yang memvalidasi.
+                  // - Saat EDIT: kantor target = kantor yang dipilih di form
+                  //   (default = kantor shift yang sedang diedit).
+                  // Perbandingan warna case-insensitive (#E53E3E == #e53e3e).
+                  // Saat EDIT shift company-wide (tidak ada pilihan cabang, branchId
+                  // kosong) → target dianggap company-wide → bentrok dengan semua.
+                  const isEditingCompanyWide =
+                    editing != null && editing.attendance_setting_id == null;
+                  const targetBranch =
+                    branchId !== '' ? Number(branchId) : editing?.attendance_setting_id ?? null;
+                  const usedBy = shifts.find((s) => {
+                    if (s.color == null || s.color.toLowerCase() !== c.toLowerCase()) return false;
+                    if (s.id === editing?.id) return false;
+                    // Shift lain company-wide selalu bentrok (di kantor mana pun)
+                    if (s.attendance_setting_id == null) return true;
+                    // Shift target company-wide → semua shift cabang bentrok
+                    if (isEditingCompanyWide) return true;
+                    // Belum bisa tahu kantor target → biarkan backend memvalidasi
+                    if (targetBranch == null) return false;
+                    // Bentrok hanya jika di cabang yang sama
+                    return s.attendance_setting_id === targetBranch;
+                  });
+                  const isUsed = !!usedBy;
+                  const isSelected = color === c;
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => { if (!isUsed) setColor(c); }}
+                      disabled={isUsed}
+                      title={usedBy ? `Sudah dipakai oleh shift "${usedBy.name}" (kantor ini)` : c}
+                      className={`w-7 h-7 rounded-full border-[3px] transition-all ${isSelected
+                        ? 'border-slate-800 scale-125 shadow-md'
+                        : isUsed
+                          ? 'border-slate-200 opacity-40 cursor-not-allowed'
+                          : 'border-transparent hover:scale-110 hover:border-slate-300'
+                        }`}
+                      style={{ backgroundColor: c }}
+                    />
+                  );
+                })}
               </div>
               {/* Preview warna terpilih */}
               <div className="mt-2 flex items-center gap-2">
@@ -653,6 +751,59 @@ function ShiftFormModal({ offices, editing, onClose, onSaved }: ShiftFormProps) 
           </div>
         </div>
       )}
+
+      {/* ── Modal konfirmasi perubahan jam kerja — berlaku mulai tanggal efektif ── */}
+      {pendingScheduleSave && effectiveDate && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in-95 duration-200 overflow-hidden">
+            <div className="flex items-center gap-3 px-6 py-4 bg-indigo-50 border-b border-indigo-100">
+              <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center shrink-0">
+                <CalendarClock className="w-5 h-5 text-indigo-600" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-indigo-800">Perubahan Jam Kerja Shift</p>
+                <p className="text-xs text-indigo-600 mt-0.5">Jam kerja baru berlaku sesuai pengaturan notice</p>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 space-y-2.5">
+              <p className="text-xs text-slate-700 leading-relaxed">
+                Perubahan <strong>jam kerja</strong> shift <strong>{editing?.name}</strong> tidak mengubah jadwal
+                hari ini. Jam kerja baru akan berlaku mulai:
+              </p>
+              <div className="rounded-lg bg-indigo-50 border border-indigo-100 px-3 py-2.5 flex items-center gap-2">
+                <CalendarDays className="w-4 h-4 text-indigo-600 shrink-0" />
+                <span className="text-sm font-bold text-indigo-700">
+                  {new Date(effectiveDate + 'T00:00:00').toLocaleDateString('id-ID', {
+                    day: 'numeric', month: 'long', year: 'numeric',
+                  })}
+                </span>
+              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Karyawan yang terpasang pada shift ini akan menerima pemberitahuan di aplikasi mobile
+                bahwa jam kerja shift berubah mulai tanggal tersebut.
+              </p>
+            </div>
+
+            <div className="flex gap-3 px-6 py-4 border-t border-slate-100 bg-slate-50/60">
+              <button
+                type="button"
+                onClick={() => setPendingScheduleSave(null)}
+                className="flex-1 py-2.5 text-xs font-bold rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 transition"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={confirmScheduleSave}
+                className="flex-1 py-2.5 text-xs font-bold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition flex items-center justify-center gap-1.5"
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" /> Ya, Simpan Perubahan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -677,21 +828,26 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
   const [k3Warnings, setK3Warnings] = useState<string[]>([]);
 
   const [history, setHistory] = useState<AssignmentRow[]>([]);
-  const [loadingHist, setLoadingHist] = useState(false);
+  const [loadingHist, setLoadingHist] = useState(true);
 
-  // Shift yang relevan: company-wide atau cabang yang sama dengan karyawan (bandingkan by ID).
-  const relevantShifts = useMemo(
-    () =>
-      shifts.filter(
-        (s) =>
-          s.is_active && (
-            !s.attendance_setting_id ||        // company-wide → boleh untuk semua karyawan
-            !user.attendance_setting_id ||     // user belum ada cabang → tampilkan semua shift
-            s.attendance_setting_id === user.attendance_setting_id // ID cabang cocok
-          ),
-      ),
-    [shifts, user.attendance_setting_id],
-  );
+  // Shift yang relevan: company-wide atau cabang yang sama dengan karyawan (bandingkan by ID),
+  // TANPA shift yang sedang AKTIF atau SEGERA dipakai karyawan (cegah assign shift yang sama).
+  const relevantShifts = useMemo(() => {
+    const activeShiftIds = new Set(
+      history
+        .filter((h) => (h.status === 'active' || h.status === 'upcoming') && h.shift?.id != null)
+        .map((h) => h.shift!.id),
+    );
+    return shifts.filter(
+      (s) =>
+        s.is_active && (
+          !s.attendance_setting_id ||        // company-wide → boleh untuk semua karyawan
+          !user.attendance_setting_id ||     // user belum ada cabang → tampilkan semua shift
+          s.attendance_setting_id === user.attendance_setting_id // ID cabang cocok
+        ) &&
+        !activeShiftIds.has(s.id),           // JANGAN tampilkan shift yang aktif/segera
+    );
+  }, [shifts, user.attendance_setting_id, history]);
 
   const loadHistory = useCallback(async () => {
     setLoadingHist(true);
@@ -731,6 +887,7 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
       }
       await loadHistory();
       onSaved();
+      setShiftId('');
       setNotes('');
       setEndDate('');
     } catch (ex: unknown) {
@@ -740,10 +897,17 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
     }
   };
 
-  const handleDelete = async (id: number) => {
-    if (!confirm('Hapus assignment ini? Jadwal karyawan akan mengikuti assignment sebelumnya / jam kantor.')) return;
+  const handleDelete = async (h: AssignmentRow) => {
+    // Pesan konfirmasi disesuaikan dengan status assignment
+    const msg =
+      h.status === 'active'
+        ? 'Assignment ini SEDANG AKTIF. Mengakhiri akan mengembalikan karyawan ke jadwal kantor default mulai hari ini. Catatan: jika karyawan sedang dalam jam kerja shift, aksi ini DITOLAK sistem (kembalikan hanya saat di luar jam kerja). Histori shift tetap tersimpan. Lanjutkan?'
+        : h.status === 'upcoming'
+          ? 'Assignment ini belum dimulai (masa depan). Hapus permanen?'
+          : 'Assignment ini sudah berakhir. Hapus dari riwayat?';
+    if (!confirm(msg)) return;
     try {
-      await shiftApi.destroyAssignment(id);
+      await shiftApi.destroyAssignment(h.id);
       await loadHistory();
       onSaved();
     } catch (ex: unknown) {
@@ -789,14 +953,19 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
               <select
                 value={shiftId}
                 onChange={(e) => setShiftId(e.target.value)}
+                disabled={loadingHist}
                 className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
               >
                 <option value="" disabled>— Pilih Shift —</option>
-                {relevantShifts.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}{s.office ? ` — ${s.office.office_name}` : ' — Semua cabang'}
-                  </option>
-                ))}
+                {loadingHist ? (
+                  <option value="" disabled>Memuat shift...</option>
+                ) : (
+                  relevantShifts.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}{s.office ? ` — ${s.office.office_name}` : ' — Semua cabang'}
+                    </option>
+                  ))
+                )}
               </select>
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -865,10 +1034,10 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
             </button>
           </form>
 
-          {/* Riwayat assignment */}
+          {/* Daftar assignment: menunjukkan shift aktif, yang akan datang, dan yang sudah berakhir */}
           <div className="border-t border-slate-100 pt-4">
             <p className="text-xs font-bold text-slate-700 flex items-center gap-1.5 mb-2">
-              <History className="w-3.5 h-3.5 text-slate-400" /> Riwayat Assignment
+              <History className="w-3.5 h-3.5 text-slate-400" /> Assignment Shift Karyawan
               {loadingHist && <div className="w-3 h-3 border-2 border-slate-300 border-t-indigo-500 rounded-full animate-spin" />}
             </p>
             {history.length === 0 && !loadingHist ? (
@@ -880,9 +1049,27 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
                 {history.map((h) => (
                   <div key={h.id} className="flex items-start justify-between gap-2 p-2.5 rounded-lg bg-slate-50 border border-slate-100">
                     <div className="min-w-0 flex-1">
-                      <p className="text-xs font-semibold text-slate-700 truncate">
-                        {h.shift?.name ?? 'Default Kantor'}
-                      </p>
+                      <div className="flex items-center gap-1.5">
+                        <p className="text-xs font-semibold text-slate-700 truncate">
+                          {h.shift?.name ?? 'Default Kantor'}
+                        </p>
+                        {/* Badge status assignment */}
+                        {h.status === 'active' && (
+                          <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 px-1.5 py-0.5 text-[9px] font-bold">
+                            <span className="w-1 h-1 rounded-full bg-emerald-500" /> AKTIF
+                          </span>
+                        )}
+                        {h.status === 'upcoming' && (
+                          <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-sky-100 text-sky-700 px-1.5 py-0.5 text-[9px] font-bold">
+                            SEGERA
+                          </span>
+                        )}
+                        {h.status === 'expired' && (
+                          <span className="shrink-0 inline-flex items-center rounded-full bg-slate-100 text-slate-400 px-1.5 py-0.5 text-[9px] font-bold">
+                            BERAKHIR
+                          </span>
+                        )}
+                      </div>
                       <p className="text-[10px] text-slate-400">
                         Mulai {fmtDate(h.start_date)}
                         {h.end_date && (
@@ -897,9 +1084,9 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
                       </p>
                     </div>
                     <button
-                      onClick={() => handleDelete(h.id)}
+                      onClick={() => handleDelete(h)}
                       className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 transition shrink-0"
-                      title="Hapus assignment"
+                      title={h.status === 'active' ? 'Akhiri assignment (kembali ke jadwal kantor)' : 'Hapus assignment'}
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
@@ -1103,6 +1290,141 @@ function BulkAssignModal({ userIds, userNames, shifts, onClose, onSaved }: BulkM
 }
 
 // ═══════════════════════════════════════════════════════════════
+// MODAL: Lihat karyawan yang terkait sebuah template shift
+// ═══════════════════════════════════════════════════════════════
+interface ShiftUsersModalProps {
+  shift: ShiftTemplate;
+  onClose: () => void;
+}
+
+function ShiftUsersModal({ shift, onClose }: ShiftUsersModalProps) {
+  const [rows, setRows] = useState<ShiftUserRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const res: any = await shiftApi.users(shift.id);
+        if (!cancelled) setRows((res?.data ?? []) as ShiftUserRow[]);
+      } catch (ex: unknown) {
+        if (!cancelled) setError(ex instanceof ApiError ? ex.message : 'Gagal memuat karyawan shift.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [shift.id]);
+
+  const activeCount = rows.filter((r) => r.status === 'active').length;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4 py-6"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-200">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: (shift.color ?? '#6366f1') + '20' }}>
+              <Layers className="w-5 h-5" style={{ color: shift.color ?? '#6366f1' }} />
+            </div>
+            <div>
+              <p className="font-bold text-sm text-slate-800 flex items-center gap-2">
+                {shift.name}
+                {!shift.is_active && (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Nonaktif</span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500">
+                {rows.length} karyawan terkait · {activeCount} aktif
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 rounded-lg text-slate-400 transition">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {error && (
+            <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-lg p-3 text-xs text-rose-700">
+              <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 border border-slate-100 animate-pulse">
+                  <div className="w-7 h-7 rounded-full bg-slate-200 shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3 w-32 bg-slate-200 rounded" />
+                    <div className="h-2 w-20 bg-slate-200 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="py-12 text-center text-slate-400">
+              <Users className="w-10 h-10 mx-auto opacity-30" />
+              <p className="font-semibold text-sm mt-2">Belum ada karyawan</p>
+              <p className="text-xs mt-0.5">Belum ada karyawan yang di-assign ke shift ini.</p>
+            </div>
+          ) : (
+            <div className="space-y-1.5">
+              {rows.map((r) => {
+                const av = avatarFor(r.name);
+                return (
+                  <div key={r.assignment_id} className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 border border-slate-100">
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${av.bg} ${av.text}`}>
+                      {initialsOf(r.name)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-semibold text-slate-700 truncate">{r.name}</p>
+                      <p className="text-[10px] text-slate-400 truncate">
+                        {r.department || 'Tanpa departemen'}
+                        {r.branch && <> · {r.branch}</>}
+                      </p>
+                    </div>
+                    {/* Badge status assignment */}
+                    {r.status === 'active' && (
+                      <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-700 px-1.5 py-0.5 text-[9px] font-bold">
+                        <span className="w-1 h-1 rounded-full bg-emerald-500" /> AKTIF
+                      </span>
+                    )}
+                    {r.status === 'upcoming' && (
+                      <span className="shrink-0 inline-flex items-center rounded-full bg-sky-100 text-sky-700 px-1.5 py-0.5 text-[9px] font-bold">
+                        SEGERA
+                      </span>
+                    )}
+                    {r.status === 'expired' && (
+                      <span className="shrink-0 inline-flex items-center rounded-full bg-slate-100 text-slate-400 px-1.5 py-0.5 text-[9px] font-bold">
+                        BERAKHIR
+                      </span>
+                    )}
+                    <span className="shrink-0 text-[10px] text-slate-400">
+                      {fmtDate(r.start_date)}
+                      {r.end_date && <> → {fmtDate(r.end_date)}</>}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════
 type Tab = 'roster' | 'templates' | 'kalender';
@@ -1143,6 +1465,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [assignUser, setAssignUser] = useState<RosterRow | null>(null);
   const [showBulk, setShowBulk] = useState(false);
   const [shiftForm, setShiftForm] = useState<{ editing: ShiftTemplate | null } | null>(null);
+  const [shiftUsersView, setShiftUsersView] = useState<ShiftTemplate | null>(null);
 
   // ─── Loaders ───────────────────────────────────────────────
   const loadOffices = useCallback(async () => {
@@ -1210,7 +1533,17 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       await loadShifts();
       onAddAuditLog?.('Shift dihapus', s.name, 'bg-rose-500');
     } catch (e: unknown) {
-      setError(e instanceof ApiError ? e.message : 'Gagal menghapus shift.');
+      // 409 = masih ada karyawan yang memakai shift → tampilkan petunjuk lengkap
+      if (e instanceof ApiError) {
+        const affected = e.data?.affected_names as string | undefined;
+        setError(
+          affected
+            ? `${e.message}\nKaryawan terdampak: ${affected}`
+            : e.message,
+        );
+      } else {
+        setError('Gagal menghapus shift.');
+      }
     }
   };
 
@@ -1223,8 +1556,17 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       await loadShifts();
       onAddAuditLog?.(s.is_active ? 'Shift dinonaktifkan' : 'Shift diaktifkan', s.name, 'bg-indigo-500');
     } catch (e: unknown) {
-      // Error overlap (422) dari backend tampil inline agar HRD tahu shift mana yang tabrakan
-      setError(e instanceof ApiError ? e.message : `Gagal ${aksi} shift.`);
+      // 409 = masih ada karyawan yang memakai shift → tampilkan petunjuk lengkap
+      if (e instanceof ApiError) {
+        const affected = e.data?.affected_names as string | undefined;
+        setError(
+          affected
+            ? `${e.message}\nKaryawan terdampak: ${affected}`
+            : e.message,
+        );
+      } else {
+        setError(`Gagal ${aksi} shift.`);
+      }
     }
   };
 
@@ -1296,7 +1638,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <button
           onClick={() => { loadShifts(); if (tab === 'roster') loadRoster(); }}
-          className="self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
+          className="ml-auto self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
         >
           <RefreshCw className="w-3.5 h-3.5" /> Refresh
         </button>
@@ -1331,7 +1673,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       {error && (
         <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-3 text-xs">
           <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
-          <span className="flex-1">{error}</span>
+          <span className="flex-1 whitespace-pre-line">{error}</span>
         </div>
       )}
 
@@ -1458,7 +1800,6 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     </th>
                     <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Karyawan</th>
                     <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Cabang</th>
-                    <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Sumber Jadwal</th>
                     <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Shift</th>
                     <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Jam Kerja</th>
                     <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Aksi</th>
@@ -1481,7 +1822,6 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                           </div>
                         </td>
                         <td className="py-3 px-3"><div className="h-3 w-20 bg-slate-200 rounded" /></td>
-                        <td className="py-3 px-3"><div className="h-4 w-20 bg-slate-200 rounded-full" /></td>
                         <td className="py-3 px-3"><div className="h-3 w-24 bg-slate-200 rounded" /></td>
                         <td className="py-3 px-3"><div className="h-3 w-20 bg-slate-200 rounded mx-auto" /></td>
                         <td className="py-3 px-3"><div className="h-6 w-16 bg-slate-200 rounded-lg mx-auto" /></td>
@@ -1489,7 +1829,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     ))
                   ) : filteredRoster.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-16 text-center">
+                      <td colSpan={6} className="py-16 text-center">
                         <div className="flex flex-col items-center gap-2 text-slate-400">
                           <Users className="w-10 h-10 opacity-30" />
                           <p className="font-semibold text-sm">Tidak ada karyawan</p>
@@ -1524,12 +1864,19 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                           </div>
                         </td>
                         <td className="py-3 px-3 text-slate-600">{r.branch ?? <span className="text-slate-300">—</span>}</td>
-                        <td className="py-3 px-3"><SourceBadge source={r.source} isOff={r.is_off} /></td>
                         <td className="py-3 px-3 text-slate-700">
                           {r.shift_name ?? (
                             r.upcoming_shift
                               ? null // ada shift coming soon → jangan tampilkan strip
-                              : <span className="text-slate-300">—</span>
+                              : r.source === 'office' ? (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                                    <Building2 className="w-3 h-3" /> Jam Kantor
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                                    <AlertCircle className="w-3 h-3" /> Belum Diatur
+                                  </span>
+                                )
                           )}
                           {/* Shift yang sudah di-assign tapi belum aktif (coming soon) */}
                           {r.upcoming_shift && (
@@ -1550,7 +1897,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         </td>
                         <td className="py-3 px-3 text-center font-mono text-slate-700">
                           {r.is_off ? (
-                            <span className="text-rose-400 font-semibold">Libur</span>
+                            <span className="text-slate-300">—</span>
                           ) : r.work_start_time ? (
                             <span className="inline-flex items-center gap-1 justify-center">
                               {hhmm(r.work_start_time)}–{hhmm(r.work_end_time)}
@@ -1721,6 +2068,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         <span
                           className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${s.is_active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}
                         />
+                      </button>
+                      <button
+                        onClick={() => setShiftUsersView(s)}
+                        className="inline-flex items-center gap-1 px-2 py-1.5 text-[10px] font-bold text-indigo-600 border border-indigo-200 hover:bg-indigo-50 rounded-lg transition"
+                        title="Lihat karyawan yang terkait shift ini"
+                      >
+                        <Users className="w-3 h-3" /> Lihat Karyawan
                       </button>
                       <button
                         onClick={() => setShiftForm({ editing: s })}
@@ -2077,6 +2431,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       {shiftForm && (
         <ShiftFormModal
           offices={offices}
+          shifts={shifts}
           editing={shiftForm.editing}
           onClose={() => setShiftForm(null)}
           onSaved={() => { loadShifts(); onAddAuditLog?.(shiftForm.editing ? 'Shift diperbarui' : 'Shift dibuat', '', 'bg-indigo-500'); }}
@@ -2099,6 +2454,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           shifts={shifts}
           onClose={() => { setShowBulk(false); }}
           onSaved={() => { loadRoster(); }}
+        />
+      )}
+
+      {shiftUsersView && (
+        <ShiftUsersModal
+          shift={shiftUsersView}
+          onClose={() => setShiftUsersView(null)}
         />
       )}
     </div>

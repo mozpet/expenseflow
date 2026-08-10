@@ -315,11 +315,12 @@ class AttendanceController extends Controller
         $filter = $request->query('filter'); // enabled | disabled
 
         $query = User::query()
+            ->with('office:id,office_name')
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
             )
-            ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'is_active']);
+            ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'attendance_setting_id', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'is_active']);
 
         if ($filter === 'enabled') {
             $query->where('attendance_enabled', true);
@@ -991,7 +992,10 @@ class AttendanceController extends Controller
 
         // Pre-load semua ShiftSchedule yang relevan (indexed by shift_id_day)
         $shiftIds = $userShifts->flatten()->pluck('shift_id')->filter()->unique()->values()->all();
+        // Cache semua versi jadwal, diurutkan efektif terbaru dulu.
+        // Saat dipakai per tanggal, filter versi dengan effective_date <= tanggal.
         $shiftScheduleCache = \App\Models\ShiftSchedule::whereIn('shift_id', $shiftIds)
+            ->orderByDesc('effective_date')
             ->get()
             ->groupBy(fn ($s) => $s->shift_id . '_' . $s->day_of_week);
 
@@ -1062,9 +1066,14 @@ class AttendanceController extends Controller
 
                     $isOff = false;
                     if ($shiftAssignment && $shiftAssignment->shift_id && optional($shiftAssignment->shift)->is_active) {
-                        // Karyawan punya jadwal shift → gunakan shift schedule (dari cache)
+                        // Karyawan punya jadwal shift → gunakan versi shift schedule
+                        // yang berlaku pada tanggal ini (effective_date <= tanggal).
                         $cacheKey   = $shiftAssignment->shift_id . '_' . $dayOfWeek;
-                        $shiftSched = ($shiftScheduleCache->get($cacheKey) ?? collect())->first();
+                        $candidates = $shiftScheduleCache->get($cacheKey) ?? collect();
+                        // Urutan sudah DESC effective_date → ambil versi pertama yang <= tanggal
+                        $shiftSched = $candidates->first(
+                            fn ($s) => $s->effective_date->toDateString() <= $dateStr
+                        ) ?? $candidates->first(); // fallback ke versi terbaru
                         $isOff = $shiftSched ? (bool) $shiftSched->is_off : false;
                     } else {
                         // Fallback ke jam kerja kantor
@@ -2114,6 +2123,9 @@ class AttendanceController extends Controller
                 'attendance'          => null,
                 'overtime_approval'   => null,
                 'scheduled_auto_checkout_at' => null,
+                // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
+                // tombol "Catat Presensi" saat tombol Refresh ditekan.
+                'wfh_enabled'         => (bool) $user->wfh_enabled,
             ]);
         }
 
@@ -2149,6 +2161,9 @@ class AttendanceController extends Controller
                 'status', 'work_minutes', 'overtime_minutes',
                 'is_auto_checkout', 'auto_checkout_at',
             ]),
+            // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
+            // tombol "Catat Presensi" saat tombol Refresh ditekan.
+            'wfh_enabled' => (bool) $user->wfh_enabled,
             // Jadwal shift aktif hari ini (untuk tampilan di Flutter)
             'active_shift' => $jadwalHariIni['source'] === 'shift' ? [
                 'shift_id'        => $jadwalHariIni['shift_id'],

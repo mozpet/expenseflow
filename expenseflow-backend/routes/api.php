@@ -15,9 +15,37 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 
-// Rate limiter untuk login: 5 attempt per menit per IP
+// Rate limiter untuk login: dua batasan jalan serentak.
+//   - Per akun: 5 percobaan per menit (dibedakan per email)
+//   - Per IP  : 30 percobaan per menit (lebih longgar untuk kantor NAT)
+// Request diblokir (429) jika SALAH SATU batasan terlampaui.
+// Response custom menyertakan retry_after (detik) agar web & mobile bisa
+// menampilkan waktu tunggu dengan andal.
 RateLimiter::for('login', function (Request $request) {
-    return Limit::perMinute(5)->by($request->ip());
+    $email = (string) $request->input('email'); // fallback aman ke string kosong
+
+    return [
+        Limit::perMinute(5)->by($email)->response(function (Request $request, array $headers) {
+            $seconds = (int) ($headers['Retry-After'] ?? 60);
+            $minutes = max(1, (int) ceil($seconds / 60));
+
+            return response()->json([
+                'message'     => "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
+                'retry_after' => $seconds,
+                'rate_limit'  => true,
+            ], 429, $headers);
+        }),
+        Limit::perMinute(30)->by($request->ip())->response(function (Request $request, array $headers) {
+            $seconds = (int) ($headers['Retry-After'] ?? 60);
+            $minutes = max(1, (int) ceil($seconds / 60));
+
+            return response()->json([
+                'message'     => "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
+                'retry_after' => $seconds,
+                'rate_limit'  => true,
+            ], 429, $headers);
+        }),
+    ];
 });
 
 Route::prefix('v1')->group(function () {
@@ -166,6 +194,8 @@ Route::prefix('v1')->group(function () {
 
             // Template shift: daftar, buat, ubah, hapus
             Route::get('/shifts', [ShiftController::class, 'index']);
+            // Daftar karyawan yang terkait sebuah shift (definisikan SEBELUM /shifts/{id})
+            Route::get('/shifts/{id}/users', [ShiftController::class, 'shiftUsers']);
             Route::post('/shifts', [ShiftController::class, 'store']);
             Route::match(['put', 'patch'], '/shifts/{id}', [ShiftController::class, 'update']);
             Route::post('/shifts/{id}/toggle-active', [ShiftController::class, 'toggleActive']);
@@ -214,5 +244,9 @@ Route::prefix('v1')->group(function () {
             // Notifikasi shift baru (Flutter: banner di beranda)
             Route::get('/shift-updates', [ShiftController::class, 'shiftUpdates']);
             Route::post('/dismiss-shift-update', [ShiftController::class, 'dismissShiftUpdate']);
+            // Kalender jadwal kerja bulanan karyawan — menampilkan jadwal per-hari
+            // berdasarkan tanggal yang dilihat, bukan "shift aktif hari ini".
+            // Solusi masalah: perubahan jadwal HRD langsung terlihat di kalender.
+            Route::get('/my-schedule-calendar', [ShiftController::class, 'myScheduleCalendar']);
         });
 });

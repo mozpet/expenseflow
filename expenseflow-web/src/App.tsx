@@ -105,6 +105,7 @@ export default function App() {
   const [dataError, setDataError] = useState<string | null>(null);
   const [pendingOvertimeCount, setPendingOvertimeCount] = useState<number>(0);
   const [pendingDeviceCount, setPendingDeviceCount] = useState<number>(0);
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   // Helper baca pagination Laravel ({ data: [...] }) atau array biasa.
   const rows = (res: any): any[] => {
@@ -295,6 +296,30 @@ export default function App() {
     await loadAuditLogs();
   };
 
+  // Refresh ulang data struk (inbox) — dipakai tombol Refresh di halaman Inbox Struk.
+  const refreshReceipts = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+    } catch (e: any) {
+      setDataError(e?.message ?? 'Gagal memuat data dari server.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  // Refresh ulang data riwayat struk — dipakai tombol Refresh di halaman Riwayat Struk.
+  const refreshReceiptHistory = async () => {
+    setRefreshing(true);
+    try {
+      await Promise.all([loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+    } catch (e: any) {
+      setDataError(e?.message ?? 'Gagal memuat data dari server.');
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   // Dipakai komponen Karyawan & Vendor untuk refresh audit/notif setelah aksi.
   const handleAddAuditLogDirect = (_title: string, _details: string, _bgBg: string) => {
     loadAuditLogs();
@@ -338,16 +363,24 @@ export default function App() {
     switch (activePage) {
       case 'inbox':
         return (
-          <ReceiptInbox 
-            receipts={receipts} 
-            onApprove={handleApproveReceipt} 
+          <ReceiptInbox
+            receipts={receipts}
+            onApprove={handleApproveReceipt}
             onReject={handleRejectReceipt}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
+            onRefresh={refreshReceipts}
+            refreshing={refreshing}
           />
         );
       case 'riwayat-struk':
-        return <ReceiptHistory approvals={receiptHistory} />;
+        return (
+          <ReceiptHistory
+            approvals={receiptHistory}
+            onRefresh={refreshReceiptHistory}
+            refreshing={refreshing}
+          />
+        );
       case 'invoice-inbox':
         return (
           <InvoiceInbox
@@ -427,6 +460,8 @@ export default function App() {
             onReject={handleRejectReceipt}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
+            onRefresh={refreshReceipts}
+            refreshing={refreshing}
           />
         );
     }

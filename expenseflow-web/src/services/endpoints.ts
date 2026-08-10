@@ -250,6 +250,10 @@ export const shiftApi = {
     apiPost(`/dashboard/attendance/shifts/${id}/toggle-active`),
   destroy: (id: number | string) => apiDelete(`/dashboard/attendance/shifts/${id}`),
 
+  // ── Daftar karyawan yang terkait sebuah template shift ──
+  users: (id: number | string) =>
+    apiGet(`/dashboard/attendance/shifts/${id}/users`),
+
   // ── Roster harian (siapa masuk shift apa pada tanggal tertentu) ──
   roster: (filters?: { date?: string; attendance_setting_id?: number; search?: string }) =>
     apiGet('/dashboard/attendance/shifts/roster', filters as Record<string, string | number>),

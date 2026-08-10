@@ -18,7 +18,8 @@ import {
   ArrowLeft,
   ChevronRight,
   ShieldCheck,
-  Building
+  Building,
+  RefreshCw
 } from 'lucide-react';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { userApi, attendanceApi } from '../services/endpoints';
@@ -528,7 +529,17 @@ export const KaryawanManagement: React.FC<{
           </p>
         </div>
         <div className="flex gap-2.5 w-full sm:w-auto shrink-0">
-          <button 
+          <button
+            onClick={() => { loadEmployees(); loadOffices(); }}
+            disabled={loadingEmployees}
+            className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition duration-150 cursor-pointer disabled:opacity-50"
+            title="Refresh Data"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingEmployees ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+
+          <button
             onClick={triggerExport}
             className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 transition duration-150 border border-slate-200 dark:border-slate-750 cursor-pointer"
           >

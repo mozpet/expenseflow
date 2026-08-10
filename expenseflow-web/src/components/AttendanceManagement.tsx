@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
   CalendarCheck,
   Users,
@@ -26,6 +26,8 @@ import {
   ExternalLink,
   Moon,
   Info,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
@@ -79,6 +81,12 @@ const fmtMinutes = (mins?: number | null): string => {
   const m = mins % 60;
   return h > 0 ? `${h}j ${m}m` : `${m}m`;
 };
+
+// Utilitas tanggal untuk kalender libur
+const pad2 = (n: number) => String(n).padStart(2, '0');
+const toDateStr = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const MONTHS = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+const WEEKDAYS = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
 
 const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
   { key: 'today', label: 'Hari Ini', icon: CalendarCheck },
@@ -333,6 +341,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   const [reportNameSort, setReportNameSort] = useState<'asc' | 'desc' | null>(null);
   const [holidays, setHolidays] = useState<any[]>([]);
+  const [holidayYear, setHolidayYear] = useState<number>(new Date().getFullYear());
 
   const reportApiError = (err: unknown, fallback: string) => {
     if (err instanceof ApiError) {
@@ -421,14 +430,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setLoading(true);
     setError(null);
     try {
-      const res: any = await attendanceApi.holidays.list();
+      const res: any = await attendanceApi.holidays.list(holidayYear);
       setHolidays(res?.holidays ?? []);
     } catch (e) {
       reportApiError(e, 'Gagal memuat kalender libur.');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [holidayYear]);
 
   // Reset halaman ke 1 setiap kali filter laporan berubah
   const setReportFilterAndReset = (next: typeof reportFilter) => {
@@ -446,7 +455,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     else if (tab === 'report') loadReport(reportPage);
     else if (tab === 'holidays') loadHolidays();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, reportFilter, reportPage]);
+  }, [tab, reportFilter, reportPage, holidayYear]);
 
   // ─── Aksi ─────────────────────────────────────────────────
   const handleApproveLeave = async (id: number, name: string) => {
@@ -592,6 +601,25 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <Info className="w-3.5 h-3.5" />
               <span className="hidden sm:inline">Panduan</span>
             </button>
+          )}
+          {tab === 'holidays' && (
+            <div className="flex items-center gap-1.5">
+              <button
+                onClick={() => setHolidayYear(y => y - 1)}
+                className="flex items-center justify-center px-2.5 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl transition shrink-0"
+                title="Tahun sebelumnya"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <span className="text-xs font-bold text-slate-700 dark:text-slate-200 w-12 text-center">{holidayYear}</span>
+              <button
+                onClick={() => setHolidayYear(y => y + 1)}
+                className="flex items-center justify-center px-2.5 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-xl transition shrink-0"
+                title="Tahun berikutnya"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
           )}
           <button
             onClick={() => {
@@ -1611,6 +1639,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             reload={loadHolidays}
             onAddAuditLog={onAddAuditLog}
             onError={reportApiError}
+            year={holidayYear}
+            onYearChange={setHolidayYear}
           />
         )
       )}
@@ -1774,11 +1804,57 @@ const HolidaysTab: React.FC<{
   reload: () => Promise<void>;
   onAddAuditLog: (t: string, d: string, b: string) => void;
   onError: (e: unknown, f: string) => void;
-}> = ({ holidays, reload, onAddAuditLog, onError }) => {
+  year: number;
+  onYearChange: (y: number) => void;
+}> = ({ holidays, reload, onAddAuditLog, onError, year, onYearChange }) => {
+  const today = new Date();
+  const [viewMonth, setViewMonth] = useState(today.getMonth());
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [form, setForm] = useState<{ date: string; name: string }>({ date: '', name: '' });
   const [saving, setSaving] = useState(false);
+  const [detailDate, setDetailDate] = useState<string | null>(null);
+
+  // Cegah bulan dari tahun lain saat navigasi tahun di header
+  useEffect(() => {
+    const cur = new Date();
+    if (year === cur.getFullYear()) setViewMonth(cur.getMonth());
+    else setViewMonth(0);
+  }, [year]);
+
+  // Kumpulkan libur per tanggal (map: 'YYYY-MM-DD' → holiday[])
+  const byDate = useMemo(() => {
+    const map: Record<string, any[]> = {};
+    holidays.forEach(h => {
+      const d = String(h.date).slice(0, 10);
+      (map[d] = map[d] || []).push(h);
+    });
+    return map;
+  }, [holidays]);
+
+  const firstDay = new Date(year, viewMonth, 1);
+  const daysInMonth = new Date(year, viewMonth + 1, 0).getDate();
+  // index Senin=0 … Minggu=6
+  const offset = (firstDay.getDay() + 6) % 7;
+  const cells: (number | null)[] = [
+    ...Array.from({ length: offset }, () => null),
+    ...Array.from({ length: daysInMonth }, (_, i) => i + 1),
+  ];
+  // Sisa sel kosong agar grid rapi (kelipatan 7)
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  // Ringkasan per bulan: jumlah libur nasional & perusahaan di bulan yang sedang dilihat
+  const summary = useMemo(() => {
+    const prefix = `${year}-${pad2(viewMonth + 1)}-`;
+    let nasional = 0, perusahaan = 0;
+    holidays.forEach(h => {
+      if (String(h.date).slice(0, 10).startsWith(prefix)) {
+        if (h.scope === 'nasional') nasional++;
+        else perusahaan++;
+      }
+    });
+    return { nasional, perusahaan };
+  }, [holidays, year, viewMonth]);
 
   const resetForm = () => {
     setForm({ date: '', name: '' });
@@ -1786,15 +1862,15 @@ const HolidaysTab: React.FC<{
     setShowForm(false);
   };
 
-  const startCreate = () => {
+  const startCreate = (date?: string) => {
     // Jika form sedang dalam mode edit, alihkan ke mode tambah; jika tidak, toggle.
     if (editingId !== null) {
       setEditingId(null);
-      setForm({ date: '', name: '' });
+      setForm({ date: date ?? '', name: '' });
       setShowForm(true);
       return;
     }
-    setForm({ date: '', name: '' });
+    setForm({ date: date ?? '', name: '' });
     setShowForm((v) => !v);
   };
 
@@ -1817,6 +1893,7 @@ const HolidaysTab: React.FC<{
         onAddAuditLog('Hari libur ditambahkan', `${form.name} (${form.date})`, 'bg-amber-500');
       }
       resetForm();
+      setDetailDate(null);
       await reload();
     } catch (err) {
       onError(err, editingId !== null ? 'Gagal mengubah hari libur.' : 'Gagal menambah hari libur.');
@@ -1830,23 +1907,42 @@ const HolidaysTab: React.FC<{
     try {
       await attendanceApi.holidays.destroy(h.id);
       onAddAuditLog('Hari libur dihapus', `${h.name} (${h.date})`, 'bg-rose-500');
+      if (detailDate) setDetailDate(null);
       await reload();
     } catch (err) {
       onError(err, 'Gagal menghapus hari libur.');
     }
   };
 
+  const changeMonth = (delta: number) => {
+    const next = viewMonth + delta;
+    if (next < 0) {
+      onYearChange(year - 1);
+      setViewMonth(11);
+    } else if (next > 11) {
+      onYearChange(year + 1);
+      setViewMonth(0);
+    } else {
+      setViewMonth(next);
+    }
+    setDetailDate(null);
+  };
+
+  // Libur pada tanggal yang dipilih (dari sisi kiri)
+  const selectedHolidays = detailDate ? (byDate[detailDate] ?? []) : [];
+
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Kalender Libur Nasional</h3>
+          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Kalender Libur {year}</h3>
           <p className="text-[11px] text-slate-400 mt-0.5">
             Tanggal libur tidak dihitung sebagai hari kerja (cuti) dan kerja di hari ini dihitung lembur penuh.
           </p>
         </div>
         <button
-          onClick={startCreate}
+          onClick={() => startCreate()}
           className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition"
         >
           <Plus className="w-3.5 h-3.5" /> Tambah Libur
@@ -1900,54 +1996,159 @@ const HolidaysTab: React.FC<{
         </form>
       )}
 
-      <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 overflow-x-auto">
-        <table className="w-full text-xs text-left">
-          <thead>
-            <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
-              <th className="py-2 px-2 font-semibold">Tanggal</th>
-              <th className="py-2 px-2 font-semibold">Nama</th>
-              <th className="py-2 px-2 font-semibold text-center">Cakupan</th>
-              <th className="py-2 px-2 font-semibold text-right">Aksi</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-            {holidays.length === 0 ? (
-              <tr>
-                <td colSpan={4} className="text-center py-12 text-slate-400 text-xs font-medium">
-                  Belum ada data libur tahun ini.
-                </td>
-              </tr>
-            ) : (
-              holidays.map((h: any) => (
-                <tr key={h.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
-                  <td className="py-3 px-2 font-mono whitespace-nowrap text-slate-700 dark:text-slate-300">{fmtDate(h.date)}</td>
-                  <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200">{h.name}</td>
-                  <td className="py-3 px-2 text-center">
-                    <span className={`inline-flex text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${h.scope === 'nasional' ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400' : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400'}`}>
-                      {h.scope}
+      {/* Grid: kalender + detail */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        {/* Kalender */}
+        <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5">
+          {/* Navigasi bulan */}
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={() => changeMonth(-1)}
+              className="flex items-center justify-center p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
+              title="Bulan sebelumnya"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <div className="text-center">
+              <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{MONTHS[viewMonth]} {year}</p>
+              <p className="text-[10px] text-slate-400">
+                {summary.nasional} nasional · {summary.perusahaan} perusahaan
+              </p>
+            </div>
+            <button
+              onClick={() => changeMonth(1)}
+              className="flex items-center justify-center p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
+              title="Bulan berikutnya"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Hari */}
+          <div className="grid grid-cols-7 gap-1 mb-2">
+            {WEEKDAYS.map(d => (
+              <div key={d} className="text-center text-[10px] font-bold text-slate-400 uppercase py-1">{d}</div>
+            ))}
+          </div>
+
+          {/* Sel tanggal */}
+          <div className="grid grid-cols-7 gap-1">
+            {cells.map((day, idx) => {
+              if (day === null) return <div key={`e-${idx}`} className="h-16 sm:h-20" />;
+              const dateStr = `${year}-${pad2(viewMonth + 1)}-${pad2(day)}`;
+              const dayHolidays = byDate[dateStr] ?? [];
+              const hasNational = dayHolidays.some(h => h.scope === 'nasional');
+              const hasCompany = dayHolidays.some(h => h.scope === 'perusahaan');
+              const isToday = dateStr === toDateStr(today);
+              const isSelected = detailDate === dateStr;
+              return (
+                <button
+                  key={dateStr}
+                  onClick={() => {
+                    setDetailDate(detailDate === dateStr ? null : dateStr);
+                    setShowForm(false);
+                  }}
+                  className={`relative flex flex-col items-center justify-start h-16 sm:h-20 rounded-lg border text-xs transition-colors cursor-pointer
+                    ${hasNational
+                      ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/40'
+                      : hasCompany
+                        ? 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-900/40'
+                        : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
+                    }
+                    ${isSelected ? 'ring-2 ring-indigo-500 border-indigo-400' : ''}`}
+                  title={dayHolidays.length ? dayHolidays.map(h => h.name).join(', ') : 'Klik untuk menambah libur'}
+                >
+                  <span className={`text-[11px] font-bold mt-1 ${isToday ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {day}
+                  </span>
+                  {dayHolidays.length > 0 && (
+                    <span className="flex flex-col items-center gap-0.5 w-full px-1 mt-0.5">
+                      {dayHolidays.slice(0, 2).map(h => (
+                        <span key={h.id} className="w-full truncate text-center text-[8px] leading-tight font-semibold text-slate-700 dark:text-slate-300">
+                          {h.name}
+                        </span>
+                      ))}
+                      {dayHolidays.length > 2 && (
+                        <span className="w-full text-center text-[8px] font-bold text-slate-400">
+                          +{dayHolidays.length - 2} lagi
+                        </span>
+                      )}
                     </span>
-                  </td>
-                  <td className="py-3 px-2 text-right">
-                    <div className="inline-flex items-center gap-1 justify-end">
-                      <button
-                        onClick={() => startEdit(h)}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[11px] font-medium transition"
-                      >
-                        <Pencil className="w-3.5 h-3.5" /> Ubah
-                      </button>
-                      <button
-                        onClick={() => remove(h)}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[11px] font-medium transition"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" /> Hapus
-                      </button>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Panel detail / tambah cepat */}
+        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 lg:sticky lg:top-4">
+          {detailDate ? (
+            <>
+              <div className="flex items-center justify-between mb-3">
+                <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                  {fmtDate(detailDate)}
+                </h4>
+                <button
+                  onClick={() => { startCreate(detailDate); }}
+                  className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 hover:underline transition"
+                >
+                  <Plus className="w-3 h-3" /> Tambah
+                </button>
+              </div>
+              {selectedHolidays.length === 0 ? (
+                <p className="text-[11px] text-slate-400">
+                  Tidak ada libur pada tanggal ini. Klik <span className="font-semibold text-indigo-600 dark:text-indigo-400">Tambah</span> untuk membuat libur khusus perusahaan.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {selectedHolidays.map(h => (
+                    <div key={h.id} className={`border rounded-lg p-2.5 ${h.scope === 'nasional' ? 'border-rose-200 dark:border-rose-900/40 bg-rose-50/40 dark:bg-rose-950/20' : 'border-indigo-200 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20'}`}>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{h.name}</p>
+                        <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${h.scope === 'nasional' ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400' : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400'}`}>
+                          {h.scope}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1 mt-1.5">
+                        <button
+                          onClick={() => startEdit(h)}
+                          className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition"
+                        >
+                          <Pencil className="w-3 h-3" /> Ubah
+                        </button>
+                        <button
+                          onClick={() => remove(h)}
+                          className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition"
+                        >
+                          <Trash2 className="w-3 h-3" /> Hapus
+                        </button>
+                      </div>
                     </div>
-                  </td>
-                </tr>
-              ))
-            )}
-          </tbody>
-        </table>
+                  ))}
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 mb-3">Panduan</h4>
+              <ul className="space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
+                <li className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-md bg-rose-50 border border-rose-200 dark:bg-rose-950/30 dark:border-rose-900/40 shrink-0" />
+                  <span><span className="font-semibold text-rose-700 dark:text-rose-400">Merah</span> — libur nasional (diberlakukan semua perusahaan)</span>
+                </li>
+                <li className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-md bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/30 dark:border-indigo-900/40 shrink-0" />
+                  <span><span className="font-semibold text-indigo-700 dark:text-indigo-400">Biru</span> — libur khusus perusahaan (cuti bersama internal)</span>
+                </li>
+                <li className="flex items-start gap-2">
+                  <span className="w-4 h-4 rounded-md bg-slate-50 border border-slate-100 dark:bg-slate-800/40 shrink-0" />
+                  <span>Klik tanggal untuk melihat detail libur di tanggal itu, atau tambah libur baru.</span>
+                </li>
+              </ul>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );

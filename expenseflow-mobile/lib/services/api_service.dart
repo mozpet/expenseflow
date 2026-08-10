@@ -10,7 +10,9 @@ class ApiException implements Exception {
   final int? statusCode;
   /// Payload JSON lengkap dari response error (jika tersedia).
   final Map<String, dynamic>? data;
-  ApiException(this.message, [this.statusCode, this.data]);
+  /// Detik tunggu saat rate-limit (429) — dari body `retry_after`.
+  final int? retryAfter;
+  ApiException(this.message, [this.statusCode, this.data, this.retryAfter]);
 
   @override
   String toString() => message;
@@ -114,7 +116,11 @@ class ApiService {
     // Ambil pesan error dari backend
     final msg = (data['message'] as String?) ??
         'Terjadi kesalahan (${res.statusCode}).';
-    throw ApiException(msg, res.statusCode, data);
+    // Rate-limit (429): bawa retry_after (detik) untuk ditampilkan di UI.
+    final retryAfter = data['retry_after'] is int
+        ? data['retry_after'] as int
+        : null;
+    throw ApiException(msg, res.statusCode, data, retryAfter);
   }
 
   // ─── Generic GET ──────────────────────────────────────────
@@ -206,7 +212,10 @@ class ApiService {
     }
     if (res.statusCode >= 200 && res.statusCode < 300) return data;
     final msg = (data['message'] as String?) ?? 'Terjadi kesalahan (${res.statusCode}).';
-    throw ApiException(msg, res.statusCode);
+    final retryAfter = data['retry_after'] is int
+        ? data['retry_after'] as int
+        : null;
+    throw ApiException(msg, res.statusCode, data, retryAfter);
   }
 
   static Future<Map<String, dynamic>> getReceipt(int id) async {
@@ -306,7 +315,10 @@ class ApiService {
     }
     if (res.statusCode >= 200 && res.statusCode < 300) return data;
     final msg = (data['message'] as String?) ?? 'Terjadi kesalahan (${res.statusCode}).';
-    throw ApiException(msg, res.statusCode);
+    final retryAfter = data['retry_after'] is int
+        ? data['retry_after'] as int
+        : null;
+    throw ApiException(msg, res.statusCode, data, retryAfter);
   }
 
   static Future<Map<String, dynamic>> holidays(int year) async {

@@ -39,10 +39,13 @@ class AuthProvider extends ChangeNotifier {
   AppUser? _user;
   bool _isLoading = false;
   String? _error;
+  int? _retryAfter;
 
   AppUser? get user => _user;
   bool get isLoading => _isLoading;
   String? get error => _error;
+  /// Detik tunggu saat rate-limit (429) — null jika bukan rate-limit.
+  int? get retryAfter => _retryAfter;
   bool get isLoggedIn => _user != null;
   bool get wfhEnabled => _user?.wfhEnabled ?? false;
 
@@ -68,6 +71,7 @@ class AuthProvider extends ChangeNotifier {
   Future<bool> login(String email, String password) async {
     _isLoading = true;
     _error = null;
+    _retryAfter = null;
     notifyListeners();
 
     try {
@@ -84,6 +88,7 @@ class AuthProvider extends ChangeNotifier {
       return true;
     } on ApiException catch (e) {
       _error = e.message;
+      _retryAfter = e.retryAfter; // rate-limit → detik tunggu (atau null)
       _isLoading = false;
       notifyListeners();
       return false;

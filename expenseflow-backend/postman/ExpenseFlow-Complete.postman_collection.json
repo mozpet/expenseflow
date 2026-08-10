@@ -1849,6 +1849,70 @@
           }
         },
         {
+          "name": "Jadwal shift saya (ringkasan hari ini + template 7 hari)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/employee/my-schedule",
+              "host": ["{{base_url}}"],
+              "path": ["employee", "my-schedule"]
+            }
+          }
+        },
+        {
+          "name": "Kalender jadwal kerja saya (per-tanggal, bulanan)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/my-schedule-calendar?month=8&year=2026",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "my-schedule-calendar"],
+              "query": [
+                { "key": "month", "value": "8" },
+                { "key": "year", "value": "2026" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Cek notifikasi shift terbaru (banner di beranda)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/shift-updates",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "shift-updates"]
+            }
+          }
+        },
+        {
+          "name": "Tandai notifikasi shift sudah dibaca",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_emp}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/attendance/dismiss-shift-update",
+              "host": ["{{base_url}}"],
+              "path": ["attendance", "dismiss-shift-update"]
+            }
+          }
+        },
+        {
           "name": "Daftarkan FCM token device",
           "request": {
             "method": "POST",
@@ -2289,6 +2353,41 @@
                 { "key": "attendance_setting_id", "value": "{{setting_id}}" },
                 { "key": "search", "value": "", "disabled": true }
               ]
+            }
+          }
+        },
+        {
+          "name": "Kalender bulanan shift (per-hari siapa masuk shift apa)",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/shifts/calendar?month=8&year=2026&attendance_setting_id={{setting_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "shifts", "calendar"],
+              "query": [
+                { "key": "month", "value": "8" },
+                { "key": "year", "value": "2026" },
+                { "key": "attendance_setting_id", "value": "{{setting_id}}" }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Toggle aktif/nonaktif template shift",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token_hrd}}" }
+            ],
+            "url": {
+              "raw": "{{base_url}}/dashboard/attendance/shifts/{{shift_id}}/toggle-active",
+              "host": ["{{base_url}}"],
+              "path": ["dashboard", "attendance", "shifts", "{{shift_id}}", "toggle-active"]
             }
           }
         },

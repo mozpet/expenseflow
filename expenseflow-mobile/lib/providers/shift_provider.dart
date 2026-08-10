@@ -35,6 +35,47 @@ class ShiftScheduleDay {
   }
 }
 
+/// Jadwal satu hari dari endpoint kalender bulanan (my-schedule-calendar).
+/// Sama seperti ShiftScheduleDay namun ditentukan berdasarkan TANGGAL,
+/// bukan template shift yang aktif hari ini.
+class ShiftCalendarDay {
+  final String date; // "2026-08-09"
+  final String source; // 'shift' | 'office' | 'none'
+  final int? shiftId;
+  final String? shiftName;
+  final String? color;
+  final String? workStartTime;
+  final String? workEndTime;
+  final bool isOff;
+  final bool isCrossDay;
+
+  ShiftCalendarDay({
+    required this.date,
+    required this.source,
+    this.shiftId,
+    this.shiftName,
+    this.color,
+    this.workStartTime,
+    this.workEndTime,
+    required this.isOff,
+    required this.isCrossDay,
+  });
+
+  factory ShiftCalendarDay.fromJson(String date, Map<String, dynamic> json) {
+    return ShiftCalendarDay(
+      date: date,
+      source: json['source'] ?? 'none',
+      shiftId: json['shift_id'],
+      shiftName: json['shift_name'],
+      color: json['color'],
+      workStartTime: json['work_start_time'],
+      workEndTime: json['work_end_time'],
+      isOff: json['is_off'] ?? false,
+      isCrossDay: json['is_cross_day'] == true,
+    );
+  }
+}
+
 class ShiftInfo {
   final String name;
   final String color;
@@ -69,6 +110,12 @@ class ShiftProvider extends ChangeNotifier {
   bool _hasShiftUpdate = false;
   String? _shiftUpdateNote;
 
+  // Kalender bulanan per-tanggal (dari /attendance/my-schedule-calendar)
+  // Map: "2026-08-09" → ShiftCalendarDay
+  Map<String, ShiftCalendarDay> _calendarDays = {};
+  int _calendarYear = 0;
+  int _calendarMonth = 0;
+
   bool get loading => _loading;
   String? get error => _error;
   String get source => _source;
@@ -76,6 +123,9 @@ class ShiftProvider extends ChangeNotifier {
   List<ShiftScheduleDay> get schedules => _schedules;
   bool get hasShiftUpdate => _hasShiftUpdate;
   String? get shiftUpdateNote => _shiftUpdateNote;
+  int get calendarYear => _calendarYear;
+  int get calendarMonth => _calendarMonth;
+  Map<String, ShiftCalendarDay> get calendarDays => _calendarDays;
 
   ShiftScheduleDay? getScheduleForDayOfWeek(int dayOfWeek) {
     try {
@@ -83,6 +133,13 @@ class ShiftProvider extends ChangeNotifier {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Ambil jadwal satu tanggal dari kalender bulanan yang sudah di-load.
+  /// Fallback ke template shift (perilaku lama) jika kalender belum di-load.
+  ShiftCalendarDay? getScheduleForDate(DateTime date) {
+    final key = _dateKey(date);
+    return _calendarDays[key];
   }
 
   Future<void> fetchMySchedule() async {
@@ -113,6 +170,62 @@ class ShiftProvider extends ChangeNotifier {
       _loading = false;
       notifyListeners();
     }
+  }
+
+  // ─── Hapus cache kalender agar fetch berikutnya selalu reload dari server ─
+  void clearCalendarCache() {
+    _calendarYear = 0;
+    _calendarMonth = 0;
+    _calendarDays = {};
+  }
+
+  // ─── Kalender jadwal kerja bulanan (per-tanggal) ──────────────────────────
+  //     Memakai endpoint /attendance/my-schedule-calendar yang menentukan
+  //     jadwal berdasarkan TANGGAL yang dilihat, bukan shift aktif hari ini.
+  //     Sehingga perubahan jadwal HRD langsung terlihat di kalender.
+  Future<void> fetchScheduleCalendar(int year, int month) async {
+    if (_calendarYear == year && _calendarMonth == month && _calendarDays.isNotEmpty) {
+      return; // sudah di-load untuk bulan ini
+    }
+
+    _loading = true;
+    _error = null;
+    notifyListeners();
+
+    try {
+      final data = await ApiService.get(
+        '/attendance/my-schedule-calendar',
+        query: {
+          'month': month.toString(),
+          'year': year.toString(),
+        },
+      );
+
+      final days = data['days'] as Map<String, dynamic>? ?? {};
+      final parsed = <String, ShiftCalendarDay>{};
+      days.forEach((date, val) {
+        if (val is Map<String, dynamic>) {
+          parsed[date] = ShiftCalendarDay.fromJson(date, val);
+        }
+      });
+
+      _calendarDays = parsed;
+      _calendarYear = year;
+      _calendarMonth = month;
+    } catch (e) {
+      _error = e.toString();
+    } finally {
+      _loading = false;
+      notifyListeners();
+    }
+  }
+
+  /// Format tanggal → "YYYY-MM-DD" (key map kalender).
+  String _dateKey(DateTime d) {
+    final y = d.year.toString().padLeft(4, '0');
+    final m = d.month.toString().padLeft(2, '0');
+    final day = d.day.toString().padLeft(2, '0');
+    return '$y-$m-$day';
   }
 
   // ─── Cek notifikasi shift terbaru (untuk banner "Shift Diperbarui" di beranda) ──

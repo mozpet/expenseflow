@@ -47,6 +47,17 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
       appBar: AppBar(
         title: const Text('Struk Saya'),
         automaticallyImplyLeading: false,
+        actions: [
+          // Refresh manual di pojok kanan atas
+          IconButton(
+            onPressed: () => Provider.of<ReceiptProvider>(
+              context,
+              listen: false,
+            ).fetchMyReceipts(),
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Refresh',
+          ),
+        ],
       ),
       body: Column(
         children: [

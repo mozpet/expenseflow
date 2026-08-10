@@ -262,6 +262,16 @@ class PresensiProvider extends ChangeNotifier {
     final status = await notifSvc.checkAttendanceStatus();
     if (status == null) return;
 
+    // Sinkronkan flag WFH dari backend (menentukan muncul/tidaknya tombol
+    // "Catat Presensi"). Bisa berubah setelah HRD toggle di dashboard web.
+    // Dilakukan SEBELUM cek attendance agar tetap tersinkron walau belum ada
+    // presensi hari ini (kasus utama saat user mau tahu boleh presensi apa tidak).
+    final newWfhEnabled = status['wfh_enabled'] == true;
+    if (newWfhEnabled != wfhEnabled) {
+      wfhEnabled = newWfhEnabled;
+      notifyListeners();
+    }
+
     final att = status['attendance'] as Map<String, dynamic>?;
     if (att == null) return;
 

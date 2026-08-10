@@ -16,7 +16,8 @@ import {
   ZoomOut,
   Maximize2,
   SlidersHorizontal,
-  Save
+  Save,
+  RefreshCw
 } from 'lucide-react';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { receiptApi } from '../services/endpoints';
@@ -27,6 +28,8 @@ interface ReceiptInboxProps {
   onReject: (id: string, catatan: string) => void;
   currentSettings: AppSettings;
   onSaveSettings: (settings: AppSettings) => void;
+  onRefresh?: () => void;
+  refreshing?: boolean;
 }
 
 export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
@@ -35,6 +38,8 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   onReject,
   currentSettings,
   onSaveSettings,
+  onRefresh,
+  refreshing,
 }) => {
   const [filter, setFilter] = useState<'all' | 'flag' | 'pend'>('all');
   const [searchQuery, setSearchQuery] = useState('');
@@ -273,7 +278,7 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
       {/* Main Container with Tabs */}
       <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-sm">
         {/* Tab Bar */}
-        <div className="flex border-b border-slate-100 dark:border-slate-800">
+        <div className="flex border-b border-slate-100 dark:border-slate-800 items-center">
           <button
             onClick={() => setActiveTab('inbox')}
             className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition border-b-2 ${
@@ -296,6 +301,18 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
             <SlidersHorizontal className="w-4 h-4" />
             Pengaturan
           </button>
+
+          <div className="ml-auto flex items-center gap-2 pr-3">
+            <button
+              onClick={onRefresh}
+              disabled={refreshing}
+              className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition shrink-0 disabled:opacity-50"
+              title="Refresh Data"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          </div>
         </div>
 
         <div className="p-5">

@@ -57,15 +57,18 @@ class ShiftController extends Controller
         }
     }
 
-    // ─── Helper: simpan/replace 7 jadwal harian sebuah shift ──────────────
-    //     Dipakai store() & update(). Selalu menimpa jadwal lama.
-    private function syncSchedules(Shift $shift, array $schedules): void
+    // ─── Helper: simpan 7 jadwal harian sebuah shift dengan VERSIONING ─────
+    //     Dipakai store() & update().
+    //     - store()  : effective_date = hari ini (versi pertama).
+    //     - update() : membuat VERSI BARU (baris baru) dengan effective_date yang
+    //       ditentukan (misal besok / sesuai notice). Versi lama TIDAK dihapus —
+    //       tetap dipakai untuk tanggal sebelum effective_date.
+    private function syncSchedules(Shift $shift, array $schedules, string $effectiveDate): void
     {
-        $shift->schedules()->delete();
-
         foreach ($schedules as $sch) {
             ShiftSchedule::create([
                 'shift_id'        => $shift->id,
+                'effective_date'  => $effectiveDate,
                 'day_of_week'     => $sch['day_of_week'],
                 'work_start_time' => $sch['is_off'] ? null : ($sch['work_start_time'] ?? null),
                 'work_end_time'   => $sch['is_off'] ? null : ($sch['work_end_time'] ?? null),
@@ -87,6 +90,50 @@ class ShiftController extends Controller
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
         )->find($branchId);
+    }
+
+    // ─── Helper: cek apakah warna sudah dipakai template shift lain ─────────
+    //     Warna bersifat unik PER KANTOR (attendance_setting_id), bukan per
+    //     perusahaan. Dua kantor boleh memakai warna yang sama, TAPI dalam satu
+    //     kantor tidak boleh ada dua shift dengan warna yang sama.
+    //
+    //     Aturan bentrok:
+    //     - Shift cabang X  → bentrok dengan shift cabang X + shift company-wide
+    //                         (karena company-wide berlaku di semua kantor).
+    //     - Shift company-wide (attendance_setting_id null) → bentrok dengan
+    //                         SEMUA shift (tampil di setiap kantor).
+    //
+    //     Perbandingan warna case-insensitive (#E53E3E == #e53e3e).
+    //
+    //     Return Shift pemilik warna bila sudah dipakai, null bila warna tersedia.
+    private function colorAlreadyUsed(User $actor, string $color, ?int $exceptShiftId = null, ?int $attendanceSettingId = null): ?Shift
+    {
+        $colorLower = strtolower($color);
+
+        $query = Shift::query()
+            ->when(
+                $actor->role !== 'super_admin',
+                fn ($q) => $q->where('company_id', $actor->company_id)
+            )
+            ->when(
+                $exceptShiftId !== null,
+                fn ($q) => $q->where('id', '!=', $exceptShiftId)
+            )
+            ->whereNotNull('color')
+            ->whereRaw('LOWER(color) = ?', [$colorLower]);
+
+        // Shift company-wide → bentrok dengan semua shift lain
+        if ($attendanceSettingId === null) {
+            return $query->first();
+        }
+
+        // Shift cabang → bentrok dengan shift cabang yang sama + shift company-wide
+        return $query
+            ->where(function ($q) use ($attendanceSettingId) {
+                $q->where('attendance_setting_id', $attendanceSettingId)
+                    ->orWhereNull('attendance_setting_id');
+            })
+            ->first();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -168,6 +215,20 @@ class ShiftController extends Controller
             return response()->json(['message' => 'Cabang tidak ditemukan di perusahaan Anda.'], 404);
         }
 
+        // Warna unik PER KANTOR — shift di kantor yang sama (atau company-wide)
+        // tidak boleh memakai warna yang sama. Dua kantor berbeda boleh sama.
+        if (! empty($validated['color'])) {
+            $owner = $this->colorAlreadyUsed($actor, $validated['color'], null, $branch->id);
+            if ($owner) {
+                $scope = $owner->attendance_setting_id === null
+                    ? ' (berlaku semua kantor)'
+                    : ' (kantor yang sama)';
+                return response()->json([
+                    'message' => "Warna {$validated['color']} sudah dipakai oleh shift '{$owner->name}'{$scope}. Pilih warna yang berbeda dalam kantor ini.",
+                ], 422);
+            }
+        }
+
         // P0 #1 — validasi batas jam kerja per minggu (opsional, toggle per kantor)
         $weeklyCheck = $this->validateWeeklyHours($validated['schedules'], $branch);
         if ($weeklyCheck['error']) {
@@ -182,10 +243,11 @@ class ShiftController extends Controller
                 'name'                  => $validated['name'],
                 'description'           => $validated['description'] ?? null,
                 'is_active'             => $validated['is_active'] ?? true,
-                'color'                 => $validated['color'] ?? null,
+                'color'                 => isset($validated['color']) ? strtolower($validated['color']) : null,
             ]);
 
-            $this->syncSchedules($shift, $validated['schedules']);
+            // Versi pertama: berlaku sejak hari ini
+            $this->syncSchedules($shift, $validated['schedules'], now('Asia/Jakarta')->toDateString());
 
             return $shift;
         });
@@ -292,13 +354,35 @@ class ShiftController extends Controller
             $k3Warnings = $validation['warnings'];
         }
 
-        // Validasi pindah cabang jika dikirim
+        // Validasi pindah cabang jika dikirim (sebelum cek warna, karena
+        // keunikan warna bersifat PER KANTOR — kantor baru menentukan bentrok).
+        $effectiveBranchId = $shift->attendance_setting_id; // bisa null = company-wide
         if (array_key_exists('attendance_setting_id', $validated)) {
             $branch = $this->resolveBranch($actor, $validated['attendance_setting_id']);
             if (! $branch) {
                 return response()->json(['message' => 'Cabang tidak ditemukan di perusahaan Anda.'], 404);
             }
-            $shift->attendance_setting_id = $branch->id;
+            $effectiveBranchId = $branch->id;
+        }
+
+        // Warna unik PER KANTOR. Shift itu sendiri dikecualikan (exceptShiftId).
+        // Shift company-wide (null) bentrok dengan semua; shift cabang bentrok
+        // dengan cabang yang sama + shift company-wide.
+        if (! empty($validated['color'])) {
+            $owner = $this->colorAlreadyUsed($actor, $validated['color'], $shift->id, $effectiveBranchId);
+            if ($owner) {
+                $scope = $owner->attendance_setting_id === null
+                    ? ' (berlaku semua kantor)'
+                    : ' (kantor yang sama)';
+                return response()->json([
+                    'message' => "Warna {$validated['color']} sudah dipakai oleh shift '{$owner->name}'{$scope}. Pilih warna yang berbeda dalam kantor ini.",
+                ], 422);
+            }
+        }
+
+        // Terapkan pindah cabang jika dikirim
+        if (array_key_exists('attendance_setting_id', $validated)) {
+            $shift->attendance_setting_id = $effectiveBranchId;
         }
 
         // P0 #1 — validasi batas jam kerja per minggu jika jadwal dikirim
@@ -314,36 +398,94 @@ class ShiftController extends Controller
             }
         }
 
-        DB::transaction(function () use ($shift, $validated) {
-            $shift->fill(collect($validated)->only(['name', 'description', 'color'])->toArray());
+        // ── VERSIONING JAM KERJA ────────────────────────────────────────────
+        // Saat HRD mengubah JAM KERJA (schedules) shift, perubahan TIDAK menimpa
+        // jadwal lama. Dibuat VERSI BARU dengan effective_date = hari ini + N hari,
+        // di mana N = "Minimum Notice Perubahan Shift (H-N Hari)" di pengaturan
+        // kantor (shift_notice_days). Minimal 1 hari (besok) agar tidak mengubah
+        // jadwal hari ini. Versi lama tetap berlaku untuk tanggal sebelum itu.
+        $scheduleEffectiveDate = null;
+        $liveAssignments = collect(); // Simpan sekali, pakai untuk count + notifikasi (hindari double query)
+
+        if (isset($validated['schedules'])) {
+            $branchForNotice = $shift->office
+                ?? AttendanceSetting::find($shift->attendance_setting_id);
+
+            $noticeDays = (int) ($branchForNotice->shift_notice_days ?? 0);
+            if ($noticeDays < 1) {
+                $noticeDays = 1; // default aman: berlaku besok
+            }
+
+            $scheduleEffectiveDate = now('Asia/Jakarta')->startOfDay()
+                ->addDays($noticeDays)
+                ->toDateString();
+
+            // Pre-load assignment aktif SEKALI — dipakai untuk count + notifikasi sekaligus
+            $liveAssignments = $this->liveAssignmentsForShift($shift->id);
+        }
+
+        DB::transaction(function () use ($shift, $validated, $scheduleEffectiveDate) {
+            // Nama/deskripsi/warna → langsung (tidak memengaruhi jadwal)
+            $data = collect($validated)->only(['name', 'description', 'color'])->toArray();
+            if (isset($data['color'])) {
+                $data['color'] = strtolower($data['color']);
+            }
+            $shift->fill($data);
             $shift->save();
 
-            if (isset($validated['schedules'])) {
-                $this->syncSchedules($shift, $validated['schedules']);
+            // Jam kerja (schedules) → versi baru dengan effective_date
+            if (isset($validated['schedules']) && $scheduleEffectiveDate) {
+                $this->syncSchedules($shift, $validated['schedules'], $scheduleEffectiveDate);
             }
         });
+
+        // Kirim notifikasi ke karyawan yang ter-assign shift ini (DB + FCM)
+        // bahwa jam kerja shift akan berubah mulai tanggal efektif.
+        // Menggunakan $liveAssignments yang sudah di-load di atas (hindari double query).
+        if ($scheduleEffectiveDate) {
+            $tglEfektif = Carbon::parse($scheduleEffectiveDate)->translatedFormat('d F Y');
+
+            foreach ($liveAssignments as $assignment) {
+                if ($assignment->user) {
+                    $this->notifyEmployee(
+                        $assignment->user,
+                        'shift_schedule_changed',
+                        "Jam kerja shift '{$shift->name}' diperbarui HRD dan akan berlaku mulai {$tglEfektif}.",
+                        $shift->id
+                    );
+                }
+            }
+        }
 
         $this->logActivity(
             $actor->id,
             $actor->company_id,
             'shift_updated',
-            "Mengubah template shift: {$shift->name}",
+            "Mengubah template shift: {$shift->name}" . ($scheduleEffectiveDate ? " (jam kerja baru efektif {$scheduleEffectiveDate})" : ''),
             'shift',
             $shift->id
         );
 
         return response()->json([
-            'message'  => 'Shift berhasil diperbarui.',
-            'warnings' => $k3Warnings,
-            'data'     => $shift->fresh()->load(['schedules', 'office:id,office_name']),
+            'message'  => $scheduleEffectiveDate
+                ? "Shift berhasil diperbarui. Jam kerja baru berlaku mulai " . Carbon::parse($scheduleEffectiveDate)->translatedFormat('d F Y') . "."
+                : 'Shift berhasil diperbarui.',
+            'warnings'       => $k3Warnings,
+            'effective_date' => $scheduleEffectiveDate,
+            'notified_users' => $liveAssignments->count(),
+            'data'           => $shift->refresh()->load(['schedules', 'office:id,office_name']),
         ]);
     }
 
     // ═══════════════════════════════════════════════════════════
     // 2c. destroy() — hapus template shift
     //     DELETE /api/v1/dashboard/attendance/shifts/{id}
-    //     Diblokir jika masih dipakai assignment agar jadwal karyawan tidak
-    //     berubah diam-diam. Sarankan nonaktifkan (is_active=false) sebagai gantinya.
+    //
+    //     DIBLOKIR jika masih ada karyawan yang menggunakan shift ini
+    //     (assignment yang masih aktif/sebelumnya). HRD harus terlebih dahulu:
+    //       1) memindahkan karyawan ke shift lain, atau
+    //       2) menghapus/ mengakhiri assignment karyawan dari shift ini.
+    //     Setelah tidak ada assignment tersisa, shift baru bisa dihapus.
     // ═══════════════════════════════════════════════════════════
     public function destroy(Request $request, int $id): JsonResponse
     {
@@ -358,10 +500,23 @@ class ShiftController extends Controller
             return response()->json(['message' => 'Shift tidak ditemukan di perusahaan Anda.'], 404);
         }
 
-        $dipakai = UserShift::where('shift_id', $shift->id)->count();
-        if ($dipakai > 0) {
+        // Assignment yang MASIH BERLAKU (aktif hari ini atau akan datang).
+        // Assignment yang sudah berakhir (end_date < hari ini) tidak memblokir hapus.
+        $liveAssignments = $this->liveAssignmentsForShift($shift->id);
+
+        if ($liveAssignments->isNotEmpty()) {
+            $names = $liveAssignments->take(5)->map(fn ($a) => $a->user->name ?? 'Karyawan')->join(', ');
+            $more  = $liveAssignments->count() > 5 ? ', dan lainnya.' : '.';
+
             return response()->json([
-                'message' => "Shift tidak bisa dihapus karena masih dipakai {$dipakai} assignment karyawan. Nonaktifkan shift (is_active=false) jika tidak ingin dipakai lagi.",
+                'message'      => "Shift tidak bisa dihapus karena masih digunakan oleh " . $liveAssignments->count() . " karyawan. Pindahkan karyawan ke shift lain atau hapus assignment karyawan dari shift ini terlebih dahulu.",
+                'affected'     => $liveAssignments->map(fn ($a) => [
+                    'user_id'   => $a->user_id,
+                    'user_name' => $a->user->name ?? 'Karyawan',
+                    'start_date' => $a->start_date->toDateString(),
+                    'end_date'   => $a->end_date?->toDateString(),
+                ])->values(),
+                'affected_names' => $names . $more,
             ], 409);
         }
 
@@ -384,10 +539,13 @@ class ShiftController extends Controller
     // 2d. toggleActive() — aktifkan / nonaktifkan template shift
     //     POST /api/v1/dashboard/attendance/shifts/{id}/toggle-active
     //
-    //     PENTING: Endpoint ini HANYA mengubah is_active (nonaktifkan/aktifkan).
-    //     Data shift (schedules) dan assignment karyawan (user_shifts) TIDAK dihapus.
-    //     Jika shift dinonaktifkan → karyawan terdampak otomatis pakai jadwal default kantor
-    //     (via resolveSchedule() yang sudah mengecek optional($userShift->shift)->is_active).
+    //     PERUBAHAN (2026-08-08):
+    //     Menonaktifkan shift DIBLOKIR selama masih ada karyawan yang
+    //     menggunakan shift ini (assignment aktif/sebelumnya). HRD harus
+    //     memindahkan karyawan ke shift lain atau mengakhiri assignment-nya
+    //     terlebih dahulu sebelum shift bisa dinonaktifkan.
+    //     Hal ini mencegah karyawan "tiba-tiba" jatuh ke jadwal default
+    //     tanpa sepengetahuan HRD.
     // ═══════════════════════════════════════════════════════════
     public function toggleActive(Request $request, int $id): JsonResponse
     {
@@ -403,6 +561,28 @@ class ShiftController extends Controller
         }
 
         $willBeActive = ! $shift->is_active;
+
+        // Saat menonaktifkan: blokir jika masih ada assignment yang berlaku
+        // (aktif hari ini atau akan datang) untuk shift ini.
+        if (! $willBeActive) {
+            $liveAssignments = $this->liveAssignmentsForShift($shift->id);
+
+            if ($liveAssignments->isNotEmpty()) {
+                $names = $liveAssignments->take(5)->map(fn ($a) => $a->user->name ?? 'Karyawan')->join(', ');
+                $more  = $liveAssignments->count() > 5 ? ', dan lainnya.' : '.';
+
+                return response()->json([
+                    'message'      => "Shift tidak bisa dinonaktifkan karena masih digunakan oleh " . $liveAssignments->count() . " karyawan. Pindahkan karyawan ke shift lain atau hapus assignment karyawan dari shift ini terlebih dahulu.",
+                    'affected'     => $liveAssignments->map(fn ($a) => [
+                        'user_id'   => $a->user_id,
+                        'user_name' => $a->user->name ?? 'Karyawan',
+                        'start_date' => $a->start_date->toDateString(),
+                        'end_date'   => $a->end_date?->toDateString(),
+                    ])->values(),
+                    'affected_names' => $names . $more,
+                ], 409);
+            }
+        }
 
         $shift->is_active = $willBeActive;
         $shift->save();
@@ -448,6 +628,26 @@ class ShiftController extends Controller
         ]);
     }
 
+    // ─── Helper: assignment yang MASIH BERLAKU untuk sebuah shift ─────────────
+    //     "Masih berlaku" = start_date <= hari ini (aktif) ATAU start_date > hari ini
+    //     (akan datang), DAN (end_date null ATAU end_date >= hari ini).
+    //     Assignment yang sudah berakhir (end_date < hari ini) TIDAK termasuk,
+    //     sehingga tidak memblokir hapus/nonaktifkan shift.
+    private function liveAssignmentsForShift(int $shiftId)
+    {
+        $today = now('Asia/Jakarta')->toDateString();
+
+        return UserShift::with('user:id,name')
+            ->where('shift_id', $shiftId)
+            ->where(function ($q) use ($today) {
+                $q->where('start_date', '<=', $today)
+                    ->where(fn ($q2) => $q2->whereNull('end_date')->orWhere('end_date', '>=', $today))
+                    ->orWhere('start_date', '>', $today);
+            })
+            ->orderBy('start_date')
+            ->get();
+    }
+
     // ═══════════════════════════════════════════════════════════
     // 3. shiftHistory() — riwayat shift assignment seorang karyawan
     //    GET /api/v1/dashboard/attendance/users/{id}/shift-history
@@ -470,7 +670,100 @@ class ShiftController extends Controller
             ->orderByDesc('start_date')
             ->paginate(20);
 
+        // Tambahkan status setiap assignment berdasarkan tanggal hari ini:
+        //   active   → shift sedang berlaku hari ini (start_date <= hari ini,
+        //               dan (end_date null ATAU end_date >= hari ini))
+        //   upcoming → shift belum dimulai (start_date > hari ini)
+        //   expired  → shift sudah berakhir (end_date < hari ini)
+        // Ini dipakai frontend untuk menampilkan badge status pada tiap assignment
+        // dan agar HRD tahu bahwa assignment yang aktif adalah yang sedang berlaku.
+        $today = now('Asia/Jakarta')->toDateString();
+
+        $history->getCollection()->transform(function (UserShift $us) use ($today) {
+            $startDate = $us->start_date->toDateString();
+            $endDate   = $us->end_date?->toDateString();
+
+            if ($startDate <= $today && ($endDate === null || $endDate >= $today)) {
+                $status = 'active';
+            } elseif ($startDate > $today) {
+                $status = 'upcoming';
+            } else {
+                $status = 'expired';
+            }
+
+            $us->setAttribute('status', $status);
+
+            return $us;
+        });
+
         return response()->json($history);
+    }
+
+    // ─── Daftar karyawan yang terkait dengan sebuah shift ─────────────
+    //     GET /api/v1/dashboard/attendance/shifts/{id}/users
+    //
+    //     Menampilkan semua assignment yang memakai shift ini (masa lalu, aktif,
+    //     dan mendatang) beserta statusnya. Dipakai UI template shift (web) agar
+    //     HRD bisa melihat siapa saja yang terpasang pada suatu shift.
+    public function shiftUsers(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $shift = Shift::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if (! $shift) {
+            return response()->json(['message' => 'Shift tidak ditemukan.'], 404);
+        }
+
+        $today = now('Asia/Jakarta')->toDateString();
+
+        $assignments = UserShift::with(['user:id,name,department,attendance_setting_id', 'user.office:id,office_name', 'shift:id,name'])
+            ->where('shift_id', $id)
+            ->orderBy('start_date')
+            ->get();
+
+        $rows = $assignments->map(function (UserShift $us) use ($today) {
+            $user = $us->user;
+
+            // null guard — assignment dengan user terhapus (soft delete)
+            if (! $user) {
+                return null;
+            }
+
+            $startDate = $us->start_date->toDateString();
+            $endDate   = $us->end_date?->toDateString();
+
+            if ($startDate <= $today && ($endDate === null || $endDate >= $today)) {
+                $status = 'active';
+            } elseif ($startDate > $today) {
+                $status = 'upcoming';
+            } else {
+                $status = 'expired';
+            }
+
+            return [
+                'user_id'               => $user->id,
+                'name'                  => $user->name,
+                'department'            => $user->department,
+                'branch'                => optional($user->office)->office_name,
+                'assignment_id'         => $us->id,
+                'status'                => $status,
+                'start_date'            => $startDate,
+                'end_date'              => $endDate,
+            ];
+        })->filter()->values();
+
+        return response()->json([
+            'shift_id'      => (int) $shift->id,
+            'shift_name'    => $shift->name,
+            'is_active'     => (bool) $shift->is_active,
+            'total'         => $rows->count(),
+            'active_count'  => $rows->where('status', 'active')->count(),
+            'data'          => $rows,
+        ]);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -512,7 +805,7 @@ class ShiftController extends Controller
         // Jika shift_id diisi, pastikan shift milik perusahaan yang sama
         // DAN cabangnya cocok dengan cabang karyawan (cegah salah assign lintas cabang).
         $shift = null;
-        if ($validated['shift_id']) {
+        if (! empty($validated['shift_id'])) {
             $shift = Shift::when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
@@ -522,8 +815,27 @@ class ShiftController extends Controller
                 return response()->json(['message' => 'Shift tidak ditemukan di perusahaan Anda.'], 404);
             }
 
+            // Cegah assign ke shift yang sudah dinonaktifkan
+            if (! $shift->is_active) {
+                return response()->json(['message' => "Shift '{$shift->name}' sudah dinonaktifkan. Aktifkan kembali terlebih dahulu atau pilih shift lain."], 422);
+            }
+
             if ($err = $this->assertBranchMatch($shift, $targetUser)) {
                 return response()->json(['message' => $err], 422);
+            }
+
+            // Cegah assign shift yang sedang AKTIF atau SEGERA (belum mulai) untuk
+            // karyawan yang sama (duplikat) — akhiri/hapus assignment dulu.
+            $todayStr = now('Asia/Jakarta')->toDateString();
+            $duplicateActive = UserShift::where('user_id', $validated['user_id'])
+                ->where('shift_id', $validated['shift_id'])
+                ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
+                ->exists();
+
+            if ($duplicateActive) {
+                return response()->json([
+                    'message' => "Karyawan ini sudah memiliki assignment aktif untuk shift '{$shift->name}'. Akhiri assignment yang sedang berjalan terlebih dahulu sebelum menetapkan shift yang sama.",
+                ], 422);
             }
         }
 
@@ -552,6 +864,38 @@ class ShiftController extends Controller
         // Validasi minimum notice period (HARD ERROR: blokir jika kurang dari N hari notice)
         if ($noticeErr = $this->checkNoticeError($targetUser, $validated['start_date'])) {
             return response()->json(['message' => $noticeErr], 422);
+        }
+
+        // CEGAH BUG: jika assignment baru mulai HARI INI (atau berlaku hari ini),
+        // pastikan karyawan tidak sedang dalam jam kerja shift yang akan digantikan.
+        // Ini mencegah jadwal hari ini berubah di tengah jam kerja.
+        $newStartDate = $validated['start_date'];
+        $newEndDate   = $validated['end_date'] ?? null;
+        $todayStr     = now('Asia/Jakarta')->toDateString();
+
+        $coversToday = $newStartDate <= $todayStr
+            && ($newEndDate === null || $newEndDate >= $todayStr);
+
+        if ($coversToday) {
+            // Assignment shift lama yang sedang aktif hari ini
+            $activeOld = UserShift::with('shift')
+                ->where('user_id', $targetUser->id)
+                ->where('id', '!=', $validated['shift_id'] ?? 0) // bukan shift baru
+                ->where('start_date', '<=', $todayStr)
+                ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
+                ->orderByDesc('start_date')
+                ->first();
+
+            // Khusus: jika start_date = hari ini, assignment baru akan menggantikan
+            // assignment lama yang aktif — cek jam kerja assignment lama.
+            if ($activeOld && $activeOld->shift_id) {
+                $blocked = $this->checkWithinWorkingHours($activeOld);
+                if ($blocked) {
+                    return response()->json([
+                        'message' => "Tidak bisa mengubah shift karyawan sekarang. " . $blocked,
+                    ], 422);
+                }
+            }
         }
 
         $userShift = UserShift::create([
@@ -620,8 +964,8 @@ class ShiftController extends Controller
         $newIsOff     = false;
         if ($newShift) {
             $dayOfWeek    = Carbon::parse($startDate)->dayOfWeek;
-            $newSchedule  = ShiftSchedule::where('shift_id', $newShift->id)
-                ->where('day_of_week', $dayOfWeek)->first();
+            // Versi jadwal yang berlaku pada startDate (effective_date <= startDate)
+            $newSchedule  = self::scheduleForDate($newShift->id, $dayOfWeek, $startDate);
             $newIsOff     = $newSchedule ? (bool) $newSchedule->is_off : false;
             $newStartTime = ($newSchedule && ! $newSchedule->is_off) ? $newSchedule->work_start_time : null;
         } else {
@@ -832,6 +1176,22 @@ class ShiftController extends Controller
             if ($err = $this->assertBranchMatch($shift, $targetUser)) {
                 return response()->json(['message' => $err], 422);
             }
+
+            // Cegah assign shift yang sedang AKTIF atau SEGERA (belum mulai) untuk
+            // karyawan yang sama (duplikat), kecuali assignment itu sendiri
+            // (no-op self-update tidak diblokir).
+            $todayStr = now('Asia/Jakarta')->toDateString();
+            $duplicateActive = UserShift::where('user_id', $userShift->user_id)
+                ->where('shift_id', $validated['shift_id'])
+                ->where('id', '!=', $userShift->id)
+                ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
+                ->exists();
+
+            if ($duplicateActive) {
+                return response()->json([
+                    'message' => "Karyawan ini sudah memiliki assignment aktif atau segera untuk shift '{$shift->name}'. Hapus/akhiri assignment tersebut terlebih dahulu.",
+                ], 422);
+            }
         }
 
         // Cek duplikat start_date (kecuali dirinya sendiri)
@@ -870,6 +1230,28 @@ class ShiftController extends Controller
             return response()->json(['message' => $noticeErr], 422);
         }
 
+        // CEGAH BUG: jika assignment ini sedang berlaku HARI INI dan diubah
+        // (shift_id / start_date / end_date) saat karyawan sedang dalam jam kerja,
+        // blokir — agar jadwal hari ini tidak berubah di tengah jam kerja.
+        $todayStr = now('Asia/Jakarta')->toDateString();
+        $effectiveEnd = $validated['end_date']
+            ?? $userShift->end_date?->toDateString()
+            ?? $todayStr; // end_date null = berlaku tanpa batas → aktif hari ini
+
+        $isActiveToday = $newStart <= $todayStr && $effectiveEnd >= $todayStr;
+        $shiftChanged  = array_key_exists('shift_id', $validated)
+            || array_key_exists('start_date', $validated)
+            || array_key_exists('end_date', $validated);
+
+        if ($isActiveToday && $shiftChanged && $userShift->shift_id) {
+            $blocked = $this->checkWithinWorkingHours($userShift);
+            if ($blocked) {
+                return response()->json([
+                    'message' => "Tidak bisa mengubah assignment shift sekarang. " . $blocked,
+                ], 422);
+            }
+        }
+
         $userShift->fill(collect($validated)->only(['shift_id', 'start_date', 'end_date', 'notes'])->toArray());
         $userShift->save();
 
@@ -897,8 +1279,19 @@ class ShiftController extends Controller
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 4c. destroyAssignment() — hapus assignment shift karyawan
+    // 4c. destroyAssignment() — hapus / akhiri assignment shift karyawan
     //     DELETE /api/v1/dashboard/attendance/assignments/{id}
+    //
+    //    Perilaku berdasarkan status assignment (lihat shiftHistory):
+    //    - ACTIVE   (sedang berlaku hari ini) → SOFT-END: set end_date = kemarin.
+    //      Histori tetap tersimpan, karyawan otomatis pindah ke jadwal kantor default.
+    //    - UPCOMING (belum dimulai, start_date > hari ini) → HAPUS PERMANEN.
+    //      Belum pernah dipakai, tidak merusak histori apa pun.
+    //    - EXPIRED  (sudah berakhir, end_date < hari ini) → HAPUS PERMANEN.
+    //      Tidak berpengaruh pada jadwal yang sedang berlaku.
+    //
+    //    Ini sesuai aturan: "Jangan merusak histori jadwal". Menghapus assignment
+    //    yang sedang aktif secara permanen akan kehilangan jejak histori shift.
     // ═══════════════════════════════════════════════════════════
     public function destroyAssignment(Request $request, int $id): JsonResponse
     {
@@ -914,6 +1307,55 @@ class ShiftController extends Controller
 
         $targetUser = $userShift->user;
         $tglMulai   = $userShift->start_date->toDateString();
+        $today      = now('Asia/Jakarta')->toDateString();
+
+        // Apakah assignment ini MASIH AKTIF hari ini?
+        $isActive = $userShift->start_date->toDateString() <= $today
+            && ($userShift->end_date === null || $userShift->end_date->toDateString() >= $today);
+
+        // CEGAH BUG: jangan izinkan hapus/akhiri assignment saat karyawan sedang
+        // dalam jam kerja shift-nya (lihat checkWithinWorkingHours).
+        if ($isActive) {
+            $blocked = $this->checkWithinWorkingHours($userShift);
+            if ($blocked) {
+                return response()->json(['message' => $blocked], 422);
+            }
+        }
+
+        if ($isActive) {
+            // SOFT-END: akhiri assignment kemarin → karyawan pindah ke jadwal kantor
+            // default mulai hari ini. Histori shift tetap tersimpan.
+            // Guard: jangan biarkan end_date < start_date (terjadi jika assignment
+            // dibuat hari ini lalu langsung dihapus hari ini juga).
+            $yesterday = Carbon::yesterday('Asia/Jakarta')->toDateString();
+            $startStr  = $userShift->start_date->toDateString();
+            $userShift->end_date = $yesterday >= $startStr ? $yesterday : $startStr;
+            $userShift->save();
+
+            $this->logActivity(
+                $actor->id,
+                $actor->company_id,
+                'shift_assignment_ended',
+                "Mengakhiri assignment shift {$targetUser->name} (mulai {$tglMulai}) — karyawan kembali ke jadwal kantor default",
+                'user',
+                $targetUser->id
+            );
+
+            $this->notifyEmployee(
+                $targetUser,
+                'shift_removed',
+                "Jadwal shift Anda (mulai " . Carbon::parse($tglMulai)->translatedFormat('d F Y') . ") telah diakhiri HRD. Anda kembali ke jadwal kantor default mulai hari ini.",
+                $userShift->id
+            );
+
+            return response()->json([
+                'message' => "Assignment shift diakhiri. {$targetUser->name} kembali ke jadwal kantor default mulai hari ini.",
+                'soft_end' => true,
+                'data'     => $userShift->fresh()->load('shift.schedules'),
+            ]);
+        }
+
+        // UPCOMING atau EXPIRED → hapus permanen (tidak memengaruhi jadwal aktif)
         $userShift->delete();
 
         $this->logActivity(
@@ -933,6 +1375,68 @@ class ShiftController extends Controller
         );
 
         return response()->json(['message' => 'Assignment shift berhasil dihapus.']);
+    }
+
+    // ─── Helper: cek apakah "sekarang" berada dalam jam kerja shift aktif ────
+    //     Mencegah bug: HRD menghapus/akhiri assignment di tengah jam kerja shift,
+    //     sehingga jadwal hari itu berubah ke default kantor (jam checkout lebih lama)
+    //     dan karyawan yang checkout sesuai shift aslinya terdeteksi pulang cepat.
+    //
+    //     Menangani shift normal & shift malam (cross-day / lintas tengah malam):
+    //     - Shift normal 08:00–15:00 → dalam jam kerja jika 08:00 <= now <= 15:00
+    //     - Shift malam 22:00–05:00 (cross-day) → dalam jam kerja jika
+    //       (22:00 <= now <= 24:00) ATAU (00:00 <= now <= 05:00)
+    //
+    //     Return null bila tidak dalam jam kerja / hari libur; return string pesan
+    //     blokir (dengan rentang jam shift) bila sekarang sedang jam kerja shift.
+    private function checkWithinWorkingHours(UserShift $userShift): ?string
+    {
+        // Assignment harus sedang berlaku HARI INI dan memakai template shift
+        if (! $userShift->shift_id) {
+            return null;
+        }
+
+        $today  = now('Asia/Jakarta');
+        $dateStr = $today->toDateString();
+
+        // Shift tidak berlaku hari ini
+        if ($userShift->start_date->toDateString() > $dateStr) {
+            return null;
+        }
+        if ($userShift->end_date !== null && $userShift->end_date->toDateString() < $dateStr) {
+            return null;
+        }
+
+        $shift = $userShift->shift;
+        if (! $shift || ! $shift->is_active) {
+            return null;
+        }
+
+        $dayOfWeek = $today->dayOfWeek; // 0=Minggu ... 6=Sabtu
+        $schedule  = self::scheduleForDate($shift->id, $dayOfWeek, $today->toDateString());
+
+        if (! $schedule || $schedule->is_off || empty($schedule->work_start_time) || empty($schedule->work_end_time)) {
+            return null; // hari libur shift → tidak ada jam kerja
+        }
+
+        $nowMinutes = $today->hour * 60 + $today->minute;
+        $startMinutes = $this->timeToMinutes($schedule->work_start_time);
+        $endMinutes   = $this->timeToMinutes($schedule->work_end_time);
+        $isCrossDay   = (bool) $schedule->is_cross_day;
+
+        $inHours = $isCrossDay
+            ? ($nowMinutes >= $startMinutes || $nowMinutes <= $endMinutes)
+            : ($nowMinutes >= $startMinutes && $nowMinutes <= $endMinutes);
+
+        if (! $inHours) {
+            return null;
+        }
+
+        $range = $isCrossDay
+            ? "{$schedule->work_start_time} sampai {$schedule->work_end_time} (+1 hari)"
+            : "{$schedule->work_start_time} sampai {$schedule->work_end_time}";
+
+        return "Karyawan sedang dalam jam kerja shift '{$shift->name}' ({$range}). Assignment tidak bisa dihapus/diakhiri di tengah jam kerja. Tunggu sampai jam kerja selesai, atau gunakan assignment baru (shift lain) mulai tanggal berikutnya.";
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -967,7 +1471,7 @@ class ShiftController extends Controller
 
         // Validasi shift sekali di depan (bukan per karyawan)
         $shift = null;
-        if ($validated['shift_id']) {
+        if (! empty($validated['shift_id'])) {
             $shift = Shift::when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
@@ -976,13 +1480,19 @@ class ShiftController extends Controller
             if (! $shift) {
                 return response()->json(['message' => 'Shift tidak ditemukan di perusahaan Anda.'], 404);
             }
+
+            // Cegah bulk-assign ke shift yang sudah dinonaktifkan
+            if (! $shift->is_active) {
+                return response()->json(['message' => "Shift '{$shift->name}' sudah dinonaktifkan. Aktifkan kembali terlebih dahulu atau pilih shift lain."], 422);
+            }
         }
 
         // Ambil semua karyawan target sekaligus (hindari N+1)
-        $targets = User::when(
-            $actor->role !== 'super_admin',
-            fn ($q) => $q->where('company_id', $actor->company_id)
-        )->whereIn('id', $validated['user_ids'])->get()->keyBy('id');
+        $targets = User::with('office')
+            ->when(
+                $actor->role !== 'super_admin',
+                fn ($q) => $q->where('company_id', $actor->company_id)
+            )->whereIn('id', $validated['user_ids'])->get()->keyBy('id');
 
         // Ambil start_date yang sudah terpakai untuk cegah bentrok (satu query)
         $tanggalTerpakai = UserShift::whereIn('user_id', $validated['user_ids'])
@@ -990,13 +1500,24 @@ class ShiftController extends Controller
             ->pluck('user_id')
             ->flip();
 
+        // Karyawan yang sudah punya assignment AKTIF atau SEGERA untuk shift yang
+        // sama (satu query) — akhiri/hapus assignment dulu sebelum assign ulang.
+        $todayStr = now('Asia/Jakarta')->toDateString();
+        $alreadyActive = $validated['shift_id'] !== null
+            ? UserShift::whereIn('user_id', $validated['user_ids'])
+                ->where('shift_id', $validated['shift_id'])
+                ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
+                ->pluck('user_id')
+                ->flip()
+            : collect();
+
         $shiftName = $shift ? $shift->name : 'Default Kantor';
         $tglMulai  = Carbon::parse($validated['start_date'])->translatedFormat('d F Y');
 
         $berhasil = [];
         $dilewati = [];
 
-        DB::transaction(function () use ($validated, $targets, $shift, $tanggalTerpakai, $shiftName, $tglMulai, $actor, &$berhasil, &$dilewati) {
+        DB::transaction(function () use ($validated, $targets, $shift, $tanggalTerpakai, $alreadyActive, $shiftName, $tglMulai, $actor, &$berhasil, &$dilewati) {
             foreach ($validated['user_ids'] as $uid) {
                 $user = $targets->get($uid);
 
@@ -1012,6 +1533,12 @@ class ShiftController extends Controller
                     continue;
                 }
 
+                // Karyawan sudah punya assignment AKTIF atau SEGERA untuk shift yang sama
+                if ($alreadyActive->has($uid)) {
+                    $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => "Karyawan ini sudah memiliki assignment aktif atau segera untuk shift '{$shiftName}'."];
+                    continue;
+                }
+
                 // Bentrok start_date
                 if ($tanggalTerpakai->has($uid)) {
                     $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => 'Sudah ada assignment di tanggal mulai yang sama.'];
@@ -1024,8 +1551,15 @@ class ShiftController extends Controller
                     $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $k3['error']];
                     continue;
                 }
-                // $k3['warnings'] disertakan ke entry berhasil setelah assignment dibuat
 
+                // Validasi minimum notice period — HARUS sebelum insert agar
+                // data tidak masuk DB jika notice period tidak terpenuhi.
+                if ($noticeErr = $this->checkNoticeError($user, $validated['start_date'])) {
+                    $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $noticeErr];
+                    continue;
+                }
+
+                // Semua validasi lolos → simpan assignment ke DB
                 $userShift = UserShift::create([
                     'user_id'    => $uid,
                     'shift_id'   => $validated['shift_id'],
@@ -1039,18 +1573,12 @@ class ShiftController extends Controller
                     : '';
                 $this->notifyEmployee(
                     $user,
-                    $validated['shift_id'] ? 'shift_assigned' : 'shift_removed',
-                    $validated['shift_id']
+                    ! empty($validated['shift_id']) ? 'shift_assigned' : 'shift_removed',
+                    ! empty($validated['shift_id'])
                         ? "Jadwal kerja Anda diubah ke '{$shiftName}' mulai {$tglMulai}{$tglAkhirBulk}."
                         : "Jadwal kerja Anda dikembalikan ke jam kantor default mulai {$tglMulai}.",
                     $userShift->id
                 );
-
-                // Validasi minimum notice period (HARD ERROR)
-                if ($noticeErr = $this->checkNoticeError($user, $validated['start_date'])) {
-                    $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $noticeErr];
-                    continue;
-                }
 
                 $entry = ['user_id' => $uid, 'name' => $user->name, 'assignment_id' => $userShift->id];
                 if (! empty($k3['warnings'])) {
@@ -1064,7 +1592,7 @@ class ShiftController extends Controller
         $this->logActivity(
             $actor->id,
             $actor->company_id,
-            $validated['shift_id'] ? 'shift_assigned' : 'shift_removed',
+            ! empty($validated['shift_id']) ? 'shift_assigned' : 'shift_removed',
             "Bulk assign shift '{$shiftName}' ke " . count($berhasil) . " karyawan mulai {$validated['start_date']}",
             'shift',
             $shift?->id
@@ -1258,22 +1786,107 @@ class ShiftController extends Controller
                 fn ($q) => $q->where('name', 'like', '%' . $validated['search'] . '%')
             )
             ->where('is_active', true)
-            ->with('office:id,office_name')
+            ->with('office')
             ->orderBy('name')
             ->get();
 
-        // Pre-load semua assignment shift MASA DEPAN (start_date > tanggal roster)
-        // sekaligus relasi template shift — satu query untuk semua user (hindari N+1).
-        $upcomingShifts = \App\Models\UserShift::with('shift:id,name,color,is_active')
-            ->whereIn('user_id', $users->pluck('id'))
+        $userIds   = $users->pluck('id');
+        $dayOfWeek = Carbon::parse($date)->dayOfWeek; // 0=Minggu … 6=Sabtu
+
+        // ── PRE-LOAD BULK (hindari N+1 dari resolveSchedule per user) ────────
+        //
+        // 1. Semua assignment AKTIF pada tanggal roster (1 query + eager load shift)
+        $activeAssignments = UserShift::with('shift:id,name,color,is_active')
+            ->whereIn('user_id', $userIds)
+            ->where('start_date', '<=', $date)
+            ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date))
+            ->orderByDesc('start_date')
+            ->get()
+            ->groupBy('user_id');
+
+        // 2. Kumpulkan shift_id aktif yang perlu dicari jadwalnya
+        $relevantShiftIds = $activeAssignments->flatten()
+            ->filter(fn ($a) => $a->shift_id && optional($a->shift)->is_active)
+            ->pluck('shift_id')
+            ->unique()
+            ->values();
+
+        // 3. Pre-load jadwal shift untuk day_of_week pada tanggal roster (1 query)
+        //    Ambil SEMUA versi lalu pilih versi terbaru yang effective_date <= date di memory
+        $schedulesByShift = collect();
+        if ($relevantShiftIds->isNotEmpty()) {
+            $schedulesByShift = ShiftSchedule::whereIn('shift_id', $relevantShiftIds)
+                ->where('day_of_week', $dayOfWeek)
+                ->orderByDesc('effective_date')
+                ->get()
+                ->groupBy('shift_id')
+                ->map(function ($schedules) use ($date) {
+                    // Versi terbaru yang sudah efektif (effective_date <= date)
+                    $match = $schedules->first(fn ($s) => $s->effective_date->toDateString() <= $date);
+                    // Fallback: versi terbaru secara global (untuk tanggal sebelum versi pertama)
+                    return $match ?? $schedules->first();
+                });
+        }
+
+        // 4. Fallback kantor untuk user yang belum punya attendance_setting_id
+        $fallbackOffice = AttendanceSetting::where('company_id', $actor->company_id)
+            ->orderBy('id')
+            ->first();
+
+        // 5. Pre-load assignment shift MASA DEPAN (start_date > tanggal roster)
+        //    — satu query untuk semua user (sudah benar sebelumnya)
+        $upcomingShifts = UserShift::with('shift:id,name,color,is_active')
+            ->whereIn('user_id', $userIds)
             ->where('start_date', '>', $date)
             ->orderBy('start_date')
             ->get()
             ->groupBy('user_id');
 
-        // Susun baris roster: identitas karyawan + jadwal efektif tanggal tsb
-        $roster = $users->map(function (User $user) use ($date, $upcomingShifts) {
-            $schedule = self::resolveSchedule($user, $date);
+        // ── RESOLVE JADWAL DI MEMORY (tanpa query tambahan per user) ─────────
+        $roster = $users->map(function (User $user) use ($date, $dayOfWeek, $activeAssignments, $schedulesByShift, $upcomingShifts, $fallbackOffice) {
+            // Cari assignment aktif dari data yang sudah di-preload
+            $active = $activeAssignments->get($user->id, collect())->first();
+
+            $source    = 'office';
+            $shiftName = null;
+            $workStart = null;
+            $workEnd   = null;
+            $isOff     = false;
+            $isCrossDay = false;
+
+            // Prioritas 1: shift aktif dengan template yang masih aktif
+            if ($active && $active->shift_id && optional($active->shift)->is_active) {
+                $schedule = $schedulesByShift->get($active->shift_id);
+                if ($schedule) {
+                    $source    = 'shift';
+                    $shiftName = $active->shift->name;
+                    $isOff     = (bool) $schedule->is_off;
+                    $workStart = $isOff ? null : $schedule->work_start_time;
+                    $workEnd   = $isOff ? null : $schedule->work_end_time;
+                    $isCrossDay = (bool) $schedule->is_cross_day;
+                }
+            }
+
+            // Prioritas 2: fallback ke jadwal default kantor
+            if ($source === 'office') {
+                $office = $user->office ?? $fallbackOffice;
+                if ($office) {
+                    $workDays = $office->work_days ?? [1, 2, 3, 4, 5];
+                    $isOff    = ! in_array($dayOfWeek, $workDays);
+                    if (! $isOff) {
+                        $customStart = null;
+                        $customEnd   = null;
+                        if (! empty($office->custom_schedules[$dayOfWeek])) {
+                            $customStart = $office->custom_schedules[$dayOfWeek]['start'] ?? null;
+                            $customEnd   = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
+                        }
+                        $workStart = $customStart ?? $office->work_start_time;
+                        $workEnd   = $customEnd ?? $office->work_end_time;
+                    }
+                } else {
+                    $source = 'none';
+                }
+            }
 
             // Cari shift berikutnya yang belum aktif (coming soon):
             // - shift_id terisi (bukan kembali ke default kantor)
@@ -1302,13 +1915,13 @@ class ShiftController extends Controller
                 'name'                   => $user->name,
                 'department'             => $user->department,
                 'branch'                 => optional($user->office)->office_name,
-                'source'                 => $schedule['source'],   // 'shift' | 'office' | 'none'
-                'shift_name'             => $schedule['shift_name'],
-                'work_start_time'        => $schedule['work_start_time'],
-                'work_end_time'          => $schedule['work_end_time'],
-                'is_off'                 => $schedule['is_off'],
-                'is_cross_day'           => $schedule['is_cross_day'] ?? false,
-                'upcoming_shift'         => $upcoming, // shift yang belum aktif (coming soon)
+                'source'                 => $source,
+                'shift_name'             => $shiftName,
+                'work_start_time'        => $workStart,
+                'work_end_time'          => $workEnd,
+                'is_off'                 => $isOff,
+                'is_cross_day'           => $isCrossDay,
+                'upcoming_shift'         => $upcoming,
             ];
         });
 
@@ -1318,6 +1931,30 @@ class ShiftController extends Controller
             'total'    => $roster->count(),
             'data'     => $roster,
         ]);
+    }
+
+    // ─── Static helper: versi jadwal yang berlaku pada tanggal tertentu ─────
+    //     Karena shift_schedules kini punya banyak versi (versioning dengan
+    //     effective_date), ambil versi TERBARU yang sudah efektif pada $date
+    //     (effective_date <= $date). Jika tidak ada versi, fallback ke versi
+    //     terbaru secara global (MAX id) — misal untuk tanggal sebelum versi pertama.
+    public static function scheduleForDate(int $shiftId, int $dayOfWeek, string $date): ?ShiftSchedule
+    {
+        $schedule = ShiftSchedule::where('shift_id', $shiftId)
+            ->where('day_of_week', $dayOfWeek)
+            ->where('effective_date', '<=', $date)
+            ->orderByDesc('effective_date')
+            ->first();
+
+        if ($schedule) {
+            return $schedule;
+        }
+
+        // Fallback: tanggal sebelum versi pertama → pakai versi terbaru
+        return ShiftSchedule::where('shift_id', $shiftId)
+            ->where('day_of_week', $dayOfWeek)
+            ->orderByDesc('effective_date')
+            ->first();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1355,10 +1992,15 @@ class ShiftController extends Controller
         // Kantor penempatan (cabang) karyawan → sumber late_tolerance, overtime, jam kerja default.
         // Prioritas: cabang yang di-assign ke karyawan (attendance_setting_id).
         // Fallback: cabang pertama perusahaan (untuk karyawan yang belum di-set cabangnya).
-        $office = $user->office
-            ?? AttendanceSetting::where('company_id', $user->company_id)
+        $office = $user->office;
+        if ($office && ! array_key_exists('work_start_time', $office->getAttributes())) {
+            $office = AttendanceSetting::find($office->id);
+        }
+        if (! $office && $user->company_id) {
+            $office = AttendanceSetting::where('company_id', $user->company_id)
                 ->orderBy('id')
                 ->first();
+        }
 
         // Cek apakah assignment masih berlaku berdasarkan end_date:
         //   - end_date = null  → berlaku tanpa batas (perilaku lama)
@@ -1370,9 +2012,8 @@ class ShiftController extends Controller
 
         // Jika ada shift aktif dengan shift_id terisi DAN template masih aktif → gunakan jadwal shift
         if ($shiftStillActive && $userShift->shift_id && optional($userShift->shift)->is_active) {
-            $shiftSchedule = ShiftSchedule::where('shift_id', $userShift->shift_id)
-                ->where('day_of_week', $dayOfWeek)
-                ->first();
+            // Versi jadwal yang berlaku pada tanggal tsb (effective_date <= tanggal)
+            $shiftSchedule = self::scheduleForDate($userShift->shift_id, $dayOfWeek, $date);
 
             if ($shiftSchedule) {
                 return [
@@ -1447,21 +2088,28 @@ class ShiftController extends Controller
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 7. mySchedule() — jadwal shift karyawan yang sedang login
-    //    GET /api/v1/employee/my-schedule
+    // 7. mySchedule() — jadwal shift karyawan yang sedang login (ringkasan "hari ini")
+    //    GET /api/v1/attendance/my-schedule
     //
-    //    Return shift aktif + jadwal 7 hari (Senin–Minggu).
+    //    Return shift yang berlaku HARI INI beserta template 7 hari (Senin–Minggu).
     //    Jika tidak ada shift khusus → fallback ke jam kantor default.
+    //
+    //    PERBAIKAN (2026-08-07):
+    //    Menambahkan cek end_date agar shift yang sudah kadaluarsa tidak tampil.
+    //    Untuk kalender bulanan per-hari, gunakan endpoint myScheduleCalendar().
     // ═══════════════════════════════════════════════════════════
     public function mySchedule(Request $request): JsonResponse
     {
         $user = $request->user();
         $today = now('Asia/Jakarta')->toDateString();
 
-        // Cari assignment shift aktif
+        // Cari assignment shift yang berlaku hari ini:
+        // - start_date <= hari ini
+        // - end_date null (tanpa batas) ATAU end_date >= hari ini (belum kadaluarsa)
         $userShift = UserShift::with('shift.schedules', 'shift.office:id,office_name')
             ->where('user_id', $user->id)
             ->where('start_date', '<=', $today)
+            ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $today))
             ->orderByDesc('start_date')
             ->first();
 
@@ -1474,7 +2122,8 @@ class ShiftController extends Controller
         // (konsisten dengan resolveSchedule() yang juga cek is_active)
         if ($userShift && $userShift->shift_id && $userShift->shift && $userShift->shift->is_active) {
             $shift = $userShift->shift;
-            $schedules = $shift->schedules->map(fn (ShiftSchedule $s) => [
+            // Versi jadwal yang berlaku HARI INI (effective_date <= hari ini)
+            $schedules = collect($shift->schedulesForDate($today))->map(fn (ShiftSchedule $s) => [
                 'day_of_week'     => $s->day_of_week,
                 'day_name'        => $s->day_name,
                 'work_start_time' => $s->is_off ? null : $s->work_start_time,
@@ -1489,6 +2138,7 @@ class ShiftController extends Controller
                     'name'        => $shift->name,
                     'color'       => $shift->color ?? '#6366f1',
                     'start_date'  => $userShift->start_date->toDateString(),
+                    'end_date'    => $userShift->end_date?->toDateString(),
                     'office_name' => optional($shift->office)->office_name ?? optional($office)->office_name,
                 ],
                 'schedules' => $schedules,
@@ -1524,6 +2174,7 @@ class ShiftController extends Controller
                     'name'        => 'Jam Kantor Default',
                     'color'       => '#6366f1',
                     'start_date'  => null,
+                    'end_date'    => null,
                     'office_name' => $office->office_name,
                 ],
                 'schedules' => $schedules,
@@ -1538,11 +2189,171 @@ class ShiftController extends Controller
     }
 
     // ═══════════════════════════════════════════════════════════
+    // 8. myScheduleCalendar() — kalender jadwal kerja bulanan karyawan
+    //    GET /api/v1/attendance/my-schedule-calendar?month=&year=
+    //
+    //    SOLUSI masalah "Jadwal Kerja Saya" di Flutter:
+    //    Endpoint ini mengembalikan jadwal PER HARI selama satu bulan,
+    //    ditentukan berdasarkan tanggal yang dilihat (bukan "shift aktif hari ini").
+    //
+    //    Logika:
+    //    - Untuk setiap tanggal, cari assignment yang berlaku pada tanggal tersebut
+    //      menggunakan resolveSchedule($user, $date).
+    //    - resolveSchedule() sudah benar: memakai start_date <= tanggal DAN
+    //      (end_date null ATAU end_date >= tanggal).
+    //    - Perubahan jadwal HRD (misal: Shift B mulai 9 Agustus) langsung terlihat
+    //      di kalender tanpa harus menunggu tanggal tersebut tiba.
+    //
+    //    Contoh response:
+    //    {
+    //      "month": 8, "year": 2026,
+    //      "days": {
+    //        "2026-08-07": {"source":"shift","shift_name":"Shift A",...},
+    //        "2026-08-08": {"source":"shift","shift_name":"Shift A",...},
+    //        "2026-08-09": {"source":"shift","shift_name":"Shift B",...},
+    //        ...
+    //      }
+    //    }
+    // ═══════════════════════════════════════════════════════════
+    public function myScheduleCalendar(Request $request): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'month' => 'nullable|integer|between:1,12',
+            'year'  => 'nullable|integer|min:2020|max:2100',
+        ]);
+
+        $month = $validated['month'] ?? (int) now('Asia/Jakarta')->format('n');
+        $year  = $validated['year']  ?? (int) now('Asia/Jakarta')->format('Y');
+
+        $startOfMonth = Carbon::create($year, $month, 1)->startOfDay();
+        $endOfMonth   = $startOfMonth->copy()->endOfMonth();
+
+        // Pre-load SEMUA assignment karyawan yang berpotensi berlaku dalam bulan ini:
+        // - assignment yang sudah mulai sebelum/pada akhir bulan
+        // - DAN (end_date null ATAU end_date >= awal bulan) — masih berlaku di bulan ini
+        // Satu query untuk seluruh bulan, bukan N query per hari (hindari N+1).
+        // Eager-load shift.schedules agar loop per-hari tidak memicu N+1 query
+        $assignments = UserShift::with(['shift:id,name,color,is_active', 'shift.schedules'])
+            ->where('user_id', $user->id)
+            ->where('start_date', '<=', $endOfMonth->toDateString())
+            ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $startOfMonth->toDateString()))
+            ->orderByDesc('start_date')
+            ->get();
+
+        // Kantor karyawan untuk fallback jadwal default
+        $office = $user->office
+            ?? AttendanceSetting::where('company_id', $user->company_id)
+                ->orderBy('id')
+                ->first();
+
+        $days = [];
+        $current = $startOfMonth->copy();
+
+        while ($current->lte($endOfMonth)) {
+            $dateStr   = $current->toDateString();
+            $dayOfWeek = $current->dayOfWeek; // 0=Minggu ... 6=Sabtu
+
+            // Cari assignment yang berlaku pada tanggal ini:
+            // - start_date <= dateStr (sudah mulai)
+            // - AND (end_date null OR end_date >= dateStr) (belum berakhir)
+            // Collection sudah diurutkan DESC start_date → first() = assignment terbaru yang berlaku
+            $active = $assignments->first(
+                fn ($a) => $a->start_date->toDateString() <= $dateStr
+                    && ($a->end_date === null || $a->end_date->toDateString() >= $dateStr)
+            );
+
+            // Tentukan jadwal untuk tanggal ini berdasarkan assignment yang berlaku
+            if ($active && $active->shift_id && $active->shift && $active->shift->is_active) {
+                // Cari jadwal dari collection schedules yang sudah di-eager-load (hindari N+1).
+                // Filter: day_of_week cocok, lalu cari versi terbaru yang effective_date <= dateStr.
+                $matchingSchedules = $active->shift->schedules
+                    ->where('day_of_week', $dayOfWeek)
+                    ->sortByDesc(fn ($s) => $s->effective_date->toDateString());
+
+                $shiftSchedule = $matchingSchedules->first(fn ($s) => $s->effective_date->toDateString() <= $dateStr)
+                    ?? $matchingSchedules->first(); // fallback: versi terbaru secara global
+
+                if ($shiftSchedule) {
+                    $isOff = (bool) $shiftSchedule->is_off;
+                    $days[$dateStr] = [
+                        'source'          => 'shift',
+                        'shift_id'        => $active->shift_id,
+                        'shift_name'      => $active->shift->name,
+                        'color'           => $active->shift->color ?? '#6366f1',
+                        'work_start_time' => $isOff ? null : $shiftSchedule->work_start_time,
+                        'work_end_time'   => $isOff ? null : $shiftSchedule->work_end_time,
+                        'is_off'          => $isOff,
+                        'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
+                    ];
+                    $current->addDay();
+                    continue;
+                }
+            }
+
+            // Fallback: jadwal default kantor
+            if ($office) {
+                $workDays = $office->work_days ?? [1, 2, 3, 4, 5];
+                $isOff = ! in_array($dayOfWeek, $workDays);
+
+                $customStart = null;
+                $customEnd = null;
+                if (! $isOff && ! empty($office->custom_schedules[$dayOfWeek])) {
+                    $customStart = $office->custom_schedules[$dayOfWeek]['start'] ?? null;
+                    $customEnd = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
+                }
+
+                $days[$dateStr] = [
+                    'source'          => 'office',
+                    'shift_id'        => null,
+                    'shift_name'      => null,
+                    'color'           => null,
+                    'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
+                    'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
+                    'is_off'          => $isOff,
+                    'is_cross_day'    => false,
+                ];
+            } else {
+                // Tidak ada pengaturan kantor sama sekali
+                $days[$dateStr] = [
+                    'source'          => 'none',
+                    'shift_id'        => null,
+                    'shift_name'      => null,
+                    'color'           => null,
+                    'work_start_time' => null,
+                    'work_end_time'   => null,
+                    'is_off'          => false,
+                    'is_cross_day'    => false,
+                ];
+            }
+
+            $current->addDay();
+        }
+
+        return response()->json([
+            'month' => $month,
+            'year'  => $year,
+            'days'  => $days,
+        ]);
+    }
+
+    // ─── Helper: tipe notifikasi yang menandakan "jadwal shift berubah" ─────
+    private static function shiftNotificationTypes(): array
+    {
+        return [
+            'shift_assigned',
+            'shift_removed',
+            'shift_schedule_changed', // jam kerja template shift diubah HRD
+        ];
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // shiftUpdates() — cek notifikasi shift-assigned terbaru
     //   GET /api/v1/attendance/shift-updates
     //   Dipanggil Flutter untuk banner "Shift Diperbarui" di beranda.
-    //   Cari notifikasi shift_assigned / shift_removed 7 hari terakhir
-    //   yang BELUM dibaca (read_at null).
+    //   Cari notifikasi shift_assigned / shift_removed / shift_schedule_changed
+    //   7 hari terakhir yang BELUM dibaca (read_at null).
     // ═══════════════════════════════════════════════════════════
     public function shiftUpdates(Request $request): JsonResponse
     {
@@ -1552,7 +2363,7 @@ class ShiftController extends Controller
         $notif = DB::table('notifications')
             ->where('user_id', $user->id)
             ->whereNull('read_at')
-            ->whereIn('type', ['shift_assigned', 'shift_removed'])
+            ->whereIn('type', self::shiftNotificationTypes())
             ->where('created_at', '>=', $cutoff)
             ->orderByDesc('created_at')
             ->first();
@@ -1586,7 +2397,7 @@ class ShiftController extends Controller
         DB::table('notifications')
             ->where('user_id', $user->id)
             ->whereNull('read_at')
-            ->whereIn('type', ['shift_assigned', 'shift_removed'])
+            ->whereIn('type', self::shiftNotificationTypes())
             ->update(['read_at' => now()]);
 
         return response()->json(['message' => 'Notifikasi shift telah ditandai dibaca.']);
