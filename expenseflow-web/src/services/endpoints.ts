@@ -221,6 +221,8 @@ export const attendanceApi = {
 export interface ShiftScheduleInput {
   day_of_week: number;              // 0=Minggu … 6=Sabtu
   is_off: boolean;                  // true = shift libur di hari itu
+  is_wfh?: boolean;                 // true = WFH di hari itu (hanya saat !is_off)
+  is_field?: boolean;               // true = Lapangan di hari itu (hanya saat !is_off && is_wfh)
   work_start_time?: string | null;  // "H:i" (wajib jika !is_off)
   work_end_time?: string | null;    // "H:i"
 }

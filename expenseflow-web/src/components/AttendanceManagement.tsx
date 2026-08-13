@@ -94,7 +94,7 @@ const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
   { key: 'users', label: 'Karyawan & WFH', icon: Users },
   { key: 'balances', label: 'Saldo Cuti', icon: Wallet },
   { key: 'report', label: 'Laporan', icon: BarChart3 },
-  { key: 'holidays', label: 'Libur Nasional', icon: CalendarDays },
+  { key: 'holidays', label: 'Kalender', icon: CalendarDays },
 ];
 
 const statusBadge = (status: string) => {
@@ -116,7 +116,7 @@ const statusLabel = (status: string) => {
   switch (status) {
     case 'present': return 'Hadir';
     case 'late': return 'Telat';
-    case 'absent': return 'Absen';
+    case 'absent': return 'Alpha';
     case 'early_leave': return 'Pulang Awal';
     case 'cuti': return 'Cuti';
     case 'izin': return 'Izin';
@@ -289,7 +289,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [tab, setTab] = useState<TabKey>('today');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  
+
   // Panduan/Legend Modal
   const [showLegend, setShowLegend] = useState(false);
 
@@ -1384,7 +1384,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <option value="present">Hadir</option>
                   <option value="late">Telat</option>
                   <option value="early_leave">Pulang Awal</option>
-                  <option value="absent">Absen</option>
+                  <option value="absent">Alpha</option>
                   <option value="libur">Libur</option>
                   <option value="cuti">Cuti</option>
                   <option value="izin">Izin</option>
@@ -1425,7 +1425,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <SummaryCard label="Hadir" value={report.summary?.present ?? 0} color="text-emerald-600" />
                 <SummaryCard label="Telat" value={report.summary?.late ?? 0} color="text-amber-600" />
                 <SummaryCard label="Pulang Awal" value={report.summary?.early_leave ?? 0} color="text-violet-600" />
-                <SummaryCard label="Absen" value={report.summary?.absent ?? 0} color="text-rose-600" />
+                <SummaryCard label="Alpha" value={report.summary?.absent ?? 0} color="text-rose-600" />
                 <SummaryCard label="Cuti" value={report.summary?.cuti ?? 0} color="text-teal-600" />
                 <SummaryCard label="Izin" value={report.summary?.izin ?? 0} color="text-purple-600" />
                 <SummaryCard label="Sakit" value={report.summary?.sakit ?? 0} color="text-orange-500" />
@@ -1713,7 +1713,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             </div>
             <div className="p-5 overflow-y-auto max-h-[70vh]">
               <div className="space-y-6">
-                
+
                 {/* Bagian Status */}
                 <div>
                   <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Indikator Status</h4>
@@ -1936,7 +1936,7 @@ const HolidaysTab: React.FC<{
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Kalender Libur {year}</h3>
+          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Kalender {year}</h3>
           <p className="text-[11px] text-slate-400 mt-0.5">
             Tanggal libur tidak dihitung sebagai hari kerja (cuti) dan kerja di hari ini dihitung lembur penuh.
           </p>

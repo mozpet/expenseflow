@@ -1622,15 +1622,17 @@ class AttendanceController extends Controller
         ]);
 
         $user = $request->user();
+        $today = $this->todayDate();
+        $jadwalHariIni = $this->getWorkSchedule($user, $today);
+        $isWfhScheduled = ! empty($jadwalHariIni['is_wfh']);
+        $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
 
-        // Mode (a): mobile diblokir → gunakan perangkat presensi kantor
-        if (! $user->canWfh()) {
+        // Mode (a): mobile diblokir → gunakan perangkat presensi kantor (kecuali WFH global / shift WFH terjadwal)
+        if (! $user->canWfh() && ! $isWfhScheduled) {
             return response()->json([
                 'message' => 'Presensi aplikasi hanya untuk karyawan WFH atau lapangan. Presensi di kantor dilakukan melalui perangkat presensi.',
             ], 403);
         }
-
-        $today = $this->todayDate();
 
         // Cegah presensi jika user sedang cuti, sakit, atau izin hari ini
         // (leave_type 'wfh' dikecualikan — itu mode kerja dari rumah, bukan izin tidak masuk)
@@ -1686,13 +1688,12 @@ class AttendanceController extends Controller
         $distanceMeters = null;
         $checkInType    = 'wfh';
 
-        // Mode WFH: validasi window waktu presensi
+        // Mode WFH / Shift WFH: validasi window waktu presensi
         // Cegah check-in terlalu dini (mis. subuh/malam setelah tengah malam reset).
         // Gunakan jam masuk dari shift aktif jika ada; fallback ke kantor.
-        if (! $user->hasRadiusEnabled()) {
-            $jadwalHariIni = $this->getWorkSchedule($user, $today);
-            $officeRef     = $jadwalHariIni['office'];
-            $jamMasuk      = $jadwalHariIni['work_start_time'];
+        if (! $user->hasRadiusEnabled() || $isWfhScheduled) {
+            $officeRef = $jadwalHariIni['office'];
+            $jamMasuk  = $jadwalHariIni['work_start_time'];
 
             if ($officeRef
                 && $officeRef->wfh_checkin_window_minutes !== null
@@ -1714,7 +1715,10 @@ class AttendanceController extends Controller
         }
 
         // Mode (c): lapangan — validasi radius terhadap lokasi kantor terdekat
-        if ($user->hasRadiusEnabled()) {
+        // Berjalan jika: (1) user memiliki radius_enabled=true & bukan hari WFH murni, ATAU (2) hari ini adalah shift Lapangan terjadwal (is_field = true)
+        $needRadiusCheck = $isFieldScheduled || ($user->hasRadiusEnabled() && ! $isWfhScheduled);
+
+        if ($needRadiusCheck) {
             $offices = AttendanceSetting::where('company_id', $user->company_id)->get();
 
             if ($offices->isEmpty()) {
@@ -1749,7 +1753,7 @@ class AttendanceController extends Controller
                 ], 403);
             }
 
-            $checkInType = 'field';
+            $checkInType = $isFieldScheduled ? 'onsite' : 'field';
         }
 
         // Ambil jadwal efektif untuk menentukan status (hadir/telat) & reminder

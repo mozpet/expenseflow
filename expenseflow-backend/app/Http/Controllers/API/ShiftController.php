@@ -66,15 +66,25 @@ class ShiftController extends Controller
     private function syncSchedules(Shift $shift, array $schedules, string $effectiveDate): void
     {
         foreach ($schedules as $sch) {
-            ShiftSchedule::create([
-                'shift_id'        => $shift->id,
-                'effective_date'  => $effectiveDate,
-                'day_of_week'     => $sch['day_of_week'],
-                'work_start_time' => $sch['is_off'] ? null : ($sch['work_start_time'] ?? null),
-                'work_end_time'   => $sch['is_off'] ? null : ($sch['work_end_time'] ?? null),
-                'is_off'          => $sch['is_off'],
-                'is_cross_day'    => $sch['is_cross_day'] ?? false,
-            ]);
+            $isOff = (bool) ($sch['is_off'] ?? false);
+            $isWfh = $isOff ? false : (bool) ($sch['is_wfh'] ?? false);
+            $isField = ($isOff || ! $isWfh) ? false : (bool) ($sch['is_field'] ?? false);
+
+            ShiftSchedule::updateOrCreate(
+                [
+                    'shift_id'       => $shift->id,
+                    'day_of_week'    => $sch['day_of_week'],
+                    'effective_date' => $effectiveDate,
+                ],
+                [
+                    'work_start_time' => $isOff ? null : ($sch['work_start_time'] ?? null),
+                    'work_end_time'   => $isOff ? null : ($sch['work_end_time'] ?? null),
+                    'is_off'          => $isOff,
+                    'is_wfh'          => $isWfh,
+                    'is_field'        => $isField,
+                    'is_cross_day'    => $sch['is_cross_day'] ?? false,
+                ]
+            );
         }
     }
 
@@ -199,6 +209,8 @@ class ShiftController extends Controller
             'schedules.*.work_start_time'  => 'nullable|date_format:H:i',
             'schedules.*.work_end_time'    => 'nullable|date_format:H:i',
             'schedules.*.is_off'           => 'required|boolean',
+            'schedules.*.is_wfh'           => 'sometimes|boolean',
+            'schedules.*.is_field'         => 'sometimes|boolean',
             'schedules.*.is_cross_day'     => 'sometimes|boolean',
         ]);
 
@@ -341,6 +353,8 @@ class ShiftController extends Controller
             'schedules.*.work_start_time'  => 'nullable|date_format:H:i',
             'schedules.*.work_end_time'    => 'nullable|date_format:H:i',
             'schedules.*.is_off'           => 'required_with:schedules|boolean',
+            'schedules.*.is_wfh'           => 'sometimes|boolean',
+            'schedules.*.is_field'         => 'sometimes|boolean',
             'schedules.*.is_cross_day'     => 'sometimes|boolean',
         ]);
 
@@ -354,16 +368,16 @@ class ShiftController extends Controller
             $k3Warnings = $validation['warnings'];
         }
 
-        // Validasi pindah cabang jika dikirim (sebelum cek warna, karena
-        // keunikan warna bersifat PER KANTOR — kantor baru menentukan bentrok).
-        $effectiveBranchId = $shift->attendance_setting_id; // bisa null = company-wide
-        if (array_key_exists('attendance_setting_id', $validated)) {
-            $branch = $this->resolveBranch($actor, $validated['attendance_setting_id']);
-            if (! $branch) {
-                return response()->json(['message' => 'Cabang tidak ditemukan di perusahaan Anda.'], 404);
-            }
-            $effectiveBranchId = $branch->id;
+        // Cabang kantor template shift bersifat permanen (hanya ditentukan saat store).
+        if (array_key_exists('attendance_setting_id', $validated)
+            && (int) $validated['attendance_setting_id'] !== (int) $shift->attendance_setting_id
+        ) {
+            return response()->json([
+                'message' => 'Cabang kantor template shift bersifat permanen dan tidak dapat diubah setelah shift dibuat. Buat template shift baru jika ingin membuat shift untuk cabang lain.',
+            ], 422);
         }
+
+        $effectiveBranchId = $shift->attendance_setting_id; // cabang permanen shift
 
         // Warna unik PER KANTOR. Shift itu sendiri dikecualikan (exceptShiftId).
         // Shift company-wide (null) bentrok dengan semua; shift cabang bentrok
@@ -380,11 +394,6 @@ class ShiftController extends Controller
             }
         }
 
-        // Terapkan pindah cabang jika dikirim
-        if (array_key_exists('attendance_setting_id', $validated)) {
-            $shift->attendance_setting_id = $effectiveBranchId;
-        }
-
         // P0 #1 — validasi batas jam kerja per minggu jika jadwal dikirim
         if (isset($validated['schedules'])) {
             $effectiveBranch = $shift->office
@@ -399,32 +408,67 @@ class ShiftController extends Controller
         }
 
         // ── VERSIONING JAM KERJA ────────────────────────────────────────────
-        // Saat HRD mengubah JAM KERJA (schedules) shift, perubahan TIDAK menimpa
-        // jadwal lama. Dibuat VERSI BARU dengan effective_date = hari ini + N hari,
-        // di mana N = "Minimum Notice Perubahan Shift (H-N Hari)" di pengaturan
-        // kantor (shift_notice_days). Minimal 1 hari (besok) agar tidak mengubah
-        // jadwal hari ini. Versi lama tetap berlaku untuk tanggal sebelum itu.
+        // Periksa apakah isi jadwal (schedules) benar-benar BERUBAH vs jadwal saat ini.
+        // Jika HANYA nama, warna, atau deskripsi yang diubah (jadwal tidak berubah),
+        // update dilakukan LANGSUNG tanpa membuat versi baru & tanpa minimum notice.
+        $hasScheduleChanges = false;
         $scheduleEffectiveDate = null;
-        $liveAssignments = collect(); // Simpan sekali, pakai untuk count + notifikasi (hindari double query)
+        $liveAssignments = collect();
 
         if (isset($validated['schedules'])) {
-            $branchForNotice = $shift->office
-                ?? AttendanceSetting::find($shift->attendance_setting_id);
+            $todayStr = now('Asia/Jakarta')->toDateString();
 
-            $noticeDays = (int) ($branchForNotice->shift_notice_days ?? 0);
-            if ($noticeDays < 1) {
-                $noticeDays = 1; // default aman: berlaku besok
+            foreach ($validated['schedules'] as $schInput) {
+                $day  = (int) $schInput['day_of_week'];
+                $curr = self::scheduleForDate($shift->id, $day, $todayStr);
+
+                $newOff   = (bool) ($schInput['is_off'] ?? false);
+                $newWfh   = $newOff ? false : (bool) ($schInput['is_wfh'] ?? false);
+                $newField = ($newOff || ! $newWfh) ? false : (bool) ($schInput['is_field'] ?? false);
+                $newStart = $newOff ? null : ($schInput['work_start_time'] ?? null);
+                $newEnd   = $newOff ? null : ($schInput['work_end_time'] ?? null);
+
+                $currOff   = $curr ? (bool) $curr->is_off : true;
+                $currWfh   = $curr ? (bool) $curr->is_wfh : false;
+                $currField = $curr ? (bool) $curr->is_field : false;
+                // Normalisasi HH:MM untuk perbandingan aman
+                $currStart = ($curr && ! $currOff && $curr->work_start_time) ? substr($curr->work_start_time, 0, 5) : null;
+                $currEnd   = ($curr && ! $currOff && $curr->work_end_time)   ? substr($curr->work_end_time, 0, 5)   : null;
+                $newStartNorm = $newStart ? substr($newStart, 0, 5) : null;
+                $newEndNorm   = $newEnd   ? substr($newEnd, 0, 5)   : null;
+
+                if (
+                    $newOff !== $currOff ||
+                    $newWfh !== $currWfh ||
+                    $newField !== $currField ||
+                    $newStartNorm !== $currStart ||
+                    $newEndNorm !== $currEnd
+                ) {
+                    $hasScheduleChanges = true;
+                    break;
+                }
             }
 
-            $scheduleEffectiveDate = now('Asia/Jakarta')->startOfDay()
-                ->addDays($noticeDays)
-                ->toDateString();
+            if ($hasScheduleChanges) {
+                $branchForNotice = $shift->office
+                    ?? AttendanceSetting::find($shift->attendance_setting_id)
+                    ?? AttendanceSetting::where('company_id', $actor->company_id)->orderBy('id')->first();
 
-            // Pre-load assignment aktif SEKALI — dipakai untuk count + notifikasi sekaligus
-            $liveAssignments = $this->liveAssignmentsForShift($shift->id);
+                $noticeDays = (int) ($branchForNotice?->shift_notice_days ?? 0);
+                if ($noticeDays < 1) {
+                    $noticeDays = 1; // default aman: berlaku besok
+                }
+
+                $scheduleEffectiveDate = Carbon::now('Asia/Jakarta')->startOfDay()
+                    ->addDays($noticeDays)
+                    ->toDateString();
+
+                // Pre-load assignment aktif SEKALI — dipakai untuk count + notifikasi sekaligus
+                $liveAssignments = $this->liveAssignmentsForShift($shift->id);
+            }
         }
 
-        DB::transaction(function () use ($shift, $validated, $scheduleEffectiveDate) {
+        DB::transaction(function () use ($shift, $validated, $scheduleEffectiveDate, $hasScheduleChanges) {
             // Nama/deskripsi/warna → langsung (tidak memengaruhi jadwal)
             $data = collect($validated)->only(['name', 'description', 'color'])->toArray();
             if (isset($data['color'])) {
@@ -433,8 +477,8 @@ class ShiftController extends Controller
             $shift->fill($data);
             $shift->save();
 
-            // Jam kerja (schedules) → versi baru dengan effective_date
-            if (isset($validated['schedules']) && $scheduleEffectiveDate) {
+            // Jam kerja (schedules) → versi baru HANYA jika jadwal benar-benar berubah
+            if (isset($validated['schedules']) && $hasScheduleChanges && $scheduleEffectiveDate) {
                 $this->syncSchedules($shift, $validated['schedules'], $scheduleEffectiveDate);
             }
         });
@@ -1852,6 +1896,8 @@ class ShiftController extends Controller
             $workStart = null;
             $workEnd   = null;
             $isOff     = false;
+            $isWfh     = false;
+            $isField   = false;
             $isCrossDay = false;
 
             // Prioritas 1: shift aktif dengan template yang masih aktif
@@ -1863,6 +1909,8 @@ class ShiftController extends Controller
                     $isOff     = (bool) $schedule->is_off;
                     $workStart = $isOff ? null : $schedule->work_start_time;
                     $workEnd   = $isOff ? null : $schedule->work_end_time;
+                    $isWfh     = $isOff ? false : (bool) $schedule->is_wfh;
+                    $isField   = ($isOff || ! $isWfh) ? false : (bool) $schedule->is_field;
                     $isCrossDay = (bool) $schedule->is_cross_day;
                 }
             }
@@ -1920,6 +1968,8 @@ class ShiftController extends Controller
                 'work_start_time'        => $workStart,
                 'work_end_time'          => $workEnd,
                 'is_off'                 => $isOff,
+                'is_wfh'                 => $isWfh,
+                'is_field'               => $isField,
                 'is_cross_day'           => $isCrossDay,
                 'upcoming_shift'         => $upcoming,
             ];
@@ -2023,6 +2073,8 @@ class ShiftController extends Controller
                     'work_start_time' => $shiftSchedule->work_start_time,
                     'work_end_time'   => $shiftSchedule->work_end_time,
                     'is_off'          => $shiftSchedule->is_off,
+                    'is_wfh'          => (bool) $shiftSchedule->is_wfh,
+                    'is_field'        => (bool) $shiftSchedule->is_field,
                     'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
                     'office'          => $office,
                 ];
@@ -2048,6 +2100,8 @@ class ShiftController extends Controller
                 'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
                 'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
                 'is_off'          => $isOff,
+                'is_wfh'          => false,
+                'is_field'        => false,
                 'is_cross_day'    => false,
                 'office'          => $office,
             ];
@@ -2061,6 +2115,8 @@ class ShiftController extends Controller
             'work_start_time' => null,
             'work_end_time'   => null,
             'is_off'          => false,
+            'is_wfh'          => false,
+            'is_field'        => false,
             'is_cross_day'    => false,
             'office'          => null,
         ];
@@ -2129,6 +2185,8 @@ class ShiftController extends Controller
                 'work_start_time' => $s->is_off ? null : $s->work_start_time,
                 'work_end_time'   => $s->is_off ? null : $s->work_end_time,
                 'is_off'          => $s->is_off,
+                'is_wfh'          => $s->is_off ? false : (bool) $s->is_wfh,
+                'is_field'        => ($s->is_off || ! $s->is_wfh) ? false : (bool) $s->is_field,
                 'is_cross_day'    => (bool) $s->is_cross_day,
             ])->sortBy('day_of_week')->values();
 
@@ -2164,6 +2222,8 @@ class ShiftController extends Controller
                     'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
                     'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
                     'is_off'          => $isOff,
+                    'is_wfh'          => false,
+                    'is_field'        => false,
                     'is_cross_day'    => false,
                 ];
             });
@@ -2277,6 +2337,8 @@ class ShiftController extends Controller
 
                 if ($shiftSchedule) {
                     $isOff = (bool) $shiftSchedule->is_off;
+                    $isWfh = $isOff ? false : (bool) $shiftSchedule->is_wfh;
+                    $isField = ($isOff || ! $isWfh) ? false : (bool) $shiftSchedule->is_field;
                     $days[$dateStr] = [
                         'source'          => 'shift',
                         'shift_id'        => $active->shift_id,
@@ -2285,6 +2347,8 @@ class ShiftController extends Controller
                         'work_start_time' => $isOff ? null : $shiftSchedule->work_start_time,
                         'work_end_time'   => $isOff ? null : $shiftSchedule->work_end_time,
                         'is_off'          => $isOff,
+                        'is_wfh'          => $isWfh,
+                        'is_field'        => $isField,
                         'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
                     ];
                     $current->addDay();
@@ -2312,6 +2376,8 @@ class ShiftController extends Controller
                     'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
                     'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
                     'is_off'          => $isOff,
+                    'is_wfh'          => false,
+                    'is_field'        => false,
                     'is_cross_day'    => false,
                 ];
             } else {
@@ -2324,6 +2390,8 @@ class ShiftController extends Controller
                     'work_start_time' => null,
                     'work_end_time'   => null,
                     'is_off'          => false,
+                    'is_wfh'          => false,
+                    'is_field'        => false,
                     'is_cross_day'    => false,
                 ];
             }

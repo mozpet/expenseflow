@@ -14,6 +14,8 @@ class ShiftSchedule extends Model
         'work_start_time',
         'work_end_time',
         'is_off',
+        'is_wfh',
+        'is_field',
         'is_cross_day',
     ];
 
@@ -23,6 +25,8 @@ class ShiftSchedule extends Model
             'effective_date' => 'date',
             'day_of_week'    => 'integer',
             'is_off'         => 'boolean',
+            'is_wfh'         => 'boolean',
+            'is_field'       => 'boolean',
             'is_cross_day'   => 'boolean',
         ];
     }

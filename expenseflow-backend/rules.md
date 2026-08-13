@@ -916,8 +916,8 @@ buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu h
 ### Bug / Isu Aktif
 - [x] **Discrepancy Status Roster & Hari Ini di UI**: Telah diperbaiki di backend (`ShiftController::resolveSchedule()`). Sebelumnya `resolveSchedule` tidak mengecek tabel `Holiday` (sehingga roster menampilkan hari kerja di hari libur), dan pencarian shift aktif (mengabaikan shift kedaluwarsa) tidak setara dengan endpoint `today`. Sekarang keduanya 100% tersinkronisasi sehingga frontend (react) menampilkan status yang sama di 'Hari Ini' dan 'Roster Harian'.
 
-fitur baru: - tambahkan tipe kontrak user karyawan Tetap / Kontrak / Freelance / Magang
-            - Tanggal bergabung user untuk menghitung masa kerja 
+fitur baru: - tambahkan tipe kontrak user karyawan Tetap / Kontrak / Freelance / Magang (80%)
+            - Tanggal bergabung user untuk menghitung masa kerja (ini next deh)
             - foto dan avatar 
 
 Atasan langsung (Direct Manager)
@@ -937,3 +937,54 @@ Berikut adalah panduan aturan bisnis, tindakan sistem, dan benefit untuk setiap 
 | **Internship** *(Magang)* | Siswa / Mahasiswa / Tenaga Magang / Freelance. | Berdurasi terbatas sesuai proyek/periode magang. | Indicator status **Magang** (Badge Purple). Filter khusus peserta magang. | • Presensi harian mobile/onsite<br>• Limit klaim opsional/terbatas<br>• Tanpa akumulasi kuota cuti tahunan |
 
 refaktoring code untuk terakhir saja
+
+---
+
+# Pengingat Penting — Form Edit Kantor & Perubahan Mendadak (2026-08-13)
+
+Peringatan untuk agent & developer: **Field di Form Edit Kantor (`attendance_settings`)**
+jangan diubah sembarangan karena berdampak langsung ke sistem presensi yang sedang berjalan **hari itu juga**.
+Setiap perubahan pada field berikut punya risiko bug/ketidakadilan data:
+
+## Dampak Perubahan Menyentuh Sistem Lain (Ceklis Saat Edit Kantor)
+
+| Field Kantor | Dampak Jika Diubah Mendadak (di Tengah Hari) | Komponen Terdampak |
+|---|---|---|
+| `work_start_time` / `work_end_time` | Karyawan yang sudah check-in hari ini bisa **mendadak dianggap telat**; hitungan lembur (check_out - work_end) & auto-checkout jadi kacau. | `determineStatus()`, `checkOut()`, `AutoCheckoutCommand` |
+| `office_latitude` / `office_longitude` / `radius_meters` | Karyawan onsite/field yang sedang check-in mendadak **ditolak 403 Out of Radius**. | `AttendanceController::checkIn()` (GPS) |
+| `auto_checkout_grace_minutes` / `checkout_reminder_minutes` | Jika grace diperkecil ekstrem (mis. 120→10 menit), **Cron Job auto-checkout langsung menutup presensi semua karyawan yang belum checkout**. | `AutoCheckoutCommand` (Laravel Scheduler) |
+| `late_tolerance_minutes` | Karyawan yang check-in siang/sore mendapat perlakuan beda vs yang check-in pagi. | `determineStatus()` |
+| `overtime_enabled` / `min_overtime_minutes` | Karyawan yang sedang lembur mendadak tidak mendapat draft approval lembur. | `checkOut()`, `overtime_approvals` |
+| `shift_notice_days` (H-N) | Mengubah nilai mendadak mempengaruhi tanggal efektif saat HRD edit template shift. | `ShiftController::update()` (versioning) |
+| `enforce_weekly_hours` / `max_weekly_hours` | Template shift yang sudah ter-assign bisa mendadak gagal validasi mingguan. | Validasi K3 Shift |
+
+## Aturan Validasi WAJIB Form Edit Kantor (Backend Laravel)
+
+```php
+$validated = $request->validate([
+    'office_name'                  => 'required|string|max:100',
+    'office_latitude'              => 'required|numeric|between:-90,90',
+    'office_longitude'             => 'required|numeric|between:-180,180',
+    'radius_meters'                => 'required|integer|min:10|max:10000',
+    'work_start_time'              => 'required|date_format:H:i',
+    'work_end_time'                => 'required|date_format:H:i',
+    'late_tolerance_minutes'       => 'required|integer|min:0|max:240',
+    'checkout_reminder_minutes'    => 'required|integer|min:5',
+    'auto_checkout_grace_minutes'  => 'required|integer|gt:checkout_reminder_minutes',
+    'overtime_enabled'             => 'required|boolean',
+    'min_overtime_minutes'         => 'nullable|required_if:overtime_enabled,true|integer|min:15',
+    'shift_notice_days'            => 'required|integer|min:0|max:30',
+    'enforce_weekly_hours'         => 'required|boolean',
+    'max_weekly_hours'             => 'nullable|required_if:enforce_weekly_hours,true|integer|min:20|max:84',
+]);
+```
+
+> **Aturan Emas:** `auto_checkout_grace_minutes` HARUS `gt:checkout_reminder_minutes`
+> (grace period lebih besar dari reminder), agar Cron Job auto-checkout tidak menutup
+> presensi karyawan sebelum mereka sempat menerima pengingat.
+
+## Strategi Proteksi yang Disarankan
+1. **Kunci Acuan Jam Kerja Hari Ini**: Simpan/referensi jam kantor pada saat karyawan check-in, agar perubahan `work_start_time`/`work_end_time` tidak mempengaruhi presensi yang sudah terjadi hari ini.
+2. **UI Confirmation Dialog**: Saat HRD mengubah Jam Kerja / Lokasi GPS / Auto-Checkout di Form Edit Kantor, tampilkan dialog:
+   > "⚠️ Anda mengubah Jam Kerja / Lokasi GPS / Auto-Checkout. Perubahan ini akan mempengaruhi perhitungan presensi & Auto-Checkout karyawan yang aktif hari ini. Lanjutkan?"
+3. **Subscribe Notifikasi**: Kirim notifikasi (DB + FCM) ke seluruh HRD/Admin saat pengaturan kantor diubah, agar perubahan bisa diaudit.

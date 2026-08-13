@@ -23,6 +23,8 @@ interface OfficeOpt {
 interface ScheduleRow {
   day_of_week: number;
   is_off: boolean;
+  is_wfh?: boolean;
+  is_field?: boolean;
   work_start_time: string | null; // "HH:MM"
   work_end_time: string | null;
   is_cross_day?: boolean; // shift lintas tengah malam (jam pulang <= jam masuk)
@@ -50,6 +52,8 @@ interface RosterRow {
   work_start_time: string | null;
   work_end_time: string | null;
   is_off: boolean;
+  is_wfh?: boolean;
+  is_field?: boolean;
   is_cross_day?: boolean;
   /** Shift yang sudah di-assign tapi belum aktif (start_date di masa depan) */
   upcoming_shift?: {
@@ -129,6 +133,8 @@ const defaultSchedules = (start = '08:00', end = '17:00'): ScheduleRow[] =>
   Array.from({ length: 7 }, (_, d) => ({
     day_of_week: d,
     is_off: d === 0 || d === 6,
+    is_wfh: false,
+    is_field: false,
     work_start_time: d === 0 || d === 6 ? null : start,
     work_end_time: d === 0 || d === 6 ? null : end,
   }));
@@ -257,11 +263,16 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
       const map = new Map(editing.schedules.map((s) => [s.day_of_week, s]));
       return Array.from({ length: 7 }, (_, d) => {
         const s = map.get(d);
+        const isOff = s?.is_off ?? (d === 0 || d === 6);
+        const isWfh = isOff ? false : Boolean(s?.is_wfh);
+        const isField = (isOff || !isWfh) ? false : Boolean(s?.is_field);
         return {
           day_of_week: d,
-          is_off: s?.is_off ?? (d === 0 || d === 6),
-          work_start_time: s?.is_off ? null : hhmm(s?.work_start_time) || '08:00',
-          work_end_time: s?.is_off ? null : hhmm(s?.work_end_time) || '17:00',
+          is_off: isOff,
+          is_wfh: isWfh,
+          is_field: isField,
+          work_start_time: isOff ? null : hhmm(s?.work_start_time) || '08:00',
+          work_end_time: isOff ? null : hhmm(s?.work_end_time) || '17:00',
         };
       });
     }
@@ -277,8 +288,8 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
 
   // Ambil setting kantor yang dipilih (untuk validasi & hitung tanggal efektif)
   const selectedOffice = useMemo(
-    () => offices.find((o) => String(o.id) === branchId) ?? null,
-    [offices, branchId],
+    () => offices.find((o) => String(o.id) === String(editing?.attendance_setting_id ?? branchId)) ?? offices[0] ?? null,
+    [offices, branchId, editing],
   );
 
   // Deteksi apakah jam kerja (schedules) berubah vs jadwal shift saat ini
@@ -290,10 +301,28 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
     return schedules.some((s) => {
       const old = current.find((c) => c.day_of_week === s.day_of_week);
       if (!old) return true;
+
+      const oldOff = Boolean(old.is_off);
+      const newOff = Boolean(s.is_off);
+
+      const oldWfh = oldOff ? false : Boolean(old.is_wfh);
+      const newWfh = newOff ? false : Boolean(s.is_wfh);
+
+      const oldField = (oldOff || !oldWfh) ? false : Boolean(old.is_field);
+      const newField = (newOff || !newWfh) ? false : Boolean(s.is_field);
+
+      const oldStart = oldOff ? null : hhmm(old.work_start_time);
+      const newStart = newOff ? null : hhmm(s.work_start_time);
+
+      const oldEnd = oldOff ? null : hhmm(old.work_end_time);
+      const newEnd = newOff ? null : hhmm(s.work_end_time);
+
       return (
-        (s.is_off || false) !== (old.is_off || false) ||
-        (s.work_start_time ?? null) !== (old.work_start_time ?? null) ||
-        (s.work_end_time ?? null) !== (old.work_end_time ?? null)
+        oldOff !== newOff ||
+        oldWfh !== newWfh ||
+        oldField !== newField ||
+        oldStart !== newStart ||
+        oldEnd !== newEnd
       );
     });
   }, [editing, schedules]);
@@ -301,12 +330,15 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
   // Tanggal efektif jam kerja baru = hari ini + max(1, shift_notice_days kantor)
   const effectiveDate = useMemo(() => {
     if (!editing || !scheduleChanged) return null;
-    const notice = selectedOffice?.shift_notice_days && selectedOffice.shift_notice_days > 0
-      ? selectedOffice.shift_notice_days
+    const noticeDays = selectedOffice?.shift_notice_days && Number(selectedOffice.shift_notice_days) > 0
+      ? Number(selectedOffice.shift_notice_days)
       : 1;
     const d = new Date();
-    d.setDate(d.getDate() + notice);
-    return d.toISOString().slice(0, 10);
+    d.setDate(d.getDate() + noticeDays);
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   }, [editing, scheduleChanged, selectedOffice]);
 
   // Hitung jeda K3 antar hari secara real-time saat user ubah jam
@@ -332,15 +364,39 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
       prev.map((s) =>
         s.day_of_week === d
           ? s.is_off
-            ? { ...s, is_off: false, work_start_time: '08:00', work_end_time: '17:00' }
-            : { ...s, is_off: true, work_start_time: null, work_end_time: null }
+            ? { ...s, is_off: false, is_wfh: false, is_field: false, work_start_time: '08:00', work_end_time: '17:00' }
+            : { ...s, is_off: true, is_wfh: false, is_field: false, work_start_time: null, work_end_time: null }
           : s,
       ),
     );
 
+  const toggleWfh = (d: number) =>
+    setSchedules((prev) =>
+      prev.map((s) => {
+        if (s.day_of_week !== d || s.is_off) return s;
+        const nextWfh = !s.is_wfh;
+        return {
+          ...s,
+          is_wfh: nextWfh,
+          is_field: nextWfh ? Boolean(s.is_field) : false,
+        };
+      }),
+    );
+
+  const toggleField = (d: number) =>
+    setSchedules((prev) =>
+      prev.map((s) => {
+        if (s.day_of_week !== d || s.is_off || !s.is_wfh) return s;
+        return {
+          ...s,
+          is_field: !s.is_field,
+        };
+      }),
+    );
+
   const validate = (): string | null => {
     if (!name.trim()) return 'Nama shift wajib diisi.';
-    if (!branchId) return 'Cabang kantor wajib dipilih.';
+    if (!editing && !branchId) return 'Cabang kantor wajib dipilih.';
     // P0 #2 — min 1 hari libur per minggu (UU No. 13/2003 Pasal 79)
     const workingDays = schedules.filter((s) => !s.is_off).length;
     if (workingDays > 6) return 'Karyawan wajib mendapat minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).';
@@ -376,18 +432,22 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
   const doSave = async () => {
     setBusy(true);
     setErr('');
-    const payload = {
+    const payload: any = {
       name: name.trim(),
       description: description.trim() || undefined,
       color: color || null,
-      attendance_setting_id: Number(branchId),
       schedules: schedules.map((s) => ({
         day_of_week: s.day_of_week,
         is_off: s.is_off,
+        is_wfh: s.is_off ? false : Boolean(s.is_wfh),
+        is_field: (s.is_off || !s.is_wfh) ? false : Boolean(s.is_field),
         work_start_time: s.is_off ? null : s.work_start_time,
         work_end_time: s.is_off ? null : s.work_end_time,
       })),
     };
+    if (!editing) {
+      payload.attendance_setting_id = Number(branchId);
+    }
     try {
       const res: any = editing ? await shiftApi.update(editing.id, payload) : await shiftApi.create(payload);
       if (res?.warnings?.length) {
@@ -453,9 +513,27 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {/* Banner nama cabang jika sedang EDIT */}
+          {editing && (
+            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-indigo-600" />
+                <div>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Cabang Terikat</p>
+                  <p className="text-xs font-bold text-slate-800">
+                    {editing.office?.office_name ?? selectedOffice?.office_name ?? 'Semua Cabang'}
+                  </p>
+                </div>
+              </div>
+              <span className="text-[10px] font-medium bg-slate-200 text-slate-600 px-2 py-0.5 rounded-md">
+                Cabang Permanen
+              </span>
+            </div>
+          )}
+
           {/* Info dasar */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <div className="sm:col-span-2">
+            <div className={editing ? "sm:col-span-1" : "sm:col-span-1"}>
               <label className="text-xs font-semibold text-slate-600 block mb-1.5">Nama Shift *</label>
               <input
                 value={name}
@@ -464,19 +542,21 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
                 className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none focus:border-indigo-400"
               />
             </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-600 block mb-1.5">Cabang Kantor *</label>
-              <select
-                value={branchId}
-                onChange={(e) => setBranchId(e.target.value)}
-                className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
-              >
-                <option value="">— Pilih cabang —</option>
-                {offices.map((o) => (
-                  <option key={o.id} value={o.id}>{o.office_name}</option>
-                ))}
-              </select>
-            </div>
+            {!editing ? (
+              <div>
+                <label className="text-xs font-semibold text-slate-600 block mb-1.5">Cabang Kantor *</label>
+                <select
+                  value={branchId}
+                  onChange={(e) => setBranchId(e.target.value)}
+                  className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
+                >
+                  <option value="">— Pilih cabang —</option>
+                  {offices.map((o) => (
+                    <option key={o.id} value={o.id}>{o.office_name}</option>
+                  ))}
+                </select>
+              </div>
+            ) : null}
             <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1.5">Warna Shift</label>
               {/* 20 preset warna kontras untuk kalender — pilih satu.
@@ -619,6 +699,31 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
                       className="w-3.5 h-3.5 rounded accent-rose-500"
                     />
                     Libur
+                  </label>
+
+                  <label className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${s.is_off ? 'opacity-40 cursor-not-allowed text-slate-400' : 'text-cyan-700'}`}>
+                    <input
+                      type="checkbox"
+                      checked={!s.is_off && Boolean(s.is_wfh)}
+                      disabled={s.is_off}
+                      onChange={() => toggleWfh(s.day_of_week)}
+                      className="w-3.5 h-3.5 rounded accent-cyan-600"
+                    />
+                    WFH
+                  </label>
+
+                  <label
+                    className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${s.is_off || !s.is_wfh ? 'opacity-40 cursor-not-allowed text-slate-400' : 'text-emerald-700'}`}
+                    title={!s.is_wfh ? 'Centang WFH terlebih dahulu untuk memilih Lapangan' : undefined}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!s.is_off && Boolean(s.is_wfh) && Boolean(s.is_field)}
+                      disabled={s.is_off || !s.is_wfh}
+                      onChange={() => toggleField(s.day_of_week)}
+                      className="w-3.5 h-3.5 rounded accent-emerald-600"
+                    />
+                    Lapangan
                   </label>
 
                   {s.is_off ? (
@@ -1634,16 +1739,6 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   // ═════════════════════════════════════════════════════════
   return (
     <div className="p-4 md:p-6 space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <button
-          onClick={() => { loadShifts(); if (tab === 'roster') loadRoster(); }}
-          className="ml-auto self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
-        >
-          <RefreshCw className="w-3.5 h-3.5" /> Refresh
-        </button>
-      </div>
-
       {/* Tabs */}
       <div className="flex items-center gap-1 border-b border-slate-200">
         {[
@@ -1784,6 +1879,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 Jadwal {rosterDayName && <span className="text-indigo-600">{rosterDayName}</span>}, {fmtDate(rosterDate)}
                 <span className="text-slate-400">· {filteredRoster.length} karyawan</span>
               </p>
+              <button
+                onClick={loadRoster}
+                disabled={loadingRoster}
+                className="flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingRoster ? 'animate-spin' : ''}`} /> Refresh
+              </button>
             </div>
 
             <div className="overflow-x-auto">
@@ -1901,6 +2003,16 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                           ) : r.work_start_time ? (
                             <span className="inline-flex items-center gap-1 justify-center">
                               {hhmm(r.work_start_time)}–{hhmm(r.work_end_time)}
+                              {r.is_wfh && !r.is_field && (
+                                <span className="inline-flex items-center text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-cyan-100 text-cyan-800 border border-cyan-200" title="Hari WFH terjadwal">
+                                  WFH
+                                </span>
+                              )}
+                              {r.is_wfh && r.is_field && (
+                                <span className="inline-flex items-center text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200" title="Hari Lapangan terjadwal (WFH + Radius GPS)">
+                                  Lapangan
+                                </span>
+                              )}
                               {r.is_cross_day && (
                                 <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700" title="Shift berakhir keesokan harinya">
                                   <Moon className="w-2.5 h-2.5" /> +1
@@ -1962,14 +2074,23 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   {templateBranch ? ` / ${shifts.length}` : ''} template
                 </span>
               </div>
-              {/* Tombol tambah */}
-              <button
-                onClick={() => setShiftForm({ editing: null })}
-                disabled={offices.length === 0}
-                className="self-start sm:self-auto flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-lg transition"
-              >
-                <Plus className="w-3.5 h-3.5" /> Tambah Shift
-              </button>
+              {/* Tombol tambah + refresh */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={loadShifts}
+                  disabled={loadingShifts}
+                  className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white hover:bg-indigo-50 rounded-lg transition"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${loadingShifts ? 'animate-spin' : ''}`} /> Refresh
+                </button>
+                <button
+                  onClick={() => setShiftForm({ editing: null })}
+                  disabled={offices.length === 0}
+                  className="self-start sm:self-auto flex items-center gap-1.5 px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-300 text-white rounded-lg transition"
+                >
+                  <Plus className="w-3.5 h-3.5" /> Tambah Shift
+                </button>
+              </div>
             </div>
 
             {/* Info: shift company-wide selalu tampil di semua filter */}
@@ -2037,6 +2158,19 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {filteredShifts.map((s) => (
                 <div key={s.id} className="bg-white rounded-2xl border border-slate-100 shadow-sm p-4 space-y-3">
+                  {/* Header Cabang Kantor di Paling Atas Card */}
+                  <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                    <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 bg-indigo-50/80 px-2.5 py-1 rounded-md">
+                      <Building2 className="w-3.5 h-3.5 text-indigo-600" />
+                      {s.office?.office_name ?? 'Semua Cabang'}
+                    </span>
+                    {s.is_active ? (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Aktif</span>
+                    ) : (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Nonaktif</span>
+                    )}
+                  </div>
+
                   <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -2046,16 +2180,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                           style={{ backgroundColor: s.color ?? '#6366f1' }}
                         />
                         <p className="font-bold text-sm text-slate-800">{s.name}</p>
-                        {s.is_active ? (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">Aktif</span>
-                        ) : (
-                          <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Nonaktif</span>
-                        )}
                       </div>
-                      <p className="text-[11px] text-slate-500 flex items-center gap-1 mt-0.5">
-                        <Building2 className="w-3 h-3" />
-                        {s.office?.office_name ?? 'Semua cabang'}
-                      </p>
                       {s.description && <p className="text-[11px] text-slate-400 mt-1">{s.description}</p>}
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
@@ -2101,18 +2226,25 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                       return (
                         <div
                           key={d}
-                          className={`rounded-lg p-1.5 text-center border ${off ? 'bg-rose-50/60 border-rose-100' : 'bg-indigo-50/60 border-indigo-100'
+                          className={`rounded-lg p-1.5 text-center border ${off ? 'bg-rose-50/60 border-rose-100' : sch?.is_field ? 'bg-emerald-50/70 border-emerald-200' : sch?.is_wfh ? 'bg-cyan-50/70 border-cyan-200' : 'bg-indigo-50/60 border-indigo-100'
                             }`}
-                          title={off ? 'Libur' : `${hhmm(sch?.work_start_time)}–${hhmm(sch?.work_end_time)}`}
+                          title={off ? 'Libur' : sch?.is_field ? `Lapangan: ${hhmm(sch?.work_start_time)}–${hhmm(sch?.work_end_time)}` : sch?.is_wfh ? `WFH: ${hhmm(sch?.work_start_time)}–${hhmm(sch?.work_end_time)}` : `${hhmm(sch?.work_start_time)}–${hhmm(sch?.work_end_time)}`}
                         >
                           <p className="text-[9px] font-bold text-slate-500">{DAY_SHORT[d]}</p>
                           {off ? (
                             <p className="text-[9px] text-rose-400 font-semibold mt-0.5">Off</p>
                           ) : (
                             <>
-                              <p className="text-[9px] font-mono text-indigo-700 mt-0.5 leading-tight">{hhmm(sch?.work_start_time)}</p>
+                              <p className={`text-[9px] font-mono font-semibold mt-0.5 leading-tight ${sch?.is_field ? 'text-emerald-800' : sch?.is_wfh ? 'text-cyan-800' : 'text-indigo-700'}`}>
+                                {hhmm(sch?.work_start_time)}
+                              </p>
                               <p className="text-[9px] font-mono text-slate-400 leading-tight flex items-center justify-center gap-0.5">
                                 {hhmm(sch?.work_end_time)}
+                                {sch && sch.is_field ? (
+                                  <span className="text-[8px] font-bold text-emerald-600 bg-emerald-100 px-1 rounded">FLD</span>
+                                ) : sch && sch.is_wfh ? (
+                                  <span className="text-[8px] font-bold text-cyan-600 bg-cyan-100 px-1 rounded">WFH</span>
+                                ) : null}
                                 {sch && !sch.is_off && sch.work_start_time && sch.work_end_time && sch.work_end_time <= sch.work_start_time && (
                                   <Moon className="w-2 h-2 text-violet-500" />
                                 )}

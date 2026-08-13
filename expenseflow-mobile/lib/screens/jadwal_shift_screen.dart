@@ -337,7 +337,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
 
           // Grid tanggal
           ..._buildWeekRows(
-            daysInMonth, leadingBlanks, year, month, now, prov, shiftColor,
+            daysInMonth, leadingBlanks, year, month, now, prov,
           ),
         ],
       ),
@@ -351,7 +351,6 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     int month,
     DateTime now,
     ShiftProvider prov,
-    Color shiftColor,
   ) {
     final totalCells = leadingBlanks + daysInMonth;
     final rows = (totalCells / 7).ceil();
@@ -391,10 +390,24 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 date.month == _selectedDate!.month &&
                 date.day == _selectedDate!.day;
 
-            // Warna shift per tanggal (bisa beda-beda dalam satu bulan — inilah fitur utamanya)
+            // Deteksi apakah hari ini adalah tanggal mulai shift malam (isCrossDay)
+            final isCrossDayToday = schedule?.isCrossDay ?? false;
+
+            // Deteksi apakah hari ini adalah tanggal berakhir shift malam dari kemarin
+            final prevDate = date.subtract(const Duration(days: 1));
+            final prevCalDay = prov.getScheduleForDate(prevDate);
+            final isCrossDayFromYesterday = prevCalDay != null &&
+                prevCalDay.isCrossDay &&
+                !prevCalDay.isOff;
+
+            final defaultShiftColor = prov.shiftInfo?.color != null
+                ? _parseColor(prov.shiftInfo!.color)
+                : const Color(0xFF6366f1);
+
+            // Warna shift per tanggal (hanya berubah jika tanggal tersebut memiliki shift dengan warna khusus)
             final cellColor = calDay?.color != null
                 ? _parseColor(calDay!.color!)
-                : shiftColor;
+                : defaultShiftColor;
 
             return Expanded(
               child: GestureDetector(
@@ -447,26 +460,40 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                         ),
                       ),
                       const SizedBox(height: 2),
-                      // Indikator jam / OFF
-                      if (isOff)
-                        Text('OFF',
-                            style: TextStyle(
-                                fontSize: 8,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.red.shade400))
-                      else if (schedule != null &&
-                          schedule.workStartTime != null)
-                        Text(
-                          _shortTime(schedule.workStartTime!),
-                          style: TextStyle(
-                              fontSize: 8,
-                              fontWeight: FontWeight.w600,
-                              color: cellColor),
-                        )
-                       else
-                         Text('-',
-                             style: TextStyle(
-                                 fontSize: 8, color: Colors.grey.shade400)),
+                      // Indikator jam / OFF / Logo bulan lintas hari
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          if (isCrossDayToday || isCrossDayFromYesterday)
+                            Padding(
+                              padding: const EdgeInsets.only(right: 2),
+                              child: Icon(
+                                Icons.nights_stay,
+                                size: 9,
+                                color: Colors.purple.shade600,
+                              ),
+                            ),
+                          if (isOff)
+                            Text('OFF',
+                                style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.red.shade400))
+                          else if (schedule != null &&
+                              schedule.workStartTime != null)
+                            Text(
+                              _shortTime(schedule.workStartTime!),
+                              style: TextStyle(
+                                  fontSize: 8,
+                                  fontWeight: FontWeight.w600,
+                                  color: cellColor),
+                            )
+                          else
+                            Text('-',
+                                style: TextStyle(
+                                    fontSize: 8, color: Colors.grey.shade400)),
+                        ],
+                      ),
                     ],
                   ),
                 ),
@@ -502,6 +529,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     final detailColor = calDay?.color != null
         ? _parseColor(calDay!.color!)
         : shiftColor;
+
+    // Deteksi shift malam lintas hari dari kemarin
+    final prevDate = date.subtract(const Duration(days: 1));
+    final prevCalDay = prov.getScheduleForDate(prevDate);
+    final isCrossDayFromYesterday = prevCalDay != null &&
+        prevCalDay.isCrossDay &&
+        !prevCalDay.isOff;
 
     return Container(
       width: double.infinity,
@@ -543,6 +577,23 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 icon: Icons.apartment,
                 label: 'Jam Kantor Default',
                 color: Colors.blueGrey,
+              ),
+              const SizedBox(height: 10),
+            ],
+            // Banner info shift malam / lintas hari
+            if (schedule.isCrossDay) ...[
+              _statusBanner(
+                icon: Icons.nights_stay,
+                label: 'Shift Malam / Lintas Hari (Pulang Keesokan Harinya)',
+                color: Colors.purple,
+              ),
+              const SizedBox(height: 10),
+            ],
+            if (isCrossDayFromYesterday && prevCalDay != null) ...[
+              _statusBanner(
+                icon: Icons.nights_stay,
+                label: 'Shift Malam Lintas Hari dari Kemarin (Selesai ${_shortTime(prevCalDay.workEndTime ?? '')})',
+                color: Colors.indigo,
               ),
               const SizedBox(height: 10),
             ],

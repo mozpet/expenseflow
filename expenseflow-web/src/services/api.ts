@@ -51,7 +51,9 @@ type RequestOptions = {
 };
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
-  const url = new URL(BASE_URL + path);
+  // BASE_URL bisa absolute (http://localhost:8000/api/v1) atau relative (/api/v1).
+  // Relative dipakai saat Vite preview/proxy agar request same-origin dan tidak memicu CORS preflight.
+  const url = new URL(BASE_URL + path, window.location.origin);
   if (query) {
     Object.entries(query).forEach(([k, v]) => {
       if (v !== undefined && v !== null && v !== '') {
