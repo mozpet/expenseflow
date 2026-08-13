@@ -988,3 +988,7 @@ $validated = $request->validate([
 2. **UI Confirmation Dialog**: Saat HRD mengubah Jam Kerja / Lokasi GPS / Auto-Checkout di Form Edit Kantor, tampilkan dialog:
    > "⚠️ Anda mengubah Jam Kerja / Lokasi GPS / Auto-Checkout. Perubahan ini akan mempengaruhi perhitungan presensi & Auto-Checkout karyawan yang aktif hari ini. Lanjutkan?"
 3. **Subscribe Notifikasi**: Kirim notifikasi (DB + FCM) ke seluruh HRD/Admin saat pengaturan kantor diubah, agar perubahan bisa diaudit.
+
+masih ada bug di assign massal pada roster harian
+peingatan cuti yagn sama jadwalnya hanya di cabang yang sama
+tambahkan di pengaturan edit kantor bahwa cuti bisa edit oleh orang

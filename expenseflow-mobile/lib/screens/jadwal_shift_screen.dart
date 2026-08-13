@@ -589,10 +589,10 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               ),
               const SizedBox(height: 10),
             ],
-            if (isCrossDayFromYesterday) ...[
+            if (prevCalDay != null && isCrossDayFromYesterday) ...[
               _statusBanner(
                 icon: Icons.nights_stay,
-                label: 'Shift Malam Lintas Hari dari Kemarin (Selesai ${_shortTime(prevCalDay?.workEndTime ?? '')})',
+                label: 'Shift Malam Lintas Hari dari Kemarin (Selesai ${_shortTime(prevCalDay.workEndTime ?? '')})',
                 color: Colors.indigo,
               ),
               const SizedBox(height: 10),
