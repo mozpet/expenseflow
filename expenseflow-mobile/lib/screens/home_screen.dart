@@ -35,10 +35,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         listen: false,
       ).checkShiftUpdates();
       // Sync status presensi saat pertama buka app
-      Provider.of<PresensiProvider>(
+      final presensiProv = Provider.of<PresensiProvider>(
         context,
         listen: false,
-      ).syncStatusFromBackend();
+      );
+      presensiProv.syncStatusFromBackend();
+      // Cek cuti bersama H-7 → tampilkan banner Ya/Tidak di beranda
+      presensiProv.fetchCollectiveLeaves();
     });
   }
 
@@ -52,10 +55,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     // Saat app kembali ke foreground, cek apakah ada auto-checkout dari backend
     if (state == AppLifecycleState.resumed) {
-      Provider.of<PresensiProvider>(
+      final presensiProv = Provider.of<PresensiProvider>(
         context,
         listen: false,
-      ).syncStatusFromBackend();
+      );
+      presensiProv.syncStatusFromBackend();
+      presensiProv.fetchCollectiveLeaves();
     }
   }
 
@@ -258,12 +263,13 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   // ─── Beranda: welcome + jadwal hari ini ─────────────────────────────────
   Widget _buildBerandaTab() {
-    return Consumer2<AuthProvider, ShiftProvider>(
-      builder: (context, auth, shiftProv, _) {
+    return Consumer3<AuthProvider, ShiftProvider, PresensiProvider>(
+      builder: (context, auth, shiftProv, presensiProv, _) {
         final user = auth.user;
         final dept = (user?.department?.isNotEmpty == true)
             ? user!.department!
             : 'No Department';
+        final collective = presensiProv.activeCollectiveLeaveBanner;
 
         return SafeArea(
           child: SingleChildScrollView(
@@ -331,6 +337,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 // Banner: shift baru diubah oleh HRD
                 if (shiftProv.hasShiftUpdate) ...[
                   _buildShiftUpdateBanner(shiftProv),
+                  const SizedBox(height: 12),
+                ],
+                // Banner: cuti bersama mendatang (pilih ikut / tidak)
+                if (collective != null) ...[
+                  _buildCollectiveLeaveBanner(presensiProv, collective),
                   const SizedBox(height: 12),
                 ],
                 // Card jadwal hari ini
@@ -537,5 +548,182 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final parts = time.split(':');
     if (parts.length >= 2) return '${parts[0]}:${parts[1]}';
     return time;
+  }
+
+  // ─── Banner: cuti bersama mendatang, karyawan pilih Ya (ikut) / Tidak ───
+  Widget _buildCollectiveLeaveBanner(
+    PresensiProvider prov,
+    CollectiveLeaveRecord c,
+  ) {
+    // Hitung sisa hari menuju tanggal cuti bersama
+    int daysLeft = 0;
+    try {
+      final target = DateTime.parse(c.date);
+      final today = DateTime(
+        DateTime.now().year,
+        DateTime.now().month,
+        DateTime.now().day,
+      );
+      daysLeft = target.difference(today).inDays;
+    } catch (_) {}
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF8E1),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFFFB300)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.campaign, color: Color(0xFFE65100), size: 22),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  'Cuti Bersama Mendatang',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: const Color(0xFFE65100),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            c.name,
+            style: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Color(0xFF5D4037),
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            '${_formatDateLabel(c.date)} • H-${daysLeft < 0 ? 0 : daysLeft}',
+            style: const TextStyle(fontSize: 12, color: Color(0xFF6D4C41)),
+          ),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFFFB300)),
+            ),
+            child: Text(
+              'Sisa saldo cuti Anda: ${c.remainingQuota} hari',
+              style: const TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                color: Color(0xFF6D4C41),
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFE53935),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  onPressed: () => _respondCollective(prov, c.id, 'declined'),
+                  child: const Text(
+                    'Tidak Ikut',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF2E7D32),
+                    foregroundColor: Colors.white,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  onPressed: () => _respondCollective(prov, c.id, 'accepted'),
+                  child: const Text(
+                    'Ya, Saya Ikut',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _respondCollective(
+    PresensiProvider prov,
+    int holidayId,
+    String response,
+  ) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      await prov.respondCollectiveLeave(holidayId, response);
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(
+            response == 'accepted'
+                ? 'Anda terdaftar ikut cuti bersama.'
+                : 'Anda tidak ikut cuti bersama.',
+          ),
+          backgroundColor:
+              response == 'accepted'
+                  ? const Color(0xFF2E7D32)
+                  : const Color(0xFFE53935),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      // Tampilkan pesan error dari API (mis. saldo tidak cukup)
+      String msg = 'Gagal menyimpan pilihan. Coba lagi.';
+      if (e.toString().isNotEmpty) {
+        // ApiException biasanya membawa pesan dari backend
+        final raw = e.toString().replaceAll('Exception: ', '');
+        if (raw.isNotEmpty) msg = raw;
+      }
+      if (!mounted) return;
+      messenger.showSnackBar(
+        SnackBar(
+          content: Text(msg),
+          backgroundColor: const Color(0xFFC62828),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
+
+  String _formatDateLabel(String dateStr) {
+    try {
+      const bulan = [
+        'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun',
+        'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des',
+      ];
+      final d = DateTime.parse(dateStr);
+      return '${d.day} ${bulan[d.month - 1]} ${d.year}';
+    } catch (_) {
+      return dateStr;
+    }
   }
 }

@@ -207,13 +207,17 @@ export const attendanceApi = {
   holidays: {
     list: (year?: number) =>
       apiGet('/dashboard/attendance/holidays', { year }),
-    create: (payload: { date: string; name: string }) =>
+    create: (payload: { date: string; name: string; is_collective?: boolean; attendance_setting_id?: number | null }) =>
       apiPost('/dashboard/attendance/holidays', payload),
-    update: (id: number | string, payload: { date: string; name: string }) =>
+    update: (id: number | string, payload: { date: string; name: string; attendance_setting_id?: number | null }) =>
       apiPut(`/dashboard/attendance/holidays/${id}`, payload),
     destroy: (id: number | string) =>
       apiDelete(`/dashboard/attendance/holidays/${id}`),
   },
+
+  // Rekap opt-in cuti bersama
+  collectiveLeaveDetail: (id: number | string) =>
+    apiGet(`/dashboard/attendance/collective-leaves/${id}/detail`),
 };
 
 // ─── Shift / Custom Scheduling — HRD ────────────────────────

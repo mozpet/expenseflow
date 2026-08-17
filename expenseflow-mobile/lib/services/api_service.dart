@@ -326,6 +326,24 @@ class ApiService {
         query: {'year': year.toString()});
   }
 
+  // ─── Cuti Bersama ───────────────────────────────────────────
+  /// Daftar cuti bersama mendatang + status pilihan karyawan login.
+  static Future<Map<String, dynamic>> collectiveLeaves() async {
+    return _request('GET', '/attendance/collective-leaves');
+  }
+
+  /// Pilih ikut / tidak ikut cuti bersama.
+  static Future<Map<String, dynamic>> respondCollectiveLeave(
+    int holidayId,
+    String response,
+  ) async {
+    return _request(
+      'POST',
+      '/attendance/collective-leave/$holidayId/respond',
+      body: {'response': response},
+    );
+  }
+
   // ─── Presensi — status & auto-checkout ──────────────────────
   /// Cek status presensi hari ini + jadwal auto-checkout dari backend.
   /// Response: {checked_in, checked_out, attendance, scheduled_auto_checkout_at, overtime_approval}

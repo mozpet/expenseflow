@@ -138,6 +138,41 @@ class HolidayRecord {
   });
 }
 
+class CollectiveLeaveRecord {
+  final int id;
+  final String date;
+  final String name;
+  final int totalDays;
+  final String collectiveStatus; // pending | accepted | declined
+  final int remainingQuota;
+  final String policy; // block | debt | free
+  final bool showBanner;
+
+  CollectiveLeaveRecord({
+    required this.id,
+    required this.date,
+    required this.name,
+    required this.totalDays,
+    required this.collectiveStatus,
+    required this.remainingQuota,
+    required this.policy,
+    required this.showBanner,
+  });
+
+  factory CollectiveLeaveRecord.fromJson(Map<String, dynamic> json) {
+    return CollectiveLeaveRecord(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      date: (json['date'] ?? '').toString(),
+      name: (json['name'] ?? '').toString(),
+      totalDays: (json['total_days'] as num?)?.toInt() ?? 0,
+      collectiveStatus: (json['collective_status'] ?? 'pending').toString(),
+      remainingQuota: (json['remaining_quota'] as num?)?.toInt() ?? 0,
+      policy: (json['policy'] ?? 'block').toString(),
+      showBanner: json['show_banner'] == true || json['show_banner'] == 1,
+    );
+  }
+}
+
 class PresensiProvider extends ChangeNotifier {
   // Flag dari backend (diisi setelah login): true = boleh presensi WFH via app
   bool wfhEnabled = false;
@@ -146,6 +181,7 @@ class PresensiProvider extends ChangeNotifier {
   final List<LeaveRequestRecord> _leaveRequests = [];
   final List<LeaveBalanceRecord> _leaveBalances = [];
   final List<HolidayRecord> _holidays = [];
+  final List<CollectiveLeaveRecord> _collectiveLeaves = [];
 
   String? _todayMasuk;
   String? _todayPulang;
@@ -155,6 +191,7 @@ class PresensiProvider extends ChangeNotifier {
   bool _loadingBalance = false;
   bool _loadingLeaves = false;
   bool _loadingHolidays = false;
+  bool _loadingCollectiveLeaves = false;
 
   List<PresensiRecord> get records => List.unmodifiable(_records);
   List<LeaveRequestRecord> get leaveRequests =>
@@ -162,6 +199,14 @@ class PresensiProvider extends ChangeNotifier {
   List<LeaveBalanceRecord> get leaveBalances =>
       List.unmodifiable(_leaveBalances);
   List<HolidayRecord> get holidays => List.unmodifiable(_holidays);
+  List<CollectiveLeaveRecord> get collectiveLeaves =>
+      List.unmodifiable(_collectiveLeaves);
+  CollectiveLeaveRecord? get activeCollectiveLeaveBanner {
+    for (final item in _collectiveLeaves) {
+      if (item.showBanner && item.collectiveStatus == 'pending') return item;
+    }
+    return null;
+  }
   String? get todayMasuk => _todayMasuk;
   String? get todayPulang => _todayPulang;
   int get todayOvertimeMinutes => _todayOvertimeMinutes;
@@ -170,6 +215,7 @@ class PresensiProvider extends ChangeNotifier {
   bool get loadingBalance => _loadingBalance;
   bool get loadingLeaves => _loadingLeaves;
   bool get loadingHolidays => _loadingHolidays;
+  bool get loadingCollectiveLeaves => _loadingCollectiveLeaves;
 
   bool get canCheckIn => _todayMasuk == null;
   bool get canCheckOut => _todayMasuk != null && _todayPulang == null;
@@ -560,6 +606,53 @@ class PresensiProvider extends ChangeNotifier {
       _holidays.sort((a, b) => a.date.compareTo(b.date));
     } catch (_) {}
     _loadingHolidays = false;
+    notifyListeners();
+  }
+
+  // ─── Fetch cuti bersama mendatang ───────────────────────────
+  Future<void> fetchCollectiveLeaves() async {
+    _loadingCollectiveLeaves = true;
+    notifyListeners();
+    try {
+      final res = await ApiService.collectiveLeaves();
+      final list = (res['collective_leaves'] as List?) ?? [];
+      _collectiveLeaves
+        ..clear()
+        ..addAll(
+          list.map((e) => CollectiveLeaveRecord.fromJson(
+                (e as Map).cast<String, dynamic>(),
+              )),
+        );
+    } catch (e, st) {
+      debugPrint('[PresensiProvider] fetchCollectiveLeaves error: $e');
+      debugPrint('$st');
+    }
+    _loadingCollectiveLeaves = false;
+    notifyListeners();
+  }
+
+  /// Response cuti bersama: accepted = ikut, declined = tidak ikut.
+  Future<void> respondCollectiveLeave(int holidayId, String response) async {
+    final res = await ApiService.respondCollectiveLeave(holidayId, response);
+    final status = (res['collective_status'] ?? response).toString();
+    final remaining = (res['remaining_quota'] as num?)?.toInt();
+
+    final idx = _collectiveLeaves.indexWhere((e) => e.id == holidayId);
+    if (idx >= 0) {
+      final old = _collectiveLeaves[idx];
+      _collectiveLeaves[idx] = CollectiveLeaveRecord(
+        id: old.id,
+        date: old.date,
+        name: old.name,
+        totalDays: old.totalDays,
+        collectiveStatus: status,
+        remainingQuota: remaining ?? old.remainingQuota,
+        policy: old.policy,
+        showBanner: false,
+      );
+    }
+
+    await fetchLeaveBalance();
     notifyListeners();
   }
 

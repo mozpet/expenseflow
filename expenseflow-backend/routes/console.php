@@ -14,3 +14,11 @@ Schedule::command('attendance:auto-checkout')
     ->everyFiveMinutes()
     ->withoutOverlapping()
     ->runInBackground();
+
+// Auto-decline karyawan yang belum memilih cuti bersama saat hari H tiba.
+// Berjalan setiap jam 00:07 (ambil jam non-round untuk distribusi beban),
+// menandai pending → declined untuk tanggal cuti yang sudah lewat.
+Schedule::command('attendance:auto-decline-collective-leave')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground();

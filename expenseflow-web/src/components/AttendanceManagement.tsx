@@ -298,6 +298,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [leaves, setLeaves] = useState<any[]>([]);
   const [leaveStatus, setLeaveStatus] = useState<'pending' | 'approved' | 'rejected' | ''>('pending');
   const [leaveTypeFilter, setLeaveTypeFilter] = useState<'wfh' | 'izin' | 'sakit' | 'cuti' | ''>('');
+  const [leaveOfficeFilter, setLeaveOfficeFilter] = useState(''); // '' = semua cabang
   const [leaveSearch, setLeaveSearch] = useState('');
   const [showUpcoming, setShowUpcoming] = useState(false);
   const [docLoadingId, setDocLoadingId] = useState<number | null>(null);
@@ -851,6 +852,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               if (leaveStatus) result = result.filter((l: any) => l.status === l.status && l.status === leaveStatus);
               if (leaveTypeFilter) result = result.filter((l: any) => l.leave_type === leaveTypeFilter);
             }
+            // Filter cabang — berlaku di semua mode (normal maupun mendatang)
+            if (leaveOfficeFilter === 'null') {
+              result = result.filter((l: any) => l.attendance_setting_id == null);
+            } else if (leaveOfficeFilter) {
+              result = result.filter((l: any) => String(l.attendance_setting_id) === leaveOfficeFilter);
+            }
             return result.filter((l: any) =>
               l.user_name.toLowerCase().includes(leaveSearch.toLowerCase())
             );
@@ -869,6 +876,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               if (other.id === pendingLeave.id) return;
               if (other.user_name === pendingLeave.user_name) return;
               if (other.status !== 'approved') return;
+              // Hanya munculkan peringatan jika karyawan berada di cabang yang SAMA.
+              // Jika salah satu belum punya cabang (null), lewati — tidak bisa
+              // dipastikan cabangnya sama sehingga tidak perlu memunculkan peringatan.
+              if (
+                pendingLeave.attendance_setting_id == null ||
+                other.attendance_setting_id == null ||
+                pendingLeave.attendance_setting_id !== other.attendance_setting_id
+              ) return;
               if (dateOverlaps(
                 pendingLeave.start_date, pendingLeave.end_date,
                 other.start_date, other.end_date
@@ -918,6 +933,21 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     <option value="cuti">Cuti</option>
                     <option value="wfh">WFH</option>
                   </select>
+
+                  {/* Dropdown kantor cabang */}
+                  {offices.length > 1 && (
+                    <select
+                      value={leaveOfficeFilter}
+                      onChange={(e) => setLeaveOfficeFilter(e.target.value)}
+                      className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    >
+                      <option value="">Semua Kantor</option>
+                      {offices.map((o: any) => (
+                        <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                      ))}
+                      <option value="null">Tanpa Kantor</option>
+                    </select>
+                  )}
 
                   {/* Tombol Mendatang */}
                   <button
@@ -1636,6 +1666,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         loading ? <TabSkeleton tab="holidays" /> : (
           <HolidaysTab
             holidays={holidays}
+            offices={offices}
             reload={loadHolidays}
             onAddAuditLog={onAddAuditLog}
             onError={reportApiError}
@@ -1801,19 +1832,31 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 // ─── Sub-komponen: Kalender libur nasional / cuti bersama ─────
 const HolidaysTab: React.FC<{
   holidays: any[];
+  offices: any[];
   reload: () => Promise<void>;
   onAddAuditLog: (t: string, d: string, b: string) => void;
   onError: (e: unknown, f: string) => void;
   year: number;
   onYearChange: (y: number) => void;
-}> = ({ holidays, reload, onAddAuditLog, onError, year, onYearChange }) => {
+}> = ({ holidays, offices, reload, onAddAuditLog, onError, year, onYearChange }) => {
   const today = new Date();
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState<{ date: string; name: string }>({ date: '', name: '' });
+  const [form, setForm] = useState<{ date: string; name: string; is_collective: boolean; attendance_setting_id: string }>({
+    date: '',
+    name: '',
+    is_collective: false,
+    attendance_setting_id: '',
+  });
   const [saving, setSaving] = useState(false);
   const [detailDate, setDetailDate] = useState<string | null>(null);
+  // Modal rekap cuti bersama (HRD)
+  const [collectiveDetailHoliday, setCollectiveDetailHoliday] = useState<any | null>(null);
+  const [collectiveDetailData, setCollectiveDetailData] = useState<any | null>(null);
+  const [loadingCollectiveDetail, setLoadingCollectiveDetail] = useState(false);
+  // Filter kantor untuk kalender — '' = semua kantor (tidak tampilkan libur mingguan)
+  const [calOfficeFilter, setCalOfficeFilter] = useState<string>('');
 
   // Cegah bulan dari tahun lain saat navigasi tahun di header
   useEffect(() => {
@@ -1822,15 +1865,47 @@ const HolidaysTab: React.FC<{
     else setViewMonth(0);
   }, [year]);
 
+  // Libur yang relevan dg filter kantor yang dipilih.
+  // '' = Semua Kantor → tampilkan semua libur perusahaan + nasional.
+  // kantor spesifik → tampilkan: nasional + company-wide (attendance_setting_id null)
+  //   + libur/cuti bersama khusus cabang tsb saja. Libur cabang lain disembunyikan.
+  const visibleHolidays = useMemo(() => {
+    if (!calOfficeFilter) return holidays;
+    return holidays.filter((h) => {
+      // Libur nasional (company_id null) berlaku untuk semua kantor.
+      if (!h.company_id || h.scope === 'nasional') return true;
+      // Jika libur/cuti bersama punya cabang spesifik: hanya tampil jika ID cabang cocok persis dengan filter!
+      if (h.attendance_setting_id !== null && h.attendance_setting_id !== undefined) {
+        return String(h.attendance_setting_id) === String(calOfficeFilter);
+      }
+      // Libur company-wide (attendance_setting_id null) berlaku untuk semua cabang.
+      return true;
+    });
+  }, [holidays, calOfficeFilter]);
+
   // Kumpulkan libur per tanggal (map: 'YYYY-MM-DD' → holiday[])
   const byDate = useMemo(() => {
     const map: Record<string, any[]> = {};
-    holidays.forEach(h => {
+    visibleHolidays.forEach(h => {
       const d = String(h.date).slice(0, 10);
       (map[d] = map[d] || []).push(h);
     });
     return map;
-  }, [holidays]);
+  }, [visibleHolidays]);
+
+  // Hitung hari libur mingguan dari kantor yang dipilih.
+  // work_days adalah array integer 0=Minggu,1=Senin,...,6=Sabtu (JS getDay() convention).
+  // weeklyOffDays = hari JS getDay() yang TIDAK ADA di work_days → hari libur mingguan.
+  const weeklyOffDays = useMemo<Set<number>>(() => {
+    if (!calOfficeFilter) return new Set(); // '' = semua kantor, tidak sorot libur mingguan
+    const office = offices.find((o: any) => String(o.id) === calOfficeFilter);
+    if (!office) return new Set();
+    const workDays: number[] = Array.isArray(office.work_days)
+      ? office.work_days.map(Number)
+      : [1, 2, 3, 4, 5]; // default Senin-Jumat jika tidak ada
+    const allDays = [0, 1, 2, 3, 4, 5, 6];
+    return new Set(allDays.filter(d => !workDays.includes(d)));
+  }, [calOfficeFilter, offices]);
 
   const firstDay = new Date(year, viewMonth, 1);
   const daysInMonth = new Date(year, viewMonth + 1, 0).getDate();
@@ -1847,36 +1922,42 @@ const HolidaysTab: React.FC<{
   const summary = useMemo(() => {
     const prefix = `${year}-${pad2(viewMonth + 1)}-`;
     let nasional = 0, perusahaan = 0;
-    holidays.forEach(h => {
+    visibleHolidays.forEach(h => {
       if (String(h.date).slice(0, 10).startsWith(prefix)) {
         if (h.scope === 'nasional') nasional++;
         else perusahaan++;
       }
     });
     return { nasional, perusahaan };
-  }, [holidays, year, viewMonth]);
+  }, [visibleHolidays, year, viewMonth]);
 
   const resetForm = () => {
-    setForm({ date: '', name: '' });
+    setForm({ date: '', name: '', is_collective: false, attendance_setting_id: calOfficeFilter || '' });
     setEditingId(null);
     setShowForm(false);
   };
 
   const startCreate = (date?: string) => {
-    // Jika form sedang dalam mode edit, alihkan ke mode tambah; jika tidak, toggle.
+    // Jika ada filter cabang yang aktif, gunakan cabang tersebut sebagai default form
+    const defaultOffice = calOfficeFilter || '';
     if (editingId !== null) {
       setEditingId(null);
-      setForm({ date: date ?? '', name: '' });
+      setForm({ date: date ?? '', name: '', is_collective: false, attendance_setting_id: defaultOffice });
       setShowForm(true);
       return;
     }
-    setForm({ date: date ?? '', name: '' });
+    setForm({ date: date ?? '', name: '', is_collective: false, attendance_setting_id: defaultOffice });
     setShowForm((v) => !v);
   };
 
   const startEdit = (h: any) => {
     setEditingId(h.id);
-    setForm({ date: String(h.date).slice(0, 10), name: h.name });
+    setForm({
+      date: String(h.date).slice(0, 10),
+      name: h.name,
+      is_collective: !!h.is_collective,
+      attendance_setting_id: h.attendance_setting_id ? String(h.attendance_setting_id) : '',
+    });
     setShowForm(true);
   };
 
@@ -1885,12 +1966,26 @@ const HolidaysTab: React.FC<{
     if (!form.date || !form.name.trim()) return;
     setSaving(true);
     try {
+      const officeId = form.attendance_setting_id ? Number(form.attendance_setting_id) : null;
       if (editingId !== null) {
-        await attendanceApi.holidays.update(editingId, { date: form.date, name: form.name.trim() });
+        await attendanceApi.holidays.update(editingId, {
+          date: form.date,
+          name: form.name.trim(),
+          attendance_setting_id: officeId,
+        });
         onAddAuditLog('Hari libur diubah', `${form.name} (${form.date})`, 'bg-sky-500');
       } else {
-        await attendanceApi.holidays.create({ date: form.date, name: form.name.trim() });
-        onAddAuditLog('Hari libur ditambahkan', `${form.name} (${form.date})`, 'bg-amber-500');
+        await attendanceApi.holidays.create({
+          date: form.date,
+          name: form.name.trim(),
+          is_collective: form.is_collective,
+          attendance_setting_id: officeId,
+        });
+        onAddAuditLog(
+          form.is_collective ? 'Cuti bersama ditambahkan' : 'Hari libur ditambahkan',
+          `${form.name} (${form.date})`,
+          form.is_collective ? 'bg-amber-500' : 'bg-sky-500',
+        );
       }
       resetForm();
       setDetailDate(null);
@@ -1911,6 +2006,20 @@ const HolidaysTab: React.FC<{
       await reload();
     } catch (err) {
       onError(err, 'Gagal menghapus hari libur.');
+    }
+  };
+
+  const openCollectiveDetail = async (h: any) => {
+    setCollectiveDetailHoliday(h);
+    setLoadingCollectiveDetail(true);
+    try {
+      const res: any = await attendanceApi.collectiveLeaveDetail(h.id);
+      setCollectiveDetailData(res);
+    } catch (err) {
+      onError(err, 'Gagal memuat rekap cuti bersama.');
+      setCollectiveDetailHoliday(null);
+    } finally {
+      setLoadingCollectiveDetail(false);
     }
   };
 
@@ -1941,12 +2050,31 @@ const HolidaysTab: React.FC<{
             Tanggal libur tidak dihitung sebagai hari kerja (cuti) dan kerja di hari ini dihitung lembur penuh.
           </p>
         </div>
-        <button
-          onClick={() => startCreate()}
-          className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition"
-        >
-          <Plus className="w-3.5 h-3.5" /> Tambah Libur
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Filter kantor — hanya tampil jika ada lebih dari 1 kantor */}
+          {offices.length > 1 && (
+            <div className="flex items-center gap-1.5">
+              <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+              <select
+                value={calOfficeFilter}
+                onChange={(e) => setCalOfficeFilter(e.target.value)}
+                className="py-1.5 px-3 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                title="Filter libur mingguan per kantor"
+              >
+                <option value="">Semua Kantor</option>
+                {offices.map((o: any) => (
+                  <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <button
+            onClick={() => startCreate()}
+            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition"
+          >
+            <Plus className="w-3.5 h-3.5" /> Tambah Libur
+          </button>
+        </div>
       </div>
 
       {showForm && (
@@ -1971,13 +2099,46 @@ const HolidaysTab: React.FC<{
             <input
               type="text"
               value={form.name}
-              placeholder="mis. Cuti Bersama"
+              placeholder="mis. Cuti Bersama Idul Fitri"
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
               required
             />
           </div>
-          <div className="flex items-center gap-2">
+          {offices.length > 0 && (
+            <div className="space-y-1.5 sm:col-span-1">
+              <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor Cabang</label>
+              <select
+                value={form.attendance_setting_id}
+                onChange={(e) => setForm({ ...form, attendance_setting_id: e.target.value })}
+                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+              >
+                <option value="">Semua Kantor (Semua Cabang)</option>
+                {offices.map((o: any) => (
+                  <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          {editingId === null && (
+            <div className="sm:col-span-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg p-3">
+              <label className="flex items-center gap-2.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.is_collective}
+                  onChange={(e) => setForm({ ...form, is_collective: e.target.checked })}
+                  className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 cursor-pointer"
+                />
+                <div>
+                  <p className="text-xs font-bold text-amber-900 dark:text-amber-300">Jadikan Cuti Bersama (Potong Saldo)</p>
+                  <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                    Karyawan akan menerima notifikasi di aplikasi mobile H-7 dan dapat memilih untuk ikut atau tidak. Saldo cuti karyawan yang ikut akan terpotong secara otomatis.
+                  </p>
+                </div>
+              </label>
+            </div>
+          )}
+          <div className="flex items-center gap-2 sm:col-span-3 justify-end">
             <button
               type="submit"
               disabled={saving}
@@ -2038,9 +2199,31 @@ const HolidaysTab: React.FC<{
               const dateStr = `${year}-${pad2(viewMonth + 1)}-${pad2(day)}`;
               const dayHolidays = byDate[dateStr] ?? [];
               const hasNational = dayHolidays.some(h => h.scope === 'nasional');
-              const hasCompany = dayHolidays.some(h => h.scope === 'perusahaan');
+              const hasCollective = dayHolidays.some(h => h.is_collective);
+              const hasCompany = dayHolidays.some(h => h.scope === 'perusahaan' && !h.is_collective);
               const isToday = dateStr === toDateStr(today);
               const isSelected = detailDate === dateStr;
+              // Cek apakah hari ini adalah libur mingguan kantor yang dipilih
+              // JS getDay(): 0=Minggu, 1=Senin, ..., 6=Sabtu — sama dengan konvensi work_days backend
+              const jsDay = new Date(dateStr + 'T00:00:00').getDay();
+              const isWeeklyOff = weeklyOffDays.has(jsDay);
+              // Prioritas warna: nasional (merah tua) > libur mingguan kantor (merah muda) > cuti bersama (amber) > perusahaan (biru) > biasa
+              const bgClass = hasNational
+                ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/40'
+                : isWeeklyOff
+                  ? 'bg-red-50 dark:bg-red-950/20 border-red-200 dark:border-red-900/30'
+                  : hasCollective
+                    ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/40'
+                    : hasCompany
+                      ? 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-900/40'
+                      : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800';
+              // Tooltip: libur mingguan kantor jika tidak ada event lain
+              const selectedOfficeName = offices.find((o: any) => String(o.id) === calOfficeFilter)?.office_name ?? '';
+              const tooltip = dayHolidays.length
+                ? dayHolidays.map(h => h.name).join(', ')
+                : isWeeklyOff
+                  ? `Hari libur mingguan ${selectedOfficeName}`
+                  : 'Klik untuk menambah libur';
               return (
                 <button
                   key={dateStr}
@@ -2049,18 +2232,25 @@ const HolidaysTab: React.FC<{
                     setShowForm(false);
                   }}
                   className={`relative flex flex-col items-center justify-start h-16 sm:h-20 rounded-lg border text-xs transition-colors cursor-pointer
-                    ${hasNational
-                      ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/40'
-                      : hasCompany
-                        ? 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-900/40'
-                        : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800'
-                    }
+                    ${bgClass}
                     ${isSelected ? 'ring-2 ring-indigo-500 border-indigo-400' : ''}`}
-                  title={dayHolidays.length ? dayHolidays.map(h => h.name).join(', ') : 'Klik untuk menambah libur'}
+                  title={tooltip}
                 >
-                  <span className={`text-[11px] font-bold mt-1 ${isToday ? 'text-indigo-600 dark:text-indigo-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                  <span className={`text-[11px] font-bold mt-1 ${
+                    isToday
+                      ? 'text-indigo-600 dark:text-indigo-400'
+                      : isWeeklyOff && !hasNational
+                        ? 'text-red-500 dark:text-red-400'
+                        : 'text-slate-500 dark:text-slate-400'
+                  }`}>
                     {day}
                   </span>
+                  {/* Badge libur mingguan — hanya jika tidak ada event spesifik */}
+                  {isWeeklyOff && !hasNational && !hasCompany && dayHolidays.length === 0 && (
+                    <span className="text-[8px] font-semibold text-red-400 dark:text-red-500 mt-0.5 leading-tight">
+                      Libur
+                    </span>
+                  )}
                   {dayHolidays.length > 0 && (
                     <span className="flex flex-col items-center gap-0.5 w-full px-1 mt-0.5">
                       {dayHolidays.slice(0, 2).map(h => (
@@ -2105,24 +2295,66 @@ const HolidaysTab: React.FC<{
                   {selectedHolidays.map(h => (
                     <div key={h.id} className={`border rounded-lg p-2.5 ${h.scope === 'nasional' ? 'border-rose-200 dark:border-rose-900/40 bg-rose-50/40 dark:bg-rose-950/20' : 'border-indigo-200 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20'}`}>
                       <div className="flex items-center justify-between gap-2">
-                        <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{h.name}</p>
-                        <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${h.scope === 'nasional' ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400' : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400'}`}>
-                          {h.scope}
+                        <div>
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{h.name}</p>
+                          {h.office_name && (
+                            <p className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
+                              <Building2 className="w-3 h-3 text-slate-400" /> {h.office_name}
+                            </p>
+                          )}
+                        </div>
+                        <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+                          h.scope === 'nasional'
+                            ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400'
+                            : h.is_collective
+                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                              : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400'
+                        }`}>
+                          {h.is_collective
+                            ? (h.office_name ? `Cuti Bersama (${h.office_name})` : 'Cuti Bersama (Semua Cabang)')
+                            : h.scope}
                         </span>
                       </div>
-                      <div className="flex items-center gap-1 mt-1.5">
-                        <button
-                          onClick={() => startEdit(h)}
-                          className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition"
-                        >
-                          <Pencil className="w-3 h-3" /> Ubah
-                        </button>
-                        <button
-                          onClick={() => remove(h)}
-                          className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition"
-                        >
-                          <Trash2 className="w-3 h-3" /> Hapus
-                        </button>
+                      {/* Ringkasan opt-in jika cuti bersama */}
+                      {h.is_collective && h.collective_summary && (
+                        <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-1 text-[10px] text-center">
+                          <div className="bg-emerald-50 dark:bg-emerald-950/30 rounded p-1">
+                            <span className="font-bold text-emerald-700 dark:text-emerald-400">{h.collective_summary.accepted}</span>
+                            <span className="block text-[8px] text-emerald-600 dark:text-emerald-500 uppercase font-bold">Ikut</span>
+                          </div>
+                          <div className="bg-rose-50 dark:bg-rose-950/30 rounded p-1">
+                            <span className="font-bold text-rose-700 dark:text-rose-400">{h.collective_summary.declined}</span>
+                            <span className="block text-[8px] text-rose-600 dark:text-rose-500 uppercase font-bold">Tidak</span>
+                          </div>
+                          <div className="bg-slate-100 dark:bg-slate-800 rounded p-1">
+                            <span className="font-bold text-slate-700 dark:text-slate-300">{h.collective_summary.pending}</span>
+                            <span className="block text-[8px] text-slate-500 uppercase font-bold">Pending</span>
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between gap-1 mt-2">
+                        {h.is_collective && (
+                          <button
+                            onClick={() => openCollectiveDetail(h)}
+                            className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 dark:hover:bg-amber-900/50 rounded-md text-[10px] font-bold transition"
+                          >
+                            <Users className="w-3 h-3" /> Rekap Opt-in
+                          </button>
+                        )}
+                        <div className="flex items-center gap-1 ml-auto">
+                          <button
+                            onClick={() => startEdit(h)}
+                            className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition"
+                          >
+                            <Pencil className="w-3 h-3" /> Ubah
+                          </button>
+                          <button
+                            onClick={() => remove(h)}
+                            className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition"
+                          >
+                            <Trash2 className="w-3 h-3" /> Hapus
+                          </button>
+                        </div>
                       </div>
                     </div>
                   ))}
@@ -2135,11 +2367,21 @@ const HolidaysTab: React.FC<{
               <ul className="space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
                 <li className="flex items-center gap-2">
                   <span className="w-4 h-4 rounded-md bg-rose-50 border border-rose-200 dark:bg-rose-950/30 dark:border-rose-900/40 shrink-0" />
-                  <span><span className="font-semibold text-rose-700 dark:text-rose-400">Merah</span> — libur nasional (diberlakukan semua perusahaan)</span>
+                  <span><span className="font-semibold text-rose-700 dark:text-rose-400">Merah tua</span> — libur nasional (diberlakukan semua perusahaan)</span>
+                </li>
+                {calOfficeFilter && (
+                  <li className="flex items-center gap-2">
+                    <span className="w-4 h-4 rounded-md bg-red-50 border border-red-200 dark:bg-red-950/20 dark:border-red-900/30 shrink-0" />
+                    <span><span className="font-semibold text-red-500 dark:text-red-400">Merah muda</span> — libur mingguan kantor yang dipilih</span>
+                  </li>
+                )}
+                <li className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-900/40 shrink-0" />
+                  <span><span className="font-semibold text-amber-700 dark:text-amber-400">Amber (kuning)</span> — cuti bersama (saldo terpotong jika karyawan ikut)</span>
                 </li>
                 <li className="flex items-center gap-2">
                   <span className="w-4 h-4 rounded-md bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/30 dark:border-indigo-900/40 shrink-0" />
-                  <span><span className="font-semibold text-indigo-700 dark:text-indigo-400">Biru</span> — libur khusus perusahaan (cuti bersama internal)</span>
+                  <span><span className="font-semibold text-indigo-700 dark:text-indigo-400">Biru</span> — libur khusus perusahaan (tanpa potong saldo)</span>
                 </li>
                 <li className="flex items-start gap-2">
                   <span className="w-4 h-4 rounded-md bg-slate-50 border border-slate-100 dark:bg-slate-800/40 shrink-0" />
@@ -2150,6 +2392,112 @@ const HolidaysTab: React.FC<{
           )}
         </div>
       </div>
+
+      {/* Modal Rekap Opt-in Cuti Bersama (HRD) */}
+      {collectiveDetailHoliday && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4 py-6"
+          onClick={(e) => { if (e.target === e.currentTarget) { setCollectiveDetailHoliday(null); setCollectiveDetailData(null); } }}
+        >
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in fade-in slide-in-from-bottom-4 duration-200">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900">
+              <div>
+                <p className="font-bold text-sm text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-amber-500" />
+                  Rekap Opt-in Cuti Bersama
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">
+                  {collectiveDetailHoliday.name} · {fmtDate(String(collectiveDetailHoliday.date).slice(0, 10))}
+                </p>
+              </div>
+              <button
+                onClick={() => { setCollectiveDetailHoliday(null); setCollectiveDetailData(null); }}
+                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4">
+              {loadingCollectiveDetail ? (
+                <p className="text-center text-xs text-slate-400 py-8">Memuat data...</p>
+              ) : collectiveDetailData ? (
+                <>
+                  {/* Summary cards */}
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 rounded-lg p-3 text-center">
+                      <p className="text-2xl font-bold text-emerald-700 dark:text-emerald-400">{collectiveDetailData.summary?.accepted ?? 0}</p>
+                      <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-500 uppercase">Ikut</p>
+                    </div>
+                    <div className="bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 rounded-lg p-3 text-center">
+                      <p className="text-2xl font-bold text-rose-700 dark:text-rose-400">{collectiveDetailData.summary?.declined ?? 0}</p>
+                      <p className="text-[10px] font-bold text-rose-600 dark:text-rose-500 uppercase">Tidak</p>
+                    </div>
+                    <div className="bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-3 text-center">
+                      <p className="text-2xl font-bold text-slate-700 dark:text-slate-300">{collectiveDetailData.summary?.pending ?? 0}</p>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase">Menunggu</p>
+                    </div>
+                  </div>
+
+                  {/* Detail per karyawan */}
+                  <div>
+                    <p className="text-xs font-bold text-slate-700 dark:text-slate-200 mb-2">Daftar Karyawan</p>
+                    <div className="border border-slate-100 dark:border-slate-800 rounded-lg overflow-hidden">
+                      <table className="w-full text-xs">
+                        <thead className="bg-slate-50 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800">
+                          <tr>
+                            <th className="py-2 px-3 text-left font-semibold text-slate-500">Karyawan</th>
+                            <th className="py-2 px-3 text-left font-semibold text-slate-500">Dept</th>
+                            <th className="py-2 px-3 text-center font-semibold text-slate-500">Saldo</th>
+                            <th className="py-2 px-3 text-center font-semibold text-slate-500">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-50 dark:divide-slate-800">
+                          {(collectiveDetailData.employees ?? []).length === 0 ? (
+                            <tr>
+                              <td colSpan={4} className="text-center py-6 text-slate-400">Tidak ada data.</td>
+                            </tr>
+                          ) : (collectiveDetailData.employees ?? []).map((e: any) => (
+                            <tr key={e.user_id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                              <td className="py-2 px-3 font-semibold text-slate-700 dark:text-slate-200">{e.user_name}</td>
+                              <td className="py-2 px-3 text-slate-500">{e.department ?? '—'}</td>
+                              <td className="py-2 px-3 text-center text-slate-600 dark:text-slate-300">
+                                {e.remaining ?? e.quota - e.used} hari
+                              </td>
+                              <td className="py-2 px-3 text-center">
+                                <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                  e.collective_status === 'accepted'
+                                    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
+                                    : e.collective_status === 'declined'
+                                      ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400'
+                                      : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                                }`}>
+                                  {e.collective_status === 'accepted' ? 'Ikut' : e.collective_status === 'declined' ? 'Tidak' : 'Pending'}
+                                </span>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <p className="text-center text-xs text-slate-400 py-8">Gagal memuat data.</p>
+              )}
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 dark:border-slate-800 flex justify-end">
+              <button
+                onClick={() => { setCollectiveDetailHoliday(null); setCollectiveDetailData(null); }}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-bold transition"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

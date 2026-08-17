@@ -1213,11 +1213,13 @@ interface BulkModalProps {
   userIds: number[];
   userNames: string[];
   shifts: ShiftTemplate[];
+  /** ID attendance_setting (cabang) dari karyawan yang dipilih — untuk filter dropdown shift */
+  selectedBranchIds: Set<number>;
   onClose: () => void;
   onSaved: () => void;
 }
 
-function BulkAssignModal({ userIds, userNames, shifts, onClose, onSaved }: BulkModalProps) {
+function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClose, onSaved }: BulkModalProps) {
   const [shiftId, setShiftId] = useState<string>('');
   const [startDate, setStartDate] = useState(todayStr());
   const [endDate, setEndDate] = useState(''); // kosong = tanpa batas waktu
@@ -1225,6 +1227,19 @@ function BulkAssignModal({ userIds, userNames, shifts, onClose, onSaved }: BulkM
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [result, setResult] = useState<{ success: number; skipped: { name?: string; reason: string }[] } | null>(null);
+
+  // Filter shift: hanya tampilkan shift yang cocok dengan cabang karyawan yang dipilih.
+  // Shift company-wide (attendance_setting_id null) selalu ditampilkan karena berlaku untuk semua cabang.
+  // Jika selectedBranchIds kosong (karyawan belum ada cabang), tampilkan semua shift aktif.
+  const availableShifts = useMemo(() => {
+    return shifts.filter((s) =>
+      s.is_active && (
+        !s.attendance_setting_id ||                            // company-wide → tampilkan untuk semua
+        selectedBranchIds.size === 0 ||                        // belum ada cabang terpilih → tampilkan semua
+        selectedBranchIds.has(s.attendance_setting_id)         // cabang shift cocok dengan cabang karyawan
+      ),
+    );
+  }, [shifts, selectedBranchIds]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1299,14 +1314,16 @@ function BulkAssignModal({ userIds, userNames, shifts, onClose, onSaved }: BulkM
                   className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
                 >
                   <option value="" disabled>— Pilih Shift —</option>
-                  {shifts.filter((s) => s.is_active).map((s) => (
+                  {availableShifts.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name}{s.office ? ` — ${s.office.office_name}` : ' — Semua cabang'}
                     </option>
                   ))}
                 </select>
                 <p className="text-[10px] text-slate-400 mt-1">
-                  Karyawan dari cabang berbeda dengan shift akan otomatis dilewati.
+                  {selectedBranchIds.size > 0
+                    ? 'Menampilkan shift milik cabang karyawan yang dipilih dan shift yang berlaku untuk semua cabang.'
+                    : 'Menampilkan semua shift aktif.'}
                 </p>
               </div>
 
@@ -2584,6 +2601,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           userIds={Array.from(selected)}
           userNames={selectedNames}
           shifts={shifts}
+          selectedBranchIds={selectedBranchIds}
           onClose={() => { setShowBulk(false); }}
           onSaved={() => { loadRoster(); }}
         />

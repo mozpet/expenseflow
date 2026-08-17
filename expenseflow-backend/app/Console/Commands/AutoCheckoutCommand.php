@@ -205,7 +205,8 @@ class AutoCheckoutCommand extends Command
 
         // Tentukan hari libur/weekend menurut kalender (libur nasional/weekend).
         // Dipakai untuk field is_holiday — samakan persis dengan checkOut() manual.
-        $isNationalNonWorking = $this->isNonWorkingDay($attDate, $attendance->company_id);
+        // Pass user_id agar cuti bersama yang di-decline tidak dianggap hari libur.
+        $isNationalNonWorking = $this->isNonWorkingDay($attDate, $attendance->company_id, $attendance->user_id);
 
         // Hitung overtime (sadar shift) — angka lembur konsisten dengan checkOut manual
         $overtimeMinutes = $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking);
@@ -317,17 +318,41 @@ class AutoCheckoutCommand extends Command
     }
 
     // ─── Helper: apakah tanggal hari libur / weekend ──────────────────────────
-    private function isNonWorkingDay(string $date, ?int $companyId): bool
+    // Bug #3 Fix: Cuti bersama (is_collective=true) hanya dianggap libur bagi karyawan
+    // yang ACCEPTED. Karyawan yang declined tetap masuk kerja hari itu seperti biasa.
+    private function isNonWorkingDay(string $date, ?int $companyId, ?int $userId = null): bool
     {
         if (Carbon::parse($date)->isWeekend()) {
             return true;
         }
-        return DB::table('holidays')
+
+        $matchingHolidays = DB::table('holidays')
             ->whereDate('date', $date)
             ->where(function ($q) use ($companyId) {
                 $q->whereNull('company_id')->orWhere('company_id', $companyId);
             })
-            ->exists();
+            ->get(['id', 'is_collective']);
+
+        foreach ($matchingHolidays as $holiday) {
+            // Untuk cuti bersama: hanya anggap libur jika karyawan memang ACCEPTED.
+            if ($holiday->is_collective && $userId) {
+                $accepted = DB::table('leave_requests')
+                    ->where('holiday_id', $holiday->id)
+                    ->where('user_id', $userId)
+                    ->where('collective_status', 'accepted')
+                    ->exists();
+                if ($accepted) {
+                    return true;
+                }
+                // Declined / pending → bukan libur untuk karyawan ini
+                continue;
+            }
+
+            // Libur nasional atau libur perusahaan biasa → libur untuk semua
+            return true;
+        }
+
+        return false;
     }
 
     // ─── Helper: hitung menit lembur (sadar shift, sama dengan AttendanceController) ───────

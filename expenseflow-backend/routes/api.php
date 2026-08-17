@@ -176,6 +176,9 @@ Route::prefix('v1')->group(function () {
             Route::match(['put', 'patch'], '/holidays/{holiday}', [AttendanceController::class, 'updateHolidays']);
             Route::delete('/holidays/{holiday}', [AttendanceController::class, 'destroyHolidays']);
 
+            // Rekap opt-in karyawan per cuti bersama (HRD)
+            Route::get('/collective-leaves/{holiday}/detail', [AttendanceController::class, 'collectiveLeaveDetail']);
+
             // Approval lembur karyawan (sistem auto-checkout & reminder)
             Route::get('/overtime-approvals', [AttendanceController::class, 'listOvertimeApprovals']);
             Route::post('/overtime-approvals/{id}/approve', [AttendanceController::class, 'approveOvertime']);
@@ -244,9 +247,11 @@ Route::prefix('v1')->group(function () {
             // Notifikasi shift baru (Flutter: banner di beranda)
             Route::get('/shift-updates', [ShiftController::class, 'shiftUpdates']);
             Route::post('/dismiss-shift-update', [ShiftController::class, 'dismissShiftUpdate']);
-            // Kalender jadwal kerja bulanan karyawan — menampilkan jadwal per-hari
-            // berdasarkan tanggal yang dilihat, bukan "shift aktif hari ini".
-            // Solusi masalah: perubahan jadwal HRD langsung terlihat di kalender.
+            // Kalender jadwal kerja bulanan karyawan
             Route::get('/my-schedule-calendar', [ShiftController::class, 'myScheduleCalendar']);
+
+            // Cuti Bersama — karyawan lihat & pilih ikut/tidak
+            Route::get('/collective-leaves', [AttendanceController::class, 'listCollectiveLeaves']);
+            Route::post('/collective-leave/{holiday}/respond', [AttendanceController::class, 'respondCollectiveLeave']);
         });
 });

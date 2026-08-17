@@ -989,6 +989,28 @@ $validated = $request->validate([
    > "⚠️ Anda mengubah Jam Kerja / Lokasi GPS / Auto-Checkout. Perubahan ini akan mempengaruhi perhitungan presensi & Auto-Checkout karyawan yang aktif hari ini. Lanjutkan?"
 3. **Subscribe Notifikasi**: Kirim notifikasi (DB + FCM) ke seluruh HRD/Admin saat pengaturan kantor diubah, agar perubahan bisa diaudit.
 
-masih ada bug di assign massal pada roster harian
-peingatan cuti yagn sama jadwalnya hanya di cabang yang sama
-tambahkan di pengaturan edit kantor bahwa cuti bisa edit oleh orang
+masih ada bug di assign massal pada roster harian --selesai
+peingatan cuti yagn sama jadwalnya hanya di cabang yang sama --selesai
+fitur yang di tambah:
+1. tambahkan di pengaturan edit kantor bahwa cuti bisa edit oleh orang
+
+bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceManagmenet.tsx, HRD memilih tangal cuti bersama, lalu masuk ke mobile setiap karyawan, karyawan dai kasih pilihan mau ikut atau tidak, jika ikut saldo cuti terpakai, jika tidak masuk sesuai jadwal:
+1. ada bug view kalender di web, seharusnya view cuti bersama di cabang x hanya terlihat oleh cabang x saja
+   --selesai ✅
+2. bug pending, seharusnya jumlah pending ada, karyawan yang dalam cabang tersebut belum respon pada cuti bersama
+   ✅ SELESAI 2026-08-16 — collective_summary.pending kini dihitung dari total karyawan aktif di
+   cabang (attendance_enabled=true) dikurangi accepted & declined; bukan dari leave_requests saja.
+   Ditambah field `total` di collective_summary untuk transparansi -- selesai
+3. bug, cuti bersama kenapa menjadi libur bersama, user yang tidak ikut cuti bersama akan masuk serperti hari normal sesuai jadwal
+   ✅ SELESAI 2026-08-17 — `isNonWorkingDay()` di AttendanceController & AutoCheckoutCommand sudah fix.
+   Lalu method `today()`, `monthlySummary()`, `reportAttendance()`, dan `countWorkingDays()`
+   diperbaiki agar tidak menganggap cuti bersama sebagai hari libur default. Sekarang hanya menganggap libur
+   jika karyawan mempunyai leave_request dengan collective_status='accepted'. Karyawan yang declined/pending
+   tetap diperlakukan sebagai hari kerja normal (is_holiday=false, lembur & early_leave dihitung normal).
+4. bug pada pengaturan edit kantor tentang regulasi cuti pada setiap kantor
+   ✅ SELESAI 2026-08-16 — respondCollectiveLeave(): policy sebelumnya selalu diambil dari kantor
+   pertama perusahaan (::where('company_id',...)->first()). Diperbaiki: gunakan
+   $user->attendance_setting_id dengan fallback ke kantor pertama jika belum di-assign.
+
+# note untuk refaktoring
+perbaiki dulu error di atas , 

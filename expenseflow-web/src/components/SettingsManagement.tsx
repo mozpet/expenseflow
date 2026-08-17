@@ -125,6 +125,7 @@ const OfficesTab: React.FC<{
     enforce_weekly_hours: false,
     max_weekly_hours: 40,
     shift_notice_days: 0,
+    collective_leave_policy: 'block',
     custom_schedules: {} as Record<number, { start: string; end: string }>,
   };
   const [showForm, setShowForm] = useState(false);
@@ -154,6 +155,7 @@ const OfficesTab: React.FC<{
       enforce_weekly_hours: o.enforce_weekly_hours ?? false,
       max_weekly_hours: o.max_weekly_hours ?? 40,
       shift_notice_days: o.shift_notice_days ?? 0,
+      collective_leave_policy: o.collective_leave_policy ?? 'block',
       custom_schedules: o.custom_schedules ?? {},
     });
     setEditId(o.id);
@@ -243,6 +245,7 @@ const OfficesTab: React.FC<{
         enforce_weekly_hours: !!form.enforce_weekly_hours,
         max_weekly_hours: form.enforce_weekly_hours ? Number(form.max_weekly_hours) : null,
         shift_notice_days: Number(form.shift_notice_days ?? 0),
+        collective_leave_policy: form.collective_leave_policy ?? 'block',
         custom_schedules: form.custom_schedules,
       };
       if (editId) {
@@ -667,6 +670,25 @@ const OfficesTab: React.FC<{
                 />
                 <p className="text-[9px] text-slate-400">
                   0 = tidak ada batas. HRD akan mendapat peringatan (warning) jika assign/mengubah shift kurang dari N hari sebelum tanggal berlaku.
+                </p>
+              </div>
+
+              {/* Kebijakan Saldo Cuti Bersama */}
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">
+                  Kebijakan Saldo Cuti Bersama
+                </label>
+                <select
+                  value={form.collective_leave_policy ?? 'block'}
+                  onChange={(e) => setForm({ ...form, collective_leave_policy: e.target.value })}
+                  className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 text-xs font-semibold"
+                >
+                  <option value="block">Blokir — tolak jika saldo cuti karyawan habis</option>
+                  <option value="debt">Hutang Cuti — izinkan meski saldo habis (saldo menjadi negatif)</option>
+                  <option value="free">Gratis — cuti bersama tidak memotong saldo cuti sama sekali</option>
+                </select>
+                <p className="text-[9px] text-slate-400">
+                  Menentukan perilaku pemotongan saldo saat karyawan memilih untuk ikut Cuti Bersama.
                 </p>
               </div>
             </div>

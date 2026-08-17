@@ -20,6 +20,8 @@ class LeaveRequest extends Model
         'approved_by',
         'approved_at',
         'rejection_reason',
+        'holiday_id',
+        'collective_status',
     ];
 
     protected function casts(): array
@@ -45,5 +47,10 @@ class LeaveRequest extends Model
     public function approver(): BelongsTo
     {
         return $this->belongsTo(User::class, 'approved_by');
+    }
+
+    public function holiday(): BelongsTo
+    {
+        return $this->belongsTo(Holiday::class);
     }
 }

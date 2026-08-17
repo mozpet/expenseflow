@@ -1,0 +1,364 @@
+❯ saya mengetest menambahkan cuti bersama mengapa di mobile flutter pada bagian 
+  home page belum ada bennernya sekarang tanggal 15 saya tambah cuit di         
+  tanggal 18 seharusnya sudah ada benner di mobile sisah waktu memilih h-3      
+
+  Read 1 file (ctrl+o to expand)
+
+● Mari periksa mengapa banner belum muncul di Flutter mobile:
+  1. Di backend API listCollectiveLeaves(), logic show_banner sudah
+  mengembalikan true jika tanggal cuti <= hari ini + 7 hari dan status masih
+  pending.
+  2. TAPI di Flutter mobile, widget banner Cuti Bersama belum ditambahkan ke 
+  dalam file home_screen.dart atau provider Flutter!
+
+  Mari cek home_screen.dart dan Flutter provider di mobile untuk melihat apakah
+  Flutter sudah memanggil API listCollectiveLeaves dan menampilkan bannernya.
+
+  Mari grep collective di expenseflow-mobile:
+
+  Searched for 1 pattern (ctrl+o to expand)
+
+● Penyebabnya ketemu! Di backend API listCollectiveLeaves sudah siap dan benar
+  mengembalikan show_banner: true untuk H-3 (karena 18 <= 15 + 7), tetapi di
+  Flutter mobile (expenseflow-mobile) belum dibuatkan Provider & Widget Banner 
+  UI-nya!
+
+  Mari buatkan Provider & Widget UI Banner Cuti Bersama di Flutter mobile
+  sekarang agar banner Cuti Bersama muncul di home page mobile saat karyawan
+  membuka aplikasi.
+
+  Buat task list:
+
+● API Error: 400 [429]: 
+  {"type":"error","error":{"type":"FreeUsageLimitError","message":"Error
+  from provider (Console): Rate limit exceeded. Please try again 
+  later."}}
+
+✻ Cooked for 10m 33s
+❯ lanjutkan                                                                     
+
+● API Error: 410 [429]: 
+  {"type":"error","error":{"type":"FreeUsageLimitError","message":"Error
+  from provider (Console): Rate limit exceeded. Please try again 
+  later."}}
+
+✻ Cooked for 1s
+
+❯ lanjutkan                                                                     
+
+● API Error: Request rejected (429) · 
+  [nvidia/deepseek-ai/deepseek-v4-flash] [410]: 
+  {"type":"about:blank","title":"Gone","status":410,"detail":"The model 
+  'deepseek-ai/deepseek-v (reset after 30s)
+
+✻ Brewed for 3m 21s
+
+❯ /model                                                                        
+  ⎿  Set model to vidi and saved as your default for new sessions
+
+❯ lanjutkan                                                                     
+
+  Thought for 17s, searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Betul, penyebab banner belum muncul karena di Flutter mobile belum ada kode
+  yang memanggil endpoint GET /api/v1/attendance/collective-leaves dan belum ada
+  widget banner di HomeScreen. Saya lanjutkan implementasi mobile-nya sekarang.
+
+  Thought for 5s, searched for 2 patterns, read 1 file (ctrl+o to expand)
+
+● Start task #7.
+
+● Baca api_service.dart dan presensi_provider.dart:
+
+  Thought for 8s, read 2 files (ctrl+o to expand)
+
+● Saya akan tambahkan integrasi Flutter: method API, state provider, lalu banner
+  Yes/No di home_screen.dart.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\services\api_service
+        .dart)
+  ⎿  Added 18 lines
+      326          query: {'year': year.toString()});
+      327    }
+      328  
+      329 +  // ─── Cuti Bersama ────────────────────────────────────────
+          +───                                                           
+      330 +  /// Daftar cuti bersama mendatang + status pilihan karyawan 
+          +login.                                                        
+      331 +  static Future<Map<String, dynamic>> collectiveLeaves() async
+          + {                                                            
+      332 +    return _request('GET', '/attendance/collective-leaves');  
+      333 +  }                                                           
+      334 +                                                              
+      335 +  /// Pilih ikut / tidak ikut cuti bersama.                   
+      336 +  static Future<Map<String, dynamic>> respondCollectiveLeave( 
+      337 +    int holidayId,                                            
+      338 +    String response,                                          
+      339 +  ) async {                                                   
+      340 +    return _request(                                          
+      341 +      'POST',                                                 
+      342 +      '/attendance/collective-leave/$holidayId/respond',      
+      343 +      body: {'response': response},                           
+      344 +    );                                                        
+      345 +  }                                                           
+      346 +                                                              
+      347    // ─── Presensi — status & auto-checkout ───────────────────
+           ───
+      348    /// Cek status presensi hari ini + jadwal auto-checkout dari
+            backend.
+      349    /// Response: {checked_in, checked_out, attendance, schedule
+           d_auto_checkout_at, overtime_approval}
+
+● Sekarang tambahkan model CollectiveLeaveRecord dan state di PresensiProvider:
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\presensi_provider.da
+        rt)
+  ⎿  Added 35 lines
+      138    });
+      139  }
+      140  
+      141 +class CollectiveLeaveRecord {                                 
+      142 +  final int id;                                               
+      143 +  final String date;                                          
+      144 +  final String name;                                          
+      145 +  final int totalDays;                                        
+      146 +  final String collectiveStatus; // pending | accepted | decli
+          +ned                                                           
+      147 +  final int remainingQuota;                                   
+      148 +  final String policy; // block | debt | free                 
+      149 +  final bool showBanner;                                      
+      150 +                                                              
+      151 +  CollectiveLeaveRecord({                                     
+      152 +    required this.id,                                         
+      153 +    required this.date,                                       
+      154 +    required this.name,                                       
+      155 +    required this.totalDays,                                  
+      156 +    required this.collectiveStatus,                           
+      157 +    required this.remainingQuota,                             
+      158 +    required this.policy,                                     
+      159 +    required this.showBanner,                                 
+      160 +  });                                                         
+      161 +                                                              
+      162 +  factory CollectiveLeaveRecord.fromJson(Map<String, dynamic> 
+          +json) {                                                       
+      163 +    return CollectiveLeaveRecord(                             
+      164 +      id: (json['id'] as num?)?.toInt() ?? 0,                 
+      165 +      date: (json['date'] ?? '').toString(),                  
+      166 +      name: (json['name'] ?? '').toString(),                  
+      167 +      totalDays: (json['total_days'] as num?)?.toInt() ?? 0,  
+      168 +      collectiveStatus: (json['collective_status'] ?? 'pending
+          +').toString(),                                                
+      169 +      remainingQuota: (json['remaining_quota'] as num?)?.toInt
+          +() ?? 0,                                                      
+      170 +      policy: (json['policy'] ?? 'block').toString(),         
+      171 +      showBanner: json['show_banner'] == true || json['show_ba
+          +nner'] == 1,                                                  
+      172 +    );                                                        
+      173 +  }                                                           
+      174 +}                                                             
+      175 +                                                              
+      176  class PresensiProvider extends ChangeNotifier {
+      177    // Flag dari backend (diisi setelah login): true = boleh pre
+           sensi WFH via app
+      178    bool wfhEnabled = false;
+
+● Tambah state dan getter collectiveLeaves di provider:
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\presensi_provider.da
+        rt)
+  ⎿  Added 1 line
+      181    final List<LeaveRequestRecord> _leaveRequests = [];
+      182    final List<LeaveBalanceRecord> _leaveBalances = [];
+      183    final List<HolidayRecord> _holidays = [];
+      184 +  final List<CollectiveLeaveRecord> _collectiveLeaves = [];   
+      185  
+      186    String? _todayMasuk;
+      187    String? _todayPulang;
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\presensi_provider.da
+        rt)
+  ⎿  Added 1 line
+      191    bool _loadingBalance = false;
+      192    bool _loadingLeaves = false;
+      193    bool _loadingHolidays = false;
+      194 +  bool _loadingCollectiveLeaves = false;                      
+      195  
+      196    List<PresensiRecord> get records => List.unmodifiable(_recor
+           ds);
+      197    List<LeaveRequestRecord> get leaveRequests =>
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\presensi_provider.da
+        rt)
+  ⎿  Added 8 lines
+      199    List<LeaveBalanceRecord> get leaveBalances =>
+      200        List.unmodifiable(_leaveBalances);
+      201    List<HolidayRecord> get holidays => List.unmodifiable(_holid
+           ays);
+      202 +  List<CollectiveLeaveRecord> get collectiveLeaves =>         
+      203 +      List.unmodifiable(_collectiveLeaves);                   
+      204 +  CollectiveLeaveRecord? get activeCollectiveLeaveBanner {    
+      205 +    for (final item in _collectiveLeaves) {                   
+      206 +      if (item.showBanner && item.collectiveStatus == 'pending
+          +') return item;                                               
+      207 +    }                                                         
+      208 +    return null;                                              
+      209 +  }                                                           
+      210    String? get todayMasuk => _todayMasuk;
+      211    String? get todayPulang => _todayPulang;
+      212    int get todayOvertimeMinutes => _todayOvertimeMinutes;
+
+● Tambah getter loading:
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\presensi_provider.da
+        rt)
+  ⎿  Added 1 line
+      215    bool get loadingBalance => _loadingBalance;
+      216    bool get loadingLeaves => _loadingLeaves;
+      217    bool get loadingHolidays => _loadingHolidays;
+      218 +  bool get loadingCollectiveLeaves => _loadingCollectiveLeaves
+          +;                                                             
+      219  
+      220    bool get canCheckIn => _todayMasuk == null;
+      221    bool get canCheckOut => _todayMasuk != null && _todayPulang 
+           == null;
+
+● Tambah method fetchCollectiveLeaves dan respondCollectiveLeave setelah
+  fetchHolidays:
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\presensi_provider.da
+        rt)
+  ⎿  Added 47 lines
+      609      notifyListeners();
+      610    }
+      611  
+      612 +  // ─── Fetch cuti bersama mendatang ────────────────────────
+          +───                                                           
+      613 +  Future<void> fetchCollectiveLeaves() async {                
+      614 +    _loadingCollectiveLeaves = true;                          
+      615 +    notifyListeners();                                        
+      616 +    try {                                                     
+      617 +      final res = await ApiService.collectiveLeaves();        
+      618 +      final list = (res['collective_leaves'] as List?) ?? []; 
+      619 +      _collectiveLeaves                                       
+      620 +        ..clear()                                             
+      621 +        ..addAll(                                             
+      622 +          list.map((e) => CollectiveLeaveRecord.fromJson(     
+      623 +                (e as Map).cast<String, dynamic>(),           
+      624 +              )),                                             
+      625 +        );                                                    
+      626 +    } catch (e, st) {                                         
+      627 +      debugPrint('[PresensiProvider] fetchCollectiveLeaves err
+          +or: $e');                                                     
+      628 +      debugPrint('$st');                                      
+      629 +    }                                                         
+      630 +    _loadingCollectiveLeaves = false;                         
+      631 +    notifyListeners();                                        
+      632 +  }                                                           
+      633 +                                                              
+      634 +  /// Response cuti bersama: accepted = ikut, declined = tidak
+          + ikut.                                                        
+      635 +  Future<void> respondCollectiveLeave(int holidayId, String re
+          +sponse) async {                                               
+      636 +    final res = await ApiService.respondCollectiveLeave(holida
+          +yId, response);                                               
+      637 +    final status = (res['collective_status'] ?? response).toSt
+          +ring();                                                       
+      638 +    final remaining = (res['remaining_quota'] as num?)?.toInt(
+          +);                                                            
+      639 +                                                              
+      640 +    final idx = _collectiveLeaves.indexWhere((e) => e.id == ho
+          +lidayId);                                                     
+      641 +    if (idx >= 0) {                                           
+      642 +      final old = _collectiveLeaves[idx];                     
+      643 +      _collectiveLeaves[idx] = CollectiveLeaveRecord(         
+      644 +        id: old.id,                                           
+      645 +        date: old.date,                                       
+      646 +        name: old.name,                                       
+      647 +        totalDays: old.totalDays,                             
+      648 +        collectiveStatus: status,                             
+      649 +        remainingQuota: remaining ?? old.remainingQuota,      
+      650 +        policy: old.policy,                                   
+      651 +        showBanner: false,                                    
+      652 +      );                                                      
+      653 +    }                                                         
+      654 +                                                              
+      655 +    await fetchLeaveBalance();                                
+      656 +    notifyListeners();                                        
+      657 +  }                                                           
+      658 +                                                              
+      659    // ─── Utility Methods ─────────────────────────────────────
+           ───────────────────
+      660  
+      661    static int _calculateLateMinutes(String? checkInStr, String?
+            status) {
+
+● Sekarang update home_screen.dart agar:
+  1. initState() memanggil PresensiProvider.fetchCollectiveLeaves()
+  2. didChangeAppLifecycleState(resumed) juga refresh.
+  3. _buildBerandaTab menggunakan Consumer3<AuthProvider, ShiftProvider, 
+  PresensiProvider> supaya akses provider presensi.
+  4. Tambahkan banner cuti bersama di atas shift banner atau setelah dept.
+
+  Lakukan import ApiException agar bisa tampil pesan error? home_screen.dart
+  belum import service. Bisa tangkap error via provider method throws?
+  respondCollectiveLeave throws ApiException jika gagal, jadi import
+  ../services/api_service.dart.
+
+  Edit.
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\screens\home_screen.
+        dart)
+  ⎿  Added 1 line
+       9  import '../providers/auth_provider.dart';
+      10  import '../providers/receipt_provider.dart';
+      11  import '../providers/shift_provider.dart';
+      12 +import '../services/api_service.dart';                         
+      13  
+      14  class HomeScreen extends StatefulWidget {
+      15    final String userName;
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\screens\home_screen.
+        dart)  ⎿  Added 5 lines, removed 2 lines
+      36          listen: false,
+      37        ).checkShiftUpdates();
+      38        // Sync status presensi saat pertama buka app
+      39 -      Provider.of<PresensiProvider>(                           
+      39 +      final presensiProv = Provider.of<PresensiProvider>(      
+      40          context,
+      41          listen: false,
+      42 -      ).syncStatusFromBackend();                               
+      42 +      );                                                       
+      43 +      presensiProv.syncStatusFromBackend();                    
+      44 +      // Cek cuti bersama H-7 → tampilkan banner Ya/Tidak di be
+         +randa                                                          
+      45 +      presensiProv.fetchCollectiveLeaves();                    
+      46      });
+      47    }
+      48  
+
+● Update(E:\koding\coba\backend-gawe\expenseflow-mobile\lib\screens\home_screen.
+        dart)
+  ⎿  Added 4 lines, removed 2 lines
+      56    void didChangeAppLifecycleState(AppLifecycleState state) {
+      57      // Saat app kembali ke foreground, cek apakah ada auto-chec
+          kout dari backend
+      58      if (state == AppLifecycleState.resumed) {
+      59 -      Provider.of<PresensiProvider>(                           
+      59 +      final presensiProv = Provider.of<PresensiProvider>(      
+      60          context,
+      61          listen: false,
+      62 -      ).syncStatusFromBackend();                               
+      62 +      );                                                       
+      63 +      presensiProv.syncStatusFromBackend();                    
+      64 +      presensiProv.fetchCollectiveLeaves();                    
+      65      }
+      66    }
+      67  
+
+● API Error: 400 [kiro/claude-sonnet-4.5] [400]: {"message":"Improperly 
+  formed request.","reason":"REQUEST_BODY_INVALID"} (reset after 2m)
+
+✻ Cogitated for 4m 43s
+
+❯ lanjutkan                                                                     
+

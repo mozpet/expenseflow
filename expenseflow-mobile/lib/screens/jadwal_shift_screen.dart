@@ -416,12 +416,14 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                   duration: const Duration(milliseconds: 150),
                   height: 52,
                   margin: const EdgeInsets.all(1.5),
-                  decoration: BoxDecoration(
-                    color: isSelected
-                        ? cellColor.withValues(alpha: 0.12)
-                        : isOff
-                            ? Colors.red.shade50.withValues(alpha: 0.5)
-                            : Colors.transparent,
+                    decoration: BoxDecoration(
+                      color: isSelected
+                          ? cellColor.withValues(alpha: 0.12)
+                          : (calDay?.shiftName == 'Cuti Bersama')
+                              ? cellColor.withValues(alpha: 0.2)
+                              : isOff
+                                  ? Colors.red.shade50.withValues(alpha: 0.5)
+                                  : Colors.transparent,
                     borderRadius: BorderRadius.circular(10),
                     border: Border.all(
                       color: isSelected
@@ -453,9 +455,11 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                             fontWeight: FontWeight.w600,
                             color: isToday
                                 ? Colors.white
-                                : isOff
-                                    ? Colors.red.shade400
-                                    : Colors.grey.shade800,
+                                : (calDay?.shiftName == 'Cuti Bersama')
+                                    ? Colors.orange.shade800
+                                    : isOff
+                                        ? Colors.red.shade400
+                                        : Colors.grey.shade800,
                           ),
                         ),
                       ),
@@ -473,7 +477,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                 color: Colors.purple.shade600,
                               ),
                             ),
-                          if (isOff)
+                          if (calDay?.shiftName == 'Cuti Bersama')
+                            Text('CUTI',
+                                style: TextStyle(
+                                    fontSize: 8,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.orange.shade800))
+                          else if (isOff)
                             Text('OFF',
                                 style: TextStyle(
                                     fontSize: 8,

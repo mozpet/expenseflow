@@ -2308,6 +2308,16 @@ class ShiftController extends Controller
                 ->orderBy('id')
                 ->first();
 
+        // Ambil cuti bersama yang sudah di-accept bulan ini
+        $collectiveLeaves = \App\Models\LeaveRequest::where('user_id', $user->id)
+            ->whereNotNull('holiday_id')
+            ->where('collective_status', 'accepted')
+            ->join('holidays', 'leave_requests.holiday_id', '=', 'holidays.id')
+            ->whereBetween('holidays.date', [$startOfMonth->toDateString(), $endOfMonth->toDateString()])
+            ->pluck('holidays.date')
+            ->map(fn ($d) => \Carbon\Carbon::parse($d)->toDateString())
+            ->flip();
+
         $days = [];
         $current = $startOfMonth->copy();
 
@@ -2323,6 +2333,9 @@ class ShiftController extends Controller
                 fn ($a) => $a->start_date->toDateString() <= $dateStr
                     && ($a->end_date === null || $a->end_date->toDateString() >= $dateStr)
             );
+
+            $isCollectiveLeave = $collectiveLeaves->has($dateStr);
+            $overrideColor = $isCollectiveLeave ? '#FACC15' : null;
 
             // Tentukan jadwal untuk tanggal ini berdasarkan assignment yang berlaku
             if ($active && $active->shift_id && $active->shift && $active->shift->is_active) {
@@ -2342,11 +2355,11 @@ class ShiftController extends Controller
                     $days[$dateStr] = [
                         'source'          => 'shift',
                         'shift_id'        => $active->shift_id,
-                        'shift_name'      => $active->shift->name,
-                        'color'           => $active->shift->color ?? '#6366f1',
+                        'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama' : $active->shift->name,
+                        'color'           => $overrideColor ?? ($active->shift->color ?? '#6366f1'),
                         'work_start_time' => $isOff ? null : $shiftSchedule->work_start_time,
                         'work_end_time'   => $isOff ? null : $shiftSchedule->work_end_time,
-                        'is_off'          => $isOff,
+                        'is_off'          => $isCollectiveLeave ? true : $isOff,
                         'is_wfh'          => $isWfh,
                         'is_field'        => $isField,
                         'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
@@ -2371,11 +2384,11 @@ class ShiftController extends Controller
                 $days[$dateStr] = [
                     'source'          => 'office',
                     'shift_id'        => null,
-                    'shift_name'      => null,
-                    'color'           => null,
+                    'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama' : null,
+                    'color'           => $overrideColor,
                     'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
                     'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
-                    'is_off'          => $isOff,
+                    'is_off'          => $isCollectiveLeave ? true : $isOff,
                     'is_wfh'          => false,
                     'is_field'        => false,
                     'is_cross_day'    => false,
@@ -2385,11 +2398,11 @@ class ShiftController extends Controller
                 $days[$dateStr] = [
                     'source'          => 'none',
                     'shift_id'        => null,
-                    'shift_name'      => null,
-                    'color'           => null,
+                    'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama' : null,
+                    'color'           => $overrideColor,
                     'work_start_time' => null,
                     'work_end_time'   => null,
-                    'is_off'          => false,
+                    'is_off'          => $isCollectiveLeave ? true : false,
                     'is_wfh'          => false,
                     'is_field'        => false,
                     'is_cross_day'    => false,

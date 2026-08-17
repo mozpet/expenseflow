@@ -128,39 +128,94 @@ class AttendanceController extends Controller
 
     // ─── Helper: apakah tanggal bukan hari kerja (weekend atau libur) ────
     //     Dipakai untuk perhitungan lembur & total hari cuti.
-    //     Libur cocok bila `company_id` sama dengan perusahaan ATAU libur nasional (NULL).
-    private function isNonWorkingDay(string $date, ?int $companyId): bool
+    //     Libur cocok bila libur nasional (company_id NULL) ATAU milik company yang sama
+    //     DAN (attendance_setting_id NULL [semua cabang] ATAU cocok dengan cabang user).
+    //
+    //     Bug #3 Fix: Cuti bersama (is_collective=true) bukan libur kalender biasa.
+    //     Hanya dianggap sebagai hari libur bagi karyawan yang memang ACCEPTED.
+    //     Karyawan yang declined tetap masuk kerja → hari itu adalah hari kerja normal.
+    //     Jika $userId diisi, cuti bersama yang declined akan dilewati.
+    private function isNonWorkingDay(string $date, ?int $companyId, ?int $officeId = null, ?int $userId = null): bool
     {
         if (Carbon::parse($date)->isWeekend()) {
             return true;
         }
 
-        return Holiday::whereDate('date', $date)
+        // Ambil semua holiday yang cocok untuk tanggal & perusahaan/cabang ini
+        $matchingHolidays = Holiday::whereDate('date', $date)
             ->where(function ($q) use ($companyId) {
                 $q->whereNull('company_id')->orWhere('company_id', $companyId);
             })
-            ->exists();
+            ->where(function ($q) use ($officeId) {
+                $q->whereNull('attendance_setting_id');
+                if ($officeId) {
+                    $q->orWhere('attendance_setting_id', $officeId);
+                }
+            })
+            ->get(['id', 'is_collective']);
+
+        foreach ($matchingHolidays as $holiday) {
+            // Untuk cuti bersama: hanya anggap libur jika karyawan memang ACCEPTED.
+            // Karyawan yang declined tetap masuk kerja sesuai jadwal normal.
+            if ($holiday->is_collective && $userId) {
+                $accepted = \App\Models\LeaveRequest::where('holiday_id', $holiday->id)
+                    ->where('user_id', $userId)
+                    ->where('collective_status', 'accepted')
+                    ->exists();
+                if ($accepted) {
+                    return true;
+                }
+                // Declined / pending → bukan libur untuk karyawan ini, lanjut cek holiday lain
+                continue;
+            }
+
+            // Libur nasional atau libur perusahaan biasa (bukan cuti bersama) → libur untuk semua
+            return true;
+        }
+
+        return false;
     }
 
     // ─── Helper: hitung jumlah HARI KERJA dalam rentang (inklusif) ────
     //     Lewati weekend & libur. Dipakai saat pengajuan cuti agar kuota adil.
-    private function countWorkingDays(Carbon $start, Carbon $end, ?int $companyId): int
+    private function countWorkingDays(Carbon $start, Carbon $end, ?int $companyId, ?int $officeId = null, ?int $userId = null): int
     {
         // Ambil daftar libur dalam rentang sekali query (hindari N+1).
         $holidays = Holiday::whereBetween('date', [$start->toDateString(), $end->toDateString()])
             ->where(function ($q) use ($companyId) {
                 $q->whereNull('company_id')->orWhere('company_id', $companyId);
             })
+            ->where(function ($q) use ($officeId) {
+                $q->whereNull('attendance_setting_id');
+                if ($officeId) {
+                    $q->orWhere('attendance_setting_id', $officeId);
+                }
+            })
+            ->get(['id', 'date', 'is_collective']);
+
+        $regularHolidays = $holidays->where('is_collective', false)
             ->pluck('date')
             ->map(fn ($d) => Carbon::parse($d)->toDateString())
             ->flip();
+
+        $acceptedCollectiveLeaves = collect();
+        if ($userId && $holidays->where('is_collective', true)->isNotEmpty()) {
+            $acceptedCollectiveLeaves = \App\Models\LeaveRequest::where('user_id', $userId)
+                ->where('collective_status', 'accepted')
+                ->whereIn('holiday_id', $holidays->where('is_collective', true)->pluck('id'))
+                ->join('holidays', 'leave_requests.holiday_id', '=', 'holidays.id')
+                ->pluck('holidays.date')
+                ->map(fn ($d) => Carbon::parse($d)->toDateString())
+                ->flip();
+        }
 
         $count = 0;
         for ($day = $start->copy(); $day->lte($end); $day->addDay()) {
             if ($day->isWeekend()) {
                 continue;
             }
-            if ($holidays->has($day->toDateString())) {
+            $ds = $day->toDateString();
+            if ($regularHolidays->has($ds) || $acceptedCollectiveLeaves->has($ds)) {
                 continue;
             }
             $count++;
@@ -478,7 +533,8 @@ class AttendanceController extends Controller
             ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('leave_requests.user_id', $u))
             ->select([
                 'leave_requests.id', 'leave_requests.user_id', 'users.name as user_name',
-                'users.department', 'leave_requests.leave_type', 'leave_requests.start_date',
+                'users.department', 'users.attendance_setting_id',
+                'leave_requests.leave_type', 'leave_requests.start_date',
                 'leave_requests.end_date', 'leave_requests.total_days', 'leave_requests.reason',
                 'leave_requests.document_path',
                 'leave_requests.status', 'leave_requests.rejection_reason',
@@ -582,11 +638,22 @@ class AttendanceController extends Controller
         $leaveList = [];
 
         // Cek apakah hari ini libur nasional/perusahaan
-        $todayHoliday = \App\Models\Holiday::whereDate('date', $today)
+        $holidaysToday = \App\Models\Holiday::whereDate('date', $today)
             ->where(function ($q) use ($actor) {
                 $q->whereNull('company_id')
                   ->orWhere('company_id', $actor->company_id);
-            })->exists();
+            })->get(['id', 'is_collective']);
+
+        $regularHoliday = $holidaysToday->where('is_collective', false)->isNotEmpty();
+        $collectiveHolidayIds = $holidaysToday->where('is_collective', true)->pluck('id');
+
+        $acceptedCollectiveLeaveUserIds = [];
+        if ($collectiveHolidayIds->isNotEmpty()) {
+            $acceptedCollectiveLeaveUserIds = \App\Models\LeaveRequest::whereIn('holiday_id', $collectiveHolidayIds)
+                ->where('collective_status', 'accepted')
+                ->pluck('user_id')
+                ->toArray();
+        }
 
         foreach ($employees as $emp) {
             $att = $attendances[$emp->id] ?? null;
@@ -625,7 +692,8 @@ class AttendanceController extends Controller
 
                 $isOff = false;
                 if ($empModel) {
-                    if ($todayHoliday) {
+                    $isHolidayForUser = $regularHoliday || in_array($empModel->id, $acceptedCollectiveLeaveUserIds);
+                    if ($isHolidayForUser) {
                         $isOff = true;
                     } else {
                         $schedule = \App\Http\Controllers\API\ShiftController::resolveSchedule($empModel, $today);
@@ -807,21 +875,42 @@ class AttendanceController extends Controller
             : $rangeEnd;
 
         // Hari libur nasional + perusahaan dalam bulan ini
-        $holidaySet = Holiday::where(function ($q) use ($target) {
+        $holidays = Holiday::where(function ($q) use ($target) {
                 $q->whereNull('company_id')->orWhere('company_id', $target->company_id);
             })
             ->whereBetween('date', [$rangeStart, $rangeEnd])
+            ->get(['id', 'date', 'is_collective']);
+
+        $regularHolidaySet = $holidays->where('is_collective', false)
             ->pluck('date')
             ->map(fn ($d) => Carbon::parse($d)->format('Y-m-d'))
             ->flip()
             ->all();
+
+        $collectiveHolidays = $holidays->where('is_collective', true);
+        $acceptedCollectiveLeavesSet = [];
+        if ($collectiveHolidays->isNotEmpty()) {
+            $acceptedLeaves = \App\Models\LeaveRequest::whereIn('holiday_id', $collectiveHolidays->pluck('id'))
+                ->where('user_id', $target->id)
+                ->where('collective_status', 'accepted')
+                ->join('holidays', 'leave_requests.holiday_id', '=', 'holidays.id')
+                ->select('holidays.date')
+                ->get();
+            
+            foreach ($acceptedLeaves as $leave) {
+                $dateStr = Carbon::parse($leave->date)->format('Y-m-d');
+                $acceptedCollectiveLeavesSet[$dateStr] = true;
+            }
+        }
 
         // Hitung hari kerja (bukan weekend, bukan libur)
         $workingDays  = 0;
         $cur          = Carbon::parse($rangeStart);
         $until        = Carbon::parse($countUntil);
         while ($cur->lte($until)) {
-            if (! $cur->isWeekend() && ! isset($holidaySet[$cur->format('Y-m-d')])) {
+            $ds = $cur->format('Y-m-d');
+            $isHolidayForUser = isset($regularHolidaySet[$ds]) || isset($acceptedCollectiveLeavesSet[$ds]);
+            if (! $cur->isWeekend() && ! $isHolidayForUser) {
                 $workingDays++;
             }
             $cur->addDay();
@@ -853,7 +942,8 @@ class AttendanceController extends Controller
             $lEnd = Carbon::parse($lr->end_date);
             while ($lCur->lte($lEnd) && $lCur->lte($until)) {
                 $ds = $lCur->format('Y-m-d');
-                if (! $lCur->isWeekend() && ! isset($holidaySet[$ds])) {
+                $isHolidayForUser = isset($regularHolidaySet[$ds]) || isset($acceptedCollectiveLeavesSet[$ds]);
+                if (! $lCur->isWeekend() && ! $isHolidayForUser) {
                     $leaveDatesByType[$lr->leave_type][$ds] = true;
                 }
                 $lCur->addDay();
@@ -957,14 +1047,32 @@ class AttendanceController extends Controller
         }
 
         // 4. Set tanggal libur (nasional + perusahaan) dalam range
-        $holidaySet = Holiday::where(function ($q) use ($companyId) {
+        $holidays = Holiday::where(function ($q) use ($companyId) {
                 $q->whereNull('company_id')->orWhere('company_id', $companyId);
             })
             ->whereBetween('date', [$startDate, $endDate])
+            ->get(['id', 'date', 'is_collective']);
+
+        $regularHolidaySet = $holidays->where('is_collective', false)
             ->pluck('date')
             ->map(fn ($d) => Carbon::parse($d)->format('Y-m-d'))
             ->flip()
             ->all();
+
+        $collectiveHolidays = $holidays->where('is_collective', true);
+        $acceptedCollectiveLeaves = [];
+        if ($collectiveHolidays->isNotEmpty()) {
+            $acceptedLeaves = \App\Models\LeaveRequest::whereIn('holiday_id', $collectiveHolidays->pluck('id'))
+                ->where('collective_status', 'accepted')
+                ->join('holidays', 'leave_requests.holiday_id', '=', 'holidays.id')
+                ->select('leave_requests.user_id', 'holidays.date')
+                ->get();
+            
+            foreach ($acceptedLeaves as $leave) {
+                $dateStr = Carbon::parse($leave->date)->format('Y-m-d');
+                $acceptedCollectiveLeaves[$leave->user_id][$dateStr] = true;
+            }
+        }
 
         // 5. Iterate setiap hari × setiap karyawan → hasilkan baris lengkap
         //    Menggunakan resolveSchedule() per-karyawan agar jadwal shift
@@ -1001,7 +1109,7 @@ class AttendanceController extends Controller
 
         while ($cur->lte($last)) {
             $dateStr   = $cur->format('Y-m-d');
-            $isHoliday = isset($holidaySet[$dateStr]);
+            $isRegularHoliday = isset($regularHolidaySet[$dateStr]);
             $isFuture  = $dateStr > $today;
             $cur->addDay();
 
@@ -1091,7 +1199,8 @@ class AttendanceController extends Controller
                     }
 
                     // Libur nasional/perusahaan juga dianggap libur
-                    if ($isHoliday) {
+                    $isHolidayForUser = $isRegularHoliday || isset($acceptedCollectiveLeaves[$user->id][$dateStr]);
+                    if ($isHolidayForUser) {
                         $isOff = true;
                     }
 
@@ -1114,7 +1223,7 @@ class AttendanceController extends Controller
                             'status'           => 'libur',
                             'late_minutes'     => null,
                             'overtime_minutes' => 0,
-                            'is_holiday'       => $isHoliday,
+                            'is_holiday'       => $isHolidayForUser,
                             'working_minutes'  => null,
                         ];
                         continue;
@@ -1347,6 +1456,8 @@ class AttendanceController extends Controller
             'enforce_weekly_hours'           => 'sometimes|boolean',
             'max_weekly_hours'               => 'sometimes|nullable|integer|min:40|max:168',
             'shift_notice_days'              => 'sometimes|integer|min:0|max:14',
+            // Kebijakan saldo cuti saat karyawan ikut cuti bersama
+            'collective_leave_policy'        => 'sometimes|in:block,debt,free',
             // Validasi custom_schedules (override per hari)
             'custom_schedules'               => 'sometimes|nullable|array',
             'custom_schedules.*.start'       => 'required_with:custom_schedules|date_format:H:i',
@@ -1462,65 +1573,131 @@ class AttendanceController extends Controller
     // listHolidays() — daftar libur (nasional + milik perusahaan), filter tahun opsional
     public function listHolidays(Request $request): JsonResponse
     {
-        $companyId = $request->user()->company_id;
+        $user      = $request->user();
+        $companyId = $user->company_id;
         $year      = $request->query('year', now('Asia/Jakarta')->year);
 
-        $holidays = Holiday::where(function ($q) use ($companyId) {
+        $holidays = Holiday::with('office:id,office_name')
+            ->where(function ($q) use ($companyId) {
                 $q->whereNull('company_id')->orWhere('company_id', $companyId);
             })
             ->whereYear('date', $year)
             ->orderBy('date')
-            ->get(['id', 'company_id', 'date', 'name', 'is_national'])
-            ->map(fn ($h) => [
-                'id'          => $h->id,
-                'date'        => $h->date->toDateString(),
-                'name'        => $h->name,
-                'is_national' => $h->is_national,
-                'scope'       => $h->company_id ? 'perusahaan' : 'nasional',
-            ]);
+            ->get(['id', 'company_id', 'attendance_setting_id', 'date', 'name', 'is_national', 'is_collective'])
+            ->map(function ($h) use ($companyId) {
+                $item = [
+                    'id'                    => $h->id,
+                    'company_id'            => $h->company_id,
+                    'date'                  => $h->date->toDateString(),
+                    'name'                  => $h->name,
+                    'is_national'           => $h->is_national,
+                    'is_collective'         => (bool) $h->is_collective,
+                    'attendance_setting_id' => $h->attendance_setting_id,
+                    'office_name'           => $h->office?->office_name,
+                    'scope'                 => $h->company_id ? ($h->attendance_setting_id ? 'cabang' : 'perusahaan') : 'nasional',
+                ];
+
+                // Untuk cuti bersama: sertakan rekap status opt-in karyawan
+                if ($h->is_collective && $h->company_id) {
+                    $counts = \App\Models\LeaveRequest::where('holiday_id', $h->id)
+                        ->selectRaw('collective_status, count(*) as total')
+                        ->groupBy('collective_status')
+                        ->pluck('total', 'collective_status');
+
+                    $accepted = (int) ($counts['accepted'] ?? 0);
+                    $declined = (int) ($counts['declined'] ?? 0);
+
+                    // Hitung "pending" berdasarkan total karyawan aktif di cabang/perusahaan ini
+                    $expectedTotal = \App\Models\User::where('company_id', $companyId)
+                        ->where('is_active', true)
+                        ->where('attendance_enabled', true)
+                        ->when(
+                            $h->attendance_setting_id,
+                            fn ($q) => $q->where('attendance_setting_id', $h->attendance_setting_id)
+                        )
+                        ->count();
+
+                    $item['collective_summary'] = [
+                        'accepted' => $accepted,
+                        'declined' => $declined,
+                        'pending'  => max(0, $expectedTotal - $accepted - $declined),
+                        'total'    => $expectedTotal,
+                    ];
+                }
+
+                return $item;
+            });
 
         return response()->json(['year' => (int) $year, 'holidays' => $holidays]);
     }
 
-    // storeHolidays() — tambah libur khusus perusahaan (mis. cuti bersama internal)
+    // storeHolidays() — tambah libur khusus perusahaan/cabang (mis. cuti bersama internal)
     public function storeHolidays(Request $request): JsonResponse
     {
         $user      = $request->user();
         $companyId = $user->company_id;
 
         $validated = $request->validate([
-            'date' => 'required|date',
-            'name' => 'required|string|max:255',
+            'date'                  => 'required|date',
+            'name'                  => 'required|string|max:255',
+            'is_collective'         => 'boolean', // true = Cuti Bersama (saldo terpotong)
+            'attendance_setting_id' => 'nullable|integer|exists:attendance_settings,id',
         ]);
 
-        $date = Carbon::parse($validated['date'])->toDateString();
+        $date         = Carbon::parse($validated['date'])->toDateString();
+        $isCollective = (bool) ($validated['is_collective'] ?? false);
+        $officeId     = ! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null;
 
-        // Cegah duplikat pada scope perusahaan yang sama.
+        // Jika cabang diset, pastikan cabang milik perusahaan user
+        if ($officeId && $user->role !== 'super_admin') {
+            $validOffice = \App\Models\AttendanceSetting::where('id', $officeId)
+                ->where('company_id', $companyId)
+                ->exists();
+            if (! $validOffice) {
+                return response()->json(['message' => 'Cabang kantor tidak ditemukan di perusahaan Anda.'], 404);
+            }
+        }
+
+        // Cegah duplikat pada scope perusahaan/cabang yang sama.
         $exists = Holiday::whereDate('date', $date)
             ->where('company_id', $companyId)
+            ->where(fn ($q) => $q->where('attendance_setting_id', $officeId))
             ->exists();
 
         if ($exists) {
-            return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar.'], 422);
+            return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar pada kantor yang dipilih.'], 422);
         }
 
         $holiday = Holiday::create([
-            'company_id'  => $companyId,
-            'date'        => $date,
-            'name'        => $validated['name'],
-            'is_national' => false,
+            'company_id'            => $companyId,
+            'attendance_setting_id' => $officeId,
+            'date'                  => $date,
+            'name'                  => $validated['name'],
+            'is_national'           => false,
+            'is_collective'         => $isCollective,
         ]);
 
-        $this->logActivity($user->id, $companyId, 'holiday_created', "Tambah libur {$holiday->name} ({$date})", 'holiday', $holiday->id);
+        // Jika cuti bersama: buat leave_request pending untuk karyawan aktif di cabang/perusahaan ini
+        if ($isCollective) {
+            $this->createCollectiveLeaveRequests($holiday, $companyId);
+        }
+
+        $logDesc = $isCollective
+            ? "Tambah cuti bersama {$holiday->name} ({$date})"
+            : "Tambah libur {$holiday->name} ({$date})";
+        $this->logActivity($user->id, $companyId, 'holiday_created', $logDesc, 'holiday', $holiday->id);
 
         return response()->json([
-            'message' => 'Hari libur berhasil ditambahkan.',
+            'message' => $isCollective ? 'Cuti bersama berhasil ditambahkan. Karyawan akan menerima notifikasi.' : 'Hari libur berhasil ditambahkan.',
             'holiday' => [
-                'id'          => $holiday->id,
-                'date'        => $date,
-                'name'        => $holiday->name,
-                'is_national' => false,
-                'scope'       => 'perusahaan',
+                'id'                    => $holiday->id,
+                'date'                  => $date,
+                'name'                  => $holiday->name,
+                'is_national'           => false,
+                'is_collective'         => $isCollective,
+                'attendance_setting_id' => $holiday->attendance_setting_id,
+                'office_name'           => $holiday->office?->office_name,
+                'scope'                 => $holiday->attendance_setting_id ? 'cabang' : 'perusahaan',
             ],
         ], 201);
     }
@@ -1536,31 +1713,53 @@ class AttendanceController extends Controller
         }
 
         $validated = $request->validate([
-            'date' => 'required|date',
-            'name' => 'required|string|max:255',
+            'date'                  => 'required|date',
+            'name'                  => 'required|string|max:255',
+            'attendance_setting_id' => 'nullable|integer|exists:attendance_settings,id',
         ]);
 
-        $newDate = Carbon::parse($validated['date'])->toDateString();
+        $newDate  = Carbon::parse($validated['date'])->toDateString();
+        $officeId = ! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null;
 
-        // Cegah duplikat: jika mengubah tanggal, pastikan tidak bentrok dengan libur lain di scope yang sama
-        if ($newDate !== $holiday->date->toDateString()) {
+        if ($officeId && $user->role !== 'super_admin') {
+            $validOffice = \App\Models\AttendanceSetting::where('id', $officeId)
+                ->where('company_id', $user->company_id)
+                ->exists();
+            if (! $validOffice) {
+                return response()->json(['message' => 'Cabang kantor tidak ditemukan di perusahaan Anda.'], 404);
+            }
+        }
+
+        // Cegah duplikat: jika mengubah tanggal / cabang
+        if ($newDate !== $holiday->date->toDateString() || $officeId !== $holiday->attendance_setting_id) {
             $exists = Holiday::whereDate('date', $newDate)
                 ->where('company_id', $holiday->company_id)
+                ->where(fn ($q) => $q->where('attendance_setting_id', $officeId))
                 ->where('id', '!=', $holiday->id)
                 ->exists();
 
             if ($exists) {
-                return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar.'], 422);
+                return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar pada kantor yang dipilih.'], 422);
             }
         }
 
         $oldName = $holiday->name;
         $oldDate = $holiday->date->toDateString();
 
+        $oldOfficeId = $holiday->attendance_setting_id;
+
         $holiday->update([
-            'date' => $newDate,
-            'name' => $validated['name'],
+            'date'                  => $newDate,
+            'name'                  => $validated['name'],
+            'attendance_setting_id' => $officeId,
         ]);
+
+        // Jika ini cuti bersama dan cabang/tanggal berubah, perbarui leave_requests
+        if ($holiday->is_collective && ($officeId !== $oldOfficeId || $newDate !== $oldDate)) {
+            // Re-sync leave requests untuk cabang baru
+            $this->cancelAllCollectiveRequests($holiday);
+            $this->createCollectiveLeaveRequests($holiday, $user->company_id);
+        }
 
         $scope = $holiday->company_id ? $user->company_id : null;
         $this->logActivity(
@@ -1575,11 +1774,14 @@ class AttendanceController extends Controller
         return response()->json([
             'message' => 'Hari libur berhasil diubah.',
             'holiday' => [
-                'id'          => $holiday->id,
-                'date'        => $newDate,
-                'name'        => $holiday->name,
-                'is_national' => $holiday->is_national,
-                'scope'       => $holiday->company_id ? 'perusahaan' : 'nasional',
+                'id'                    => $holiday->id,
+                'date'                  => $newDate,
+                'name'                  => $holiday->name,
+                'is_national'           => $holiday->is_national,
+                'is_collective'         => (bool) $holiday->is_collective,
+                'attendance_setting_id' => $holiday->attendance_setting_id,
+                'office_name'           => $holiday->office?->office_name,
+                'scope'                 => $holiday->company_id ? ($holiday->attendance_setting_id ? 'cabang' : 'perusahaan') : 'nasional',
             ],
         ]);
     }
@@ -1598,11 +1800,381 @@ class AttendanceController extends Controller
         $date = $holiday->date->toDateString();
         $id   = $holiday->id;
 
+        // Jika ini cuti bersama: batalkan semua leave_request terkait & kembalikan saldo
+        if ($holiday->is_collective) {
+            $this->cancelAllCollectiveRequests($holiday);
+        }
+
         $holiday->delete();
 
         $this->logActivity($user->id, $user->company_id, 'holiday_deleted', "Hapus libur {$name} ({$date})", 'holiday', $id);
 
         return response()->json(['message' => 'Hari libur berhasil dihapus.']);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // BAGIAN A4 — Cuti Bersama (Collective Leave)
+    // ═══════════════════════════════════════════════════════════
+
+    // collectiveLeaveDetail() — rekap opt-in karyawan per cuti bersama (HRD)
+    //   GET /api/v1/dashboard/attendance/collective-leaves/{holidayId}/detail
+    public function collectiveLeaveDetail(Request $request, Holiday $holiday): JsonResponse
+    {
+        $user = $request->user();
+
+        if (! $holiday->is_collective) {
+            return response()->json(['message' => 'Ini bukan cuti bersama.'], 422);
+        }
+
+        if ($user->role !== 'super_admin' && $holiday->company_id !== $user->company_id) {
+            return response()->json(['message' => 'Tidak ditemukan.'], 404);
+        }
+
+        $rows = \App\Models\LeaveRequest::where('holiday_id', $holiday->id)
+            ->join('users', 'leave_requests.user_id', '=', 'users.id')
+            ->leftJoin('leave_balances', function ($join) {
+                $join->on('leave_balances.user_id', '=', 'users.id')
+                    ->whereColumn('leave_balances.year', \DB::raw('YEAR(leave_requests.start_date)'))
+                    ->where('leave_balances.leave_type', 'cuti');
+            })
+            ->select([
+                'leave_requests.id',
+                'leave_requests.user_id',
+                'users.name as user_name',
+                'users.department',
+                'leave_requests.total_days',
+                'leave_requests.collective_status',
+                \DB::raw('COALESCE(leave_balances.quota, 12) as quota'),
+                \DB::raw('COALESCE(leave_balances.used, 0) as used'),
+            ])
+            ->orderBy('users.name')
+            ->get()
+            ->map(fn ($r) => [
+                'leave_request_id'  => $r->id,
+                'user_id'           => $r->user_id,
+                'user_name'         => $r->user_name,
+                'department'        => $r->department,
+                'total_days'        => $r->total_days,
+                'collective_status' => $r->collective_status,
+                'quota'             => (int) $r->quota,
+                'used'              => (int) $r->used,
+                'remaining'         => (int) $r->quota - (int) $r->used,
+            ]);
+
+        return response()->json([
+            'holiday' => [
+                'id'   => $holiday->id,
+                'date' => $holiday->date->toDateString(),
+                'name' => $holiday->name,
+            ],
+            'summary' => [
+                'accepted' => $rows->where('collective_status', 'accepted')->count(),
+                'declined' => $rows->where('collective_status', 'declined')->count(),
+                'pending'  => $rows->where('collective_status', 'pending')->count(),
+            ],
+            'employees' => $rows->values(),
+        ]);
+    }
+
+    // listCollectiveLeaves() — daftar cuti bersama mendatang + status opt-in user (mobile)
+    //   GET /api/v1/attendance/collective-leaves
+    public function listCollectiveLeaves(Request $request): JsonResponse
+    {
+        $user      = $request->user();
+        $companyId = $user->company_id;
+        $today     = now('Asia/Jakarta')->toDateString();
+
+        // Ambil semua cuti bersama milik perusahaan yang belum lewat + H-7 ke depan
+        // Dan cocok dengan cabang karyawan (NULL = semua cabang, ATAU attendance_setting_id sama dengan kantor user)
+        $holidays = Holiday::where('company_id', $companyId)
+            ->where('is_collective', true)
+            ->where('date', '>=', $today)
+            ->where(function ($q) use ($user) {
+                $q->whereNull('attendance_setting_id');
+                if ($user->attendance_setting_id) {
+                    $q->orWhere('attendance_setting_id', $user->attendance_setting_id);
+                }
+            })
+            ->orderBy('date')
+            ->get();
+
+        // Ambil leave_request karyawan ini untuk cuti bersama di atas
+        $myRequests = \App\Models\LeaveRequest::where('user_id', $user->id)
+            ->whereIn('holiday_id', $holidays->pluck('id'))
+            ->pluck('collective_status', 'holiday_id');
+
+        // Saldo cuti tahun ini
+        $year    = (int) now('Asia/Jakarta')->year;
+        $balance = \App\Models\LeaveBalance::firstOrCreate(
+            ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
+            ['company_id' => $companyId, 'quota' => 12, 'used' => 0]
+        );
+        $remaining = $balance->quota - $balance->used;
+
+        // Ambil kebijakan saldo dari kantor karyawan
+        $office = $user->attendance_setting_id
+            ? \App\Models\AttendanceSetting::find($user->attendance_setting_id)
+            : \App\Models\AttendanceSetting::where('company_id', $companyId)->first();
+        $policy = $office?->collective_leave_policy ?? 'block';
+
+        $result = $holidays->map(fn ($h) => [
+            'id'                => $h->id,
+            'date'              => $h->date->toDateString(),
+            'name'              => $h->name,
+            'total_days'        => $this->countWorkingDays(
+                Carbon::parse($h->date),
+                Carbon::parse($h->date),
+                $companyId,
+                $user->attendance_setting_id,
+                $user->id
+            ),
+            'collective_status' => $myRequests->get($h->id) ?? 'pending',
+            'remaining_quota'   => $remaining,
+            'policy'            => $policy,
+            // Apakah banner harus muncul: H-7 s/d hari H & belum memilih
+            'show_banner'       => $h->date->toDateString() <= now('Asia/Jakarta')->addDays(7)->toDateString()
+                                && ($myRequests->get($h->id) ?? 'pending') === 'pending',
+        ]);
+
+        return response()->json(['collective_leaves' => $result]);
+    }
+
+    // respondCollectiveLeave() — karyawan pilih ikut/tidak cuti bersama (mobile)
+    //   POST /api/v1/attendance/collective-leave/{holidayId}/respond
+    //   Body: { "response": "accepted" | "declined" }
+    public function respondCollectiveLeave(Request $request, Holiday $holiday): JsonResponse
+    {
+        $user = $request->user();
+
+        $validated = $request->validate([
+            'response' => 'required|in:accepted,declined',
+        ]);
+
+        // Validasi holiday
+        if (! $holiday->is_collective) {
+            return response()->json(['message' => 'Ini bukan cuti bersama.'], 422);
+        }
+        if ($holiday->company_id !== $user->company_id) {
+            return response()->json(['message' => 'Cuti bersama tidak ditemukan.'], 404);
+        }
+
+        // Validasi cabang: cuti bersama hanya berlaku utk karyawan cabang tsb
+        // (atau company-wide jika attendance_setting_id NULL).
+        if ($holiday->attendance_setting_id
+            && (int) $holiday->attendance_setting_id !== (int) $user->attendance_setting_id) {
+            return response()->json([
+                'message' => 'Cuti bersama ini hanya berlaku untuk karyawan kantor cabang lain.',
+            ], 403);
+        }
+
+        // Tidak bisa ubah pilihan setelah hari H lewat
+        $today = now('Asia/Jakarta')->toDateString();
+        if ($holiday->date->toDateString() < $today) {
+            return response()->json(['message' => 'Batas waktu memilih telah lewat.'], 422);
+        }
+
+        // Cari leave_request milik karyawan ini untuk cuti bersama ini
+        $leave = \App\Models\LeaveRequest::where('user_id', $user->id)
+            ->where('holiday_id', $holiday->id)
+            ->first();
+
+        // Auto-create leave_request bila belum ada (mis. user dibuat/assigned cabang
+        // SETELAH cuti bersama di-generate, atau generate ter-skip krn kondisi tertentu).
+        // Karyawan tetap boleh memilih ikut/tidak tanpa harus menunggu re-generate HRD.
+        if (! $leave) {
+            $totalDays = $this->countWorkingDays(
+                Carbon::parse($holiday->date),
+                Carbon::parse($holiday->date),
+                $holiday->company_id,
+                $holiday->attendance_setting_id,
+                $user->id
+            );
+
+            $leave = \App\Models\LeaveRequest::create([
+                'user_id'           => $user->id,
+                'company_id'        => $holiday->company_id,
+                'holiday_id'        => $holiday->id,
+                'leave_type'        => 'cuti',
+                'start_date'        => $holiday->date->toDateString(),
+                'end_date'          => $holiday->date->toDateString(),
+                'total_days'        => $totalDays,
+                'reason'            => "Cuti bersama: {$holiday->name}",
+                'status'            => 'pending',
+                'collective_status' => 'pending',
+            ]);
+        }
+
+        // Jika pilihan sama, tidak perlu proses ulang
+        if ($leave->collective_status === $validated['response']) {
+            return response()->json(['message' => 'Pilihan Anda sudah tersimpan.', 'collective_status' => $leave->collective_status]);
+        }
+
+        $year    = Carbon::parse($leave->start_date)->year;
+        $balance = \App\Models\LeaveBalance::firstOrCreate(
+            ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
+            ['company_id' => $user->company_id, 'quota' => 12, 'used' => 0]
+        );
+
+        // Ambil kebijakan saldo dari kantor karyawan (bukan kantor pertama perusahaan).
+        // Bug #4 Fix: pakai attendance_setting_id karyawan; fallback ke kantor pertama
+        // perusahaan jika karyawan belum di-assign ke cabang tertentu.
+        $office = $user->attendance_setting_id
+            ? \App\Models\AttendanceSetting::find($user->attendance_setting_id)
+            : \App\Models\AttendanceSetting::where('company_id', $user->company_id)->first();
+        $policy  = $office?->collective_leave_policy ?? 'block';
+
+        if ($validated['response'] === 'accepted') {
+            $remaining = $balance->quota - $balance->used;
+
+            // Cek saldo sesuai kebijakan kantor
+            if ($policy === 'block' && $remaining < $leave->total_days) {
+                return response()->json([
+                    'message'        => "Saldo cuti Anda tidak cukup. Sisa {$remaining} hari, dibutuhkan {$leave->total_days} hari. Hubungi HRD untuk informasi lebih lanjut.",
+                    'remaining'      => $remaining,
+                    'required'       => $leave->total_days,
+                    'policy'         => $policy,
+                ], 422);
+            }
+
+            // Jika sebelumnya sudah accepted (ganti dari declined → accepted), jangan double potong
+            $wasPreviouslyAccepted = $leave->collective_status === 'accepted';
+
+            $leave->update([
+                'collective_status' => 'accepted',
+                'status'            => 'approved',
+                'approved_by'       => null,
+                'approved_at'       => now(),
+            ]);
+
+            // Potong saldo (kecuali policy=free atau sudah pernah dipotong)
+            if ($policy !== 'free' && ! $wasPreviouslyAccepted) {
+                $balance->increment('used', $leave->total_days);
+            }
+
+            $this->logActivity($user->id, $user->company_id, 'leave_approved',
+                "Ikut cuti bersama #{$holiday->id} {$holiday->name}", 'leave_request', $leave->id);
+
+            $remaining = $balance->fresh()->quota - $balance->fresh()->used;
+            return response()->json([
+                'message'           => "Anda terdaftar ikut cuti bersama \"{$holiday->name}\".",
+                'collective_status' => 'accepted',
+                'remaining_quota'   => $remaining,
+                'policy'            => $policy,
+            ]);
+        }
+
+        // Response = 'declined'
+        $wasAccepted = $leave->collective_status === 'accepted';
+
+        $leave->update([
+            'collective_status' => 'declined',
+            'status'            => 'rejected',
+        ]);
+
+        // Kembalikan saldo jika sebelumnya sudah accepted dan policy bukan free
+        if ($wasAccepted && $policy !== 'free') {
+            $balance->decrement('used', $leave->total_days);
+        }
+
+        $this->logActivity($user->id, $user->company_id, 'leave_rejected',
+            "Tidak ikut cuti bersama #{$holiday->id} {$holiday->name}", 'leave_request', $leave->id);
+
+        $remaining = $balance->fresh()->quota - $balance->fresh()->used;
+        return response()->json([
+            'message'           => "Pilihan Anda tersimpan. Anda tidak ikut cuti bersama \"{$holiday->name}\".",
+            'collective_status' => 'declined',
+            'remaining_quota'   => $remaining,
+        ]);
+    }
+
+    // ─── Helper: buat leave_request batch untuk semua karyawan aktif (cuti bersama) ────
+    private function createCollectiveLeaveRequests(Holiday $holiday, int $companyId): void
+    {
+        $date      = $holiday->date->toDateString();
+        $totalDays = $this->countWorkingDays(
+            Carbon::parse($date),
+            Carbon::parse($date),
+            $companyId,
+            $holiday->attendance_setting_id
+        );
+
+        // Jika tanggal cuti bersama adalah hari libur nasional / weekend → total_days = 0, skip
+        if ($totalDays < 1) {
+            return;
+        }
+
+        // Karyawan aktif yang attendance_enabled.
+        // Jika holiday memiliki cabang spesifik ($holiday->attendance_setting_id) → filter hanya karyawan di cabang itu!
+        $query = \App\Models\User::where('company_id', $companyId)
+            ->where('is_active', true)
+            ->where('attendance_enabled', true);
+
+        if ($holiday->attendance_setting_id) {
+            $query->where('attendance_setting_id', $holiday->attendance_setting_id);
+        }
+
+        $users = $query->pluck('id');
+
+        $now = now();
+        $rows = $users->map(fn ($uid) => [
+            'user_id'           => $uid,
+            'company_id'        => $companyId,
+            'holiday_id'        => $holiday->id,
+            'leave_type'        => 'cuti',
+            'start_date'        => $date,
+            'end_date'          => $date,
+            'total_days'        => $totalDays,
+            'reason'            => "Cuti bersama: {$holiday->name}",
+            'status'            => 'pending',
+            'collective_status' => 'pending',
+            'created_at'        => $now,
+            'updated_at'        => $now,
+        ])->toArray();
+
+        // Bulk insert (lebih efisien dari looping create())
+        if (! empty($rows)) {
+            \App\Models\LeaveRequest::insert($rows);
+        }
+
+        // Kirim notifikasi FCM ke karyawan cabang tersebut
+        foreach ($users as $uid) {
+            $this->notifyUser($uid, 'collective_leave_announced', [
+                'message'    => "Cuti bersama \"{$holiday->name}\" pada {$date} telah dijadwalkan. Silakan pilih ikut atau tidak di aplikasi.",
+                'holiday_id' => $holiday->id,
+                'date'       => $date,
+                'name'       => $holiday->name,
+            ], 'holiday', $holiday->id);
+        }
+    }
+
+    // ─── Helper: batalkan semua leave_request cuti bersama & kembalikan saldo ────
+    private function cancelAllCollectiveRequests(Holiday $holiday): void
+    {
+        $accepted = \App\Models\LeaveRequest::where('holiday_id', $holiday->id)
+            ->where('collective_status', 'accepted')
+            ->get();
+
+        foreach ($accepted as $leave) {
+            $year    = Carbon::parse($leave->start_date)->year;
+            $balance = \App\Models\LeaveBalance::where('user_id', $leave->user_id)
+                ->where('year', $year)
+                ->where('leave_type', 'cuti')
+                ->first();
+
+            if ($balance && $leave->total_days > 0) {
+                // Kembalikan saldo yang sudah dipotong
+                $balance->decrement('used', min($leave->total_days, $balance->used));
+            }
+
+            // Notifikasi ke karyawan bahwa cuti bersama dibatalkan
+            $this->notifyUser($leave->user_id, 'collective_leave_cancelled', [
+                'message'    => "Cuti bersama \"{$holiday->name}\" pada {$holiday->date->toDateString()} telah dibatalkan. Saldo cuti Anda telah dikembalikan.",
+                'holiday_id' => $holiday->id,
+            ], 'holiday', $holiday->id);
+        }
+
+        // Hapus semua leave_request terkait cuti bersama ini
+        \App\Models\LeaveRequest::where('holiday_id', $holiday->id)->delete();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1869,8 +2441,9 @@ class AttendanceController extends Controller
         $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate);
         $workMinutes = (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta'));
 
-        // isNonWorkingDay: apakah tanggal shift libur nasional/weekend secara kalender
-        $nonWorking      = $this->isNonWorkingDay($scheduleDate, $user->company_id);
+        // isNonWorkingDay: apakah tanggal shift libur nasional/weekend secara kalender.
+        // Pass $user->id agar cuti bersama yang di-decline tidak dianggap hari libur karyawan ini.
+        $nonWorking      = $this->isNonWorkingDay($scheduleDate, $user->company_id, null, $user->id);
         // calculateOvertime & checkEarlyLeave sudah mempertimbangkan shift aktif karyawan (cross-day aware)
         $overtimeMinutes = $this->calculateOvertime($user, $scheduleDate, $checkOutTime, $workMinutes, $nonWorking);
         $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking);
@@ -2676,7 +3249,9 @@ class AttendanceController extends Controller
         $totalDays = $this->countWorkingDays(
             Carbon::parse($validated['start_date']),
             Carbon::parse($validated['end_date']),
-            $user->company_id
+            $user->company_id,
+            null,
+            $user->id
         );
 
         if ($totalDays < 1) {
