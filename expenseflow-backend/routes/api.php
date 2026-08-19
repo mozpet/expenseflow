@@ -238,8 +238,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/leave-balance', [AttendanceController::class, 'myLeaveBalance']);
             Route::get('/my-leaves', [AttendanceController::class, 'myLeaves']);
             Route::post('/leave-request', [AttendanceController::class, 'requestLeave']);
-            // Kalender libur (read-only) — untuk tampilan kalender di mobile
-            Route::get('/holidays', [AttendanceController::class, 'listHolidays']);
+
             // Daftar overtime approval milik karyawan ini
             Route::get('/my-overtime', [AttendanceController::class, 'myOvertimeApprovals']);
             // Simpan FCM token device (dipanggil saat login/buka app)

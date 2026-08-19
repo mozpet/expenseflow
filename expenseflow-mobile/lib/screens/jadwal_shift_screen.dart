@@ -72,7 +72,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     try {
       return Color(int.parse('FF${hex.replaceAll('#', '')}', radix: 16));
     } catch (_) {
-      return const Color(0xFF6366f1);
+      return const Color(0xFF9CA3AF);
     }
   }
 
@@ -85,10 +85,19 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     if (date != null) {
       final calDay = prov.getScheduleForDate(date);
       if (calDay != null) {
+        // Hari libur/cuti bersama: tampilkan nama libur (bukan nama shift/kantor default).
+        if (calDay.holiday != null || calDay.shiftName == 'Cuti Bersama') {
+          return _ShiftDisplayInfo(
+            name: calDay.shiftName ?? (calDay.holiday?.name ?? 'Libur'),
+            color: calDay.color ?? '#EF4444',
+            source: calDay.shiftName == 'Cuti Bersama' ? 'shift' : 'office',
+            startDate: null,
+          );
+        }
         if (calDay.source == 'shift' && calDay.shiftName != null) {
           return _ShiftDisplayInfo(
             name: calDay.shiftName!,
-            color: calDay.color ?? '#6366f1',
+            color: calDay.color ?? '#9CA3AF',
             source: 'shift',
             // Cari start_date dari calendarDays (tanggal pertama shift ini muncul berurutan)
             startDate: _findShiftStartDate(prov, date, calDay.shiftId),
@@ -96,7 +105,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         } else if (calDay.source == 'office') {
           return _ShiftDisplayInfo(
             name: 'Jam Kantor Default',
-            color: '#6366f1',
+            color: '#9CA3AF',
             source: 'office',
             startDate: null,
           );
@@ -117,7 +126,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
 
     return const _ShiftDisplayInfo(
       name: 'Jam Kantor Default',
-      color: '#6366f1',
+      color: '#9CA3AF',
       source: 'office',
     );
   }
@@ -402,12 +411,31 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
 
             final defaultShiftColor = prov.shiftInfo?.color != null
                 ? _parseColor(prov.shiftInfo!.color)
-                : const Color(0xFF6366f1);
+                : const Color(0xFF9CA3AF);
 
             // Warna shift per tanggal (hanya berubah jika tanggal tersebut memiliki shift dengan warna khusus)
             final cellColor = calDay?.color != null
                 ? _parseColor(calDay!.color!)
                 : defaultShiftColor;
+
+            // Hari dengan shift → teks jam memakai warna shift (pilihan warna di web).
+            // Hari jam kantor default / tanpa shift → teks jam abu-abu agar bisa dibedakan.
+            final bool isShiftDay = (calDay?.source == 'shift') ||
+                (calDay == null && prov.source == 'shift');
+
+            // Hari libur nasional / perusahaan
+            final holiday = calDay?.holiday;
+            final isHoliday = holiday != null;
+            // Cuti bersama yang sudah diikuti (accepted) → shiftName 'Cuti Bersama'
+            final isCollectiveLeave = calDay?.shiftName == 'Cuti Bersama';
+            // Warna aksen sesuai jenis libur: nasional merah, cuti bersama kuning, perusahaan/cabang biru
+            final holidayAccent = isCollectiveLeave
+                ? const Color(0xFFD97706) // amber 600
+                : holiday != null
+                    ? (holiday.isNational
+                        ? const Color(0xFFEF4444) // merah
+                        : const Color(0xFF3B82F6)) // biru
+                    : null;
 
             return Expanded(
               child: GestureDetector(
@@ -419,8 +447,8 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                     decoration: BoxDecoration(
                       color: isSelected
                           ? cellColor.withValues(alpha: 0.12)
-                          : (calDay?.shiftName == 'Cuti Bersama')
-                              ? cellColor.withValues(alpha: 0.2)
+                          : holidayAccent != null
+                              ? holidayAccent.withValues(alpha: 0.15)
                               : isOff
                                   ? Colors.red.shade50.withValues(alpha: 0.5)
                                   : Colors.transparent,
@@ -455,16 +483,14 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                             fontWeight: FontWeight.w600,
                             color: isToday
                                 ? Colors.white
-                                : (calDay?.shiftName == 'Cuti Bersama')
-                                    ? Colors.orange.shade800
-                                    : isOff
-                                        ? Colors.red.shade400
-                                        : Colors.grey.shade800,
+                                : holidayAccent ?? (isOff
+                                    ? Colors.red.shade400
+                                    : Colors.grey.shade800),
                           ),
                         ),
                       ),
                       const SizedBox(height: 2),
-                      // Indikator jam / OFF / Logo bulan lintas hari
+                      // Indikator jam / OFF / nama libur / CUTI
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [
@@ -477,12 +503,24 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                 color: Colors.purple.shade600,
                               ),
                             ),
-                          if (calDay?.shiftName == 'Cuti Bersama')
+                          if (isCollectiveLeave)
                             Text('CUTI',
                                 style: TextStyle(
                                     fontSize: 8,
                                     fontWeight: FontWeight.w700,
-                                    color: Colors.orange.shade800))
+                                    color: const Color(0xFFD97706)))
+                          else if (isHoliday)
+                            Flexible(
+                              child: Text(
+                                _abbreviate(holiday.name),
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                    fontSize: 7,
+                                    fontWeight: FontWeight.w700,
+                                    color: holidayAccent ?? Colors.red.shade400),
+                              ),
+                            )
                           else if (isOff)
                             Text('OFF',
                                 style: TextStyle(
@@ -496,7 +534,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                               style: TextStyle(
                                   fontSize: 8,
                                   fontWeight: FontWeight.w600,
-                                  color: cellColor),
+                                  color: isShiftDay ? cellColor : Colors.grey.shade600),
                             )
                           else
                             Text('-',
@@ -539,6 +577,18 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     final detailColor = calDay?.color != null
         ? _parseColor(calDay!.color!)
         : shiftColor;
+
+    // Aksen warna sesuai jenis libur (nasional merah / cuti bersama kuning / perusahaan biru)
+    final holiday = calDay?.holiday;
+    final HolidayInfo? detailHoliday = holiday;
+    final bool isCollectiveLeaveDetail = calDay?.shiftName == 'Cuti Bersama';
+    final Color? detailHolidayAccent = isCollectiveLeaveDetail
+        ? const Color(0xFFD97706)
+        : detailHoliday != null
+            ? (detailHoliday.isNational
+                ? const Color(0xFFEF4444)
+                : const Color(0xFF3B82F6))
+            : null;
 
     // Deteksi shift malam lintas hari dari kemarin
     final prevDate = date.subtract(const Duration(days: 1));
@@ -607,12 +657,64 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               ),
               const SizedBox(height: 10),
             ],
-            if (schedule.isOff)
+            if (schedule.isOff) ...[
               _statusBanner(
-                icon: Icons.weekend,
-                label: 'Hari Libur Shift',
-                color: Colors.red,
-              )
+                icon: isCollectiveLeaveDetail ? Icons.celebration : Icons.beach_access,
+                label: isCollectiveLeaveDetail ? 'Cuti Bersama (Diikuti)' : 'Hari Libur / Tidak Bekerja',
+                color: isCollectiveLeaveDetail
+                    ? Colors.amber
+                    : detailHolidayAccent != null && !detailHoliday!.isNational
+                        ? Colors.blue
+                        : Colors.red,
+              ),
+              // Tampilkan nama libur jika ini hari libur nasional/perusahaan/cuti bersama
+              if (calDay?.holiday != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: (detailHolidayAccent ?? Colors.red).withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: (detailHolidayAccent ?? Colors.red).withValues(alpha: 0.35)),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.flag_rounded, size: 16, color: detailHolidayAccent ?? Colors.red.shade600),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              calDay!.holiday!.name,
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.bold,
+                                color: detailHolidayAccent ?? Colors.red.shade800,
+                              ),
+                            ),
+                            Text(
+                              calDay.holiday!.isNational
+                                  ? 'Libur Nasional'
+                                  : (calDay.holiday!.isCollective
+                                      ? 'Cuti Bersama'
+                                      : (calDay.holiday!.scope == 'cabang'
+                                          ? 'Libur Cabang'
+                                          : 'Libur Perusahaan')),
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: detailHolidayAccent?.withValues(alpha: 0.85) ?? Colors.red.shade400,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ]
             else ...[
             // Badge jam kustom
             if (schedule.isCustom) ...[
@@ -810,6 +912,18 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     } catch (_) {
       return s;
     }
+  }
+
+  /// Singkat nama libur agar muat di cell kalender kecil (maks ~8 karakter).
+  /// Contoh: "Maulid Nabi Muhammad SAW" → "Maulid N."
+  String _abbreviate(String name) {
+    if (name.length <= 9) return name;
+    final words = name.split(' ');
+    if (words.length == 1) return '${name.substring(0, 8)}.';
+    // Ambil kata pertama + inisial kata berikutnya jika masih panjang
+    final first = words[0];
+    if (first.length >= 9) return '${first.substring(0, 8)}.';
+    return first;
   }
 }
 

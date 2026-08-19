@@ -388,7 +388,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final hex = (prov.shiftInfo!.color).replaceAll('#', '');
       shiftColor = Color(int.parse('FF$hex', radix: 16));
     } catch (_) {
-      shiftColor = const Color(0xFF6366f1);
+      shiftColor = const Color(0xFF9CA3AF);
     }
 
     return GestureDetector(

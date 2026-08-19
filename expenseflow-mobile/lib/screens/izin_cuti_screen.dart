@@ -17,12 +17,11 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
+    _tabController = TabController(length: 2, vsync: this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final prov = Provider.of<PresensiProvider>(context, listen: false);
       prov.fetchLeaveRequests();
       prov.fetchLeaveBalance();
-      prov.fetchHolidays(DateTime.now().year);
     });
   }
 
@@ -48,7 +47,6 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
               );
               prov.fetchLeaveRequests();
               prov.fetchLeaveBalance();
-              prov.fetchHolidays(DateTime.now().year);
             },
             icon: const Icon(Icons.refresh),
             tooltip: 'Refresh',
@@ -62,7 +60,6 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
           tabs: const [
             Tab(text: 'Riwayat'),
             Tab(text: 'Saldo Cuti'),
-            Tab(text: 'Hari Libur'),
           ],
         ),
       ),
@@ -71,7 +68,6 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
         children: const [
           _RiwayatIzinTab(),
           _SaldoCutiTab(),
-          _HariLiburTab(),
         ],
       ),
       floatingActionButton: FloatingActionButton.extended(
@@ -99,247 +95,6 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
   }
 }
 
-// ─── Tab Hari Libur ──────────────────────────────────────────
-class _HariLiburTab extends StatefulWidget {
-  const _HariLiburTab();
-
-  @override
-  State<_HariLiburTab> createState() => _HariLiburTabState();
-}
-
-class _HariLiburTabState extends State<_HariLiburTab> {
-  late int _selectedYear;
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedYear = DateTime.now().year;
-  }
-
-  void _changeYear(int delta) {
-    final newYear = _selectedYear + delta;
-    setState(() => _selectedYear = newYear);
-    Provider.of<PresensiProvider>(context, listen: false)
-        .fetchHolidays(newYear);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final prov = Provider.of<PresensiProvider>(context);
-    final holidays = prov.holidays;
-
-    return Column(
-      children: [
-        // ─ Header pemilih tahun
-        Container(
-          color: Colors.white,
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              IconButton(
-                onPressed: () => _changeYear(-1),
-                icon: const Icon(Icons.chevron_left),
-                tooltip: 'Tahun sebelumnya',
-              ),
-              Text(
-                'Kalender Libur $_selectedYear',
-                style: const TextStyle(
-                    fontSize: 15, fontWeight: FontWeight.bold),
-              ),
-              IconButton(
-                onPressed: () => _changeYear(1),
-                icon: const Icon(Icons.chevron_right),
-                tooltip: 'Tahun berikutnya',
-              ),
-            ],
-          ),
-        ),
-        const Divider(height: 1),
-        // ─ Body
-        Expanded(
-          child: prov.loadingHolidays
-              ? const Center(child: CircularProgressIndicator())
-              : RefreshIndicator(
-                  onRefresh: () => Provider.of<PresensiProvider>(
-                          context,
-                          listen: false)
-                      .fetchHolidays(_selectedYear),
-                  child: holidays.isEmpty
-                      ? ListView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          children: const [
-                            SizedBox(height: 120),
-                            Center(
-                              child: Text(
-                                'Belum ada data hari libur.',
-                                style: TextStyle(color: Colors.grey),
-                              ),
-                            ),
-                          ],
-                        )
-                      : ListView.builder(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 80),
-                          itemCount: holidays.length,
-                          itemBuilder: (context, i) =>
-                              _HolidayCard(holiday: holidays[i]),
-                        ),
-                ),
-        ),
-      ],
-    );
-  }
-}
-
-class _HolidayCard extends StatelessWidget {
-  final HolidayRecord holiday;
-  const _HolidayCard({required this.holiday});
-
-  @override
-  Widget build(BuildContext context) {
-    final date = _formatDate(holiday.date);
-    final dayName = _dayName(holiday.date);
-    final isWeekend = _isWeekend(holiday.date);
-
-    return Card(
-      elevation: 0,
-      margin: const EdgeInsets.only(bottom: 10),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(14),
-        side: BorderSide(color: Colors.grey.shade200),
-      ),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        child: Row(
-          children: [
-            // Kalender ikon dengan tanggal
-            Container(
-              width: 48,
-              height: 52,
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.red.shade100),
-              ),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    _dayNumber(holiday.date),
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.red.shade700,
-                    ),
-                  ),
-                  Text(
-                    _monthShort(holiday.date),
-                    style: TextStyle(
-                      fontSize: 10,
-                      color: Colors.red.shade400,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(width: 12),
-            // Nama & info
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    holiday.name,
-                    style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.black87,
-                    ),
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    '$dayName, $date',
-                    style: const TextStyle(fontSize: 11, color: Colors.grey),
-                  ),
-                ],
-              ),
-            ),
-            // Badge tipe libur
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.end,
-              children: [
-                if (holiday.isNational)
-                  _badge('Nasional', Colors.red)
-                else
-                  _badge('Perusahaan', Colors.blue),
-                if (isWeekend) ...[
-                  const SizedBox(height: 4),
-                  _badge('Weekend', Colors.grey),
-                ],
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _badge(String label, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: color.withValues(alpha: 0.3)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(
-            fontSize: 10, color: color, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-
-  String _formatDate(String iso) {
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return iso;
-    const months = [
-      'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-      'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
-    ];
-    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
-  }
-
-  String _dayNumber(String iso) {
-    final dt = DateTime.tryParse(iso);
-    return dt != null ? dt.day.toString() : '-';
-  }
-
-  String _monthShort(String iso) {
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return '';
-    const short = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun',
-      'Jul', 'Ags', 'Sep', 'Okt', 'Nov', 'Des'
-    ];
-    return short[dt.month - 1];
-  }
-
-  String _dayName(String iso) {
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return '';
-    const days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-    return days[dt.weekday % 7];
-  }
-
-  bool _isWeekend(String iso) {
-    final dt = DateTime.tryParse(iso);
-    if (dt == null) return false;
-    return dt.weekday == DateTime.saturday || dt.weekday == DateTime.sunday;
-  }
-}
 
 // ─── Tab Riwayat ─────────────────────────────────────────────
 class _RiwayatIzinTab extends StatelessWidget {

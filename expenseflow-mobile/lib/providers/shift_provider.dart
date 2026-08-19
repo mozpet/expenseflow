@@ -35,6 +35,33 @@ class ShiftScheduleDay {
   }
 }
 
+/// Info hari libur nasional / perusahaan yang melekat pada suatu tanggal.
+class HolidayInfo {
+  final int id;
+  final String name;
+  final bool isNational;
+  final bool isCollective;
+  final String scope; // 'nasional' | 'perusahaan' | 'cabang'
+
+  const HolidayInfo({
+    required this.id,
+    required this.name,
+    required this.isNational,
+    required this.isCollective,
+    required this.scope,
+  });
+
+  factory HolidayInfo.fromJson(Map<String, dynamic> json) {
+    return HolidayInfo(
+      id: json['id'] ?? 0,
+      name: json['name'] ?? '',
+      isNational: json['is_national'] == true,
+      isCollective: json['is_collective'] == true,
+      scope: json['scope'] ?? 'nasional',
+    );
+  }
+}
+
 /// Jadwal satu hari dari endpoint kalender bulanan (my-schedule-calendar).
 /// Sama seperti ShiftScheduleDay namun ditentukan berdasarkan TANGGAL,
 /// bukan template shift yang aktif hari ini.
@@ -48,6 +75,8 @@ class ShiftCalendarDay {
   final String? workEndTime;
   final bool isOff;
   final bool isCrossDay;
+  /// Info hari libur jika tanggal ini merupakan hari libur (null = bukan libur).
+  final HolidayInfo? holiday;
 
   ShiftCalendarDay({
     required this.date,
@@ -59,9 +88,11 @@ class ShiftCalendarDay {
     this.workEndTime,
     required this.isOff,
     required this.isCrossDay,
+    this.holiday,
   });
 
   factory ShiftCalendarDay.fromJson(String date, Map<String, dynamic> json) {
+    final holidayJson = json['holiday'];
     return ShiftCalendarDay(
       date: date,
       source: json['source'] ?? 'none',
@@ -72,6 +103,7 @@ class ShiftCalendarDay {
       workEndTime: json['work_end_time'],
       isOff: json['is_off'] ?? false,
       isCrossDay: json['is_cross_day'] == true,
+      holiday: holidayJson != null ? HolidayInfo.fromJson(holidayJson as Map<String, dynamic>) : null,
     );
   }
 }
@@ -92,7 +124,7 @@ class ShiftInfo {
   factory ShiftInfo.fromJson(Map<String, dynamic> json) {
     return ShiftInfo(
       name: json['name'] ?? '',
-      color: json['color'] ?? '#6366f1',
+      color: json['color'] ?? '#9CA3AF',
       startDate: json['start_date'],
       officeName: json['office_name'],
     );
@@ -115,6 +147,8 @@ class ShiftProvider extends ChangeNotifier {
   Map<String, ShiftCalendarDay> _calendarDays = {};
   int _calendarYear = 0;
   int _calendarMonth = 0;
+  /// List hari libur bulan yang sedang di-load (untuk info di UI kalender).
+  List<HolidayInfo> _calendarHolidays = [];
 
   bool get loading => _loading;
   String? get error => _error;
@@ -126,6 +160,7 @@ class ShiftProvider extends ChangeNotifier {
   int get calendarYear => _calendarYear;
   int get calendarMonth => _calendarMonth;
   Map<String, ShiftCalendarDay> get calendarDays => _calendarDays;
+  List<HolidayInfo> get calendarHolidays => _calendarHolidays;
 
   ShiftScheduleDay? getScheduleForDayOfWeek(int dayOfWeek) {
     try {
@@ -177,6 +212,7 @@ class ShiftProvider extends ChangeNotifier {
     _calendarYear = 0;
     _calendarMonth = 0;
     _calendarDays = {};
+    _calendarHolidays = [];
   }
 
   // ─── Kalender jadwal kerja bulanan (per-tanggal) ──────────────────────────
@@ -208,6 +244,13 @@ class ShiftProvider extends ChangeNotifier {
           parsed[date] = ShiftCalendarDay.fromJson(date, val);
         }
       });
+
+      // Parse daftar hari libur bulan ini
+      final rawHolidays = data['holidays'] as List<dynamic>? ?? [];
+      _calendarHolidays = rawHolidays
+          .whereType<Map<String, dynamic>>()
+          .map(HolidayInfo.fromJson)
+          .toList();
 
       _calendarDays = parsed;
       _calendarYear = year;

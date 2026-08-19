@@ -124,19 +124,6 @@ class LeaveBalanceRecord {
   });
 }
 
-class HolidayRecord {
-  final int id;
-  final String date;
-  final String name;
-  final bool isNational;
-
-  HolidayRecord({
-    required this.id,
-    required this.date,
-    required this.name,
-    required this.isNational,
-  });
-}
 
 class CollectiveLeaveRecord {
   final int id;
@@ -180,7 +167,6 @@ class PresensiProvider extends ChangeNotifier {
   final List<PresensiRecord> _records = [];
   final List<LeaveRequestRecord> _leaveRequests = [];
   final List<LeaveBalanceRecord> _leaveBalances = [];
-  final List<HolidayRecord> _holidays = [];
   final List<CollectiveLeaveRecord> _collectiveLeaves = [];
 
   String? _todayMasuk;
@@ -190,7 +176,6 @@ class PresensiProvider extends ChangeNotifier {
   bool _loadingHistory = false;
   bool _loadingBalance = false;
   bool _loadingLeaves = false;
-  bool _loadingHolidays = false;
   bool _loadingCollectiveLeaves = false;
 
   List<PresensiRecord> get records => List.unmodifiable(_records);
@@ -198,7 +183,6 @@ class PresensiProvider extends ChangeNotifier {
       List.unmodifiable(_leaveRequests);
   List<LeaveBalanceRecord> get leaveBalances =>
       List.unmodifiable(_leaveBalances);
-  List<HolidayRecord> get holidays => List.unmodifiable(_holidays);
   List<CollectiveLeaveRecord> get collectiveLeaves =>
       List.unmodifiable(_collectiveLeaves);
   CollectiveLeaveRecord? get activeCollectiveLeaveBanner {
@@ -214,7 +198,6 @@ class PresensiProvider extends ChangeNotifier {
   bool get loadingHistory => _loadingHistory;
   bool get loadingBalance => _loadingBalance;
   bool get loadingLeaves => _loadingLeaves;
-  bool get loadingHolidays => _loadingHolidays;
   bool get loadingCollectiveLeaves => _loadingCollectiveLeaves;
 
   bool get canCheckIn => _todayMasuk == null;
@@ -582,32 +565,6 @@ class PresensiProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ─── Fetch kalender libur ─────────────────────────────────
-  Future<void> fetchHolidays(int year) async {
-    _loadingHolidays = true;
-    notifyListeners();
-    try {
-      final res = await ApiService.holidays(year);
-      final list = (res['holidays'] as List?) ?? [];
-      _holidays
-        ..clear()
-        ..addAll(
-          list.map((e) {
-            final m = e as Map<String, dynamic>;
-            return HolidayRecord(
-              id: (m['id'] ?? 0) as int,
-              date: _dateOnly(m['date']),
-              name: (m['name'] ?? '').toString(),
-              isNational: m['is_national'] == true || m['is_national'] == 1,
-            );
-          }),
-        );
-      // Urutkan dari tanggal terkecil
-      _holidays.sort((a, b) => a.date.compareTo(b.date));
-    } catch (_) {}
-    _loadingHolidays = false;
-    notifyListeners();
-  }
 
   // ─── Fetch cuti bersama mendatang ───────────────────────────
   Future<void> fetchCollectiveLeaves() async {

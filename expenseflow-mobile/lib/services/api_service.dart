@@ -321,10 +321,6 @@ class ApiService {
     throw ApiException(msg, res.statusCode, data, retryAfter);
   }
 
-  static Future<Map<String, dynamic>> holidays(int year) async {
-    return _request('GET', '/attendance/holidays',
-        query: {'year': year.toString()});
-  }
 
   // ─── Cuti Bersama ───────────────────────────────────────────
   /// Daftar cuti bersama mendatang + status pilihan karyawan login.

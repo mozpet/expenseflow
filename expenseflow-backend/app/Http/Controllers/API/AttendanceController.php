@@ -1631,7 +1631,10 @@ class AttendanceController extends Controller
         return response()->json(['year' => (int) $year, 'holidays' => $holidays]);
     }
 
-    // storeHolidays() — tambah libur khusus perusahaan/cabang (mis. cuti bersama internal)
+    // storeHolidays() — tambah libur, mendukung 3 tipe:
+    //   nasional    → berlaku semua perusahaan (company_id = NULL, is_national = true)
+    //   collective  → cuti bersama (potong saldo, karyawan pilih ikut/tidak)
+    //   perusahaan  → khusus perusahaan/cabang (tanpa potong saldo)
     public function storeHolidays(Request $request): JsonResponse
     {
         $user      = $request->user();
@@ -1640,13 +1643,23 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'date'                  => 'required|date',
             'name'                  => 'required|string|max:255',
-            'is_collective'         => 'boolean', // true = Cuti Bersama (saldo terpotong)
+            'type'                  => 'nullable|in:nasional,collective,perusahaan',
+            'is_collective'         => 'boolean', // backward compat: form lama hanya kirim boolean ini
             'attendance_setting_id' => 'nullable|integer|exists:attendance_settings,id',
         ]);
 
-        $date         = Carbon::parse($validated['date'])->toDateString();
-        $isCollective = (bool) ($validated['is_collective'] ?? false);
-        $officeId     = ! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null;
+        $date = Carbon::parse($validated['date'])->toDateString();
+        $type = $validated['type'] ?? null;
+
+        // Backward compat: jika type tidak dikirim, turunkan dari is_collective (form lama).
+        $isNational   = $type === 'nasional';
+        $isCollective = $type !== null ? $type === 'collective' : (bool) ($validated['is_collective'] ?? false);
+
+        // Libur nasional tidak terikat perusahaan/cabang → company_id NULL.
+        $holidayCompanyId = $isNational ? null : $companyId;
+        $officeId         = $isNational
+            ? null
+            : (! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null);
 
         // Jika cabang diset, pastikan cabang milik perusahaan user
         if ($officeId && $user->role !== 'super_admin') {
@@ -1658,46 +1671,52 @@ class AttendanceController extends Controller
             }
         }
 
-        // Cegah duplikat pada scope perusahaan/cabang yang sama.
+        // Cegah duplikat pada scope yang sama (nasional vs perusahaan/cabang).
         $exists = Holiday::whereDate('date', $date)
-            ->where('company_id', $companyId)
+            ->where('company_id', $holidayCompanyId)
             ->where(fn ($q) => $q->where('attendance_setting_id', $officeId))
             ->exists();
 
         if ($exists) {
-            return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar pada kantor yang dipilih.'], 422);
+            return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar pada scope yang dipilih.'], 422);
         }
 
         $holiday = Holiday::create([
-            'company_id'            => $companyId,
+            'company_id'            => $holidayCompanyId,
             'attendance_setting_id' => $officeId,
             'date'                  => $date,
             'name'                  => $validated['name'],
-            'is_national'           => false,
+            'is_national'           => $isNational,
             'is_collective'         => $isCollective,
         ]);
 
         // Jika cuti bersama: buat leave_request pending untuk karyawan aktif di cabang/perusahaan ini
-        if ($isCollective) {
+        if ($isCollective && ! $isNational) {
             $this->createCollectiveLeaveRequests($holiday, $companyId);
         }
 
         $logDesc = $isCollective
             ? "Tambah cuti bersama {$holiday->name} ({$date})"
-            : "Tambah libur {$holiday->name} ({$date})";
+            : ($isNational
+                ? "Tambah libur nasional {$holiday->name} ({$date})"
+                : "Tambah libur {$holiday->name} ({$date})");
         $this->logActivity($user->id, $companyId, 'holiday_created', $logDesc, 'holiday', $holiday->id);
 
         return response()->json([
-            'message' => $isCollective ? 'Cuti bersama berhasil ditambahkan. Karyawan akan menerima notifikasi.' : 'Hari libur berhasil ditambahkan.',
+            'message' => $isCollective
+                ? 'Cuti bersama berhasil ditambahkan. Karyawan akan menerima notifikasi.'
+                : ($isNational
+                    ? 'Libur nasional berhasil ditambahkan.'
+                    : 'Hari libur berhasil ditambahkan.'),
             'holiday' => [
                 'id'                    => $holiday->id,
                 'date'                  => $date,
                 'name'                  => $holiday->name,
-                'is_national'           => false,
+                'is_national'           => $isNational,
                 'is_collective'         => $isCollective,
                 'attendance_setting_id' => $holiday->attendance_setting_id,
                 'office_name'           => $holiday->office?->office_name,
-                'scope'                 => $holiday->attendance_setting_id ? 'cabang' : 'perusahaan',
+                'scope'                 => $holiday->company_id ? ($holiday->attendance_setting_id ? 'cabang' : 'perusahaan') : 'nasional',
             ],
         ], 201);
     }
@@ -1715,11 +1734,30 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'date'                  => 'required|date',
             'name'                  => 'required|string|max:255',
+            'type'                  => 'nullable|in:nasional,collective,perusahaan',
             'attendance_setting_id' => 'nullable|integer|exists:attendance_settings,id',
         ]);
 
-        $newDate  = Carbon::parse($validated['date'])->toDateString();
-        $officeId = ! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null;
+        $newDate = Carbon::parse($validated['date'])->toDateString();
+        $type    = $validated['type'] ?? null;
+
+        // Tipe tujuan (backward compat: tanpa type, pertahankan tipe yang sudah ada).
+        $isNational   = $type !== null ? $type === 'nasional' : ($holiday->is_national ?? false);
+        $isCollective = $type !== null ? $type === 'collective' : (bool) ($holiday->is_collective ?? false);
+
+        // Hindari perubahan yang melintasi scope nasional ↔ perusahaan/cabang.
+        // Libur nasional adalah data global (company_id NULL) milik semua perusahaan;
+        // mengubahnya lewat edit berisiko salah ubah data lintas-perusahaan.
+        // Solusi yang aman: hapus & buat ulang.
+        if ($isNational !== (bool) $holiday->is_national) {
+            return response()->json(['message' => 'Tipe libur tidak dapat diubah antara libur nasional dan libur biasa. Hapus lalu buat ulang.'], 422);
+        }
+
+        // Libur nasional tidak terikat cabang; perusahaan/collective memakai company user.
+        $holidayCompanyId = $isNational ? null : $user->company_id;
+        $officeId = $isNational
+            ? null
+            : (! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null);
 
         if ($officeId && $user->role !== 'super_admin') {
             $validOffice = \App\Models\AttendanceSetting::where('id', $officeId)
@@ -1730,35 +1768,40 @@ class AttendanceController extends Controller
             }
         }
 
-        // Cegah duplikat: jika mengubah tanggal / cabang
-        if ($newDate !== $holiday->date->toDateString() || $officeId !== $holiday->attendance_setting_id) {
+        // Cegah duplikat: jika mengubah tanggal / tipe / cabang
+        $oldOfficeId = $holiday->attendance_setting_id;
+        $oldIsCollective = (bool) $holiday->is_collective;
+        if ($newDate !== $holiday->date->toDateString() || $officeId !== $oldOfficeId || $isNational !== (bool) $holiday->is_national) {
             $exists = Holiday::whereDate('date', $newDate)
-                ->where('company_id', $holiday->company_id)
+                ->where('company_id', $holidayCompanyId)
                 ->where(fn ($q) => $q->where('attendance_setting_id', $officeId))
                 ->where('id', '!=', $holiday->id)
                 ->exists();
 
             if ($exists) {
-                return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar pada kantor yang dipilih.'], 422);
+                return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar pada scope yang dipilih.'], 422);
             }
         }
 
         $oldName = $holiday->name;
         $oldDate = $holiday->date->toDateString();
 
-        $oldOfficeId = $holiday->attendance_setting_id;
-
         $holiday->update([
+            'company_id'            => $holidayCompanyId,
+            'attendance_setting_id' => $officeId,
             'date'                  => $newDate,
             'name'                  => $validated['name'],
-            'attendance_setting_id' => $officeId,
+            'is_national'           => $isNational,
+            'is_collective'         => $isCollective,
         ]);
 
-        // Jika ini cuti bersama dan cabang/tanggal berubah, perbarui leave_requests
-        if ($holiday->is_collective && ($officeId !== $oldOfficeId || $newDate !== $oldDate)) {
-            // Re-sync leave requests untuk cabang baru
+        // Re-sync cuti bersama jika tipe/cabang/tanggal berubah (termasuk berubah menjadi/keluar dari cuti bersama)
+        $scopeChanged = $officeId !== $oldOfficeId || $newDate !== $oldDate || $isCollective !== $oldIsCollective;
+        if ($scopeChanged) {
             $this->cancelAllCollectiveRequests($holiday);
-            $this->createCollectiveLeaveRequests($holiday, $user->company_id);
+            if ($isCollective && ! $isNational) {
+                $this->createCollectiveLeaveRequests($holiday, $user->company_id);
+            }
         }
 
         $scope = $holiday->company_id ? $user->company_id : null;

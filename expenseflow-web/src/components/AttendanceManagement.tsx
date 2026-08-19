@@ -1843,10 +1843,10 @@ const HolidaysTab: React.FC<{
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState<{ date: string; name: string; is_collective: boolean; attendance_setting_id: string }>({
+  const [form, setForm] = useState<{ date: string; name: string; type: string; attendance_setting_id: string }>({
     date: '',
     name: '',
-    is_collective: false,
+    type: 'perusahaan',
     attendance_setting_id: '',
   });
   const [saving, setSaving] = useState(false);
@@ -1921,18 +1921,19 @@ const HolidaysTab: React.FC<{
   // Ringkasan per bulan: jumlah libur nasional & perusahaan di bulan yang sedang dilihat
   const summary = useMemo(() => {
     const prefix = `${year}-${pad2(viewMonth + 1)}-`;
-    let nasional = 0, perusahaan = 0;
+    let nasional = 0, perusahaan = 0, cutiBersama = 0;
     visibleHolidays.forEach(h => {
       if (String(h.date).slice(0, 10).startsWith(prefix)) {
         if (h.scope === 'nasional') nasional++;
+        else if (h.is_collective) cutiBersama++;
         else perusahaan++;
       }
     });
-    return { nasional, perusahaan };
+    return { nasional, perusahaan, cutiBersama };
   }, [visibleHolidays, year, viewMonth]);
 
   const resetForm = () => {
-    setForm({ date: '', name: '', is_collective: false, attendance_setting_id: calOfficeFilter || '' });
+    setForm({ date: '', name: '', type: 'perusahaan', attendance_setting_id: calOfficeFilter || '' });
     setEditingId(null);
     setShowForm(false);
   };
@@ -1942,11 +1943,11 @@ const HolidaysTab: React.FC<{
     const defaultOffice = calOfficeFilter || '';
     if (editingId !== null) {
       setEditingId(null);
-      setForm({ date: date ?? '', name: '', is_collective: false, attendance_setting_id: defaultOffice });
+      setForm({ date: date ?? '', name: '', type: 'perusahaan', attendance_setting_id: defaultOffice });
       setShowForm(true);
       return;
     }
-    setForm({ date: date ?? '', name: '', is_collective: false, attendance_setting_id: defaultOffice });
+    setForm({ date: date ?? '', name: '', type: 'perusahaan', attendance_setting_id: defaultOffice });
     setShowForm((v) => !v);
   };
 
@@ -1955,7 +1956,15 @@ const HolidaysTab: React.FC<{
     setForm({
       date: String(h.date).slice(0, 10),
       name: h.name,
-      is_collective: !!h.is_collective,
+      // Tipe diturunkan dari data holiday:
+      //  - scope 'nasional' / is_national=true → libur nasional
+      //  - is_collective=true                  → cuti bersama
+      //  - selain itu (scope 'perusahaan'/'cabang') → libur perusahaan
+      type: h.scope === 'nasional' || h.is_national
+        ? 'nasional'
+        : h.is_collective
+          ? 'collective'
+          : 'perusahaan',
       attendance_setting_id: h.attendance_setting_id ? String(h.attendance_setting_id) : '',
     });
     setShowForm(true);
@@ -1966,11 +1975,16 @@ const HolidaysTab: React.FC<{
     if (!form.date || !form.name.trim()) return;
     setSaving(true);
     try {
-      const officeId = form.attendance_setting_id ? Number(form.attendance_setting_id) : null;
+      const isCollective = form.type === 'collective';
+      // Libur nasional tidak terikat kantor/cabang; kosongkan attendance_setting_id.
+      const officeId = form.type === 'nasional'
+        ? null
+        : (form.attendance_setting_id ? Number(form.attendance_setting_id) : null);
       if (editingId !== null) {
         await attendanceApi.holidays.update(editingId, {
           date: form.date,
           name: form.name.trim(),
+          type: form.type,
           attendance_setting_id: officeId,
         });
         onAddAuditLog('Hari libur diubah', `${form.name} (${form.date})`, 'bg-sky-500');
@@ -1978,13 +1992,14 @@ const HolidaysTab: React.FC<{
         await attendanceApi.holidays.create({
           date: form.date,
           name: form.name.trim(),
-          is_collective: form.is_collective,
+          type: form.type,
+          is_collective: isCollective,
           attendance_setting_id: officeId,
         });
         onAddAuditLog(
-          form.is_collective ? 'Cuti bersama ditambahkan' : 'Hari libur ditambahkan',
+          isCollective ? 'Cuti bersama ditambahkan' : 'Hari libur ditambahkan',
           `${form.name} (${form.date})`,
-          form.is_collective ? 'bg-amber-500' : 'bg-sky-500',
+          isCollective ? 'bg-amber-500' : 'bg-sky-500',
         );
       }
       resetForm();
@@ -2099,14 +2114,46 @@ const HolidaysTab: React.FC<{
             <input
               type="text"
               value={form.name}
-              placeholder="mis. Cuti Bersama Idul Fitri"
+              placeholder={form.type === 'nasional' ? 'mis. Hari Kenaikan Yesus Kristus' : form.type === 'collective' ? 'mis. Cuti Bersama Idul Fitri' : 'mis. Hari Jadi Perusahaan'}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
               required
             />
           </div>
-          {offices.length > 0 && (
-            <div className="space-y-1.5 sm:col-span-1">
+          <div className="space-y-1.5 sm:col-span-1">
+            <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Tipe Libur</label>
+            <select
+              value={form.type}
+              onChange={(e) => setForm({ ...form, type: e.target.value })}
+              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+            >
+              <option value="nasional">Libur Nasional</option>
+              <option value="collective">Cuti Bersama</option>
+              <option value="perusahaan">Libur Perusahaan</option>
+            </select>
+          </div>
+
+          {form.type === 'nasional' ? (
+            <div className="sm:col-span-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/30 rounded-lg p-3">
+              <p className="text-[11px] text-rose-700 dark:text-rose-400">
+                <span className="font-bold">Libur nasional</span> berlaku untuk semua perusahaan di aplikasi dan tampil <span className="font-bold">merah</span> di kalender.
+              </p>
+            </div>
+          ) : form.type === 'collective' ? (
+            <div className="sm:col-span-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg p-3">
+              <p className="text-xs font-bold text-amber-900 dark:text-amber-300">Cuti Bersama (Potong Saldo)</p>
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                Karyawan akan menerima notifikasi di aplikasi mobile H-7 dan dapat memilih untuk ikut atau tidak. <span className="font-bold">Saldo cuti karyawan yang mengikuti cuti ini akan terpotong otomatis.</span>
+              </p>
+            </div>
+          ) : (
+            <p className="text-[11px] text-slate-400 sm:col-span-3">
+              Libur perusahaan hanya berlaku untuk perusahaan Anda dan tampil <span className="font-bold text-indigo-600 dark:text-indigo-400">biru</span> di kalender. Pilih kantor cabang untuk membatasi libur ke cabang tertentu.
+            </p>
+          )}
+
+          {form.type !== 'nasional' && offices.length > 0 && (
+            <div className="space-y-1.5 sm:col-span-3">
               <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor Cabang</label>
               <select
                 value={form.attendance_setting_id}
@@ -2118,24 +2165,6 @@ const HolidaysTab: React.FC<{
                   <option key={o.id} value={String(o.id)}>{o.office_name}</option>
                 ))}
               </select>
-            </div>
-          )}
-          {editingId === null && (
-            <div className="sm:col-span-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg p-3">
-              <label className="flex items-center gap-2.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={form.is_collective}
-                  onChange={(e) => setForm({ ...form, is_collective: e.target.checked })}
-                  className="w-4 h-4 rounded text-amber-600 focus:ring-amber-500 cursor-pointer"
-                />
-                <div>
-                  <p className="text-xs font-bold text-amber-900 dark:text-amber-300">Jadikan Cuti Bersama (Potong Saldo)</p>
-                  <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                    Karyawan akan menerima notifikasi di aplikasi mobile H-7 dan dapat memilih untuk ikut atau tidak. Saldo cuti karyawan yang ikut akan terpotong secara otomatis.
-                  </p>
-                </div>
-              </label>
             </div>
           )}
           <div className="flex items-center gap-2 sm:col-span-3 justify-end">
@@ -2173,7 +2202,7 @@ const HolidaysTab: React.FC<{
             <div className="text-center">
               <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{MONTHS[viewMonth]} {year}</p>
               <p className="text-[10px] text-slate-400">
-                {summary.nasional} nasional · {summary.perusahaan} perusahaan
+                {summary.nasional} nasional · {summary.cutiBersama} cuti bersama · {summary.perusahaan} perusahaan
               </p>
             </div>
             <button
@@ -2200,7 +2229,7 @@ const HolidaysTab: React.FC<{
               const dayHolidays = byDate[dateStr] ?? [];
               const hasNational = dayHolidays.some(h => h.scope === 'nasional');
               const hasCollective = dayHolidays.some(h => h.is_collective);
-              const hasCompany = dayHolidays.some(h => h.scope === 'perusahaan' && !h.is_collective);
+              const hasCompany = dayHolidays.some(h => (h.scope === 'perusahaan' || h.scope === 'cabang') && !h.is_collective);
               const isToday = dateStr === toDateStr(today);
               const isSelected = detailDate === dateStr;
               // Cek apakah hari ini adalah libur mingguan kantor yang dipilih
