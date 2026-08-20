@@ -16,35 +16,42 @@ use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 
 // Rate limiter untuk login: dua batasan jalan serentak.
-//   - Per akun: 5 percobaan per menit (dibedakan per email)
-//   - Per IP  : 30 percobaan per menit (lebih longgar untuk kantor NAT)
+//   - Per akun: 5 percobaan per menit (dibedakan per email)  → penjaga anti brute-force utama
+//   - Per IP  : 120 percobaan per menit (sangat longgar untuk kantor NAT & CGNAT seluler)
 // Request diblokir (429) jika SALAH SATU batasan terlampaui.
 // Response custom menyertakan retry_after (detik) agar web & mobile bisa
 // menampilkan waktu tunggu dengan andal.
-RateLimiter::for('login', function (Request $request) {
+//
+// PENGAMAN: nilai `retry_after` dari header DICLAMP ke `$window` detik.
+// Rate limiter seharusnya mengembalikan sisa window (<=60s), tetapi bila
+// cache/timer korup (pernah terjadi: mengembalikan ~74.000 detik / 20 jam),
+// clamp memastikan user tidak dikunci login lebih dari durasi window itu.
+// Batas percobaan tetap berlaku penuh (5/menit email, 120/menit IP).
+$loginErrorResponse = function (Request $request, array $headers, int $window) {
+    $raw = (int) ($headers['Retry-After'] ?? 0);
+    $seconds = max(1, min($raw > 0 ? $raw : $window, $window));
+    $minutes = max(1, (int) ceil($seconds / 60));
+
+    $clampedHeaders = $headers;
+    $clampedHeaders['Retry-After'] = (string) $seconds;
+
+    return response()->json([
+        'message'     => "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
+        'retry_after' => $seconds,
+        'rate_limit'  => true,
+    ], 429, $clampedHeaders);
+};
+
+RateLimiter::for('login', function (Request $request) use ($loginErrorResponse) {
     $email = (string) $request->input('email'); // fallback aman ke string kosong
 
     return [
-        Limit::perMinute(5)->by($email)->response(function (Request $request, array $headers) {
-            $seconds = (int) ($headers['Retry-After'] ?? 60);
-            $minutes = max(1, (int) ceil($seconds / 60));
-
-            return response()->json([
-                'message'     => "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
-                'retry_after' => $seconds,
-                'rate_limit'  => true,
-            ], 429, $headers);
-        }),
-        Limit::perMinute(30)->by($request->ip())->response(function (Request $request, array $headers) {
-            $seconds = (int) ($headers['Retry-After'] ?? 60);
-            $minutes = max(1, (int) ceil($seconds / 60));
-
-            return response()->json([
-                'message'     => "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
-                'retry_after' => $seconds,
-                'rate_limit'  => true,
-            ], 429, $headers);
-        }),
+        Limit::perMinute(5)
+            ->by($email)
+            ->response(fn (Request $req, array $h) => $loginErrorResponse($req, $h, 60)),
+        Limit::perMinute(120)
+            ->by($request->ip())
+            ->response(fn (Request $req, array $h) => $loginErrorResponse($req, $h, 60)),
     ];
 });
 
@@ -152,6 +159,9 @@ Route::prefix('v1')->group(function () {
             Route::get('/leaves/{leave}/document', [AttendanceController::class, 'leaveDocument']);
             Route::post('/leaves/{id}/approve', [AttendanceController::class, 'approveLeave']);
             Route::post('/leaves/{id}/reject', [AttendanceController::class, 'rejectLeave']);
+
+            // Semua karyawan (tanpa pagination) untuk dropdown pengecualian libur
+            Route::get('/users/all', [AttendanceController::class, 'listAllUsers']);
 
             // Dashboard hari ini & rekap
             Route::get('/today', [AttendanceController::class, 'today']);

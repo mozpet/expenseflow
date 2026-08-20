@@ -2310,14 +2310,18 @@ class ShiftController extends Controller
 
         // Ambil hari libur nasional & perusahaan untuk bulan ini.
         // Libur khusus cabang hanya berlaku untuk user di cabang tsb → filter attendance_setting_id.
-        $holidayCollection = \App\Models\Holiday::where(function ($q) use ($user) {
+        $holidayCollection = \App\Models\Holiday::with('excludedUsers:id')
+            ->where(function ($q) use ($user) {
                 $q->whereNull('company_id')->orWhere('company_id', $user->company_id);
             })
             ->where(fn ($q) => $q->whereNull('attendance_setting_id')
                 ->when($user->attendance_setting_id, fn ($qq) => $qq->orWhere('attendance_setting_id', $user->attendance_setting_id)))
             ->whereBetween('date', [$startOfMonth->toDateString(), $endOfMonth->toDateString()])
             ->orderBy('date')
-            ->get(['id', 'date', 'name', 'is_national', 'is_collective', 'company_id', 'attendance_setting_id']);
+            ->get(['id', 'date', 'name', 'is_national', 'is_collective', 'company_id', 'attendance_setting_id'])
+            // User yang DIKECUALIKAN dari sebuah libur tidak melihat libur itu di kalender.
+            ->filter(fn ($h) => ! $h->excludedUsers->contains('id', $user->id))
+            ->values();
 
         // Map holiday per date untuk lookup O(1) — jika ada beberapa libur di tanggal sama, ambil yang nasional dulu
         $holidayByDate = $holidayCollection

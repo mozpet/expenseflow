@@ -269,13 +269,54 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final dept = (user?.department?.isNotEmpty == true)
             ? user!.department!
             : 'No Department';
-        final collective = presensiProv.activeCollectiveLeaveBanner;
+        final collectiveBanners = presensiProv.activeCollectiveLeaveBanners;
 
         return SafeArea(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 32),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
             child: Column(
               children: [
+                // Notifikasi Icon
+                Align(
+                  alignment: Alignment.topRight,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    children: [
+                      Container(
+                        decoration: BoxDecoration(
+                          color: Colors.grey.shade100,
+                          shape: BoxShape.circle,
+                        ),
+                        child: IconButton(
+                          icon: const Icon(Icons.mail_outline, color: Colors.black87),
+                          onPressed: () {
+                            _showCollectiveLeavesBottomSheet(context);
+                          },
+                        ),
+                      ),
+                      if (collectiveBanners.isNotEmpty)
+                        Positioned(
+                          right: -2,
+                          top: -2,
+                          child: Container(
+                            padding: const EdgeInsets.all(5),
+                            decoration: const BoxDecoration(
+                              color: Color(0xFFE53935),
+                              shape: BoxShape.circle,
+                            ),
+                            child: Text(
+                              '${collectiveBanners.length}',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
                 // Ikon akun
                 Container(
                   width: 80,
@@ -337,11 +378,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 // Banner: shift baru diubah oleh HRD
                 if (shiftProv.hasShiftUpdate) ...[
                   _buildShiftUpdateBanner(shiftProv),
-                  const SizedBox(height: 12),
-                ],
-                // Banner: cuti bersama mendatang (pilih ikut / tidak)
-                if (collective != null) ...[
-                  _buildCollectiveLeaveBanner(presensiProv, collective),
                   const SizedBox(height: 12),
                 ],
                 // Card jadwal hari ini
@@ -550,6 +586,70 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     return time;
   }
 
+  void _showCollectiveLeavesBottomSheet(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) {
+        return Container(
+          height: MediaQuery.of(ctx).size.height * 0.7,
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          ),
+          child: Column(
+            children: [
+              Container(
+                margin: const EdgeInsets.symmetric(vertical: 12),
+                height: 4,
+                width: 40,
+                decoration: BoxDecoration(
+                  color: Colors.grey[300],
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.all(16.0),
+                child: Text(
+                  'Pesan & Notifikasi',
+                  style: TextStyle(
+                    fontSize: 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: Consumer<PresensiProvider>(
+                  builder: (context, presensiProv, _) {
+                    final banners = presensiProv.activeCollectiveLeaveBanners;
+                    if (banners.isEmpty) {
+                      return const Center(
+                        child: Text(
+                          'Tidak ada pesan baru.',
+                          style: TextStyle(color: Colors.grey),
+                        ),
+                      );
+                    }
+                    return ListView.separated(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: banners.length,
+                      separatorBuilder: (context, index) => const SizedBox(height: 16),
+                      itemBuilder: (context, index) {
+                        return _buildCollectiveLeaveBanner(presensiProv, banners[index]);
+                      },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   // ─── Banner: cuti bersama mendatang, karyawan pilih Ya (ikut) / Tidak ───
   Widget _buildCollectiveLeaveBanner(
     PresensiProvider prov,
@@ -566,6 +666,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
       daysLeft = target.difference(today).inDays;
     } catch (_) {}
+
+    // Saldo cuti tidak cukup → user tidak bisa ikut cuti bersama.
+    // (Kebijakan ditetapkan 'block' sejak 2026-08-20: ikut hanya jika saldo cukup.)
+    final bool saldoCukup = c.remainingQuota >= c.totalDays;
 
     return Container(
       width: double.infinity,
@@ -625,6 +729,35 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ),
             ),
           ),
+          if (!saldoCukup) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFDECEA),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFE53935)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.error_outline,
+                      color: Color(0xFFC62828), size: 18),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      'Saldo Anda tidak cukup untuk mengikuti cuti bersama '
+                      '(butuh ${c.totalDays} hari, sisa ${c.remainingQuota} hari).',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFFC62828),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
           Row(
             children: [
@@ -650,7 +783,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               Expanded(
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: const Color(0xFF2E7D32),
+                    backgroundColor: saldoCukup
+                        ? const Color(0xFF2E7D32)
+                        : Colors.grey.shade400,
                     foregroundColor: Colors.white,
                     elevation: 0,
                     shape: RoundedRectangleBorder(
@@ -658,7 +793,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ),
                     padding: const EdgeInsets.symmetric(vertical: 12),
                   ),
-                  onPressed: () => _respondCollective(prov, c.id, 'accepted'),
+                  onPressed: saldoCukup
+                      ? () => _respondCollective(prov, c.id, 'accepted')
+                      : null,
                   child: const Text(
                     'Ya, Saya Ikut',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),

@@ -34,4 +34,9 @@ class Holiday extends Model
     {
         return $this->belongsTo(AttendanceSetting::class, 'attendance_setting_id');
     }
+
+    public function excludedUsers()
+    {
+        return $this->belongsToMany(User::class, 'holiday_exclusions', 'holiday_id', 'user_id')->withTimestamps();
+    }
 }

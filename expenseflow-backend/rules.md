@@ -14,8 +14,8 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
 - **OCR**      : Tesseract (dev) / Google Cloud Vision API (production)
 - **Queue**    : Laravel Queue (driver: database)
 - **Storage**  : Local disk (`storage/app/private/`), nanti R2
-- **Auth**     : Sanctum token, expired 24 jam
-- **Rate Limit**: Login 5 attempts/menit/IP
+- **Auth**     : Sanctum token — mobile TANPA expiry (tetap login sampai Logout), web expired 24 jam
+- **Rate Limit**: Login 5 attempts/menit/email + 120 attempts/menit/IP (retry_after di-clamp ≤ 60s)
 
 ## Status Saat Ini
 - Frontend Flutter : SELESAI
@@ -133,6 +133,13 @@ bootstrap/
 | 20d | `shifts` | Template shift (company_id, **attendance_setting_id** nullable=milik cabang/null=company-wide, name, description, is_active). Ditambah 2026-07-04. |
 | 20e | `shift_schedules` | Detail 7 hari per shift dengan **VERSIONING** (shift_id, **effective_date**, day_of_week 0=Minggu–6=Sabtu, work_start_time, work_end_time, is_off, is_cross_day). Unique(shift_id, day_of_week, effective_date). **Versi yang berlaku pada tanggal T = baris dengan effective_date ≤ T terbesar.** Edit jam kerja shift membuat VERSI BARU (effective_date = hari ini + max(1, shift_notice_days)); versi lama tetap berlaku sebelum tanggal efektif. |
 | 20f | `user_shifts` | Assignment shift ke karyawan (user_id, shift_id **nullable**=default kantor, start_date, **end_date nullable**, notes). Unique(user_id, start_date). **Shift berlaku pada tanggal T jika: start_date ≤ T DAN (end_date NULL ATAU end_date ≥ T).** Diurutkan DESC start_date → ambil first() = assignment terbaru yang mencakup tanggal T. |
+| 20g | `holiday_exclusions` | **Pengecualian karyawan pada hari libur** (holiday_id, user_id, timestamps, unique(holiday_id, user_id)). Ditambah 2026-08-20. Karyawan yang masuk daftar ini **TIDAK dianggap libur** pada tanggal tsb: tetap hari kerja normal, tidak dibuatkan leave_request cuti bersama, tidak dianggap libur di kalender mobile, dan tidak terpotong saldo. Dipakai `isNonWorkingDay()`, `countWorkingDays()`, `ShiftController::calendar()`. |
+
+> **Kebijakan Saldo Cuti Bersama (2026-08-20):** kolom `attendance_settings.collective_leave_policy` **DIDROP** (migration `2026_08_20_064513...`). Perilaku di-**hardcode** menjadi `block`: karyawan hanya boleh ikut cuti bersama jika sisa saldo cuti ≥ `total_days`. Jika tidak cukup → ditolak (422 "Saldo cuti Anda tidak cukup...") dan di mobile banner menampilkan peringatan + tombol "Ya, Saya Ikut" di-disable.
+>
+> **Banner cuti bersama — sembunyikan jika karyawan sudah libur:** `listCollectiveLeaves()` menetapkan `show_banner=false` bila pada tanggal cuti bersama karyawan (a) libur dari jadwal shift (`ShiftController::resolveSchedule(...)['is_off'] == true`, termasuk template shift OFF & hari di luar work_days) atau (b) punya cuti pribadi `status=approved` yang mencakup tanggal tsb. Tujuan: hindari ikut cuti bersama & potong saldo saat karyawan sebenarnya sudah libur.
+>
+> **Optimasi N+1 (helper `resolveOffDatesForUser`):** perhitungan `is_off` per tanggal cuti bersama memakai helper privat bulk di `AttendanceController` yang meniru `ShiftController::resolveSchedule()` persis (UserShift + ShiftSchedule + office di-preload sekali), menurunkan query 24 → 4 untuk 8 tanggal tanpa mengubah perilaku. |
 
 ### Laravel Defaults
 | # | Tabel | Keterangan |
@@ -331,9 +338,10 @@ draft → submitted (submitted_at diisi) → approved / rejected
 
 ### Login
 - Login gagal wajib masuk `login_attempts`
-- Rate limited: 5 attempts per menit per IP
+- Rate limited (via `throttle:login`): 5 attempts/menit per **email** + 120 attempts/menit per **IP** (longgar untuk NAT & CGNAT seluler). `retry_after` di-clamp maksimal 60 detik agar tidak menampilkan waktu tunggu yang tidak wajar.
 - Password: min 8, max 255 karakter
-- Token expired: 24 jam
+- Token mobile: TANPA expiry (tetap login sampai user klik Logout). Single-session mobile: login baru di HP lain menghapus token lama.
+- Token web: expired 24 jam.
 - X-Platform header divalidasi (whitelist: mobile, web)
 
 ---
@@ -676,8 +684,8 @@ HRD rejectLeave (via web)
 - Variance formula: `abs(claimed - ocrRaw) / ocrRaw * 100`, flag jika > 10%
 - Invoice PPN: `subtotal * 0.11`
 - Semua route dashboard sudah include `super_admin` di middleware role
-- Login rate limit: 5 attempts/menit/IP via `throttle:login`
-- Token expiration: 24 jam
+- Login rate limit: 5 attempts/menit/email + 120 attempts/menit/IP via `throttle:login` (retry_after di-clamp ≤ 60s)
+- Token mobile tanpa expiry; web 24 jam
 
 ---
 

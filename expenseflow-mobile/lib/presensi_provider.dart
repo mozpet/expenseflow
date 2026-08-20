@@ -191,6 +191,10 @@ class PresensiProvider extends ChangeNotifier {
     }
     return null;
   }
+  
+  List<CollectiveLeaveRecord> get activeCollectiveLeaveBanners {
+    return _collectiveLeaves.where((item) => item.showBanner && item.collectiveStatus == 'pending').toList();
+  }
   String? get todayMasuk => _todayMasuk;
   String? get todayPulang => _todayPulang;
   int get todayOvertimeMinutes => _todayOvertimeMinutes;

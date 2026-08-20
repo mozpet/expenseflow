@@ -116,12 +116,17 @@ class AuthController extends Controller
             $user->tokens()->where('name', 'auth-token-mobile')->delete();
         }
 
-        // Lolos — buat Sanctum token dengan expiration 24 jam.
+        // Lolos — buat Sanctum token.
+        //   - MOBILE: TANPA expiration → akun tetap login sampai user klik Logout
+        //             (sesuai keputusan bisnis, 2026-08-20). Device binding &
+        //             single-session tetap menjaga keamanan (lihat di atas).
+        //   - WEB   : expiration 24 jam (sesi dashboard tetap dibatasi).
         // Nama token dibedakan per-platform agar bisa ditarget saat single-session.
+        $expiresAt = $platform === 'mobile' ? null : now()->addHours(24);
         $token = $user->createToken(
             "auth-token-{$platform}",
             ['*'],
-            now()->addHours(24)
+            $expiresAt
         )->plainTextToken;
 
         $this->logAttempt($user, $request, 'success');

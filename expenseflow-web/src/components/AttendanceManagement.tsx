@@ -454,7 +454,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     else if (tab === 'users') loadUsers();
     else if (tab === 'balances') loadBalances();
     else if (tab === 'report') loadReport(reportPage);
-    else if (tab === 'holidays') loadHolidays();
+    else if (tab === 'holidays') {
+      loadHolidays();
+      if (users.length === 0) {
+        attendanceApi.users().then(res => setUsers(rows(res))).catch(() => {});
+      }
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, reportFilter, reportPage, holidayYear]);
 
@@ -1667,6 +1672,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           <HolidaysTab
             holidays={holidays}
             offices={offices}
+            users={users}
             reload={loadHolidays}
             onAddAuditLog={onAddAuditLog}
             onError={reportApiError}
@@ -1833,23 +1839,43 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 const HolidaysTab: React.FC<{
   holidays: any[];
   offices: any[];
+  users: any[];
   reload: () => Promise<void>;
   onAddAuditLog: (t: string, d: string, b: string) => void;
   onError: (e: unknown, f: string) => void;
   year: number;
   onYearChange: (y: number) => void;
-}> = ({ holidays, offices, reload, onAddAuditLog, onError, year, onYearChange }) => {
+}> = ({ holidays, offices, users, reload, onAddAuditLog, onError, year, onYearChange }) => {
   const today = new Date();
+  // Tanggal hari ini (YYYY-MM-DD) untuk menentukan sel kalender yang lewat/sedang berjalan
+  const todayStr = toDateStr(today);
   const [viewMonth, setViewMonth] = useState(today.getMonth());
   const [showForm, setShowForm] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [form, setForm] = useState<{ date: string; name: string; type: string; attendance_setting_id: string }>({
+  const [form, setForm] = useState<{ date: string; name: string; type: string; attendance_setting_id: string; excluded_users: any[] }>({
     date: '',
     name: '',
     type: 'perusahaan',
     attendance_setting_id: '',
+    excluded_users: [],
   });
+  const [excludeSearch, setExcludeSearch] = useState('');
+  const [excludeDropdownOpen, setExcludeDropdownOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  // Daftar karyawan untuk dropdown pengecualian — selalu diambil mandiri via /users/all
+  // (jangan pakai prop users: itu paginated 20 saja, tidak memuat semua karyawan)
+  const [userOptions, setUserOptions] = useState<any[]>([]);
+
+  // Muat semua karyawan aktif untuk dropdown pengecualian (dengan cache: hanya sekali)
+  const ensureUserOptions = useCallback(() => {
+    if (userOptions.length > 0) return;
+    attendanceApi.allUsers()
+      .then((res: any) => {
+        const list = rows(res?.users ?? res);
+        if (list.length > 0) setUserOptions(list);
+      })
+      .catch(() => {});
+  }, [userOptions.length]);
   const [detailDate, setDetailDate] = useState<string | null>(null);
   // Modal rekap cuti bersama (HRD)
   const [collectiveDetailHoliday, setCollectiveDetailHoliday] = useState<any | null>(null);
@@ -1864,6 +1890,12 @@ const HolidaysTab: React.FC<{
     if (year === cur.getFullYear()) setViewMonth(cur.getMonth());
     else setViewMonth(0);
   }, [year]);
+
+  // Muat daftar karyawan untuk dropdown pengecualian saat komponen pertama kali mount
+  useEffect(() => {
+    ensureUserOptions();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Libur yang relevan dg filter kantor yang dipilih.
   // '' = Semua Kantor → tampilkan semua libur perusahaan + nasional.
@@ -1933,7 +1965,7 @@ const HolidaysTab: React.FC<{
   }, [visibleHolidays, year, viewMonth]);
 
   const resetForm = () => {
-    setForm({ date: '', name: '', type: 'perusahaan', attendance_setting_id: calOfficeFilter || '' });
+    setForm({ date: '', name: '', type: 'perusahaan', attendance_setting_id: calOfficeFilter || '', excluded_users: [] });
     setEditingId(null);
     setShowForm(false);
   };
@@ -1943,12 +1975,13 @@ const HolidaysTab: React.FC<{
     const defaultOffice = calOfficeFilter || '';
     if (editingId !== null) {
       setEditingId(null);
-      setForm({ date: date ?? '', name: '', type: 'perusahaan', attendance_setting_id: defaultOffice });
+      setForm({ date: date ?? '', name: '', type: 'perusahaan', attendance_setting_id: defaultOffice, excluded_users: [] });
       setShowForm(true);
       return;
     }
-    setForm({ date: date ?? '', name: '', type: 'perusahaan', attendance_setting_id: defaultOffice });
+    setForm({ date: date ?? '', name: '', type: 'perusahaan', attendance_setting_id: defaultOffice, excluded_users: [] });
     setShowForm((v) => !v);
+    ensureUserOptions();
   };
 
   const startEdit = (h: any) => {
@@ -1956,6 +1989,7 @@ const HolidaysTab: React.FC<{
     setForm({
       date: String(h.date).slice(0, 10),
       name: h.name,
+      excluded_users: h.excluded_users ?? [],
       // Tipe diturunkan dari data holiday:
       //  - scope 'nasional' / is_national=true → libur nasional
       //  - is_collective=true                  → cuti bersama
@@ -1973,6 +2007,11 @@ const HolidaysTab: React.FC<{
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.date || !form.name.trim()) return;
+    // Larang membuat libur/cuti bersama baru untuk tanggal yang sudah lewat / hari ini.
+    if (editingId === null && form.date <= todayStr) {
+      onError(null, 'Tanggal sudah lewat / hari ini tidak bisa untuk menambah libur.');
+      return;
+    }
     setSaving(true);
     try {
       const isCollective = form.type === 'collective';
@@ -1980,22 +2019,19 @@ const HolidaysTab: React.FC<{
       const officeId = form.type === 'nasional'
         ? null
         : (form.attendance_setting_id ? Number(form.attendance_setting_id) : null);
+      const payload = {
+        date: form.date,
+        name: form.name.trim(),
+        type: form.type,
+        attendance_setting_id: officeId,
+        excluded_user_ids: form.excluded_users.map(u => u.id),
+      };
+
       if (editingId !== null) {
-        await attendanceApi.holidays.update(editingId, {
-          date: form.date,
-          name: form.name.trim(),
-          type: form.type,
-          attendance_setting_id: officeId,
-        });
+        await attendanceApi.holidays.update(editingId, payload);
         onAddAuditLog('Hari libur diubah', `${form.name} (${form.date})`, 'bg-sky-500');
       } else {
-        await attendanceApi.holidays.create({
-          date: form.date,
-          name: form.name.trim(),
-          type: form.type,
-          is_collective: isCollective,
-          attendance_setting_id: officeId,
-        });
+        await attendanceApi.holidays.create({ ...payload, is_collective: isCollective });
         onAddAuditLog(
           isCollective ? 'Cuti bersama ditambahkan' : 'Hari libur ditambahkan',
           `${form.name} (${form.date})`,
@@ -2055,6 +2091,10 @@ const HolidaysTab: React.FC<{
   // Libur pada tanggal yang dipilih (dari sisi kiri)
   const selectedHolidays = detailDate ? (byDate[detailDate] ?? []) : [];
 
+  // Tombol "Tambah" status libur hanya diperbolehkan untuk tanggal di masa depan.
+  // Tanggal sudah lewat / hari ini → tombol disembunyikan (disabled).
+  const isDetailLocked = detailDate ? detailDate <= todayStr : false;
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -2083,31 +2123,24 @@ const HolidaysTab: React.FC<{
               </select>
             </div>
           )}
-          <button
-            onClick={() => startCreate()}
-            className="flex items-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition"
-          >
-            <Plus className="w-3.5 h-3.5" /> Tambah Libur
-          </button>
         </div>
       </div>
 
       {showForm && (
-        <form onSubmit={submit} className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
-          <div className="space-y-1.5 sm:col-span-3 -mb-2">
+        <form onSubmit={submit} className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 grid grid-cols-1 sm:grid-cols-4 gap-4 items-end">
+          <div className="space-y-1.5 sm:col-span-4 -mb-2">
             <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
               {editingId !== null ? 'Ubah Hari Libur' : 'Tambah Hari Libur'}
             </p>
           </div>
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 sm:col-span-1">
             <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Tanggal</label>
-            <input
-              type="date"
-              value={form.date}
-              onChange={(e) => setForm({ ...form, date: e.target.value })}
-              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-              required
-            />
+            {/* Tanggal tidak bisa diedit — berasal dari pilihan kalender (atau tanggal libur yang sedang diubah). */}
+            <div className="flex items-center gap-2 text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100">
+              <CalendarDays className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+              <span className="font-semibold">{form.date ? fmtDate(form.date) : '—'}</span>
+            </div>
+            <input type="hidden" value={form.date} />
           </div>
           <div className="space-y-1.5 sm:col-span-1">
             <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Nama Libur</label>
@@ -2133,27 +2166,9 @@ const HolidaysTab: React.FC<{
             </select>
           </div>
 
-          {form.type === 'nasional' ? (
-            <div className="sm:col-span-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/30 rounded-lg p-3">
-              <p className="text-[11px] text-rose-700 dark:text-rose-400">
-                <span className="font-bold">Libur nasional</span> berlaku untuk semua perusahaan di aplikasi dan tampil <span className="font-bold">merah</span> di kalender.
-              </p>
-            </div>
-          ) : form.type === 'collective' ? (
-            <div className="sm:col-span-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg p-3">
-              <p className="text-xs font-bold text-amber-900 dark:text-amber-300">Cuti Bersama (Potong Saldo)</p>
-              <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                Karyawan akan menerima notifikasi di aplikasi mobile H-7 dan dapat memilih untuk ikut atau tidak. <span className="font-bold">Saldo cuti karyawan yang mengikuti cuti ini akan terpotong otomatis.</span>
-              </p>
-            </div>
-          ) : (
-            <p className="text-[11px] text-slate-400 sm:col-span-3">
-              Libur perusahaan hanya berlaku untuk perusahaan Anda dan tampil <span className="font-bold text-indigo-600 dark:text-indigo-400">biru</span> di kalender. Pilih kantor cabang untuk membatasi libur ke cabang tertentu.
-            </p>
-          )}
-
+          {/* Kantor Cabang — langsung setelah Tipe Libur agar sebaris (kolom ke-4) */}
           {form.type !== 'nasional' && offices.length > 0 && (
-            <div className="space-y-1.5 sm:col-span-3">
+            <div className="space-y-1.5 sm:col-span-1">
               <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor Cabang</label>
               <select
                 value={form.attendance_setting_id}
@@ -2167,7 +2182,118 @@ const HolidaysTab: React.FC<{
               </select>
             </div>
           )}
-          <div className="flex items-center gap-2 sm:col-span-3 justify-end">
+
+          {form.type === 'nasional' ? (
+            <div className="sm:col-span-4 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-900/30 rounded-lg p-3">
+              <p className="text-[11px] text-rose-700 dark:text-rose-400">
+                <span className="font-bold">Libur nasional</span> berlaku untuk semua perusahaan di aplikasi dan tampil <span className="font-bold">merah</span> di kalender.
+              </p>
+            </div>
+          ) : form.type === 'collective' ? (
+            <div className="sm:col-span-4 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg p-3">
+              <p className="text-xs font-bold text-amber-900 dark:text-amber-300">Cuti Bersama (Potong Saldo)</p>
+              <p className="text-[11px] text-amber-700 dark:text-amber-400">
+                Karyawan akan menerima notifikasi di aplikasi mobile H-7 dan dapat memilih untuk ikut atau tidak. <span className="font-bold">Saldo cuti karyawan yang mengikuti cuti ini akan terpotong otomatis.</span>
+              </p>
+            </div>
+          ) : (
+            <p className="text-[11px] text-slate-400 sm:col-span-4">
+              Libur perusahaan hanya berlaku untuk perusahaan Anda dan tampil <span className="font-bold text-indigo-600 dark:text-indigo-400">biru</span> di kalender. Pilih kantor cabang untuk membatasi libur ke cabang tertentu.
+            </p>
+          )}
+          {/* Input Pengecualian Karyawan */}
+          <div className="sm:col-span-1 mt-2 space-y-1.5">
+            <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">
+              Pengecualian Karyawan <span className="lowercase normal-case font-normal">(Tidak ikut libur)</span>
+            </label>
+            <div className="relative">
+              <div
+                className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus-within:ring-1 focus-within:ring-indigo-400 cursor-text min-h-[38px]"
+                onClick={() => { ensureUserOptions(); setExcludeDropdownOpen(true); }}
+              >
+                <div className="flex flex-wrap gap-1.5 mb-1">
+                  {form.excluded_users.length === 0 && !excludeDropdownOpen && (
+                    <span className="text-slate-400 py-0.5">Pilih karyawan...</span>
+                  )}
+                  {form.excluded_users.map(u => (
+                    <span key={u.id} className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded text-[10px] font-medium border border-slate-200 dark:border-slate-600">
+                      {u.name}
+                      <button type="button" onClick={(e) => { e.stopPropagation(); setForm(f => ({ ...f, excluded_users: f.excluded_users.filter(x => x.id !== u.id) })); }} className="hover:text-rose-500">
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+                {excludeDropdownOpen && (
+                  <input
+                    type="text"
+                    autoFocus
+                    placeholder="Cari karyawan..."
+                    value={excludeSearch}
+                    onChange={e => setExcludeSearch(e.target.value)}
+                    onBlur={() => setTimeout(() => setExcludeDropdownOpen(false), 200)}
+                    className="w-full bg-transparent outline-none text-slate-800 dark:text-slate-100 placeholder-slate-400 mt-1"
+                  />
+                )}
+              </div>
+
+              {/* Dropdown List */}
+              {excludeDropdownOpen && (
+                <div className="absolute z-10 top-full left-0 w-80 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+                  {(() => {
+                    const filteredUsers = (userOptions || []).filter(u => {
+                      // Filter by office if branch is selected
+                      if (form.type !== 'nasional' && form.attendance_setting_id) {
+                        if (String(u.attendance_setting_id) !== form.attendance_setting_id) return false;
+                      }
+                      // Filter by search
+                      if (excludeSearch) {
+                        const q = excludeSearch.toLowerCase();
+                        const userName = String(u.name || '').toLowerCase();
+                        const userCode = String(u.employee_code || '').toLowerCase();
+                        if (!userName.includes(q) && !userCode.includes(q)) return false;
+                      }
+                      // Filter out already selected
+                      if (form.excluded_users.some(x => x.id === u.id)) return false;
+                      return true;
+                    });
+
+                    if (filteredUsers.length === 0) {
+                      return <div className="p-3 text-xs text-slate-500 text-center">Tidak ada karyawan yang cocok.</div>;
+                    }
+
+                    return filteredUsers.map(u => (
+                      <div
+                        key={u.id}
+                        className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-50 dark:border-slate-800/60 last:border-0"
+                      >
+                        <div>
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{u.name}</p>
+                          <p className="text-[10px] text-slate-400">
+                            {u.employee_code && <span className="font-mono">{u.employee_code} · </span>}
+                            {u.office?.office_name ?? 'Kantor Pusat'}
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault(); // Mencegah onBlur pada input
+                            setForm(f => ({ ...f, excluded_users: [...f.excluded_users, u] }));
+                            setExcludeSearch('');
+                          }}
+                          className="flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded text-[10px] font-bold transition"
+                        >
+                          <Plus className="w-3 h-3" /> Add
+                        </button>
+                      </div>
+                    ));
+                  })()}
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 sm:col-span-4 justify-end mt-2">
             <button
               type="submit"
               disabled={saving}
@@ -2226,6 +2352,10 @@ const HolidaysTab: React.FC<{
             {cells.map((day, idx) => {
               if (day === null) return <div key={`e-${idx}`} className="h-16 sm:h-20" />;
               const dateStr = `${year}-${pad2(viewMonth + 1)}-${pad2(day)}`;
+              // Tanggal yang sudah lewat / hari ini TETAP menampilkan status liburnya
+              // (tanggal merah, libur perusahaan, cuti bersama, libur mingguan).
+              // Hanya tindakan "tambah status" yang disembunyikan untuk tanggal tsb.
+              const isPastOrToday = dateStr <= todayStr;
               const dayHolidays = byDate[dateStr] ?? [];
               const hasNational = dayHolidays.some(h => h.scope === 'nasional');
               const hasCollective = dayHolidays.some(h => h.is_collective);
@@ -2237,6 +2367,7 @@ const HolidaysTab: React.FC<{
               const jsDay = new Date(dateStr + 'T00:00:00').getDay();
               const isWeeklyOff = weeklyOffDays.has(jsDay);
               // Prioritas warna: nasional (merah tua) > libur mingguan kantor (merah muda) > cuti bersama (amber) > perusahaan (biru) > biasa
+              // Tanggal sudah lewat / hari ini tetap menampilkan status libur; hanya tombol tambah yang disembunyikan darinya.
               const bgClass = hasNational
                 ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/40'
                 : isWeeklyOff
@@ -2248,11 +2379,13 @@ const HolidaysTab: React.FC<{
                       : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800';
               // Tooltip: libur mingguan kantor jika tidak ada event lain
               const selectedOfficeName = offices.find((o: any) => String(o.id) === calOfficeFilter)?.office_name ?? '';
-              const tooltip = dayHolidays.length
-                ? dayHolidays.map(h => h.name).join(', ')
-                : isWeeklyOff
-                  ? `Hari libur mingguan ${selectedOfficeName}`
-                  : 'Klik untuk menambah libur';
+              const tooltip = isPastOrToday
+                ? ''
+                : (dayHolidays.length
+                  ? dayHolidays.map(h => h.name).join(', ')
+                  : isWeeklyOff
+                    ? `Hari libur mingguan ${selectedOfficeName}`
+                    : 'Klik untuk menambah libur');
               return (
                 <button
                   key={dateStr}
@@ -2308,17 +2441,25 @@ const HolidaysTab: React.FC<{
                 <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">
                   {fmtDate(detailDate)}
                 </h4>
-                <button
-                  onClick={() => { startCreate(detailDate); }}
-                  className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 hover:underline transition"
-                >
-                  <Plus className="w-3 h-3" /> Tambah
-                </button>
+                {!isDetailLocked && selectedHolidays.length === 0 && (
+                  <button
+                    onClick={() => { startCreate(detailDate); }}
+                    className="inline-flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold shadow-sm shadow-indigo-500/20 transition"
+                  >
+                    <Plus className="w-3.5 h-3.5" /> Tambah Libur
+                  </button>
+                )}
               </div>
               {selectedHolidays.length === 0 ? (
-                <p className="text-[11px] text-slate-400">
-                  Tidak ada libur pada tanggal ini. Klik <span className="font-semibold text-indigo-600 dark:text-indigo-400">Tambah</span> untuk membuat libur khusus perusahaan.
-                </p>
+                isDetailLocked ? (
+                  <p className="text-[11px] text-slate-400">
+                    Tidak ada libur pada tanggal ini.
+                  </p>
+                ) : (
+                  <p className="text-[11px] text-slate-400">
+                    Tidak ada libur pada tanggal ini. Klik <span className="font-semibold text-indigo-600 dark:text-indigo-400">Tambah</span> untuk membuat libur khusus perusahaan.
+                  </p>
+                )
               ) : (
                 <div className="space-y-2">
                   {selectedHolidays.map(h => (
@@ -2361,6 +2502,20 @@ const HolidaysTab: React.FC<{
                           </div>
                         </div>
                       )}
+                      {/* Pengecualian Karyawan */}
+                      {h.excluded_users && h.excluded_users.length > 0 && (
+                        <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                          <p className="text-[9px] font-bold text-slate-500 uppercase mb-1">Dikecualikan (Kerja)</p>
+                          <div className="flex flex-wrap gap-1">
+                            {h.excluded_users.map((u: any) => (
+                              <span key={u.id} className="text-[9px] bg-slate-100 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600">
+                                {u.name}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       <div className="flex items-center justify-between gap-1 mt-2">
                         {h.is_collective && (
                           <button
@@ -2371,18 +2526,23 @@ const HolidaysTab: React.FC<{
                           </button>
                         )}
                         <div className="flex items-center gap-1 ml-auto">
-                          <button
-                            onClick={() => startEdit(h)}
-                            className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition"
-                          >
-                            <Pencil className="w-3 h-3" /> Ubah
-                          </button>
-                          <button
-                            onClick={() => remove(h)}
-                            className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition"
-                          >
-                            <Trash2 className="w-3 h-3" /> Hapus
-                          </button>
+                          {/* Tombol Ubah/Hapus hanya untuk tanggal masa depan — status historis tidak diubah/dihapus */}
+                          {!isDetailLocked && (
+                            <>
+                              <button
+                                onClick={() => startEdit(h)}
+                                className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition"
+                              >
+                                <Pencil className="w-3 h-3" /> Ubah
+                              </button>
+                              <button
+                                onClick={() => remove(h)}
+                                className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition"
+                              >
+                                <Trash2 className="w-3 h-3" /> Hapus
+                              </button>
+                            </>
+                          )}
                         </div>
                       </div>
                     </div>

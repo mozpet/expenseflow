@@ -119,6 +119,9 @@ export const attendanceApi = {
   // Daftar karyawan + status attendance/WFH
   users: (filter?: 'enabled' | 'disabled') =>
     apiGet('/dashboard/attendance/users', { filter }),
+  // Semua karyawan aktif (tanpa pagination) — untuk dropdown pengecualian libur
+  allUsers: () =>
+    apiGet('/dashboard/attendance/users/all'),
   toggleWfh: (id: number | string) =>
     apiPost(`/dashboard/attendance/users/${id}/toggle-wfh`),
   toggleRadius: (id: number | string) =>

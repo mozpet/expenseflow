@@ -65,6 +65,14 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     _loadMonth(Provider.of<ShiftProvider>(context, listen: false));
   }
 
+  /// Muat ulang (refresh) data shift: info hari ini + kalender bulan yang ditampilkan.
+  Future<void> _refreshData() async {
+    final prov = Provider.of<ShiftProvider>(context, listen: false);
+    await prov.fetchMySchedule();
+    prov.clearCalendarCache();
+    await prov.fetchScheduleCalendar(_displayedMonth.year, _displayedMonth.month);
+  }
+
   /// day_of_week API: 0=Minggu, 1=Senin ... 6=Sabtu
   int _toApiDow(DateTime d) => d.weekday % 7;
 
@@ -169,6 +177,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
       appBar: AppBar(
         title: const Text('Jadwal Kerja Saya'),
         centerTitle: true,
+        actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            onPressed: _refreshData,
+            icon: const Icon(Icons.refresh),
+          ),
+        ],
       ),
       body: Consumer<ShiftProvider>(
         builder: (context, prov, _) {
