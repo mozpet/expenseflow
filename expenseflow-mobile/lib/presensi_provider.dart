@@ -613,6 +613,28 @@ class PresensiProvider extends ChangeNotifier {
       );
     }
 
+    // LIVE UPDATE: setelah user merespon 1 cuti bersama, saldo cuti berubah.
+    // Sinkronkan sisa saldo ke SEMUA banner cuti bersama lain yang masih pending
+    // agar tombol "Ya, Saya Ikut" & peringatan saldo habis langsung ter-update
+    // tanpa perlu refresh manual.
+    if (remaining != null) {
+      for (var i = 0; i < _collectiveLeaves.length; i++) {
+        final item = _collectiveLeaves[i];
+        if (item.id == holidayId) continue;
+        if (item.collectiveStatus != 'pending') continue;
+        _collectiveLeaves[i] = CollectiveLeaveRecord(
+          id: item.id,
+          date: item.date,
+          name: item.name,
+          totalDays: item.totalDays,
+          collectiveStatus: item.collectiveStatus,
+          remainingQuota: remaining,
+          policy: item.policy,
+          showBanner: item.showBanner,
+        );
+      }
+    }
+
     await fetchLeaveBalance();
     notifyListeners();
   }

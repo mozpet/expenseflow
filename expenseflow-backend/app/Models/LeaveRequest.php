@@ -14,6 +14,7 @@ class LeaveRequest extends Model
         'start_date',
         'end_date',
         'total_days',
+        'holiday_compensated_days',
         'reason',
         'document_path',
         'status',
@@ -27,10 +28,11 @@ class LeaveRequest extends Model
     protected function casts(): array
     {
         return [
-            'start_date'  => 'date',
-            'end_date'    => 'date',
-            'total_days'  => 'integer',
-            'approved_at' => 'datetime',
+            'start_date'               => 'date',
+            'end_date'                 => 'date',
+            'total_days'               => 'integer',
+            'holiday_compensated_days' => 'integer',
+            'approved_at'              => 'datetime',
         ];
     }
 

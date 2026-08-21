@@ -833,11 +833,16 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         children: [
           Icon(icon, color: color.shade600, size: 18),
           const SizedBox(width: 8),
-          Text(label,
+          Expanded(
+            child: Text(
+              label,
               style: TextStyle(
-                  color: color.shade700,
-                  fontWeight: FontWeight.w600,
-                  fontSize: 13)),
+                color: color.shade700,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
+            ),
+          ),
         ],
       ),
     );

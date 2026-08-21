@@ -21,6 +21,40 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   int _currentIndex = 0;
   final List<bool> _visited = [true, false, false, false, false];
+  bool _isReloading = false;
+
+  Future<void> _refreshHomeData() async {
+    if (_isReloading) return;
+    setState(() => _isReloading = true);
+    try {
+      final receiptProv = Provider.of<ReceiptProvider>(context, listen: false);
+      final shiftProv = Provider.of<ShiftProvider>(context, listen: false);
+      final presensiProv = Provider.of<PresensiProvider>(context, listen: false);
+
+      await Future.wait([
+        receiptProv.fetchMyReceipts(),
+        shiftProv.fetchMySchedule(),
+        shiftProv.checkShiftUpdates(),
+        presensiProv.syncStatusFromBackend(),
+        presensiProv.fetchCollectiveLeaves(),
+      ]);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Data beranda berhasil diperbarui'),
+            duration: Duration(seconds: 1),
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } catch (_) {
+    } finally {
+      if (mounted) {
+        setState(() => _isReloading = false);
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -66,12 +100,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+    final navBarHeight = 70.0 + bottomPadding;
+    final totalBarHeight = 100.0 + bottomPadding;
+
     return Scaffold(
       extendBody: true,
       body: Stack(
         children: [
           Positioned.fill(
-            bottom: 70,
+            bottom: navBarHeight,
             child: IndexedStack(
               index: _currentIndex,
               children: [
@@ -89,7 +127,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             left: 0,
             right: 0,
             bottom: 0,
-            height: 100,
+            height: totalBarHeight,
             child: Stack(
               clipBehavior: Clip.none,
               children: [
@@ -97,7 +135,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   left: 0,
                   right: 0,
                   bottom: 0,
-                  height: 70,
+                  height: navBarHeight,
                   child: Container(
                     decoration: const BoxDecoration(
                       color: Colors.white,
@@ -115,36 +153,39 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                 ),
                 Positioned.fill(
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceAround,
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    children: [
-                      _buildTabItem(0, Icons.home_outlined, Icons.home, 'Home'),
-                      _buildTabItem(
-                        1,
-                        Icons.receipt_long_outlined,
-                        Icons.receipt_long,
-                        'Struk',
-                      ),
-                      _buildTabItem(
-                        2,
-                        Icons.fingerprint,
-                        Icons.fingerprint,
-                        'Presensi',
-                      ),
-                      _buildTabItem(
-                        3,
-                        Icons.event_note_outlined,
-                        Icons.event_note,
-                        'Izin/Cuti',
-                      ),
-                      _buildTabItem(
-                        4,
-                        Icons.person_outline,
-                        Icons.person,
-                        'Profil',
-                      ),
-                    ],
+                  child: Padding(
+                    padding: EdgeInsets.only(bottom: bottomPadding),
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceAround,
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      children: [
+                        _buildTabItem(0, Icons.home_outlined, Icons.home, 'Home'),
+                        _buildTabItem(
+                          1,
+                          Icons.receipt_long_outlined,
+                          Icons.receipt_long,
+                          'Struk',
+                        ),
+                        _buildTabItem(
+                          2,
+                          Icons.fingerprint,
+                          Icons.fingerprint,
+                          'Presensi',
+                        ),
+                        _buildTabItem(
+                          3,
+                          Icons.event_note_outlined,
+                          Icons.event_note,
+                          'Izin/Cuti',
+                        ),
+                        _buildTabItem(
+                          4,
+                          Icons.person_outline,
+                          Icons.person,
+                          'Profil',
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ],
@@ -272,51 +313,75 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final collectiveBanners = presensiProv.activeCollectiveLeaveBanners;
 
         return SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
-            child: Column(
-              children: [
-                // Notifikasi Icon
-                Align(
-                  alignment: Alignment.topRight,
-                  child: Stack(
-                    clipBehavior: Clip.none,
+          child: RefreshIndicator(
+            onRefresh: _refreshHomeData,
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
+              child: Column(
+                children: [
+                  // Baris Header: Reload Button + Notifikasi Icon
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
+                      // Tombol Reload/Refresh Data
                       Container(
                         decoration: BoxDecoration(
                           color: Colors.grey.shade100,
                           shape: BoxShape.circle,
                         ),
                         child: IconButton(
-                          icon: const Icon(Icons.mail_outline, color: Colors.black87),
-                          onPressed: () {
-                            _showCollectiveLeavesBottomSheet(context);
-                          },
+                          icon: _isReloading
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                )
+                              : const Icon(Icons.refresh, color: Colors.black87),
+                          tooltip: 'Muat Ulang Data',
+                          onPressed: _refreshHomeData,
                         ),
                       ),
-                      if (collectiveBanners.isNotEmpty)
-                        Positioned(
-                          right: -2,
-                          top: -2,
-                          child: Container(
-                            padding: const EdgeInsets.all(5),
-                            decoration: const BoxDecoration(
-                              color: Color(0xFFE53935),
+                      // Notifikasi Icon
+                      Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Container(
+                            decoration: BoxDecoration(
+                              color: Colors.grey.shade100,
                               shape: BoxShape.circle,
                             ),
-                            child: Text(
-                              '${collectiveBanners.length}',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 10,
-                                fontWeight: FontWeight.bold,
-                              ),
+                            child: IconButton(
+                              icon: const Icon(Icons.mail_outline, color: Colors.black87),
+                              onPressed: () {
+                                _showCollectiveLeavesBottomSheet(context);
+                              },
                             ),
                           ),
-                        ),
+                          if (collectiveBanners.isNotEmpty)
+                            Positioned(
+                              right: -2,
+                              top: -2,
+                              child: Container(
+                                padding: const EdgeInsets.all(5),
+                                decoration: const BoxDecoration(
+                                  color: Color(0xFFE53935),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Text(
+                                  '${collectiveBanners.length}',
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.bold,
+                                  ),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
                     ],
                   ),
-                ),
                 // Ikon akun
                 Container(
                   width: 80,
@@ -385,7 +450,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ],
             ),
           ),
-        );
+        ),
+      );
       },
     );
   }

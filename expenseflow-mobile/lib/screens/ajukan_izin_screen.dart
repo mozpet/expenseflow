@@ -13,10 +13,18 @@ class AjukanIzinScreen extends StatefulWidget {
 
 class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   String _selectedType = 'izin';
-  DateTime _startDate = DateTime.now().add(const Duration(days: 1));
-  DateTime _endDate = DateTime.now().add(const Duration(days: 1));
+  late DateTime _startDate;
+  late DateTime _endDate;
   final _reasonController = TextEditingController();
   bool _isLoading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final tomorrow = DateTime.now().add(const Duration(days: 1));
+    _startDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
+    _endDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
+  }
 
   // Lampiran surat dokter (wajib untuk jenis 'sakit')
   Uint8List? _docBytes;
@@ -33,11 +41,14 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   int get _totalDays => _endDate.difference(_startDate).inDays + 1;
 
   Future<void> _pickDate({required bool isStart}) async {
+    final tomorrow = DateTime.now().add(const Duration(days: 1));
+    final minDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
+    final first = isStart ? minDate : _startDate;
     final initial = isStart ? _startDate : _endDate;
-    final first = isStart ? DateTime.now() : _startDate;
+
     final picked = await showDatePicker(
       context: context,
-      initialDate: initial,
+      initialDate: initial.isBefore(first) ? first : initial,
       firstDate: first,
       lastDate: DateTime.now().add(const Duration(days: 365)),
       locale: const Locale('id', 'ID'),
@@ -86,6 +97,18 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   }
 
   void _submit() async {
+    final tomorrow = DateTime.now().add(const Duration(days: 1));
+    final minDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
+    if (_startDate.isBefore(minDate)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Pengajuan hanya diperbolehkan untuk besok atau tanggal setelahnya.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
     if (_reasonController.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(

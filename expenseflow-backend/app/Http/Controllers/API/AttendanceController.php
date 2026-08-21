@@ -221,12 +221,35 @@ class AttendanceController extends Controller
                 ->flip();
         }
 
-        $count = 0;
+        // Bangun daftar tanggal dalam rentang.
+        $dates = [];
         for ($day = $start->copy(); $day->lte($end); $day->addDay()) {
-            if ($day->isWeekend()) {
+            $dates[] = $day->toDateString();
+        }
+
+        // Tentukan hari LIBUR/OFF per tanggal.
+        // Jika user diketahui → gunakan resolveOffDatesForUser() yang SHIFT-AWARE
+        // (membaca jadwal shift is_off, dengan fallback ke work_days kantor).
+        // Ini penting agar karyawan ber-shift yang justru MASUK di Sabtu/Minggu
+        // tidak salah dianggap libur (bug: kantor default libur Minggu, tapi shift
+        // user menjadwalkan Minggu masuk). Jika user tak diketahui → fallback isWeekend().
+        $offMap = [];
+        if ($userId) {
+            $userModel = User::find($userId);
+            if ($userModel) {
+                $offMap = $this->resolveOffDatesForUser($userModel, $dates);
+            }
+        }
+        $useShiftAware = $userId && ! empty($offMap);
+
+        $count = 0;
+        foreach ($dates as $ds) {
+            $isOff = $useShiftAware
+                ? (bool) ($offMap[$ds] ?? false)
+                : Carbon::parse($ds)->isWeekend();
+            if ($isOff) {
                 continue;
             }
-            $ds = $day->toDateString();
             if ($regularHolidays->has($ds) || $acceptedCollectiveLeaves->has($ds)) {
                 continue;
             }
@@ -436,6 +459,14 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Permintaan sudah diproses sebelumnya.'], 403);
         }
 
+        // Guard: cuti bersama (holiday_id != null) tidak bisa di-approve oleh HRD secara manual.
+        // Karyawan yang memutuskan sendiri via aplikasi mobile (accept/decline).
+        if ($leave->holiday_id !== null) {
+            return response()->json([
+                'message' => 'Cuti bersama tidak bisa disetujui secara manual. Karyawan memilih sendiri via aplikasi mobile.',
+            ], 403);
+        }
+
         $balance = null;
         $year    = Carbon::parse($leave->start_date)->year;
 
@@ -513,6 +544,13 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Permintaan sudah diproses sebelumnya.'], 403);
         }
 
+        // Guard: cuti bersama tidak bisa ditolak oleh HRD secara manual.
+        if ($leave->holiday_id !== null) {
+            return response()->json([
+                'message' => 'Cuti bersama tidak bisa ditolak secara manual. Karyawan memilih sendiri via aplikasi mobile.',
+            ], 403);
+        }
+
         $leave->update([
             'status'           => 'rejected',
             'approved_by'      => $actor->id,
@@ -571,6 +609,9 @@ class AttendanceController extends Controller
                 'leave_requests.document_path',
                 'leave_requests.status', 'leave_requests.rejection_reason',
                 'leave_requests.approved_by', 'leave_requests.approved_at', 'leave_requests.created_at',
+                // Kolom pembeda sumber cuti: NULL = cuti mandiri (karyawan via mobile), NOT NULL = cuti bersama (HR via kalender)
+                'leave_requests.holiday_id',
+                'leave_requests.collective_status',
             ])
             ->orderByDesc('leave_requests.created_at')
             ->paginate(20);
@@ -1763,9 +1804,18 @@ class AttendanceController extends Controller
             $holiday->excludedUsers()->attach($validated['excluded_user_ids']);
         }
 
-        // Jika cuti bersama: buat leave_request pending untuk karyawan aktif di cabang/perusahaan ini
+        // Jika cuti bersama: buat leave_request pending untuk karyawan aktif di cabang/perusahaan ini.
+        // Karyawan yang sudah punya leave approved overlap akan otomatis dikecualikan (dikembalikan sebagai warning).
+        $autoExcluded = [];
         if ($isCollective && ! $isNational) {
-            $this->createCollectiveLeaveRequests($holiday, $companyId);
+            $autoExcluded = $this->createCollectiveLeaveRequests($holiday, $companyId);
+        }
+
+        // Jika libur nasional / libur cabang (non-collective): kembalikan saldo cuti karyawan
+        // yang sudah punya cuti approved di tanggal ini (mereka jadi libur gratis).
+        $compensated = [];
+        if (! $isCollective) {
+            $compensated = $this->compensateApprovedLeavesForHoliday($holiday, $companyId, $isNational);
         }
 
         $logDesc = $isCollective
@@ -1790,6 +1840,12 @@ class AttendanceController extends Controller
                 'attendance_setting_id' => $holiday->attendance_setting_id,
                 'office_name'           => $holiday->office?->office_name,
                 'scope'                 => $holiday->company_id ? ($holiday->attendance_setting_id ? 'cabang' : 'perusahaan') : 'nasional',
+            ],
+            'warnings' => [
+                // Karyawan yang dikecualikan otomatis dari cuti bersama (sudah punya leave approved)
+                'auto_excluded'       => $autoExcluded,
+                // Karyawan yang saldo cutinya dikembalikan karena libur nasional/cabang
+                'balance_restored'    => $compensated,
             ],
         ], 201);
     }
@@ -1953,7 +2009,28 @@ class AttendanceController extends Controller
             $this->cancelAllCollectiveRequests($holiday);
         }
 
+        // Untuk libur nasional/cabang (non-collective): kumpulkan cuti approved yang
+        // saldo-nya PERNAH dikembalikan akibat libur ini (holiday_compensated_days > 0
+        // dan overlap tanggal libur). Setelah libur dihapus, saldo mereka dipotong kembali.
+        $affectedLeaveIds = [];
+        if (! $holiday->is_collective) {
+            $affectedLeaveIds = \App\Models\LeaveRequest::where('status', 'approved')
+                ->where('leave_type', 'cuti')
+                ->whereNull('holiday_id')
+                ->where('holiday_compensated_days', '>', 0)
+                ->where('start_date', '<=', $date)
+                ->where('end_date', '>=', $date)
+                ->pluck('id')
+                ->toArray();
+        }
+
         $holiday->delete();
+
+        // Potong ulang saldo SETELAH holiday dihapus agar countWorkingDays tidak lagi
+        // mengecualikan tanggal libur tersebut.
+        if (! empty($affectedLeaveIds)) {
+            $this->reapplyLeaveDeductionAfterHolidayRemoval($affectedLeaveIds, $user->company_id, $name, $date, $id);
+        }
 
         $this->logActivity($user->id, $user->company_id, 'holiday_deleted', "Hapus libur {$name} ({$date})", 'holiday', $id);
 
@@ -2387,7 +2464,7 @@ class AttendanceController extends Controller
     }
 
     // ─── Helper: buat leave_request batch untuk semua karyawan aktif (cuti bersama) ────
-    private function createCollectiveLeaveRequests(Holiday $holiday, int $companyId): void
+    private function createCollectiveLeaveRequests(Holiday $holiday, int $companyId): array
     {
         $date      = $holiday->date->toDateString();
         $totalDays = $this->countWorkingDays(
@@ -2399,7 +2476,7 @@ class AttendanceController extends Controller
 
         // Jika tanggal cuti bersama adalah hari libur nasional / weekend → total_days = 0, skip
         if ($totalDays < 1) {
-            return;
+            return [];
         }
 
         // Karyawan aktif yang attendance_enabled.
@@ -2412,13 +2489,44 @@ class AttendanceController extends Controller
             $query->where('attendance_setting_id', $holiday->attendance_setting_id);
         }
 
-        // Ambil daftar user yang DIKECUALIKAN dari libur ini
+        // Ambil daftar user yang DIKECUALIKAN dari libur ini (exclusion manual oleh HR)
         $excludedUserIds = $holiday->excludedUsers()->pluck('users.id')->toArray();
 
-        // Singkirkan user yang dikecualikan
-        $users = $query->pluck('id')->reject(function ($id) use ($excludedUserIds) {
-            return in_array($id, $excludedUserIds);
-        });
+        $candidates = $query->get(['id', 'name']);
+
+        // Auto-exclude: karyawan yang SUDAH punya leave approved yang overlap dengan
+        // tanggal cuti bersama tidak perlu dibuatkan leave_request cuti bersama.
+        // Mereka sudah "libur" pada hari itu; masukkan ke daftar warning.
+        $existingApproved = \App\Models\LeaveRequest::whereIn('user_id', $candidates->pluck('id'))
+            ->where('status', 'approved')
+            ->whereNull('holiday_id') // cuti pribadi, bukan cuti bersama lain
+            ->where('start_date', '<=', $date)
+            ->where('end_date', '>=', $date)
+            ->get()
+            ->keyBy('user_id');
+
+        $autoExcluded = [];
+        $typeLabels   = ['wfh' => 'WFH', 'izin' => 'izin', 'sakit' => 'sakit', 'cuti' => 'cuti'];
+
+        $users = $candidates->reject(function ($u) use ($excludedUserIds, $existingApproved, &$autoExcluded, $typeLabels) {
+            // Dikecualikan manual oleh HR
+            if (in_array($u->id, $excludedUserIds)) {
+                return true;
+            }
+            // Auto-exclude karena sudah punya leave approved yang overlap
+            if ($existingApproved->has($u->id)) {
+                $lr = $existingApproved->get($u->id);
+                $autoExcluded[] = [
+                    'user_id'    => $u->id,
+                    'name'       => $u->name,
+                    'leave_type' => $typeLabels[$lr->leave_type] ?? $lr->leave_type,
+                    'start_date' => Carbon::parse($lr->start_date)->toDateString(),
+                    'end_date'   => Carbon::parse($lr->end_date)->toDateString(),
+                ];
+                return true;
+            }
+            return false;
+        })->pluck('id');
 
         $now = now();
         $rows = $users->map(fn ($uid) => [
@@ -2450,6 +2558,8 @@ class AttendanceController extends Controller
                 'name'       => $holiday->name,
             ], 'holiday', $holiday->id);
         }
+
+        return $autoExcluded;
     }
 
     // ─── Helper: batalkan semua leave_request cuti bersama & kembalikan saldo ────
@@ -2480,6 +2590,142 @@ class AttendanceController extends Controller
 
         // Hapus semua leave_request terkait cuti bersama ini
         \App\Models\LeaveRequest::where('holiday_id', $holiday->id)->delete();
+    }
+
+    // ─── Helper: kembalikan saldo cuti approved saat HR menambah libur nasional/cabang ───
+    // Saat HR menambah hari libur (non-collective) di tanggal yang overlap dengan cuti
+    // pribadi karyawan yang SUDAH di-approve, hari itu jadi "libur gratis" — saldo cuti
+    // yang terpotong dikembalikan. Jumlah hari yang dikembalikan disimpan di
+    // leave_requests.holiday_compensated_days agar bisa dipotong kembali jika libur dihapus.
+    // Hanya berlaku untuk leave_type = 'cuti' (izin & sakit tidak memakai saldo).
+    private function compensateApprovedLeavesForHoliday(Holiday $holiday, int $companyId, bool $isNational): array
+    {
+        $date = $holiday->date->toDateString();
+
+        // Kandidat karyawan sesuai scope libur:
+        //   nasional → seluruh karyawan perusahaan
+        //   cabang   → hanya karyawan di attendance_setting_id tersebut
+        $userQuery = \App\Models\User::where('company_id', $companyId)
+            ->where('is_active', true)
+            ->where('attendance_enabled', true);
+        if (! $isNational && $holiday->attendance_setting_id) {
+            $userQuery->where('attendance_setting_id', $holiday->attendance_setting_id);
+        }
+        $userIds = $userQuery->pluck('id');
+
+        if ($userIds->isEmpty()) {
+            return [];
+        }
+
+        // Cuti pribadi approved yang overlap tanggal libur (hanya 'cuti' yang pakai saldo).
+        $leaves = \App\Models\LeaveRequest::whereIn('user_id', $userIds)
+            ->where('status', 'approved')
+            ->where('leave_type', 'cuti')
+            ->whereNull('holiday_id') // cuti pribadi, bukan cuti bersama
+            ->where('start_date', '<=', $date)
+            ->where('end_date', '>=', $date)
+            ->with('user:id,name,attendance_setting_id')
+            ->get();
+
+        $compensated = [];
+        foreach ($leaves as $leave) {
+            // Hitung ulang hari kerja SEKARANG (libur baru sudah dibuat → otomatis dikecualikan).
+            // Pakai cabang milik karyawan agar libur cabang lain ikut diperhitungkan dengan benar.
+            $newTotal = $this->countWorkingDays(
+                Carbon::parse($leave->start_date),
+                Carbon::parse($leave->end_date),
+                $companyId,
+                $leave->user->attendance_setting_id ?? null,
+                $leave->user_id
+            );
+
+            $restored = $leave->total_days - $newTotal;
+            if ($restored <= 0) {
+                continue; // libur ini tidak mengurangi hari kerja cuti (mis. weekend)
+            }
+
+            $year    = Carbon::parse($leave->start_date)->year;
+            $balance = \App\Models\LeaveBalance::where('user_id', $leave->user_id)
+                ->where('year', $year)
+                ->where('leave_type', 'cuti')
+                ->first();
+            if ($balance) {
+                $balance->decrement('used', min($restored, $balance->used));
+            }
+
+            $leave->total_days               = $newTotal;
+            $leave->holiday_compensated_days = ($leave->holiday_compensated_days ?? 0) + $restored;
+            $leave->save();
+
+            $compensated[] = [
+                'user_id'       => $leave->user_id,
+                'name'          => $leave->user->name ?? null,
+                'restored_days' => $restored,
+                'start_date'    => Carbon::parse($leave->start_date)->toDateString(),
+                'end_date'      => Carbon::parse($leave->end_date)->toDateString(),
+            ];
+
+            $this->notifyUser($leave->user_id, 'leave_balance_restored', [
+                'message'    => "Hari libur \"{$holiday->name}\" ({$date}) ditambahkan. Saldo cuti Anda dikembalikan {$restored} hari.",
+                'holiday_id' => $holiday->id,
+                'date'       => $date,
+            ], 'holiday', $holiday->id);
+        }
+
+        return $compensated;
+    }
+
+    // ─── Helper: potong ulang saldo cuti saat HR menghapus libur nasional/cabang ───
+    // Kebalikan dari compensateApprovedLeavesForHoliday(): saat libur yang tadi membuat
+    // cuti "gratis" dihapus, hari kerja cuti bertambah lagi sehingga saldo dipotong kembali.
+    // Dipanggil SETELAH holiday dihapus agar countWorkingDays tidak lagi mengecualikan tanggal itu.
+    private function reapplyLeaveDeductionAfterHolidayRemoval(array $leaveIds, int $companyId, string $holidayName, string $date, int $holidayId): void
+    {
+        if (empty($leaveIds)) {
+            return;
+        }
+
+        $leaves = \App\Models\LeaveRequest::whereIn('id', $leaveIds)
+            ->with('user:id,attendance_setting_id')
+            ->get();
+
+        foreach ($leaves as $leave) {
+            // Libur sudah dihapus → hari kerja bertambah lagi.
+            $newTotal = $this->countWorkingDays(
+                Carbon::parse($leave->start_date),
+                Carbon::parse($leave->end_date),
+                $companyId,
+                $leave->user->attendance_setting_id ?? null,
+                $leave->user_id
+            );
+
+            $deduct = $newTotal - $leave->total_days;
+            if ($deduct <= 0) {
+                continue;
+            }
+            // Jangan potong lebih dari yang pernah dikembalikan akibat libur.
+            $deduct = min($deduct, (int) $leave->holiday_compensated_days);
+            if ($deduct <= 0) {
+                continue;
+            }
+
+            $year    = Carbon::parse($leave->start_date)->year;
+            $balance = \App\Models\LeaveBalance::firstOrCreate(
+                ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'cuti'],
+                ['company_id' => $companyId, 'quota' => 12, 'used' => 0]
+            );
+            $balance->increment('used', $deduct);
+
+            $leave->total_days               = $leave->total_days + $deduct;
+            $leave->holiday_compensated_days = max(0, (int) $leave->holiday_compensated_days - $deduct);
+            $leave->save();
+
+            $this->notifyUser($leave->user_id, 'leave_balance_deducted', [
+                'message'    => "Hari libur \"{$holidayName}\" ({$date}) dihapus. Saldo cuti Anda dipotong kembali {$deduct} hari.",
+                'holiday_id' => $holidayId,
+                'date'       => $date,
+            ], 'holiday', $holidayId);
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -3550,6 +3796,15 @@ class AttendanceController extends Controller
 
         $user = $request->user();
 
+        // Pengajuan hanya dapat dilakukan untuk besok atau tanggal setelahnya (hari ini & tanggal lalu dilarang).
+        $startDateStr = Carbon::parse($validated['start_date'])->toDateString();
+        $todayStr     = now()->toDateString();
+        if ($startDateStr <= $todayStr) {
+            return response()->json([
+                'message' => 'Pengajuan hanya dapat dilakukan untuk besok atau tanggal setelahnya (hari ini & tanggal lalu tidak diperbolehkan).',
+            ], 422);
+        }
+
         // Hitung HARI KERJA saja (lewati weekend & libur nasional) agar kuota adil.
         $totalDays = $this->countWorkingDays(
             Carbon::parse($validated['start_date']),
@@ -3562,6 +3817,57 @@ class AttendanceController extends Controller
         if ($totalDays < 1) {
             return response()->json([
                 'message' => 'Rentang tanggal tidak mengandung hari kerja (semua weekend/libur).',
+            ], 422);
+        }
+
+        // Label ramah-pengguna untuk tiap jenis pengajuan (dipakai di beberapa pesan validasi).
+        $typeLabels = ['wfh' => 'WFH', 'izin' => 'izin', 'sakit' => 'sakit', 'cuti' => 'cuti'];
+
+        // Validasi jadwal shift: karyawan tidak boleh mengajukan cuti/izin/sakit/wfh
+        // pada tanggal yang di jadwal shift-nya sudah ditandai LIBUR (is_off = true).
+        // Menggunakan resolveOffDatesForUser() yang meniru logika resolveSchedule shift +
+        // fallback ke jadwal default kantor.
+        $requestedDates = [];
+        for (
+            $d = Carbon::parse($validated['start_date']);
+            $d->lte(Carbon::parse($validated['end_date']));
+            $d->addDay()
+        ) {
+            $requestedDates[] = $d->toDateString();
+        }
+
+        $offMap   = $this->resolveOffDatesForUser($user, $requestedDates);
+        $offDates = array_keys(array_filter($offMap, fn ($isOff) => $isOff === true));
+
+        if (! empty($offDates)) {
+            $formatted = collect($offDates)
+                ->map(fn ($d) => Carbon::parse($d)->isoFormat('D MMMM YYYY'))
+                ->implode(', ');
+            $typeLabel = $typeLabels[$validated['leave_type']] ?? $validated['leave_type'];
+
+            return response()->json([
+                'message'   => "Tidak dapat mengajukan {$typeLabel}. Pada tanggal {$formatted} Anda sudah dijadwalkan libur shift.",
+                'off_dates' => $offDates,
+            ], 422);
+        }
+
+        // Validasi overlap: karyawan tidak boleh punya pengajuan aktif (pending/approved)
+        // di rentang tanggal yang sama, apapun tipe leave-nya.
+        $overlap = LeaveRequest::where('user_id', $user->id)
+            ->whereIn('status', ['pending', 'approved'])
+            ->where('start_date', '<=', $validated['end_date'])
+            ->where('end_date', '>=', $validated['start_date'])
+            ->orderBy('start_date')
+            ->first();
+        if ($overlap) {
+            $typeLabel  = $typeLabels[$overlap->leave_type] ?? $overlap->leave_type;
+            $start      = Carbon::parse($overlap->start_date)->isoFormat('D MMMM YYYY');
+            $end        = Carbon::parse($overlap->end_date)->isoFormat('D MMMM YYYY');
+            $periodDesc = ($overlap->start_date === $overlap->end_date)
+                ? "tanggal {$start}"
+                : "periode {$start} – {$end}";
+            return response()->json([
+                'message' => "Anda sudah mengajukan {$typeLabel} pada {$periodDesc}. Tidak dapat mengajukan izin lain di tanggal yang sudah diajukan.",
             ], 422);
         }
 

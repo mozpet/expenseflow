@@ -1020,5 +1020,13 @@ bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceMa
    pertama perusahaan (::where('company_id',...)->first()). Diperbaiki: gunakan
    $user->attendance_setting_id dengan fallback ke kantor pertama jika belum di-assign.
 
+
+   ada bug: kantor A menambahkan libur nasional untuk semua kantor cabang, namun kantor B bisa menghapus libur nasional yang di buat oleh kantor A 
+
+   ada bug lagi: user yang sudah assigned shift, di dalam shif itu pada tanggal 25 agustus adalah jadwal dia libur shift , tapi dia mengajukan cuti/izin/sakit/wfh dan sistem memperbolehkan dia mengajukan cuti/izin/sakit/wfh, padahal seharusnya user tidak bisa mengajukan cuti/izin/sakit/wfh kalau di jadwal shif dia libur , tolong buatkan validasi bahwa dia libur pada jadwal shif tersebut ✅ SELESAI 2026-08-22
+
+  ada bug lagi: user a adalah pegawai kantor cabang B yang di mana hari libur dari kantor cabang B(kantor default) adalah dalam 1 minggu kantor cabang b libur di hari sabtu dan minggu, lalu user a assigned shift yang di mana dalam shift tersebut hari sabtu dan minggu jadwal user a masuk kerja, lalu user a ingin mengajukan cuti pada hari minggu namun tidak bisa karena sistem membaca bahwa dia libur kerja(karena kantor default libur di hari minggu) padahal saat ini karyawan tersebut di assigned shift shift di mana shif itu hari minggu dan sabtu user a masuk ✅ SELESAI 2026-08-22
+
+
 # note untuk refaktoring
 perbaiki dulu error di atas , 
