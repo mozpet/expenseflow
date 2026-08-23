@@ -328,10 +328,27 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
         }
 
-        $target->wfh_enabled = ! $target->wfh_enabled;
-        // Switch WFH = satu-satunya gerbang presensi mobile.
-        // attendance_enabled disinkronkan: ON saat WFH, OFF saat bukan WFH (presensi kantor via hardware).
-        $target->attendance_enabled = $target->wfh_enabled;
+        $newWfhState = ! $target->wfh_enabled;
+
+        // Guard: jika HRD ingin mematikan WFH, cek apakah karyawan sedang
+        // aktif check-in (belum checkout) hari ini. Jika ya, tetap simpan
+        // perubahan (agar check-in baru besok terblokir) tapi attendance_enabled
+        // TIDAK dimatikan supaya karyawan bisa menyelesaikan checkout.
+        $today = now('Asia/Jakarta')->toDateString();
+        $hasActiveCheckIn = \App\Models\Attendance::where('user_id', $target->id)
+            ->whereDate('date', $today)
+            ->whereNotNull('check_in_time')
+            ->whereNull('check_out_time')
+            ->exists();
+
+        $target->wfh_enabled = $newWfhState;
+
+        // attendance_enabled hanya dimatikan jika karyawan TIDAK sedang aktif check-in.
+        // Jika sedang aktif, biarkan attendance_enabled tetap true agar checkout bisa dilakukan.
+        if ($newWfhState || ! $hasActiveCheckIn) {
+            $target->attendance_enabled = $newWfhState;
+        }
+
         $target->save();
 
         $this->logActivity(
@@ -343,10 +360,15 @@ class AttendanceController extends Controller
             $target->id
         );
 
+        $warningMsg = ! $newWfhState && $hasActiveCheckIn
+            ? ' Catatan: karyawan sedang aktif check-in, mode presensi mobile tetap aktif hingga karyawan checkout.'
+            : '';
+
         return response()->json([
-            'message' => $target->wfh_enabled
+            'message' => ($target->wfh_enabled
                 ? 'Mode WFH diaktifkan — karyawan bisa presensi dari rumah lewat aplikasi.'
-                : 'Mode WFH dinonaktifkan — presensi mobile dimatikan, presensi kantor lewat perangkat presensi.',
+                : 'Mode WFH dinonaktifkan — presensi mobile dimatikan, presensi kantor lewat perangkat presensi.')
+                . $warningMsg,
             'user' => [
                 'id'                 => $target->id,
                 'name'               => $target->name,
@@ -3281,6 +3303,12 @@ class AttendanceController extends Controller
 
         $overtimeApproval = OvertimeApproval::where('attendance_id', $attendance->id)->first();
 
+        // Jika karyawan sudah check-in tapi belum checkout, wfh_enabled selalu true
+        // agar tombol checkout tetap muncul di Flutter meskipun HRD mematikan toggle WFH.
+        // Toggle WFH yang dimatikan hanya berlaku untuk MENCEGAH check-in baru, bukan memblokir checkout.
+        $isActiveSession = $attendance->check_in_time && ! $attendance->check_out_time;
+        $wfhEnabledForResponse = $isActiveSession ? true : (bool) $user->wfh_enabled;
+
         return response()->json([
             'checked_in'  => true,
             'checked_out' => (bool) $attendance->check_out_time,
@@ -3291,7 +3319,8 @@ class AttendanceController extends Controller
             ]),
             // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
             // tombol "Catat Presensi" saat tombol Refresh ditekan.
-            'wfh_enabled' => (bool) $user->wfh_enabled,
+            // Jika user sedang aktif (checked-in, belum checkout), paksa true.
+            'wfh_enabled' => $wfhEnabledForResponse,
             // Jadwal shift aktif hari ini (untuk tampilan di Flutter)
             'active_shift' => $jadwalHariIni['source'] === 'shift' ? [
                 'shift_id'        => $jadwalHariIni['shift_id'],

@@ -22,3 +22,11 @@ Schedule::command('attendance:auto-decline-collective-leave')
     ->hourly()
     ->withoutOverlapping()
     ->runInBackground();
+
+// Sync status WFH dan Radius karyawan setiap hari jam 00:01
+// berdasarkan jadwal shift hari tersebut.
+// Hal ini memungkinkan HRD untuk melakukan override (on/off) di tengah hari jika diperlukan.
+Schedule::command('attendance:sync-shift-wfh')
+    ->dailyAt('00:01')
+    ->withoutOverlapping()
+    ->runInBackground();

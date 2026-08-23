@@ -28,7 +28,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
     final todayStr = presensiProv.todayDateFormatted;
 
     return Scaffold(
-      floatingActionButton: presensiProv.wfhEnabled
+      // Tombol "Catat Presensi" muncul dalam dua kondisi:
+      // 1. wfhEnabled = true  → bisa check-in baru (WFH aktif)
+      // 2. canCheckOut = true → sudah check-in, belum checkout (harus bisa checkout
+      //    meski HRD mematikan WFH di tengah shift)
+      floatingActionButton: (presensiProv.wfhEnabled || presensiProv.canCheckOut)
           ? FloatingActionButton.extended(
               heroTag: 'presensi_history_fab',
               onPressed: () => Navigator.push(
@@ -38,7 +42,7 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
               backgroundColor: const Color(0xFF0088FF),
               foregroundColor: Colors.white,
               icon: const Icon(Icons.add),
-              label: const Text('Catat Presensi'),
+              label: Text(presensiProv.canCheckOut ? 'Catat Pulang' : 'Catat Presensi'),
             )
           : null,
       appBar: AppBar(
@@ -75,7 +79,58 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
             child: Consumer<PresensiProvider>(
               builder: (context, prov, _) {
-                if (prov.wfhEnabled) {
+                if (prov.canCheckOut && !prov.wfhEnabled) {
+                  // User sudah check-in tapi HRD mematikan WFH → tetap tampilkan
+                  // opsi checkout agar user tidak bingung.
+                  return Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE3F2FD),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFF90CAF9)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.logout_outlined,
+                            color: Colors.blue, size: 18),
+                        const SizedBox(width: 8),
+                        const Expanded(
+                          child: Text(
+                            'Anda sedang check-in — tekan tombol untuk mencatat pulang.',
+                            style: TextStyle(
+                                color: Colors.blue,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12),
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () => Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                                builder: (_) => const PresensiMapScreen()),
+                          ),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 10, vertical: 6),
+                            decoration: BoxDecoration(
+                              color: Colors.blue,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: const Text(
+                              'Catat Pulang',
+                              style: TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 11),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                } else if (prov.wfhEnabled) {
                   // WFH aktif: tampilkan tombol presensi + info
                   return Container(
                     width: double.infinity,

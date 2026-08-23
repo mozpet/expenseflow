@@ -7,6 +7,7 @@ const BASE_URL =
 
 const TOKEN_KEY = 'expenseflow_token';
 const USER_KEY = 'expenseflow_user';
+const TOKEN_EXPIRES_KEY = 'expenseflow_token_expires_at';
 
 // ─── Token helpers ──────────────────────────────────────────
 export const getToken = (): string | null => localStorage.getItem(TOKEN_KEY);
@@ -14,6 +15,7 @@ export const setToken = (token: string): void => localStorage.setItem(TOKEN_KEY,
 export const clearToken = (): void => {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  localStorage.removeItem(TOKEN_EXPIRES_KEY);
 };
 
 export const getStoredUser = (): any | null => {
@@ -22,6 +24,19 @@ export const getStoredUser = (): any | null => {
 };
 export const setStoredUser = (user: unknown): void =>
   localStorage.setItem(USER_KEY, JSON.stringify(user));
+
+// Simpan kapan token web expired (ISO string dari backend)
+export const setTokenExpiresAt = (iso: string | null): void => {
+  if (iso) localStorage.setItem(TOKEN_EXPIRES_KEY, iso);
+  else localStorage.removeItem(TOKEN_EXPIRES_KEY);
+};
+
+// Cek apakah token sudah expired secara lokal (tanpa hit server)
+export const isTokenExpired = (): boolean => {
+  const raw = localStorage.getItem(TOKEN_EXPIRES_KEY);
+  if (!raw) return false; // mobile atau tidak ada expiry → anggap tidak expired
+  return new Date() >= new Date(raw);
+};
 
 // Error khusus agar pemanggil bisa membaca status & pesan validasi.
 export class ApiError extends Error {

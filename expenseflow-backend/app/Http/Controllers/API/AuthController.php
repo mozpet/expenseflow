@@ -132,9 +132,12 @@ class AuthController extends Controller
         $this->logAttempt($user, $request, 'success');
 
         return response()->json([
-            'message' => 'Login berhasil.',
-            'user'    => $this->userPayload($user),
-            'token'   => $token,
+            'message'          => 'Login berhasil.',
+            'user'             => $this->userPayload($user),
+            'token'            => $token,
+            // Dikirim ke web agar frontend bisa proaktif logout sebelum 401.
+            // null untuk mobile (tidak ada expiry).
+            'token_expires_at' => $expiresAt ? $expiresAt->toIso8601String() : null,
         ]);
     }
 

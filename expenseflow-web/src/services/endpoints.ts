@@ -1,17 +1,18 @@
 // Fungsi pemanggil API per-resource. Semua mengembalikan data mentah backend;
 // transformasi ke tipe frontend dilakukan di mappers.ts / komponen.
 
-import { apiGet, apiPost, apiPut, apiPatch, apiDelete, apiDownload, setToken, setStoredUser, clearToken, getToken, BASE_URL } from './api';
+import { apiGet, apiPost, apiPut, apiPatch, apiDelete, apiDownload, setToken, setStoredUser, clearToken, getToken, setTokenExpiresAt, BASE_URL } from './api';
 
 // ─── Auth ───────────────────────────────────────────────────
 export const authApi = {
   login: async (email: string, password: string) => {
-    const res = await apiPost<{ message: string; user: any; token: string }>('/login', {
+    const res = await apiPost<{ message: string; user: any; token: string; token_expires_at?: string | null }>('/login', {
       email,
       password,
     });
     setToken(res.token);
     setStoredUser(res.user);
+    setTokenExpiresAt(res.token_expires_at ?? null);
     return res;
   },
   me: () => apiGet<{ user: any }>('/me'),

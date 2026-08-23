@@ -75,6 +75,10 @@ class ShiftCalendarDay {
   final String? workEndTime;
   final bool isOff;
   final bool isCrossDay;
+  /// true = hari ini karyawan bekerja dari rumah (Work From Home).
+  final bool isWfh;
+  /// true = hari ini karyawan bekerja di lapangan (Field / kunjungan luar).
+  final bool isField;
   /// Info hari libur jika tanggal ini merupakan hari libur (null = bukan libur).
   final HolidayInfo? holiday;
 
@@ -88,6 +92,8 @@ class ShiftCalendarDay {
     this.workEndTime,
     required this.isOff,
     required this.isCrossDay,
+    this.isWfh = false,
+    this.isField = false,
     this.holiday,
   });
 
@@ -103,6 +109,8 @@ class ShiftCalendarDay {
       workEndTime: json['work_end_time'],
       isOff: json['is_off'] ?? false,
       isCrossDay: json['is_cross_day'] == true,
+      isWfh: json['is_wfh'] == true,
+      isField: json['is_field'] == true,
       holiday: holidayJson != null ? HolidayInfo.fromJson(holidayJson as Map<String, dynamic>) : null,
     );
   }

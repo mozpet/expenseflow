@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
 import { authApi } from '../services/endpoints';
-import { getToken, getStoredUser, clearToken, setUnauthorizedHandler } from '../services/api';
+import { getToken, getStoredUser, clearToken, setUnauthorizedHandler, isTokenExpired } from '../services/api';
 
 export interface AuthUser {
   id: number;
@@ -25,7 +25,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [user, setUser] = useState<AuthUser | null>(getStoredUser());
   const [loading, setLoading] = useState<boolean>(!!getToken());
 
-  // Logout lokal (tanpa panggil server) — dipakai saat 401.
+  // Logout lokal (tanpa panggil server) — dipakai saat 401 atau token expired.
   const forceLogout = useCallback(() => {
     clearToken();
     setUser(null);
@@ -41,6 +41,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   useEffect(() => {
     let active = true;
     if (getToken()) {
+      // Cek dulu secara lokal sebelum hit server — hindari request dengan token expired.
+      if (isTokenExpired()) {
+        forceLogout();
+        return;
+      }
       authApi
         .me()
         .then((res) => {
@@ -59,6 +64,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       active = false;
     };
   }, [forceLogout]);
+
+  // ─── Proactive token expiry check ─────────────────────────────────────────
+  // Cek setiap 60 detik apakah token web sudah expired (berdasarkan expires_at
+  // yang disimpan di localStorage saat login). Jika expired → paksa logout
+  // tanpa menunggu request berikutnya.
+  useEffect(() => {
+    if (!user) return; // Tidak perlu cek jika sudah logout
+
+    const interval = setInterval(() => {
+      if (isTokenExpired()) {
+        clearToken();
+        setUser(null);
+      }
+    }, 60_000); // Cek setiap 1 menit
+
+    return () => clearInterval(interval);
+  }, [user]);
 
   const login = useCallback(async (email: string, password: string) => {
     const res = await authApi.login(email, password);

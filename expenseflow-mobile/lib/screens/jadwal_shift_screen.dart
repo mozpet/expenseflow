@@ -386,7 +386,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           children: List.generate(7, (col) {
             final cellIndex = row * 7 + col;
             if (cellIndex < leadingBlanks || cellIndex >= totalCells) {
-              return const Expanded(child: SizedBox(height: 52));
+              return const Expanded(child: SizedBox(height: 58));
             }
 
             final day = cellIndex - leadingBlanks + 1;
@@ -443,6 +443,11 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             final isHoliday = holiday != null;
             // Cuti bersama yang sudah diikuti (accepted) → shiftName 'Cuti Bersama'
             final isCollectiveLeave = calDay?.shiftName == 'Cuti Bersama';
+            // Hari kerja dari rumah (WFH) — hanya jika bukan libur/OFF/cuti bersama
+            final bool isWfhDay = (calDay?.isWfh ?? false) &&
+                !isOff &&
+                !isHoliday &&
+                !isCollectiveLeave;
             // Warna aksen sesuai jenis libur: nasional merah, cuti bersama kuning, perusahaan/cabang biru
             final holidayAccent = isCollectiveLeave
                 ? const Color(0xFFD97706) // amber 600
@@ -457,7 +462,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 onTap: () => setState(() => _selectedDate = date),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
-                  height: 52,
+                  height: 58,
                   margin: const EdgeInsets.all(1.5),
                     decoration: BoxDecoration(
                       color: isSelected
@@ -480,6 +485,19 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
+                      // Lambang kecil "kerja dari rumah" (WFH) di atas angka tanggal.
+                      // Selalu sisakan slot setinggi 10px agar tanggal tetap sejajar
+                      // di semua sel (WFH maupun bukan).
+                      SizedBox(
+                        height: 10,
+                        child: isWfhDay
+                            ? Icon(
+                                Icons.home_rounded,
+                                size: 10,
+                                color: Colors.teal.shade600,
+                              )
+                            : null,
+                      ),
                       // Tanggal
                       Container(
                         width: 26,
@@ -652,6 +670,17 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 icon: Icons.apartment,
                 label: 'Jam Kantor Default',
                 color: Colors.blueGrey,
+              ),
+              const SizedBox(height: 10),
+            ],
+            // Banner "Kerja Dari Rumah" / "Kerja Lapangan" (hanya hari kerja aktif)
+            if (!schedule.isOff && calDay != null && calDay.isWfh) ...[
+              _statusBanner(
+                icon: calDay.isField ? Icons.directions_walk : Icons.home_rounded,
+                label: calDay.isField
+                    ? 'Kerja Lapangan (Field)'
+                    : 'Kerja Dari Rumah (WFH)',
+                color: calDay.isField ? Colors.deepPurple : Colors.teal,
               ),
               const SizedBox(height: 10),
             ],
