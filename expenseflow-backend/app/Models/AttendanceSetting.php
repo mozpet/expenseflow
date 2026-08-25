@@ -31,6 +31,10 @@ class AttendanceSetting extends Model
         'enforce_weekly_hours',
         'max_weekly_hours',
         'shift_notice_days',
+        // kebijakan saldo cuti per kantor (kuota default & tanggal reset tahunan)
+        'default_leave_quota',
+        'leave_reset_date',
+        'last_leave_reset_on',
     ];
 
     protected function casts(): array
@@ -53,6 +57,9 @@ class AttendanceSetting extends Model
             'enforce_weekly_hours'          => 'boolean',
             'max_weekly_hours'              => 'integer',
             'shift_notice_days'             => 'integer',
+            'default_leave_quota'           => 'integer',
+            // leave_reset_date string 'MM-DD' (anniversary tanpa tahun) — tidak di-cast date
+            'last_leave_reset_on'           => 'date:Y-m-d',
         ];
     }
 

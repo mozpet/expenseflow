@@ -125,6 +125,10 @@ const OfficesTab: React.FC<{
     enforce_weekly_hours: false,
     max_weekly_hours: 40,
     shift_notice_days: 0,
+    checkout_reminder_minutes: 30,
+    auto_checkout_grace_minutes: 60,
+    default_leave_quota: 12,
+    leave_reset_date: '',
     custom_schedules: {} as Record<number, { start: string; end: string }>,
   };
   const [showForm, setShowForm] = useState(false);
@@ -133,8 +137,13 @@ const OfficesTab: React.FC<{
   const [saving, setSaving] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
   const [expandedDays, setExpandedDays] = useState<number[]>([]);
+  // Dialog konfirmasi reset saldo: tanggal reset yang anniversary-nya sudah lewat
+  // tahun ini akan langsung memicu reset saldo TAHUN BERJALAN sekali.
+  const [confirmReset, setConfirmReset] = useState<string | null>(null);
+  // Nilai leave_reset_date saat form dibuka (untuk mendeteksi perubahan)
+  const [originalLeaveReset, setOriginalLeaveReset] = useState<string>('');
 
-  const openAdd = () => { setForm(empty); setEditId(null); setShowForm(true); setValidationError(null); setExpandedDays([]); };
+  const openAdd = () => { setForm(empty); setEditId(null); setShowForm(true); setValidationError(null); setConfirmReset(null); setOriginalLeaveReset(''); setExpandedDays([]); };
   const openEdit = (o: any) => {
     const isEarlyLeaveEnabled = o.early_leave_tolerance_minutes !== null && o.early_leave_tolerance_minutes !== undefined;
     setForm({
@@ -154,10 +163,17 @@ const OfficesTab: React.FC<{
       enforce_weekly_hours: o.enforce_weekly_hours ?? false,
       max_weekly_hours: o.max_weekly_hours ?? 40,
       shift_notice_days: o.shift_notice_days ?? 0,
+      checkout_reminder_minutes: o.checkout_reminder_minutes ?? 30,
+      auto_checkout_grace_minutes: o.auto_checkout_grace_minutes ?? 60,
+      default_leave_quota: o.default_leave_quota ?? 12,
+      leave_reset_date: o.leave_reset_date ? String(o.leave_reset_date).slice(0, 5) : '',
       custom_schedules: o.custom_schedules ?? {},
     });
+    setOriginalLeaveReset(o.leave_reset_date ? String(o.leave_reset_date).slice(0, 5) : '');
     setEditId(o.id);
     setShowForm(true);
+    setValidationError(null);
+    setConfirmReset(null);
     setExpandedDays(Object.keys(o.custom_schedules ?? {}).map(Number));
   };
 
@@ -178,15 +194,13 @@ const OfficesTab: React.FC<{
     return totalMinutes / 60;
   }, [form.work_days, form.work_start_time, form.work_end_time, form.custom_schedules]);
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // ─── Validasi form (dipanggil submit & sebelum konfirmasi reset) ──
+  const validate = (): string | null => {
     if (!form.office_name || form.office_latitude === '' || form.office_longitude === '') {
-      setValidationError('Nama kantor, latitude, dan longitude wajib diisi.');
-      return;
+      return 'Nama kantor, latitude, dan longitude wajib diisi.';
     }
     if (Array.isArray(form.work_days) && form.work_days.length > 6) {
-      setValidationError('Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur.');
-      return;
+      return 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur.';
     }
 
     // Validasi typo AM/PM
@@ -200,29 +214,63 @@ const OfficesTab: React.FC<{
     };
 
     const defaultTypo = checkAmPmTypo(form.work_start_time, form.work_end_time, 'jam kerja default');
-    if (defaultTypo) {
-      setValidationError(defaultTypo);
-      return;
-    }
+    if (defaultTypo) return defaultTypo;
 
     for (const day of (form.work_days as number[])) {
       if (form.custom_schedules[day]) {
         const typo = checkAmPmTypo(form.custom_schedules[day].start, form.custom_schedules[day].end, 'jam khusus');
-        if (typo) {
-          setValidationError(typo);
-          return;
-        }
+        if (typo) return typo;
       }
     }
 
     if (form.enforce_weekly_hours) {
       const maxHours = Number(form.max_weekly_hours);
       if (calculatedWeeklyHours > maxHours) {
-        setValidationError(`Total jam kerja per minggu (${calculatedWeeklyHours.toFixed(1)} jam) melebihi batas maksimal yang diatur (${maxHours} jam).`);
-        return;
+        return `Total jam kerja per minggu (${calculatedWeeklyHours.toFixed(1)} jam) melebihi batas maksimal yang diatur (${maxHours} jam).`;
       }
     }
 
+    // Auto-checkout: reminder harus sebelum auto-checkout
+    if (Number(form.auto_checkout_grace_minutes) <= Number(form.checkout_reminder_minutes)) {
+      return 'Menit auto-checkout harus LEBIH BESAR dari menit reminder checkout, agar karyawan sempat menerima pengingat sebelum sistem menutup presensinya.';
+    }
+
+    // Saldo cuti: kuota wajib angka ≥ 0
+    const leaveQuota = Number(form.default_leave_quota);
+    if (isNaN(leaveQuota) || leaveQuota < 0) {
+      return 'Saldo cuti default wajib berupa angka minimal 0.';
+    }
+    return null;
+  };
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+
+    const err = validate();
+    if (err) { setValidationError(err); return; }
+
+    // Konfirmasi tambahan: tanggal reset BARU yang anniversary-nya hari ini / sudah lewat
+    // tahun ini akan langsung memicu reset saldo TAHUN BERJALAN sekali (potong pemakaian).
+    if (form.leave_reset_date && form.leave_reset_date !== originalLeaveReset) {
+      const now = new Date();
+      const [mm, dd] = form.leave_reset_date.split('-').map(Number);
+      // Bandingkan dari awal hari — tanggal HARI INI juga ikut dikonfirmasi
+      // karena scheduler berikutnya langsung memprosesnya.
+      const anniversaryThisYear = new Date(now.getFullYear(), mm - 1, dd);
+      if (anniversaryThisYear.getTime() <= now.getTime()) {
+        setConfirmReset(
+          `Tanggal reset saldo cuti (${Number(dd)} ${['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'][mm - 1]}) hari ini atau sudah lewat tahun ini. ` +
+          'Saat pengaturan disimpan, sistem akan langsung MERESET saldo cuti semua karyawan kantor ini ke saldo default dan pemakaian cuti tahun berjalan menjadi 0. Lanjutkan?'
+        );
+        return; // tunggu user konfirmasi → doSave()
+      }
+    }
+
+    await doSave();
+  };
+
+  const doSave = async () => {
+    setConfirmReset(null);
     setSaving(true);
     try {
       const payload = {
@@ -243,6 +291,12 @@ const OfficesTab: React.FC<{
         enforce_weekly_hours: !!form.enforce_weekly_hours,
         max_weekly_hours: form.enforce_weekly_hours ? Number(form.max_weekly_hours) : null,
         shift_notice_days: Number(form.shift_notice_days ?? 0),
+        // Auto-checkout presensi mobile (dihitung dari jam pulang — kantor default ATAU shift)
+        checkout_reminder_minutes: Number(form.checkout_reminder_minutes),
+        auto_checkout_grace_minutes: Number(form.auto_checkout_grace_minutes),
+        // Kebijakan saldo cuti per kantor: kuota default & tanggal reset tahunan
+        default_leave_quota: Number(form.default_leave_quota ?? 12),
+        leave_reset_date: form.leave_reset_date ? form.leave_reset_date : null,
         // collective_leave_policy: dihapus — hardcode 'block' sejak 2026-08-20
         custom_schedules: form.custom_schedules,
       };
@@ -340,6 +394,27 @@ const OfficesTab: React.FC<{
                     ? <span className="text-indigo-600 dark:text-indigo-400 font-semibold">Maks {o.max_weekly_hours ?? 40} jam/minggu (aktif)</span>
                     : <span className="italic text-slate-400">Tidak dibatasi</span>
                   }
+                </span>
+                <span className="col-span-2 flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-emerald-500" />
+                  Auto-checkout:{' '}
+                  <span className="text-emerald-600 dark:text-emerald-400 font-semibold">
+                    reminder +{o.checkout_reminder_minutes ?? 30} mnt · tutup otomatis +{o.auto_checkout_grace_minutes ?? 60} mnt setelah jam pulang
+                  </span>
+                </span>
+                <span className="col-span-2 flex items-center gap-1">
+                  <CalendarDays className="w-3 h-3 text-teal-500" />
+                  Saldo cuti:{' '}
+                  <span className="text-teal-600 dark:text-teal-400 font-semibold">
+                    {o.default_leave_quota ?? 12} hari/tahun
+                    {o.leave_reset_date
+                      ? (() => {
+                          const [mm, dd] = String(o.leave_reset_date).slice(0, 5).split('-');
+                          const bulan = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'][Number(mm) - 1] ?? mm;
+                          return ` · reset tiap ${Number(dd)} ${bulan}`;
+                        })()
+                      : ' · tanpa reset otomatis'}
+                  </span>
                 </span>
               </div>
             </div>
@@ -671,6 +746,135 @@ const OfficesTab: React.FC<{
                 </p>
               </div>
 
+              {/* Auto-Checkout Presensi Mobile */}
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5 text-emerald-500" /> Auto-Checkout Presensi Mobile
+                </span>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 block">Reminder checkout (menit)</label>
+                    <input
+                      type="number"
+                      min={5}
+                      max={120}
+                      value={form.checkout_reminder_minutes}
+                      onChange={(e) => setForm({ ...form, checkout_reminder_minutes: e.target.value })}
+                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 block">Auto-checkout aktif (menit)</label>
+                    <input
+                      type="number"
+                      min={30}
+                      max={240}
+                      value={form.auto_checkout_grace_minutes}
+                      onChange={(e) => setForm({ ...form, auto_checkout_grace_minutes: e.target.value })}
+                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                    />
+                  </div>
+                </div>
+                <p className="text-[9px] text-slate-400">
+                  Dihitung dari jam pulang karyawan — jam pulang <strong>jadwal shift</strong> bila ada,
+                  jika tidak memakai jam pulang default kantor ini. Contoh: reminder 30 &amp; auto-checkout 60
+                  dengan jam pulang shift 16:00 → pengingat notif 16:30, sistem menutup presensi otomatis 17:00 WIB.
+                  Nilai auto-checkout wajib lebih besar dari reminder.
+                </p>
+              </div>
+
+              {/* Saldo Cuti & Reset Tahunan */}
+              <div className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-3">
+                <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                  <CalendarDays className="w-3.5 h-3.5 text-teal-500" /> Saldo Cuti Karyawan (Kantor Ini)
+                </span>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 block">Saldo cuti default (hari/tahun)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={365}
+                    value={form.default_leave_quota}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value);
+                      setForm({ ...form, default_leave_quota: isNaN(val) ? '' : Math.max(0, val) });
+                    }}
+                    className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                  />
+                  <p className="text-[9px] text-slate-400">
+                    Kuota awal karyawan baru di kantor ini & kuota saat reset tahunan. Default standar UU: 12 hari.
+                  </p>
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-400 block">Tanggal reset saldo cuti (ulang tiap tahun)</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <select
+                      value={form.leave_reset_date ? form.leave_reset_date.split('-')[0] : ''}
+                      onChange={(e) => {
+                        const month = e.target.value;
+                        if (!month) { setForm({ ...form, leave_reset_date: '' }); return; }
+                        let day = form.leave_reset_date ? form.leave_reset_date.split('-')[1] : '01';
+                        
+                        const maxDays = month === '02' ? 29 : (['04', '06', '09', '11'].includes(month) ? 30 : 31);
+                        if (parseInt(day) > maxDays) {
+                          day = String(maxDays).padStart(2, '0');
+                        }
+                        
+                        setForm({ ...form, leave_reset_date: `${month}-${day}` });
+                      }}
+                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100"
+                    >
+                      <option value="">— Pilih Bulan —</option>
+                      {['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'].map((m, i) => (
+                        <option key={m} value={String(i + 1).padStart(2, '0')}>{m}</option>
+                      ))}
+                    </select>
+                    <select
+                      value={form.leave_reset_date ? form.leave_reset_date.split('-')[1] : ''}
+                      onChange={(e) => {
+                        const day = e.target.value;
+                        if (!day) { setForm({ ...form, leave_reset_date: '' }); return; }
+                        const month = form.leave_reset_date ? form.leave_reset_date.split('-')[0] : '01';
+                        setForm({ ...form, leave_reset_date: `${month}-${day}` });
+                      }}
+                      disabled={!form.leave_reset_date}
+                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 disabled:opacity-50"
+                    >
+                      <option value="">— Tanggal —</option>
+                      {(() => {
+                        const selectedMonth = form.leave_reset_date ? form.leave_reset_date.split('-')[0] : '';
+                        const daysInMonth = selectedMonth === '02' ? 29 : (['04', '06', '09', '11'].includes(selectedMonth) ? 30 : 31);
+                        return Array.from({ length: daysInMonth }, (_, i) => i + 1).map((d) => (
+                          <option key={d} value={String(d).padStart(2, '0')}>{d}</option>
+                        ));
+                      })()}
+                    </select>
+                  </div>
+                  <p className="text-[9px] text-slate-400">
+                    Setiap tanggal ini (tanpa tahun, ulang tiap tahun), saldo cuti semua karyawan kantor ini
+                    dikembalikan ke saldo default & pemakaian di-reset ke 0.
+                  </p>
+                  {form.leave_reset_date ? (
+                    (() => {
+                      const [mm, dd] = form.leave_reset_date.split('-').map(Number);
+                      const now = new Date();
+                      const sudahLewat = new Date(now.getFullYear(), mm - 1, dd).getTime() <= now.getTime();
+                      return (
+                        <p className={`text-[9px] font-semibold ${sudahLewat ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          Reset otomatis aktif: setiap {Number(dd)} {['Januari','Februari','Maret','April','Mei','Juni','Juli','Agustus','September','Oktober','November','Desember'][mm - 1]}.
+                          {sudahLewat && ' Tanggal ini sudah lewat tahun ini — saat disimpan, saldo tahun berjalan langsung di-reset sekali.'}
+                        </p>
+                      );
+                    })()
+                  ) : (
+                    <p className="text-[9px] font-semibold text-rose-600 dark:text-rose-400">
+                      Tanpa reset otomatis: saldo cuti TIDAK akan di-reset oleh sistem — terus berkurang sampai
+                      HRD mengaturnya manual lewat menu Saldo Cuti. Isi bulan &amp; tanggal untuk mengaktifkan reset tahunan.
+                    </p>
+                  )}
+                </div>
+              </div>
+
               </div>
 
             <div className="flex gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
@@ -698,6 +902,41 @@ const OfficesTab: React.FC<{
                 >
                   Kembali Edit Form
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* Konfirmasi reset saldo cuti: anniversary sudah lewat tahun ini →
+              reset saldo tahun berjalan langsung terjadi sekali saat disimpan */}
+          {confirmReset && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 duration-200 border border-slate-100 dark:border-slate-700">
+                <div className="flex items-center gap-3 text-amber-600 dark:text-amber-400 mb-4">
+                  <div className="p-2 bg-amber-50 dark:bg-amber-900/30 rounded-full">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <h3 className="font-bold text-base">Konfirmasi Reset Saldo Cuti</h3>
+                </div>
+                <p className="text-slate-600 dark:text-slate-300 text-sm mb-6 leading-relaxed">
+                  {confirmReset}
+                </p>
+                <div className="flex gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setConfirmReset(null)}
+                    className="flex-1 py-2.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold rounded-xl text-xs transition-colors"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={doSave}
+                    disabled={saving}
+                    className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white font-bold rounded-xl text-xs transition-colors"
+                  >
+                    {saving ? 'Menyimpan...' : 'Ya, Lanjutkan'}
+                  </button>
+                </div>
               </div>
             </div>
           )}

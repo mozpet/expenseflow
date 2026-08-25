@@ -167,6 +167,7 @@ class PresensiProvider extends ChangeNotifier {
   final List<PresensiRecord> _records = [];
   final List<LeaveRequestRecord> _leaveRequests = [];
   final List<LeaveBalanceRecord> _leaveBalances = [];
+  Map<String, dynamic>? _leaveResetInfo;
   final List<CollectiveLeaveRecord> _collectiveLeaves = [];
 
   String? _todayMasuk;
@@ -183,6 +184,7 @@ class PresensiProvider extends ChangeNotifier {
       List.unmodifiable(_leaveRequests);
   List<LeaveBalanceRecord> get leaveBalances =>
       List.unmodifiable(_leaveBalances);
+  Map<String, dynamic>? get leaveResetInfo => _leaveResetInfo;
   List<CollectiveLeaveRecord> get collectiveLeaves =>
       List.unmodifiable(_collectiveLeaves);
   CollectiveLeaveRecord? get activeCollectiveLeaveBanner {
@@ -487,6 +489,7 @@ class PresensiProvider extends ChangeNotifier {
     try {
       final res = await ApiService.leaveBalance();
       final list = (res['balances'] as List?) ?? [];
+      _leaveResetInfo = res['reset_info'] as Map<String, dynamic>?;
       _leaveBalances
         ..clear()
         ..addAll(

@@ -23,6 +23,15 @@ use Illuminate\Support\Str;
  * 3. Hitung overtime_minutes otomatis.
  * 4. Buat record overtime_approval (status pending) dan notifikasi HRD.
  *
+ * CATCH-UP: query TIDAK dibatasi tanggal hari ini/kemarin — SEMUA presensi terbuka diproses,
+ * sehingga presensi lama yang tertinggal (server mati beberapa hari) tetap ditutup saat
+ * server menyala kembali, bukan menggantung selamanya.
+ *
+ * Jam checkout = MIN(waktu eksekusi, jam pulang + grace). Artinya bila server baru menyala
+ * SETELAH batas lewat, presensi ditutup pada JADWAL targetnya (jam pulang + grace), bukan
+ * jam server menyala — agar work_minutes & overtime tidak membengkak palsu dan konsisten
+ * dengan isi notifikasi reminder ("sistem akan otomatis checkout pukul XX:XX").
+ *
  * Jadwal: setiap 5 menit (via routes/console.php scheduler).
  */
 class AutoCheckoutCommand extends Command
@@ -43,14 +52,11 @@ class AutoCheckoutCommand extends Command
         $today  = now('Asia/Jakarta')->toDateString();
         $nowUtc = now(); // waktu UTC untuk perbandingan dengan datetime di DB
 
-        // Ambil semua karyawan yang belum check-out:
-        //   - check-in HARI INI (shift normal), ATAU
-        //   - check-in KEMARIN (shift malam lintas hari yang menyeberang tengah malam)
-        // Keduanya perlu ditangani agar karyawan shift malam yang lupa checkout tetap di-auto-checkout.
-        $yesterday = Carbon::parse($today)->subDay()->toDateString();
-
-        $openAttendances = Attendance::whereIn('date', [$today, $yesterday])
-            ->whereNotNull('check_in_time')
+        // CATCH-UP: proses SEMUA presensi terbuka tanpa batas tanggal.
+        // Sebelumnya hanya melihat hari ini + kemarin dan melewatkan record kemarin
+        // non-cross-day — akibatnya bila scheduler mati lintas hari, presensi lama
+        // menggantung permanen (kasus: server tidak menyala saat jam pulang).
+        $openAttendances = Attendance::whereNotNull('check_in_time')
             ->whereNull('check_out_time')
             ->with('user')
             ->get();
@@ -79,7 +85,8 @@ class AutoCheckoutCommand extends Command
                 continue;
             }
 
-            // Tanggal shift asli record ini (bisa hari ini atau kemarin untuk shift malam)
+            // Tanggal shift asli record ini (bisa kemarin/lama untuk catch-up,
+            // atau kemarin untuk shift malam lintas hari)
             $attDate = Carbon::parse($attendance->date)->toDateString();
 
             // Ambil jadwal efektif karyawan pada tanggal shift-nya (shift aktif atau default kantor).
@@ -89,12 +96,6 @@ class AutoCheckoutCommand extends Command
                 : null;
 
             $isCrossDay = $schedule && ! empty($schedule['is_cross_day']) && ! $schedule['is_off'];
-
-            // Record kemarin yang BUKAN shift cross-day → lewati (bukan urusan auto-checkout hari ini,
-            // seharusnya sudah ditangani command hari sebelumnya).
-            if ($attDate === $yesterday && ! $isCrossDay) {
-                continue;
-            }
 
             // Jika hari ini ditandai libur oleh shift (is_off) → jam pulang tidak relevan,
             // pakai jam pulang kantor sebagai acuan grace period auto-checkout.
@@ -110,18 +111,40 @@ class AutoCheckoutCommand extends Command
                 ? Carbon::parse($attDate, 'Asia/Jakarta')->addDay()->toDateString()
                 : $attDate;
 
-            $workEnd         = Carbon::parse($jamPulangDate . ' ' . $jamPulang, 'Asia/Jakarta')->utc();
+            $workEnd         = Carbon::parse($jamPulangDate . ' ' . substr($jamPulang, 0, 5), 'Asia/Jakarta')->utc();
             $reminderTime    = $workEnd->copy()->addMinutes($reminderMins);
             $autoCheckoutTime = $workEnd->copy()->addMinutes($graceMins);
 
-            // Sudah lewat batas auto-checkout → lakukan auto-checkout
+            // Sudah lewat batas auto-checkout → lakukan auto-checkout.
+            // Jam checkout di-clamp ke JADWAL TARGET (jam pulang + grace), bukan jam eksekusi,
+            // agar presensi basi (server sempat mati) tidak mencatat kerja/lembur palsu
+            // selama rentang server mati.
             if ($nowUtc->gte($autoCheckoutTime)) {
-                $this->doAutoCheckout($attendance, $office, $attDate, $nowUtc);
+                $effectiveCheckOut = $nowUtc->lt($autoCheckoutTime->copy()->addMinutes(5))
+                    ? $nowUtc   // masih dalam interval cek normal → pakai waktu nyata
+                    : $autoCheckoutTime; // presensi basi / catch-up → pakai jadwal target
+
+                // Kasus patologis: check-in terjadi SETELAH batas auto-checkout jadwal
+                // (karyawan masuk sangat larut / di luar jam kerja, mis. 22:04 padahal
+                // batas checkout 18:00). Clamping ke jadwal akan menghasilkan checkout
+                // SEBELUM check-in (menit kerja negatif); memakai jam eksekusi untuk
+                // record basi justru menciptakan lembur ribuan menit. Solusi: tutup tepat
+                // di jam check-in tanpa lembur — data tetap tertutup, tanpa angka fiktif.
+                $checkInUtc = Carbon::parse($attendance->check_in_time)->utc();
+                $skipOvertime = false;
+                if ($effectiveCheckOut->lessThan($checkInUtc)) {
+                    $effectiveCheckOut = $checkInUtc;
+                    $skipOvertime      = true;
+                }
+
+                $this->doAutoCheckout($attendance, $office, $attDate, $effectiveCheckOut, $skipOvertime);
                 $totalAutoCheckout++;
                 continue;
             }
 
-            // Sudah lewat batas reminder (tapi belum waktunya auto-checkout) → kirim reminder
+            // Sudah lewat batas reminder (tapi belum waktunya auto-checkout) → kirim reminder.
+            // Reminder untuk record basi tidak relevan lagi (batas sudah lewat) — hanya kirim
+            // bila auto-checkout memang masih di depan.
             if ($nowUtc->gte($reminderTime)) {
                 $this->sendCheckoutReminder($attendance, $autoCheckoutTime, $graceMins);
                 $totalReminder++;
@@ -186,14 +209,13 @@ class AutoCheckoutCommand extends Command
     // ─── Lakukan auto-checkout ────────────────────────────────────────────────
     // $attDate = tanggal shift asli (bisa kemarin untuk shift malam lintas hari),
     //            bukan tanggal hari ini. Penting untuk resolveSchedule() yang benar.
-    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $attDate, Carbon $nowUtc): void
+    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $attDate, Carbon $checkOutTime, bool $skipOvertime = false): void
     {
         $user = $attendance->user;
 
         // Ambil jadwal efektif karyawan pada tanggal shift aslinya.
         // Untuk shift malam (check-in kemarin, checkout pagi ini), $attDate = kemarin —
         // sehingga resolveSchedule() membaca jadwal shift malam, bukan jadwal hari ini.
-        $checkOutTime = $nowUtc;
         $schedule = $user
             ? ShiftController::resolveSchedule($user, $attDate)
             : null;
@@ -201,15 +223,18 @@ class AutoCheckoutCommand extends Command
         // Hitung jam kerja dari jam JADWAL masuk (bukan jam check-in).
         // Konsisten dengan manual checkOut() di AttendanceController.
         $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate);
-        $workMinutes = (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta'));
+        $workMinutes = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta')));
 
         // Tentukan hari libur/weekend menurut kalender (libur nasional/weekend).
         // Dipakai untuk field is_holiday — samakan persis dengan checkOut() manual.
         // Pass user_id agar cuti bersama yang di-decline tidak dianggap hari libur.
         $isNationalNonWorking = $this->isNonWorkingDay($attDate, $attendance->company_id, $attendance->user_id);
 
-        // Hitung overtime (sadar shift) — angka lembur konsisten dengan checkOut manual
-        $overtimeMinutes = $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking);
+        // Hitung overtime (sadar shift) — angka lembur konsisten dengan checkOut manual.
+        // $skipOvertime: checkout patologis (ditutup tepat di jam check-in) → tanpa lembur.
+        $overtimeMinutes = $skipOvertime
+            ? 0
+            : $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking);
 
         $attendance->update([
             'check_out_time'   => $checkOutTime,
@@ -320,8 +345,23 @@ class AutoCheckoutCommand extends Command
     // ─── Helper: apakah tanggal hari libur / weekend ──────────────────────────
     // Bug #3 Fix: Cuti bersama (is_collective=true) hanya dianggap libur bagi karyawan
     // yang ACCEPTED. Karyawan yang declined tetap masuk kerja hari itu seperti biasa.
+    // SHIFT-AWARE FIX: weekend global tidak otomatis libur bila jadwal shift efektif
+    // karyawan menandai hari itu MASUK (resolveSchedule is_off=false) — dan sebaliknya,
+    // hari kerja kantor yang libur menurut shift tetap dianggap libur.
     private function isNonWorkingDay(string $date, ?int $companyId, ?int $userId = null): bool
     {
+        // Cek jadwal shift efektif dulu (sudah dipanggil caller dengan tanggal yang sama)
+        if ($userId) {
+            $userModel = User::find($userId);
+            if ($userModel) {
+                $schedule = ShiftController::resolveSchedule($userModel, $date);
+                if ($schedule['source'] !== 'none') {
+                    return (bool) $schedule['is_off'];
+                }
+                // Tanpa shift & tanpa kantor → jatuh ke cek kalender di bawah
+            }
+        }
+
         if (Carbon::parse($date)->isWeekend()) {
             return true;
         }
@@ -366,15 +406,22 @@ class AutoCheckoutCommand extends Command
             return 0;
         }
 
-        // Kasus 1: jadwal shift menandai hari ini libur → seluruh menit kerja jadi lembur
+        $minOvertime = (int) ($office->min_overtime_minutes ?? 30);
+
+        // Kasus 1: jadwal shift menandai hari ini libur → seluruh menit kerja jadi lembur,
+        //          asal mencapai min_overtime_minutes (anti-noise, konsisten dgn checkOut manual)
         if ($schedule && $schedule['is_off']) {
-            return max(0, $workMinutes);
+            $full = max(0, $workMinutes);
+
+            return $full >= $minOvertime ? $full : 0;
         }
 
         // Kasus 2: tanpa shift (pakai default kantor) & hari ini libur nasional/weekend
         $pakaiDefaultKantor = ! $schedule || $schedule['source'] === 'office';
         if ($pakaiDefaultKantor && $isNationalNonWorking) {
-            return max(0, $workMinutes);
+            $full = max(0, $workMinutes);
+
+            return $full >= $minOvertime ? $full : 0;
         }
 
         // Kasus 3: hari kerja efektif → lembur setelah jam pulang yang berlaku

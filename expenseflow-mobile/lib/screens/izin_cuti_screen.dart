@@ -336,6 +336,44 @@ class _SaldoCutiTab extends StatelessWidget {
           const SizedBox(height: 20),
           ...balances.map((b) => _BalanceCard(balance: b)),
           const SizedBox(height: 24),
+          if (prov.leaveResetInfo != null && prov.leaveResetInfo!['leave_reset_date'] != null)
+            Container(
+              margin: const EdgeInsets.only(bottom: 12),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.amber.shade50,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.amber.shade200),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.update, color: Colors.amber.shade700, size: 18),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Builder(
+                      builder: (context) {
+                        final dateStr = prov.leaveResetInfo!['leave_reset_date'].toString();
+                        final parts = dateStr.split('-');
+                        String prettyDate = dateStr;
+                        if (parts.length == 2) {
+                          final int? month = int.tryParse(parts[0]);
+                          final int? day = int.tryParse(parts[1]);
+                          if (month != null && day != null && month >= 1 && month <= 12) {
+                            const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+                            prettyDate = '$day ${months[month - 1]}';
+                          }
+                        }
+                        return Text(
+                          'Saldo cuti tahunan akan di-reset menjadi ${prov.leaveResetInfo!['default_leave_quota']} hari pada setiap tanggal $prettyDate.',
+                          style: TextStyle(fontSize: 12, color: Colors.amber.shade900),
+                        );
+                      }
+                    ),
+                  ),
+                ],
+              ),
+            ),
           // Info note
           Container(
             padding: const EdgeInsets.all(12),

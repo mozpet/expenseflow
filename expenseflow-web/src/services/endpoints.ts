@@ -133,6 +133,7 @@ export const attendanceApi = {
     status?: 'pending' | 'approved' | 'rejected';
     leave_type?: 'wfh' | 'izin' | 'sakit' | 'cuti';
     user_id?: number;
+    page?: number;
   }) => apiGet('/dashboard/attendance/leaves', filters),
   approveLeave: (id: number | string) =>
     apiPost(`/dashboard/attendance/leaves/${id}/approve`),

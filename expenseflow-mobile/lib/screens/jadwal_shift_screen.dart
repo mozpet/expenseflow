@@ -93,12 +93,17 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     if (date != null) {
       final calDay = prov.getScheduleForDate(date);
       if (calDay != null) {
-        // Hari libur/cuti bersama: tampilkan nama libur (bukan nama shift/kantor default).
-        if (calDay.holiday != null || calDay.shiftName == 'Cuti Bersama') {
+        // Hari libur/cuti bersama/cuti mandiri: tampilkan nama libur (bukan nama shift/kantor default).
+        if (calDay.holiday != null ||
+            calDay.shiftName == 'Cuti Bersama' ||
+            calDay.personalLeave ||
+            calDay.shiftName == 'Cuti Mandiri') {
           return _ShiftDisplayInfo(
             name: calDay.shiftName ?? (calDay.holiday?.name ?? 'Libur'),
             color: calDay.color ?? '#EF4444',
-            source: calDay.shiftName == 'Cuti Bersama' ? 'shift' : 'office',
+            source: (calDay.shiftName == 'Cuti Bersama' || calDay.shiftName == 'Cuti Mandiri')
+                ? 'shift'
+                : 'office',
             startDate: null,
           );
         }
@@ -443,14 +448,19 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             final isHoliday = holiday != null;
             // Cuti bersama yang sudah diikuti (accepted) → shiftName 'Cuti Bersama'
             final isCollectiveLeave = calDay?.shiftName == 'Cuti Bersama';
-            // Hari kerja dari rumah (WFH) — hanya jika bukan libur/OFF/cuti bersama
+            // CUTI MANDIRI: cuti pribadi yang di-approve HRD (flag personal_leave dari API).
+            // Warna sama dengan cuti bersama (kuning), hanya label berbeda.
+            final bool isPersonalLeave =
+                (calDay?.personalLeave ?? false) || calDay?.shiftName == 'Cuti Mandiri';
+            // Hari kerja dari rumah (WFH) — hanya jika bukan libur/OFF/cuti bersama/mandiri
             final bool isWfhDay = (calDay?.isWfh ?? false) &&
                 !isOff &&
                 !isHoliday &&
-                !isCollectiveLeave;
-            // Warna aksen sesuai jenis libur: nasional merah, cuti bersama kuning, perusahaan/cabang biru
-            final holidayAccent = isCollectiveLeave
-                ? const Color(0xFFD97706) // amber 600
+                !isCollectiveLeave &&
+                !isPersonalLeave;
+            // Warna aksen sesuai jenis libur: nasional merah, cuti bersama & cuti mandiri kuning, perusahaan/cabang biru
+            final holidayAccent = isCollectiveLeave || isPersonalLeave
+                ? const Color(0xFFD97706) // amber 600 — sama dengan cuti bersama
                 : holiday != null
                     ? (holiday.isNational
                         ? const Color(0xFFEF4444) // merah
@@ -542,6 +552,16 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                     fontSize: 8,
                                     fontWeight: FontWeight.w700,
                                     color: const Color(0xFFD97706)))
+                          else if (isPersonalLeave)
+                            Flexible(
+                              child: Text('CUTI MANDIRI',
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                      fontSize: 7,
+                                      fontWeight: FontWeight.w700,
+                                      color: const Color(0xFFD97706))),
+                            )
                           else if (isHoliday)
                             Flexible(
                               child: Text(
@@ -611,17 +631,20 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         ? _parseColor(calDay!.color!)
         : shiftColor;
 
-    // Aksen warna sesuai jenis libur (nasional merah / cuti bersama kuning / perusahaan biru)
+    // Aksen warna sesuai jenis libur (nasional merah / cuti bersama & mandiri kuning / perusahaan biru)
     final holiday = calDay?.holiday;
     final HolidayInfo? detailHoliday = holiday;
     final bool isCollectiveLeaveDetail = calDay?.shiftName == 'Cuti Bersama';
-    final Color? detailHolidayAccent = isCollectiveLeaveDetail
-        ? const Color(0xFFD97706)
-        : detailHoliday != null
-            ? (detailHoliday.isNational
-                ? const Color(0xFFEF4444)
-                : const Color(0xFF3B82F6))
-            : null;
+    final bool isPersonalLeaveDetail =
+        (calDay?.personalLeave ?? false) || calDay?.shiftName == 'Cuti Mandiri';
+    final Color? detailHolidayAccent =
+        isCollectiveLeaveDetail || isPersonalLeaveDetail
+            ? const Color(0xFFD97706)
+            : detailHoliday != null
+                ? (detailHoliday.isNational
+                    ? const Color(0xFFEF4444)
+                    : const Color(0xFF3B82F6))
+                : null;
 
     // Deteksi shift malam lintas hari dari kemarin
     final prevDate = date.subtract(const Duration(days: 1));
@@ -703,9 +726,15 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             ],
             if (schedule.isOff) ...[
               _statusBanner(
-                icon: isCollectiveLeaveDetail ? Icons.celebration : Icons.beach_access,
-                label: isCollectiveLeaveDetail ? 'Cuti Bersama (Diikuti)' : 'Hari Libur / Tidak Bekerja',
-                color: isCollectiveLeaveDetail
+                icon: isCollectiveLeaveDetail || isPersonalLeaveDetail
+                    ? Icons.celebration
+                    : Icons.beach_access,
+                label: isCollectiveLeaveDetail
+                    ? 'Cuti Bersama (Diikuti)'
+                    : isPersonalLeaveDetail
+                        ? 'Cuti Mandiri (Disetujui HRD)'
+                        : 'Hari Libur / Tidak Bekerja',
+                color: isCollectiveLeaveDetail || isPersonalLeaveDetail
                     ? Colors.amber
                     : detailHolidayAccent != null && !detailHoliday!.isNational
                         ? Colors.blue

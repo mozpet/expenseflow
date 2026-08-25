@@ -23,6 +23,14 @@ Schedule::command('attendance:auto-decline-collective-leave')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Reset otomatis saldo cuti tahunan per kantor (anniversary leave_reset_date).
+// Berjalan setiap hari jam 00:03 — command sendiri yang memutuskan apakah ada
+// kantor yang anniversary-nya sudah/sedang jatuh tempo (catch-up bila server mati).
+Schedule::command('attendance:reset-leave-balances')
+    ->dailyAt('00:03')
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // Sync status WFH dan Radius karyawan setiap hari jam 00:01
 // berdasarkan jadwal shift hari tersebut.
 // Hal ini memungkinkan HRD untuk melakukan override (on/off) di tengah hari jika diperlukan.

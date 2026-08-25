@@ -125,7 +125,7 @@ bootstrap/
 | # | Tabel | Keterangan |
 |---|-------|-----------|
 | 17 | `attendances` | Presensi harian (user_id, company_id, date, check_in_time, check_in_lat, check_in_lng, check_in_distance_meters, check_in_type [onsite/wfh/field], check_in_photo, check_out_time, check_out_lat, check_out_lng, check_out_type, status [present/late/absent], **work_minutes**, **overtime_minutes**, **is_holiday**, **auto_checkout_at**, **is_auto_checkout**, notes) |
-| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, **overtime_enabled** default true, **min_overtime_minutes** default 30, **checkout_reminder_minutes** default 30, **auto_checkout_grace_minutes** default 60) |
+| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable) |
 | 19 | `leave_requests` | Pengajuan cuti/izin (user_id, company_id, leave_type [wfh/izin/sakit/cuti], start_date, end_date, total_days, reason, status [pending/approved/rejected], approved_by, approved_at, rejection_reason) |
 | 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type, quota, used) |
 | 20b | `holidays` | Kalender libur (company_id **nullable** → NULL = libur nasional semua company, date, name, is_national). Unique (company_id, date). Dipakai untuk hitung hari kerja cuti & lembur hari libur. |
@@ -652,6 +652,30 @@ HRD bisa ubah per kantor via `PUT /api/v1/dashboard/attendance/settings/{id}`.
 
 ---
 
+## Saldo Cuti & Reset Tahunan per Kantor (2026-08-25)
+Kuota cuti karyawan tidak lagi hardcoded 12 hari — dikendalikan **per kantor** di form
+Tambah/Edit Kantor (Pengaturan → Kantor Presensi):
+
+| Kolom `attendance_settings` | Format | Keterangan |
+|---|---|---|
+| `default_leave_quota` | int, default 12 | Kuota awal karyawan baru di kantor tsb & kuota saat reset tahunan. |
+| `leave_reset_date` | 'MM-DD' nullable (tanpa tahun) | Tanggal anniversary reset otomatis, ulang tiap tahun. NULL = mati. |
+| `last_leave_reset_on` | date nullable | Penanda anniversary terakhir yang sudah diproses (anti dobel + catch-up). |
+
+- Semua titik `LeaveBalance::firstOrCreate(... 'cuti' ...)` memakai helper
+  `AttendanceController::defaultLeaveQuota(companyId, userId)`: ambil kuota dari kantor
+  karyawan (`users.attendance_setting_id`) → fallback kantor pertama perusahaan → fallback 12.
+- Reset otomatis: command `attendance:reset-leave-balances` (scheduler harian 00:03,
+  `routes/console.php`). Bila tanggal anniversary sudah/sedang tiba dan belum diproses,
+  saldo cuti TAHUN BERJALAN semua karyawan aktif kantor itu dibuat-ulang:
+  `quota = default_leave_quota`, `used = 0`. Baris tahun lama dibiarkan untuk riwayat.
+- Server mati beberapa hari → reset tetap dieksekusi sekali saat menyala lagi (catch-up
+  via `last_leave_reset_on`); tidak pernah dobel.
+- HRD menghapus jadwal reset (null) → `last_leave_reset_on` ikut di-null agar jadwal baru
+  nantinya bisa langsung diproses.
+
+---
+
 ## Leave (Cuti/Izin) Pipeline
 ```
 Karyawan requestLeave (via mobile, tanpa gerbang attendance_access)
@@ -924,7 +948,7 @@ buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu h
 ### Bug / Isu Aktif
 - [x] **Discrepancy Status Roster & Hari Ini di UI**: Telah diperbaiki di backend (`ShiftController::resolveSchedule()`). Sebelumnya `resolveSchedule` tidak mengecek tabel `Holiday` (sehingga roster menampilkan hari kerja di hari libur), dan pencarian shift aktif (mengabaikan shift kedaluwarsa) tidak setara dengan endpoint `today`. Sekarang keduanya 100% tersinkronisasi sehingga frontend (react) menampilkan status yang sama di 'Hari Ini' dan 'Roster Harian'.
 
-fitur baru: - tambahkan tipe kontrak user karyawan Tetap / Kontrak / Freelance / Magang (80%)
+fitur baru: - tambahkan tipe kontrak user karyawan Tetap / Kontrak / Magang (80%)
             - Tanggal bergabung user untuk menghitung masa kerja (ini next deh)
             - foto dan avatar 
 
@@ -997,12 +1021,14 @@ $validated = $request->validate([
    > "⚠️ Anda mengubah Jam Kerja / Lokasi GPS / Auto-Checkout. Perubahan ini akan mempengaruhi perhitungan presensi & Auto-Checkout karyawan yang aktif hari ini. Lanjutkan?"
 3. **Subscribe Notifikasi**: Kirim notifikasi (DB + FCM) ke seluruh HRD/Admin saat pengaturan kantor diubah, agar perubahan bisa diaudit.
 
+------------------------------------------------------------------------------
+
 masih ada bug di assign massal pada roster harian --selesai
 peingatan cuti yagn sama jadwalnya hanya di cabang yang sama --selesai
 fitur yang di tambah:
-1. tambahkan di pengaturan edit kantor bahwa cuti bisa edit oleh orang
+1. tambahkan di pengaturan edit kantor bahwa cuti bisa edit oleh orang -- selesai
 
-bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceManagmenet.tsx, HRD memilih tangal cuti bersama, lalu masuk ke mobile setiap karyawan, karyawan dai kasih pilihan mau ikut atau tidak, jika ikut saldo cuti terpakai, jika tidak masuk sesuai jadwal:
+bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceManagmenet.tsx, HRD memilih tangal cuti bersama, lalu masuk ke mobile setiap karyawan, karyawan di kasih pilihan mau ikut atau tidak, jika ikut saldo cuti terpakai, jika tidak masuk sesuai jadwal:
 1. ada bug view kalender di web, seharusnya view cuti bersama di cabang x hanya terlihat oleh cabang x saja
    --selesai ✅
 2. bug pending, seharusnya jumlah pending ada, karyawan yang dalam cabang tersebut belum respon pada cuti bersama

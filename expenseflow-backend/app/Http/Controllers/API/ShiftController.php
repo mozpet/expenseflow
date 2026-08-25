@@ -2348,6 +2348,25 @@ class ShiftController extends Controller
             ->map(fn ($d) => \Carbon\Carbon::parse($d)->toDateString())
             ->flip();
 
+        // CUTI MANDIRI (pribadi) yang sudah di-approve & memotong bulan ini.
+        // Ditandai per-tanggal agar kalender mobile bisa menampilkan "CUTI MANDIRI"
+        // (warna sama dgn cuti bersama, hanya label berbeda).
+        $personalLeaveDates = [];
+        $personalLeaves = \App\Models\LeaveRequest::where('user_id', $user->id)
+            ->whereNull('holiday_id')          // bukan cuti bersama
+            ->where('status', 'approved')      // hanya yang sudah disetujui HRD
+            ->where('start_date', '<=', $endOfMonth->toDateString())
+            ->where('end_date', '>=', $startOfMonth->toDateString())
+            ->get(['start_date', 'end_date']);
+        foreach ($personalLeaves as $pl) {
+            for ($d = \Carbon\Carbon::parse($pl->start_date); $d->lte(\Carbon\Carbon::parse($pl->end_date)); $d->addDay()) {
+                $ds = $d->toDateString();
+                if ($ds >= $startOfMonth->toDateString() && $ds <= $endOfMonth->toDateString()) {
+                    $personalLeaveDates[$ds] = true;
+                }
+            }
+        }
+
         $days = [];
         $current = $startOfMonth->copy();
 
@@ -2359,6 +2378,7 @@ class ShiftController extends Controller
             // Jika masih pending/declined → tanggal bukan hari libur, tetap ikuti jadwal normal.
             // Konsisten dengan isNonWorkingDay() di AttendanceController (Bug #3 fix).
             $isCollectiveLeave = $collectiveLeaves->has($dateStr);
+            $isPersonalLeave   = ! $isCollectiveLeave && isset($personalLeaveDates[$dateStr]);
 
             // Cek apakah tanggal ini merupakan hari libur yang BERLAKU untuk user ini.
             $holidayObj = $holidayByDate->get($dateStr);
@@ -2409,12 +2429,20 @@ class ShiftController extends Controller
                     $isOff = (bool) $shiftSchedule->is_off;
                     $isWfh = $isOff ? false : (bool) $shiftSchedule->is_wfh;
                     $isField = ($isOff || ! $isWfh) ? false : (bool) $shiftSchedule->is_field;
-                    $forceOff = $isCollectiveLeave || $isHoliday;
+                    // Cuti mandiri approved juga memaksa hari tsb libur (sama seperti cuti bersama),
+                    // dengan label & flag berbeda agar UI bisa menampilkannya sebagai "CUTI MANDIRI".
+                    $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
+                    // Warna cuti mandiri = kuning sama dgn cuti bersama (#FACC15)
+                    $dayColor = $forceOff
+                        ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
+                        : ($active->shift->color ?? '#6366f1');
                     $days[$dateStr] = [
                         'source'          => 'shift',
                         'shift_id'        => $active->shift_id,
-                        'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama' : ($isHoliday ? ($holidayInfo['name']) : $active->shift->name),
-                        'color'           => $forceOff ? ($overrideColor ?? '#EF4444') : ($active->shift->color ?? '#6366f1'),
+                        'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama'
+                            : ($isPersonalLeave ? 'Cuti Mandiri'
+                                : ($isHoliday ? ($holidayInfo['name']) : $active->shift->name)),
+                        'color'           => $dayColor,
                         'work_start_time' => ($isOff || $forceOff) ? null : $shiftSchedule->work_start_time,
                         'work_end_time'   => ($isOff || $forceOff) ? null : $shiftSchedule->work_end_time,
                         'is_off'          => $forceOff ? true : $isOff,
@@ -2422,6 +2450,7 @@ class ShiftController extends Controller
                         'is_field'        => $forceOff ? false : $isField,
                         'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
                         'holiday'         => $holidayInfo,
+                        'personal_leave'  => $isPersonalLeave,
                     ];
                     $current->addDay();
                     continue;
@@ -2440,12 +2469,17 @@ class ShiftController extends Controller
                     $customEnd = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
                 }
 
-                $forceOff = $isCollectiveLeave || $isHoliday;
+                // Cuti mandiri approved juga memaksa hari tsb libur (sama seperti cuti bersama)
+                $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
                 $days[$dateStr] = [
                     'source'          => 'office',
                     'shift_id'        => null,
-                    'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama' : ($isHoliday ? $holidayInfo['name'] : null),
-                    'color'           => $forceOff ? ($overrideColor ?? '#EF4444') : $overrideColor,
+                    'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama'
+                        : ($isPersonalLeave ? 'Cuti Mandiri'
+                            : ($isHoliday ? $holidayInfo['name'] : null)),
+                    'color'           => $forceOff
+                        ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
+                        : $overrideColor,
                     'work_start_time' => ($isOff || $forceOff) ? null : ($customStart ?? $office->work_start_time),
                     'work_end_time'   => ($isOff || $forceOff) ? null : ($customEnd ?? $office->work_end_time),
                     'is_off'          => $forceOff ? true : $isOff,
@@ -2453,15 +2487,20 @@ class ShiftController extends Controller
                     'is_field'        => false,
                     'is_cross_day'    => false,
                     'holiday'         => $holidayInfo,
+                    'personal_leave'  => $isPersonalLeave,
                 ];
             } else {
                 // Tidak ada pengaturan kantor sama sekali
-                $forceOff = $isCollectiveLeave || $isHoliday;
+                $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
                 $days[$dateStr] = [
                     'source'          => 'none',
                     'shift_id'        => null,
-                    'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama' : ($isHoliday ? $holidayInfo['name'] : null),
-                    'color'           => $forceOff ? ($overrideColor ?? '#EF4444') : $overrideColor,
+                    'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama'
+                        : ($isPersonalLeave ? 'Cuti Mandiri'
+                            : ($isHoliday ? $holidayInfo['name'] : null)),
+                    'color'           => $forceOff
+                        ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
+                        : $overrideColor,
                     'work_start_time' => null,
                     'work_end_time'   => null,
                     'is_off'          => $forceOff,
@@ -2469,6 +2508,7 @@ class ShiftController extends Controller
                     'is_field'        => false,
                     'is_cross_day'    => false,
                     'holiday'         => $holidayInfo,
+                    'personal_leave'  => $isPersonalLeave,
                 ];
             }
 

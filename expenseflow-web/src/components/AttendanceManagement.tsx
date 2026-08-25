@@ -309,6 +309,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [userOfficeFilter, setUserOfficeFilter] = useState('');
   const [balances, setBalances] = useState<any[]>([]);
   const [balanceSearch, setBalanceSearch] = useState('');
+  const [balanceOfficeFilter, setBalanceOfficeFilter] = useState('');
   const [togglingUserId, setTogglingUserId] = useState<number | null>(null);
   const [report, setReport] = useState<any | null>(null);
   const [reportFilter, setReportFilter] = useState<{ start_date: string; end_date: string; status: string; type: string; search?: string; office_id?: string }>({
@@ -371,10 +372,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setLoading(true);
     setError(null);
     try {
-      // Fetch SEMUA leaves tanpa filter status dari API — filter diterapkan lokal.
-      // Ini memastikan data approved selalu tersedia untuk deteksi bentrok pada baris pending.
-      const res: any = await attendanceApi.leaves({});
-      setLeaves(rows(res));
+      // Fetch SEMUA leaves (semua halaman pagination API) tanpa filter status —
+      // filter diterapkan lokal. Tanpa ini, riwayat lama "hilang" karena hanya
+      // 20 baris pertama yang termuat.
+      let allRows: any[] = [];
+      for (let page = 1; page <= 50; page++) {
+        const res: any = await attendanceApi.leaves({ page });
+        const batch = rows(res);
+        allRows = allRows.concat(batch);
+        const lastPage = Number(res?.last_page ?? res?.meta?.last_page ?? 1);
+        if (batch.length === 0 || page >= lastPage) break;
+      }
+      setLeaves(allRows);
     } catch (e) {
       reportApiError(e, 'Gagal memuat pengajuan izin/cuti.');
     } finally {
@@ -855,7 +864,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 (l.end_date ?? '').slice(0, 10) >= todayStr
               );
             } else {
-              if (leaveStatus) result = result.filter((l: any) => l.status === l.status && l.status === leaveStatus);
+              if (leaveStatus) result = result.filter((l: any) => l.status === leaveStatus);
               if (leaveTypeFilter) result = result.filter((l: any) => l.leave_type === leaveTypeFilter);
             }
             // Filter sumber cuti — berlaku di semua mode (normal maupun mendatang)
@@ -1298,10 +1307,23 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             return acc;
           }, {});
 
-          const entries = Object.entries(grouped).filter(([name, data]: [string, any]) => {
-            const q = balanceSearch.toLowerCase();
-            return name.toLowerCase().includes(q) || (data.employeeCode && data.employeeCode.toLowerCase().includes(q));
-          });
+          const entries = Object.entries(grouped)
+            .filter(([, data]: [string, any]) => {
+              // Filter kantor (office_id dari API; kosong/null = belum di-assign kantor)
+              if (balanceOfficeFilter) {
+                const officeId = String(data.cuti?.office_id ?? data.izin?.office_id ?? '');
+                if (balanceOfficeFilter === 'none') {
+                  if (officeId !== '') return false;
+                } else if (officeId !== balanceOfficeFilter) {
+                  return false;
+                }
+              }
+              return true;
+            })
+            .filter(([name, data]: [string, any]) => {
+              const q = balanceSearch.toLowerCase();
+              return name.toLowerCase().includes(q) || (data.employeeCode && data.employeeCode.toLowerCase().includes(q));
+            });
 
           const progressColor = (remaining: number, quota: number) => {
             if (quota === 0) return 'bg-slate-300';
@@ -1316,17 +1338,30 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
           return (
             <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center justify-between gap-3 flex-wrap">
                 <p className="text-[11px] text-slate-400">Saldo cuti karyawan tahun {new Date().getFullYear()}.</p>
-                <div className="relative">
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-                  <input
-                    type="text"
-                    placeholder="Cari nama atau NIK..."
-                    value={balanceSearch}
-                    onChange={(e) => setBalanceSearch(e.target.value)}
-                    className="pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-48"
-                  />
+                <div className="flex items-center gap-2">
+                  <select
+                    value={balanceOfficeFilter}
+                    onChange={(e) => setBalanceOfficeFilter(e.target.value)}
+                    className="py-2 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800/20 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 max-w-[180px]"
+                  >
+                    <option value="">Semua Kantor</option>
+                    {offices.map(o => (
+                      <option key={o.id} value={o.id}>{o.office_name}</option>
+                    ))}
+                    <option value="none">Tanpa Kantor</option>
+                  </select>
+                  <div className="relative">
+                    <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      placeholder="Cari nama atau NIK..."
+                      value={balanceSearch}
+                      onChange={(e) => setBalanceSearch(e.target.value)}
+                      className="pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-48"
+                    />
+                  </div>
                 </div>
               </div>
 

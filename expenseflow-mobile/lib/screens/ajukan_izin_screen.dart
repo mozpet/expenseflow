@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../widgets/custom_date_picker_dialog.dart';
 
 class AjukanIzinScreen extends StatefulWidget {
   const AjukanIzinScreen({super.key});
@@ -46,12 +47,11 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
     final first = isStart ? minDate : _startDate;
     final initial = isStart ? _startDate : _endDate;
 
-    final picked = await showDatePicker(
+    final picked = await showCustomDatePicker(
       context: context,
       initialDate: initial.isBefore(first) ? first : initial,
       firstDate: first,
       lastDate: DateTime.now().add(const Duration(days: 365)),
-      locale: const Locale('id', 'ID'),
     );
     if (picked == null) return;
     setState(() {

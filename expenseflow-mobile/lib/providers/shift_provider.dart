@@ -81,6 +81,9 @@ class ShiftCalendarDay {
   final bool isField;
   /// Info hari libur jika tanggal ini merupakan hari libur (null = bukan libur).
   final HolidayInfo? holiday;
+  /// true = tanggal ini adalah CUTI MANDIRI (cuti pribadi approved, bukan cuti bersama).
+  /// Warna sama dengan cuti bersama (kuning), hanya label yang berbeda.
+  final bool personalLeave;
 
   ShiftCalendarDay({
     required this.date,
@@ -95,6 +98,7 @@ class ShiftCalendarDay {
     this.isWfh = false,
     this.isField = false,
     this.holiday,
+    this.personalLeave = false,
   });
 
   factory ShiftCalendarDay.fromJson(String date, Map<String, dynamic> json) {
@@ -112,6 +116,7 @@ class ShiftCalendarDay {
       isWfh: json['is_wfh'] == true,
       isField: json['is_field'] == true,
       holiday: holidayJson != null ? HolidayInfo.fromJson(holidayJson as Map<String, dynamic>) : null,
+      personalLeave: json['personal_leave'] == true,
     );
   }
 }
