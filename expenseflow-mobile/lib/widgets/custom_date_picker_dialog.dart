@@ -77,11 +77,20 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
 
   int _toApiDow(DateTime d) => d.weekday % 7;
 
+  final Map<String, Color> _colorCache = {};
+
   Color _parseColor(String hex) {
+    if (_colorCache.containsKey(hex)) return _colorCache[hex]!;
     try {
-      return Color(int.parse('FF', radix: 16));
+      final clean = hex.replaceAll('#', '').trim();
+      final full = clean.length == 6 ? 'FF$clean' : clean;
+      final c = Color(int.parse(full, radix: 16));
+      _colorCache[hex] = c;
+      return c;
     } catch (_) {
-      return const Color(0xFF9CA3AF);
+      const fallback = Color(0xFF9CA3AF);
+      _colorCache[hex] = fallback;
+      return fallback;
     }
   }
 

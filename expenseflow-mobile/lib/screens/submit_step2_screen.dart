@@ -172,7 +172,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(12),
                 child: Image.memory(widget.imageBytes,
-                    fit: BoxFit.cover, cacheWidth: 1200),
+                    fit: BoxFit.cover, cacheWidth: 800),
               ),
             ),
             const SizedBox(height: 16),

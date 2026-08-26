@@ -556,6 +556,8 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
                                       width: 44,
                                       height: 44,
                                       fit: BoxFit.cover,
+                                      cacheWidth: 100,
+                                      cacheHeight: 100,
                                     ),
                             ),
                             const SizedBox(width: 12),

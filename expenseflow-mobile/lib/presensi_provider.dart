@@ -1,164 +1,13 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
+import 'models/attendance_model.dart';
+import 'models/leave_model.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
 
-class PresensiRecord {
-  final int id; // attendance ID — untuk mapping overtime approval
-  final String date;
-  final String masukTime;
-  final String pulangTime;
-  final String? checkInType; // 'wfh', 'onsite', 'field'
-  final int overtimeMinutes;
-  final bool isHoliday;
-  final bool isAutoCheckout;
-  final int lateMinutes;
-  // null = belum ada lembur / belum diproses; 'pending'/'approved'/'rejected'
-  final String? overtimeStatus;
-
-  PresensiRecord({
-    this.id = 0,
-    required this.date,
-    required this.masukTime,
-    required this.pulangTime,
-    this.checkInType,
-    this.overtimeMinutes = 0,
-    this.isHoliday = false,
-    this.isAutoCheckout = false,
-    this.lateMinutes = 0,
-    this.overtimeStatus,
-  });
-
-  PresensiRecord copyWith({
-    int? id,
-    String? date,
-    String? masukTime,
-    String? pulangTime,
-    String? checkInType,
-    int? overtimeMinutes,
-    bool? isHoliday,
-    bool? isAutoCheckout,
-    int? lateMinutes,
-    String? overtimeStatus,
-  }) {
-    return PresensiRecord(
-      id: id ?? this.id,
-      date: date ?? this.date,
-      masukTime: masukTime ?? this.masukTime,
-      pulangTime: pulangTime ?? this.pulangTime,
-      checkInType: checkInType ?? this.checkInType,
-      overtimeMinutes: overtimeMinutes ?? this.overtimeMinutes,
-      isHoliday: isHoliday ?? this.isHoliday,
-      isAutoCheckout: isAutoCheckout ?? this.isAutoCheckout,
-      lateMinutes: lateMinutes ?? this.lateMinutes,
-      overtimeStatus: overtimeStatus ?? this.overtimeStatus,
-    );
-  }
-
-  String get totalJamKerja => _hitungDurasi(masukTime, pulangTime);
-
-  String get totalLembur {
-    if (overtimeMinutes <= 0) return '';
-    final j = overtimeMinutes ~/ 60;
-    final m = overtimeMinutes % 60;
-    if (j == 0) return '${m}m';
-    if (m == 0) return '${j}j';
-    return '${j}j ${m}m';
-  }
-}
-
-/// Hitung durasi kerja dari "HH:mm" masuk ke "HH:mm" pulang.
-/// Kembalikan format "Xj Ym" atau "-" jika data tidak lengkap.
-String _hitungDurasi(String masuk, String pulang) {
-  if (masuk == '-' || pulang == '-') return '-';
-  final mp = masuk.split(':');
-  final pp = pulang.split(':');
-  if (mp.length < 2 || pp.length < 2) return '-';
-  final masukMenit =
-      (int.tryParse(mp[0]) ?? 0) * 60 + (int.tryParse(mp[1]) ?? 0);
-  final pulangMenit =
-      (int.tryParse(pp[0]) ?? 0) * 60 + (int.tryParse(pp[1]) ?? 0);
-  var diff = pulangMenit - masukMenit;
-  // Shift lintas tengah malam (mis. masuk 23:00, pulang 07:00): tambah 24 jam.
-  if (diff < 0) diff += 24 * 60;
-  if (diff == 0) return '-';
-  final jam = diff ~/ 60;
-  final menit = diff % 60;
-  if (menit == 0) return '${jam}j';
-  return '${jam}j ${menit}m';
-}
-
-class LeaveRequestRecord {
-  final int id;
-  final String leaveType; // wfh | izin | sakit | cuti
-  final String startDate;
-  final String endDate;
-  final int totalDays;
-  final String reason;
-  final String status; // pending | approved | rejected
-  final String? rejectionReason;
-
-  LeaveRequestRecord({
-    required this.id,
-    required this.leaveType,
-    required this.startDate,
-    required this.endDate,
-    required this.totalDays,
-    required this.reason,
-    required this.status,
-    this.rejectionReason,
-  });
-}
-
-class LeaveBalanceRecord {
-  final String leaveType;
-  final int quota;
-  final int used;
-  int get remaining => quota - used;
-
-  LeaveBalanceRecord({
-    required this.leaveType,
-    required this.quota,
-    required this.used,
-  });
-}
-
-
-class CollectiveLeaveRecord {
-  final int id;
-  final String date;
-  final String name;
-  final int totalDays;
-  final String collectiveStatus; // pending | accepted | declined
-  final int remainingQuota;
-  final String policy; // block | debt | free
-  final bool showBanner;
-
-  CollectiveLeaveRecord({
-    required this.id,
-    required this.date,
-    required this.name,
-    required this.totalDays,
-    required this.collectiveStatus,
-    required this.remainingQuota,
-    required this.policy,
-    required this.showBanner,
-  });
-
-  factory CollectiveLeaveRecord.fromJson(Map<String, dynamic> json) {
-    return CollectiveLeaveRecord(
-      id: (json['id'] as num?)?.toInt() ?? 0,
-      date: (json['date'] ?? '').toString(),
-      name: (json['name'] ?? '').toString(),
-      totalDays: (json['total_days'] as num?)?.toInt() ?? 0,
-      collectiveStatus: (json['collective_status'] ?? 'pending').toString(),
-      remainingQuota: (json['remaining_quota'] as num?)?.toInt() ?? 0,
-      policy: (json['policy'] ?? 'block').toString(),
-      showBanner: json['show_banner'] == true || json['show_banner'] == 1,
-    );
-  }
-}
+export 'models/attendance_model.dart';
+export 'models/leave_model.dart';
 
 class PresensiProvider extends ChangeNotifier {
   // Flag dari backend (diisi setelah login): true = boleh presensi WFH via app
@@ -209,7 +58,7 @@ class PresensiProvider extends ChangeNotifier {
   bool get canCheckIn => _todayMasuk == null;
   bool get canCheckOut => _todayMasuk != null && _todayPulang == null;
   String get todayTotalJamKerja =>
-      _hitungDurasi(_todayMasuk ?? '-', _todayPulang ?? '-');
+      hitungDurasiKerja(_todayMasuk ?? '-', _todayPulang ?? '-');
 
   String get todayDateFormatted {
     final now = DateTime.now();
