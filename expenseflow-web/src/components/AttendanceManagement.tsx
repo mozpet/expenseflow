@@ -142,28 +142,236 @@ const TabSkeleton = ({ tab }: { tab: TabKey }) => {
   if (tab === 'today') {
     return (
       <div className="space-y-5 animate-pulse w-full">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          {[1, 2, 3, 4].map(i => <div key={i} className="h-[84px] bg-slate-200 dark:bg-slate-800 rounded-2xl" />)}
+        {/* Header bar */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="h-5 w-52 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+          <div className="h-8 w-36 bg-slate-200 dark:bg-slate-800 rounded-xl" />
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-          {[1, 2, 3].map(i => <div key={i} className="h-64 bg-slate-200 dark:bg-slate-800 rounded-2xl" />)}
+
+        {/* 4 Summary Cards */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          {[1, 2, 3, 4].map(i => (
+            <div key={i} className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-2">
+              <div className="h-3 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+              <div className="h-7 w-12 bg-slate-200 dark:bg-slate-800 rounded-md" />
+            </div>
+          ))}
+        </div>
+
+        {/* 4 Kolom Per-Data */}
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          {/* Kolom 1: Sudah Check-in */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="h-4 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+              <div className="h-4 w-6 bg-slate-200 dark:bg-slate-800 rounded-full" />
+            </div>
+            <div className="h-8 bg-slate-100 dark:bg-slate-800/60 rounded-lg w-full" />
+            <div className="space-y-3 pt-1">
+              {[1, 2, 3, 4].map(i => (
+                <div key={i} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2.5">
+                  <div className="space-y-1.5">
+                    <div className="h-3.5 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+                    <div className="h-2.5 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </div>
+                  <div className="h-5 w-12 bg-slate-200 dark:bg-slate-800 rounded" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Kolom 2: Belum Check-in */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="h-4 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+              <div className="h-4 w-6 bg-slate-200 dark:bg-slate-800 rounded-full" />
+            </div>
+            <div className="h-8 bg-slate-100 dark:bg-slate-800/60 rounded-lg w-full" />
+            <div className="space-y-3 pt-1">
+              {[1, 2, 3, 4].map(i => (
+                <div key={i} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2.5">
+                  <div className="space-y-1.5">
+                    <div className="h-3.5 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+                    <div className="h-2.5 w-28 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Kolom 3: Sedang Libur */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="h-4 w-28 bg-slate-200 dark:bg-slate-800 rounded" />
+              <div className="h-4 w-6 bg-slate-200 dark:bg-slate-800 rounded-full" />
+            </div>
+            <div className="h-8 bg-slate-100 dark:bg-slate-800/60 rounded-lg w-full" />
+            <div className="space-y-3 pt-1">
+              {[1, 2, 3].map(i => (
+                <div key={i} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2.5">
+                  <div className="space-y-1.5">
+                    <div className="h-3.5 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+                    <div className="h-2.5 w-28 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </div>
+                  <div className="h-5 w-10 bg-slate-200 dark:bg-slate-800 rounded" />
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Kolom 4: Sedang Izin/Cuti */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full space-y-3">
+            <div className="flex items-center justify-between">
+              <div className="h-4 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+              <div className="h-4 w-6 bg-slate-200 dark:bg-slate-800 rounded-full" />
+            </div>
+            <div className="h-8 bg-slate-100 dark:bg-slate-800/60 rounded-lg w-full" />
+            <div className="space-y-3 pt-1">
+              {[1, 2, 3].map(i => (
+                <div key={i} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2.5">
+                  <div className="space-y-1.5">
+                    <div className="h-3.5 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+                    <div className="h-2.5 w-28 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </div>
+                  <div className="h-5 w-10 bg-slate-200 dark:bg-slate-800 rounded" />
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     );
   }
+
+  if (tab === 'leaves') {
+    return (
+      <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4 animate-pulse w-full">
+        {/* Filter bar skeleton */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="h-8 w-28 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+            <div className="h-8 w-24 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+            <div className="h-8 w-28 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+            <div className="h-8 w-28 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+            <div className="h-8 w-24 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+          </div>
+          <div className="h-8 w-48 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+        </div>
+
+        {/* Table skeleton per-data */}
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs text-left">
+            <thead>
+              <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400">
+                <th className="py-2 px-2 font-semibold">Karyawan</th>
+                <th className="py-2 px-2 font-semibold">Tipe</th>
+                <th className="py-2 px-2 font-semibold">Sumber</th>
+                <th className="py-2 px-2 font-semibold">Periode</th>
+                <th className="py-2 px-2 font-semibold text-center">Hari</th>
+                <th className="py-2 px-2 font-semibold">Alasan / Status Pilihan</th>
+                <th className="py-2 px-2 font-semibold text-center">Status</th>
+                <th className="py-2 px-2 font-semibold text-right">Aksi</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+              {[...Array(6)].map((_, i) => (
+                <tr key={i}>
+                  <td className="py-3 px-2">
+                    <div className="space-y-1.5">
+                      <div className="h-3.5 w-28 bg-slate-200 dark:bg-slate-800 rounded" />
+                      <div className="h-2.5 w-16 bg-slate-200 dark:bg-slate-800 rounded" />
+                    </div>
+                  </td>
+                  <td className="py-3 px-2">
+                    <div className="h-5 w-12 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </td>
+                  <td className="py-3 px-2">
+                    <div className="h-3.5 w-16 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </td>
+                  <td className="py-3 px-2">
+                    <div className="h-3.5 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </td>
+                  <td className="py-3 px-2 text-center">
+                    <div className="h-3.5 w-6 bg-slate-200 dark:bg-slate-800 rounded mx-auto" />
+                  </td>
+                  <td className="py-3 px-2">
+                    <div className="h-3.5 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+                  </td>
+                  <td className="py-3 px-2 text-center">
+                    <div className="h-5 w-16 bg-slate-200 dark:bg-slate-800 rounded mx-auto" />
+                  </td>
+                  <td className="py-3 px-2">
+                    <div className="flex items-center justify-end gap-1.5">
+                      <div className="h-6 w-6 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+                      <div className="h-6 w-6 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    );
+  }
+
   if (tab === 'balances') {
     return (
-      <div className="space-y-4 animate-pulse mt-2 w-full">
-        <div className="flex justify-between items-center">
+      <div className="space-y-4 animate-pulse w-full">
+        {/* Header bar */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="h-4 w-48 bg-slate-200 dark:bg-slate-800 rounded" />
-          <div className="h-8 w-48 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+          <div className="flex items-center gap-2">
+            <div className="h-8 w-32 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+            <div className="h-8 w-48 bg-slate-200 dark:bg-slate-800 rounded-xl" />
+          </div>
         </div>
+
+        {/* Grid Card Saldo Per Karyawan */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {[1, 2, 3, 4].map(i => <div key={i} className="h-40 bg-slate-200 dark:bg-slate-800 rounded-2xl" />)}
+          {[1, 2, 3, 4, 5, 6].map(i => (
+            <div
+              key={i}
+              className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-3"
+            >
+              {/* Header karyawan + toggle switch */}
+              <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
+                <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-slate-800 shrink-0" />
+                <div className="flex-1 space-y-1">
+                  <div className="h-3.5 w-28 bg-slate-200 dark:bg-slate-800 rounded" />
+                  <div className="h-2.5 w-16 bg-slate-200 dark:bg-slate-800 rounded" />
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  <div className="h-3 w-16 bg-slate-200 dark:bg-slate-800 rounded" />
+                  <div className="h-5 w-9 bg-slate-200 dark:bg-slate-800 rounded-full" />
+                </div>
+              </div>
+
+              {/* 2 Kolom: Cuti & Izin */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Blok Cuti Tahunan */}
+                <div className="space-y-2">
+                  <div className="h-2.5 w-16 bg-slate-200 dark:bg-slate-800 rounded" />
+                  <div className="h-5 w-20 bg-slate-200 dark:bg-slate-800 rounded" />
+                  <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-full" />
+                  <div className="h-2.5 w-20 bg-slate-200 dark:bg-slate-800 rounded" />
+                </div>
+
+                {/* Blok Izin / Sakit */}
+                <div className="space-y-2">
+                  <div className="h-2.5 w-14 bg-slate-200 dark:bg-slate-800 rounded" />
+                  <div className="h-5 w-20 bg-slate-200 dark:bg-slate-800 rounded" />
+                  <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-800 rounded-full" />
+                  <div className="h-2.5 w-16 bg-slate-200 dark:bg-slate-800 rounded" />
+                </div>
+              </div>
+            </div>
+          ))}
         </div>
       </div>
     );
   }
+
   if (tab === 'report') {
     return (
       <div className="space-y-4 animate-pulse w-full">
@@ -215,20 +423,74 @@ const TabSkeleton = ({ tab }: { tab: TabKey }) => {
       </div>
     );
   }
+
   if (tab === 'holidays') {
     return (
       <div className="space-y-4 animate-pulse w-full">
-        <div className="flex justify-between items-center">
-          <div className="space-y-2">
-            <div className="h-5 w-40 bg-slate-200 dark:bg-slate-800 rounded" />
-            <div className="h-3 w-64 bg-slate-200 dark:bg-slate-800 rounded" />
+        {/* Header */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="space-y-1">
+            <div className="h-5 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+            <div className="h-3 w-72 bg-slate-200 dark:bg-slate-800 rounded" />
           </div>
           <div className="h-8 w-32 bg-slate-200 dark:bg-slate-800 rounded-lg" />
         </div>
-        <div className="h-[300px] bg-slate-200 dark:bg-slate-800 rounded-2xl" />
+
+        {/* Grid kalender (2 cols) + detail (1 col) */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+          {/* Kalender Box */}
+          <div className="lg:col-span-2 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4">
+            {/* Navigasi bulan */}
+            <div className="flex items-center justify-between mb-4">
+              <div className="h-8 w-8 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+              <div className="space-y-1 flex flex-col items-center">
+                <div className="h-4 w-28 bg-slate-200 dark:bg-slate-800 rounded" />
+                <div className="h-2.5 w-44 bg-slate-200 dark:bg-slate-800 rounded" />
+              </div>
+              <div className="h-8 w-8 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+            </div>
+
+            {/* Nama Hari */}
+            <div className="grid grid-cols-7 gap-1 mb-2">
+              {['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'].map(d => (
+                <div key={d} className="h-3 bg-slate-200 dark:bg-slate-800 rounded mx-2" />
+              ))}
+            </div>
+
+            {/* Sel Tanggal (35 cells) */}
+            <div className="grid grid-cols-7 gap-1">
+              {[...Array(35)].map((_, idx) => (
+                <div key={idx} className="h-16 sm:h-20 rounded-lg border border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 p-1 flex flex-col items-center justify-between">
+                  <div className="h-3 w-4 bg-slate-200 dark:bg-slate-700 rounded mt-1" />
+                  {idx % 7 === 0 || idx === 12 || idx === 20 ? (
+                    <div className="h-2.5 w-10 bg-slate-200 dark:bg-slate-700 rounded mb-1" />
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Panel Detail */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-3">
+            <div className="flex items-center justify-between mb-3">
+              <div className="h-4 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+              <div className="h-7 w-24 bg-slate-200 dark:bg-slate-800 rounded-lg" />
+            </div>
+            {[1, 2].map(i => (
+              <div key={i} className="border border-slate-100 dark:border-slate-800 rounded-lg p-3 space-y-2 bg-slate-50/50 dark:bg-slate-800/20">
+                <div className="flex items-center justify-between">
+                  <div className="h-3.5 w-24 bg-slate-200 dark:bg-slate-800 rounded" />
+                  <div className="h-4 w-14 bg-slate-200 dark:bg-slate-800 rounded" />
+                </div>
+                <div className="h-2.5 w-32 bg-slate-200 dark:bg-slate-800 rounded" />
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     );
   }
+
   if (tab === 'users') {
     return (
       <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4 w-full animate-pulse">
@@ -266,7 +528,6 @@ const TabSkeleton = ({ tab }: { tab: TabKey }) => {
     );
   }
 
-  // Default for leaves
   return (
     <div className="h-[400px] bg-slate-200 dark:bg-slate-800 rounded-2xl animate-pulse w-full" />
   );

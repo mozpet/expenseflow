@@ -142,8 +142,29 @@ const OfficesTab: React.FC<{
   const [confirmReset, setConfirmReset] = useState<string | null>(null);
   // Nilai leave_reset_date saat form dibuka (untuk mendeteksi perubahan)
   const [originalLeaveReset, setOriginalLeaveReset] = useState<string>('');
+  // Gerbang konfirmasi field berbahaya (backend 422 requires_confirmation):
+  // HRD wajib mengetik "SIMPAN" sebelum perubahan aturan presensi disimpan.
+  const [dangerousFields, setDangerousFields] = useState<string[] | null>(null);
+  const [confirmText, setConfirmText] = useState('');
 
-  const openAdd = () => { setForm(empty); setEditId(null); setShowForm(true); setValidationError(null); setConfirmReset(null); setOriginalLeaveReset(''); setExpandedDays([]); };
+  // Label ramah untuk field berbahaya yang dikirim backend
+  const DANGEROUS_LABELS: Record<string, string> = {
+    work_start_time: 'Jam Masuk',
+    work_end_time: 'Jam Pulang',
+    work_days: 'Hari Kerja',
+    custom_schedules: 'Jam Kerja Khusus per Hari',
+    office_latitude: 'Lokasi Kantor (Latitude)',
+    office_longitude: 'Lokasi Kantor (Longitude)',
+    radius_meters: 'Radius Presensi',
+    late_tolerance_minutes: 'Toleransi Telat',
+    early_leave_tolerance_minutes: 'Toleransi Pulang Awal',
+    overtime_enabled: 'Hitung Lembur Otomatis',
+    min_overtime_minutes: 'Ambang Minimal Lembur',
+    checkout_reminder_minutes: 'Reminder Checkout',
+    auto_checkout_grace_minutes: 'Auto-Checkout',
+  };
+
+  const openAdd = () => { setForm(empty); setEditId(null); setShowForm(true); setValidationError(null); setConfirmReset(null); setOriginalLeaveReset(''); setExpandedDays([]); setDangerousFields(null); setConfirmText(''); };
   const openEdit = (o: any) => {
     const isEarlyLeaveEnabled = o.early_leave_tolerance_minutes !== null && o.early_leave_tolerance_minutes !== undefined;
     setForm({
@@ -174,6 +195,8 @@ const OfficesTab: React.FC<{
     setShowForm(true);
     setValidationError(null);
     setConfirmReset(null);
+    setDangerousFields(null);
+    setConfirmText('');
     setExpandedDays(Object.keys(o.custom_schedules ?? {}).map(Number));
   };
 
@@ -269,11 +292,11 @@ const OfficesTab: React.FC<{
     await doSave();
   };
 
-  const doSave = async () => {
+  const doSave = async (confirmDangerous: boolean = false) => {
     setConfirmReset(null);
     setSaving(true);
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         office_name: form.office_name,
         office_latitude: Number(form.office_latitude),
         office_longitude: Number(form.office_longitude),
@@ -300,6 +323,8 @@ const OfficesTab: React.FC<{
         // collective_leave_policy: dihapus — hardcode 'block' sejak 2026-08-20
         custom_schedules: form.custom_schedules,
       };
+      // Gerbang backend: perubahan field berbahaya wajib menyertakan frasa konfirmasi
+      if (editId && confirmDangerous) payload.confirm_dangerous = 'SIMPAN';
       if (editId) {
         await attendanceApi.settings.update(editId, payload);
         onAddAuditLog('Kantor Presensi Diperbarui', `Kantor ${form.office_name} diperbarui`, 'bg-indigo-600');
@@ -309,8 +334,15 @@ const OfficesTab: React.FC<{
       }
       setShowForm(false);
       await reload();
-    } catch (e2) {
-      onError(e2, 'Gagal menyimpan kantor.');
+    } catch (e2: any) {
+      // Backend menolak (422 requires_confirmation): field berbahaya berubah
+      // tanpa frasa "SIMPAN" → tampilkan dialog ketik-konfirmasi.
+      if (e2?.data?.requires_confirmation === true) {
+        setDangerousFields(Array.isArray(e2.data.dangerous_changed_fields) ? e2.data.dangerous_changed_fields : []);
+        setConfirmText('');
+      } else {
+        onError(e2, 'Gagal menyimpan kantor.');
+      }
     } finally {
       setSaving(false);
     }
@@ -908,6 +940,8 @@ const OfficesTab: React.FC<{
 
           {/* Konfirmasi reset saldo cuti: anniversary sudah lewat tahun ini →
               reset saldo tahun berjalan langsung terjadi sekali saat disimpan */}
+          {/* Konfirmasi reset saldo cuti: anniversary sudah lewat tahun ini →
+              reset saldo tahun berjalan langsung terjadi sekali saat disimpan */}
           {confirmReset && (
             <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
               <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 duration-200 border border-slate-100 dark:border-slate-700">
@@ -935,6 +969,60 @@ const OfficesTab: React.FC<{
                     className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-white font-bold rounded-xl text-xs transition-colors"
                   >
                     {saving ? 'Menyimpan...' : 'Ya, Lanjutkan'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Gerbang field berbahaya: HRD wajib mengetik "SIMPAN" untuk
+              mengonfirmasi perubahan aturan presensi di tengah hari */}
+          {dangerousFields && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm animate-in fade-in duration-200">
+              <div className="bg-white dark:bg-slate-800 rounded-2xl p-6 shadow-2xl max-w-sm w-full animate-in zoom-in-95 duration-200 border border-slate-100 dark:border-slate-700">
+                <div className="flex items-center gap-3 text-amber-600 dark:text-amber-400 mb-3">
+                  <div className="p-2 bg-amber-50 dark:bg-amber-900/30 rounded-full">
+                    <AlertTriangle className="w-6 h-6" />
+                  </div>
+                  <h3 className="font-bold text-base">Perubahan Aturan Presensi</h3>
+                </div>
+                <p className="text-slate-600 dark:text-slate-300 text-sm mb-2 leading-relaxed">
+                  ⚠️ Anda mengubah aturan presensi berikut di tengah hari:
+                </p>
+                <ul className="text-xs text-amber-700 dark:text-amber-400 font-semibold list-disc list-inside mb-3 space-y-0.5">
+                  {dangerousFields.map((f) => (
+                    <li key={f}>{DANGEROUS_LABELS[f] ?? f}</li>
+                  ))}
+                </ul>
+                <p className="text-slate-600 dark:text-slate-300 text-sm mb-4 leading-relaxed">
+                  Ini mengubah cara sistem menghitung telat, lembur, dan auto-checkout untuk karyawan yang <strong>belum check-in hari ini</strong> dan <strong>seluruh presensi esok hari</strong>. Karyawan yang sudah check-in tetap memakai aturan saat mereka masuk tadi.
+                </p>
+                <label className="text-[10px] font-bold text-slate-400 block mb-1">
+                  Ketik <span className="font-mono text-rose-600 dark:text-rose-400">SIMPAN</span> untuk melanjutkan
+                </label>
+                <input
+                  type="text"
+                  value={confirmText}
+                  onChange={(e) => setConfirmText(e.target.value)}
+                  placeholder="Ketik SIMPAN di sini"
+                  autoFocus
+                  className={`w-full p-2.5 border rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono text-sm mb-4 ${confirmText.length > 0 && confirmText !== 'SIMPAN' ? 'border-rose-300 dark:border-rose-700' : 'border-slate-200 dark:border-slate-700'}`}
+                />
+                <div className="flex gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => setDangerousFields(null)}
+                    className="flex-1 py-2.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-200 font-bold rounded-xl text-xs transition-colors"
+                  >
+                    Batal
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => doSave(true)}
+                    disabled={saving || confirmText !== 'SIMPAN'}
+                    className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold rounded-xl text-xs transition-colors"
+                  >
+                    {saving ? 'Menyimpan...' : 'Ya, Simpan Perubahan'}
                   </button>
                 </div>
               </div>

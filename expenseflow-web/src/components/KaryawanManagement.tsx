@@ -1,20 +1,20 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import {
-  Users, 
-  UserPlus, 
-  Download, 
-  Search, 
-  Plus, 
-  Check, 
-  Clock, 
-  Ban, 
-  Lock, 
-  Edit2, 
-  X, 
-  Info, 
-  AlertTriangle, 
-  Eye, 
-  EyeOff, 
+  Users,
+  UserPlus,
+  Download,
+  Search,
+  Plus,
+  Check,
+  Clock,
+  Ban,
+  Lock,
+  Edit2,
+  X,
+  Info,
+  AlertTriangle,
+  Eye,
+  EyeOff,
   ArrowLeft,
   ChevronRight,
   ShieldCheck,
@@ -34,7 +34,7 @@ interface Employee {
   jabatan: string; // dipetakan dari role
   role: string;
   hp: string;
-  limit: number; // in IDR
+  limit: number | null; // in IDR. null = tanpa batas
   loginTerakhir: string;
   status: 'Aktif' | 'Nonaktif' | 'Belum login';
   initials: string;
@@ -44,6 +44,7 @@ interface Employee {
   tanggalMasuk?: string;
   officeId: number | null; // attendance_setting_id — kantor penempatan
   officeName: string; // nama kantor untuk tampilan
+  nikKtp: string | null; // NIK KTP (identity_number)
   // Tipe hubungan kerja & kontrak
   employmentType: string | null; // 'PKWTT' | 'PKWT' | 'Probation' | 'Internship' | null
   joinedDate: string | null;
@@ -79,7 +80,7 @@ function mapEmployee(u: any): Employee {
     jabatan: u.role ?? '—',
     role: u.role ?? 'employee',
     hp: u.phone ?? '—',
-    limit: Number(u.monthly_claim_limit ?? 0),
+    limit: u.monthly_claim_limit !== null && u.monthly_claim_limit !== undefined ? Number(u.monthly_claim_limit) : null,
     loginTerakhir: '—',
     status: u.is_active === false ? 'Nonaktif' : 'Aktif',
     initials: initials || '?',
@@ -89,6 +90,7 @@ function mapEmployee(u: any): Employee {
     tanggalMasuk: u.joined_date ?? (u.created_at ? String(u.created_at).split('T')[0] : undefined),
     officeId: u.attendance_setting_id ?? null,
     officeName: u.office?.office_name ?? '—',
+    nikKtp: u.identity_number ?? null,
     employmentType: u.employment_type ?? null,
     joinedDate: u.joined_date ?? null,
     contractStartDate: u.contract_start_date ?? null,
@@ -123,10 +125,10 @@ function contractStatus(endDate: string | null): 'active' | 'near' | 'expired' |
 
 // ─── Helper: config badge employment type ──────────────────────────────────
 const EMPLOYMENT_BADGE: Record<string, { label: string; cls: string }> = {
-  PKWTT:      { label: 'Tetap',    cls: 'bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400' },
-  PKWT:       { label: 'Kontrak',  cls: 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400' },
-  Probation:  { label: 'Probasi',  cls: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400' },
-  Internship: { label: 'Magang',   cls: 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400' },
+  PKWTT: { label: 'Tetap', cls: 'bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400' },
+  PKWT: { label: 'Kontrak', cls: 'bg-blue-50 text-blue-700 dark:bg-blue-950/30 dark:text-blue-400' },
+  Probation: { label: 'Probasi', cls: 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400' },
+  Internship: { label: 'Magang', cls: 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400' },
 };
 
 interface ActivityLog {
@@ -154,7 +156,7 @@ export const KaryawanManagement: React.FC<{
       const res: any = await attendanceApi.settings.list();
       const list: Office[] = Array.isArray(res?.settings) ? res.settings
         : Array.isArray(res?.data) ? res.data
-        : Array.isArray(res) ? res : [];
+          : Array.isArray(res) ? res : [];
       setOffices(list.map((o: any) => ({ id: o.id, office_name: o.office_name })));
     } catch { /* diam — kantor opsional, tidak kritis */ }
   };
@@ -187,7 +189,7 @@ export const KaryawanManagement: React.FC<{
   const [selectedOffice, setSelectedOffice] = useState<string>('Semua kantor');
   const [selectedEmploymentType, setSelectedEmploymentType] = useState<string>('');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  
+
   // Views/Forms controllers
   const [viewMode, setViewMode] = useState<'list' | 'add'>('list');
 
@@ -197,10 +199,11 @@ export const KaryawanManagement: React.FC<{
   const [editForm, setEditForm] = useState({
     nama: '',
     nik: '',
+    nikKtp: '',
     dept: '',
     jabatan: '',
     hp: '',
-    limit: 2000000,
+    limit: '' as number | '' | null,
     officeId: '' as number | '', // '' = belum ditentukan
     employmentType: '' as string,
     joinedDate: '',
@@ -227,6 +230,7 @@ export const KaryawanManagement: React.FC<{
   const [addForm, setAddForm] = useState({
     nama: '',
     nik: '',
+    nikKtp: '',
     email: '',
     hp: '',
     tanggalMasuk: new Date().toISOString().split('T')[0],
@@ -235,7 +239,7 @@ export const KaryawanManagement: React.FC<{
     role: 'employee',
     atasan: '',
     officeId: '' as number | '', // '' = belum ditentukan
-    limit: 2000000,
+    limit: '' as number | '' | null,
     password: 'Maju2026!',
     confirmPassword: 'Maju2026!',
     showPassword: false,
@@ -274,13 +278,13 @@ export const KaryawanManagement: React.FC<{
   // 3. Filter and search logic
   const filteredEmployees = useMemo(() => {
     return employees.filter(e => {
-      const matchSearch = e.nama.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          e.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          e.email.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchSearch = e.nama.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        e.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        e.email.toLowerCase().includes(searchQuery.toLowerCase());
       const matchDept = selectedDept === 'Semua dept' || e.dept === selectedDept;
       const matchStatus = activeTab === 'all' || e.status === activeTab;
       const matchOffice = selectedOffice === 'Semua kantor' ||
-                          (selectedOffice === 'tanpa_kantor' ? !e.officeId : e.officeId === Number(selectedOffice));
+        (selectedOffice === 'tanpa_kantor' ? !e.officeId : e.officeId === Number(selectedOffice));
       const matchEmploymentType = !selectedEmploymentType || e.employmentType === selectedEmploymentType;
       return matchSearch && matchDept && matchStatus && matchOffice && matchEmploymentType;
     });
@@ -343,53 +347,64 @@ export const KaryawanManagement: React.FC<{
       return;
     }
 
-    setSubmitting(true);
-    try {
-      await userApi.create({
-        name: addForm.nama,
-        email: addForm.email,
-        password: addForm.password,
-        role: addForm.role,
-        employee_code: addForm.nik || undefined,
-        department: addForm.dept || undefined,
-        attendance_setting_id: addForm.officeId === '' ? null : addForm.officeId,
-        monthly_claim_limit: addForm.limit,
-        employment_type: addForm.employmentType || null,
-        joined_date: addForm.joinedDate || null,
-        contract_start_date: addForm.employmentType === 'PKWT' ? (addForm.contractStartDate || null) : null,
-        contract_end_date: addForm.employmentType === 'PKWT' ? (addForm.contractEndDate || null) : null,
-      });
-      await loadEmployees();
-      onAddAuditLog('Karyawan Baru Terdaftar', `Menambahkan karyawan baru: ${addForm.nama} - Role: ${addForm.role}`, 'bg-indigo-600');
-      onAddNotification('new', 'Karyawan Baru Ditambahkan', `Akun untuk ${addForm.nama} berhasil didaftarkan.`);
+    handleOpenConfirm({
+      isOpen: true,
+      title: 'Konfirmasi Karyawan Baru',
+      message: `Apakah Anda yakin ingin menambahkan karyawan baru bernama ${addForm.nama}? Pastikan data NIK dan email sudah benar.`,
+      type: 'info',
+      confirmText: 'Ya, Tambahkan',
+      onConfirm: async () => {
+        setSubmitting(true);
+        try {
+          await userApi.create({
+            name: addForm.nama,
+            email: addForm.email,
+            password: addForm.password,
+            role: addForm.role,
+            employee_code: addForm.nik || undefined,
+            identity_number: addForm.nikKtp || undefined,
+            department: addForm.dept || undefined,
+            attendance_setting_id: addForm.officeId === '' ? null : addForm.officeId,
+            monthly_claim_limit: addForm.limit === '' || addForm.limit === null ? null : addForm.limit,
+            employment_type: addForm.employmentType || null,
+            joined_date: addForm.joinedDate || null,
+            contract_start_date: addForm.employmentType === 'PKWT' ? (addForm.contractStartDate || null) : null,
+            contract_end_date: addForm.employmentType === 'PKWT' ? (addForm.contractEndDate || null) : null,
+          });
+          await loadEmployees();
+          onAddAuditLog('Karyawan Baru Terdaftar', `Menambahkan karyawan baru: ${addForm.nama} - Role: ${addForm.role}`, 'bg-indigo-600');
+          onAddNotification('new', 'Karyawan Baru Ditambahkan', `Akun untuk ${addForm.nama} berhasil didaftarkan.`);
 
-      // Reset add state
-      setAddForm({
-        nama: '',
-        nik: '',
-        email: '',
-        hp: '',
-        tanggalMasuk: new Date().toISOString().split('T')[0],
-        dept: '',
-        jabatan: '',
-        role: 'employee',
-        atasan: '',
-        officeId: '',
-        limit: 2000000,
-        password: 'Maju2026!',
-        confirmPassword: 'Maju2026!',
-        showPassword: false,
-        employmentType: '',
-        joinedDate: new Date().toISOString().split('T')[0],
-        contractStartDate: '',
-        contractEndDate: '',
-      });
-      setViewMode('list');
-    } catch (err) {
-      reportApiError(err, 'Gagal menambahkan karyawan.');
-    } finally {
-      setSubmitting(false);
-    }
+          // Reset add state
+          setAddForm({
+            nama: '',
+            nik: '',
+            nikKtp: '',
+            email: '',
+            hp: '',
+            tanggalMasuk: new Date().toISOString().split('T')[0],
+            dept: '',
+            jabatan: '',
+            role: 'employee',
+            atasan: '',
+            officeId: '',
+            limit: '' as number | '' | null,
+            password: 'Maju2026!',
+            confirmPassword: 'Maju2026!',
+            showPassword: false,
+            employmentType: '',
+            joinedDate: new Date().toISOString().split('T')[0],
+            contractStartDate: '',
+            contractEndDate: '',
+          });
+          setViewMode('list');
+        } catch (err) {
+          reportApiError(err, 'Gagal menambahkan karyawan.');
+        } finally {
+          setSubmitting(false);
+        }
+      }
+    });
   };
 
   // Edit employee trigger & save
@@ -399,6 +414,7 @@ export const KaryawanManagement: React.FC<{
     setEditForm({
       nama: emp.nama,
       nik: emp.id.startsWith('EMP-') ? '' : emp.id,
+      nikKtp: emp.nikKtp ?? '',
       dept: emp.dept,
       jabatan: emp.role,
       hp: emp.hp === '—' ? '' : emp.hp,
@@ -414,29 +430,59 @@ export const KaryawanManagement: React.FC<{
   const handleSaveEditSubmit = async () => {
     if (!editEmployee) return;
 
-    setSubmitting(true);
-    try {
-      await userApi.update(editEmployee.backendId, {
-        name: editForm.nama,
-        employee_code: editForm.nik || undefined,
-        phone: editForm.hp || undefined,
-        role: editForm.jabatan || undefined,
-        department: editForm.dept || undefined,
-        attendance_setting_id: editForm.officeId === '' ? null : editForm.officeId,
-        monthly_claim_limit: editForm.limit,
-        employment_type: editForm.employmentType || null,
-        joined_date: editForm.joinedDate || null,
-        contract_start_date: editForm.employmentType === 'PKWT' ? (editForm.contractStartDate || null) : null,
-        contract_end_date: editForm.employmentType === 'PKWT' ? (editForm.contractEndDate || null) : null,
-      });
-      await loadEmployees();
-      onAddAuditLog('Update Profil Karyawan', `Profil ${editForm.nama} (${editEmployee.id}) diperbarui`, 'bg-indigo-600');
-      setEditEmployee(null);
-    } catch (err) {
-      reportApiError(err, 'Gagal memperbarui karyawan.');
-    } finally {
-      setSubmitting(false);
+    const isChanged = (
+      editForm.nama !== editEmployee.nama ||
+      (editForm.nik || '') !== (editEmployee.id.startsWith('EMP-') ? '' : editEmployee.id) ||
+      (editForm.nikKtp || '') !== (editEmployee.nikKtp ?? '') ||
+      (editForm.hp || '') !== (editEmployee.hp === '—' ? '' : editEmployee.hp) ||
+      editForm.dept !== editEmployee.dept ||
+      editForm.jabatan !== editEmployee.role ||
+      (editForm.officeId === '' ? null : editForm.officeId) !== editEmployee.officeId ||
+      editForm.limit !== editEmployee.limit ||
+      (editForm.employmentType || null) !== editEmployee.employmentType ||
+      (editForm.joinedDate || null) !== editEmployee.joinedDate ||
+      (editForm.contractStartDate || null) !== editEmployee.contractStartDate ||
+      (editForm.contractEndDate || null) !== editEmployee.contractEndDate
+    );
+
+    if (!isChanged) {
+      alert("Tidak ada perubahan data karyawan.");
+      return;
     }
+
+    handleOpenConfirm({
+      isOpen: true,
+      title: 'Konfirmasi Perubahan Data',
+      message: `Terdapat perubahan pada profil ${editForm.nama}. Apakah Anda yakin ingin menyimpannya?`,
+      type: 'info',
+      confirmText: 'Ya, Simpan Perubahan',
+      onConfirm: async () => {
+        setSubmitting(true);
+        try {
+          await userApi.update(editEmployee.backendId, {
+            name: editForm.nama,
+            employee_code: editForm.nik || undefined,
+            identity_number: editForm.nikKtp || undefined,
+            phone: editForm.hp || undefined,
+            role: editForm.jabatan || undefined,
+            department: editForm.dept || undefined,
+            attendance_setting_id: editForm.officeId === '' ? null : editForm.officeId,
+            monthly_claim_limit: editForm.limit === '' || editForm.limit === null ? null : editForm.limit,
+            employment_type: editForm.employmentType || null,
+            joined_date: editForm.joinedDate || null,
+            contract_start_date: editForm.employmentType === 'PKWT' ? (editForm.contractStartDate || null) : null,
+            contract_end_date: editForm.employmentType === 'PKWT' ? (editForm.contractEndDate || null) : null,
+          });
+          await loadEmployees();
+          onAddAuditLog('Update Profil Karyawan', `Profil ${editForm.nama} (${editEmployee.id}) diperbarui`, 'bg-indigo-600');
+          setEditEmployee(null);
+        } catch (err) {
+          reportApiError(err, 'Gagal memperbarui karyawan.');
+        } finally {
+          setSubmitting(false);
+        }
+      }
+    });
   };
 
   // Reset password logic
@@ -516,7 +562,7 @@ export const KaryawanManagement: React.FC<{
 
   return (
     <div className="space-y-6 font-sans">
-      
+
       {/* Dynamic Header top bar */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 shadow-xs">
         <div>
@@ -546,9 +592,9 @@ export const KaryawanManagement: React.FC<{
             <Download className="w-3.5 h-3.5 text-indigo-600" />
             <span>Export Excel</span>
           </button>
-          
+
           {viewMode === 'list' && (
-            <button 
+            <button
               onClick={() => setViewMode('add')}
               className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm shadow-indigo-500/15 transition duration-150 cursor-pointer"
             >
@@ -558,7 +604,7 @@ export const KaryawanManagement: React.FC<{
           )}
 
           {viewMode === 'add' && (
-            <button 
+            <button
               onClick={() => setViewMode('list')}
               className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-705 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition duration-150 cursor-pointer"
             >
@@ -612,49 +658,45 @@ export const KaryawanManagement: React.FC<{
 
           {/* Interactive Card Table with Filters */}
           <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-5 shadow-xs space-y-4">
-            
+
             {/* Filter Bar */}
             <div className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3 pb-2">
-              
+
               {/* Pill status filter */}
               <div className="flex items-center gap-1.5 overflow-x-auto scroller-hidden">
-                <button 
+                <button
                   onClick={() => setActiveTab('all')}
-                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
-                    activeTab === 'all' 
-                      ? 'bg-indigo-600 text-white' 
-                      : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
-                  }`}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${activeTab === 'all'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
+                    }`}
                 >
                   Semua ({employees.length})
                 </button>
-                <button 
+                <button
                   onClick={() => setActiveTab('Aktif')}
-                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
-                    activeTab === 'Aktif' 
-                      ? 'bg-indigo-600 text-white' 
-                      : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
-                  }`}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${activeTab === 'Aktif'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
+                    }`}
                 >
                   Aktif ({employees.filter(e => e.status === 'Aktif').length})
                 </button>
-                <button 
+                <button
                   onClick={() => setActiveTab('Nonaktif')}
-                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
-                    activeTab === 'Nonaktif' 
-                      ? 'bg-indigo-600 text-white' 
-                      : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
-                  }`}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${activeTab === 'Nonaktif'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
+                    }`}
                 >
                   Nonaktif ({employees.filter(e => e.status === 'Nonaktif').length})
                 </button>
-                <button 
+                <button
                   onClick={() => setActiveTab('Belum login')}
-                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${
-                    activeTab === 'Belum login' 
-                      ? 'bg-indigo-600 text-white' 
-                      : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
-                  }`}
+                  className={`px-3 py-1.5 rounded-full text-[11px] font-bold transition whitespace-nowrap cursor-pointer ${activeTab === 'Belum login'
+                    ? 'bg-indigo-600 text-white'
+                    : 'bg-slate-50 dark:bg-slate-800/40 text-slate-500 hover:text-slate-800 dark:hover:text-slate-250'
+                    }`}
                 >
                   Belum Login ({employees.filter(e => e.status === 'Belum login').length})
                 </button>
@@ -662,7 +704,7 @@ export const KaryawanManagement: React.FC<{
 
               {/* Department, Office and Search query inputs */}
               <div className="flex flex-wrap items-center gap-2">
-                <select 
+                <select
                   value={selectedOffice}
                   onChange={(e) => setSelectedOffice(e.target.value)}
                   className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
@@ -674,7 +716,7 @@ export const KaryawanManagement: React.FC<{
                   <option value="tanpa_kantor">Tanpa Kantor</option>
                 </select>
 
-                <select 
+                <select
                   value={selectedDept}
                   onChange={(e) => setSelectedDept(e.target.value)}
                   className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
@@ -685,7 +727,7 @@ export const KaryawanManagement: React.FC<{
                   ))}
                 </select>
 
-                <select 
+                <select
                   value={selectedEmploymentType}
                   onChange={(e) => setSelectedEmploymentType(e.target.value)}
                   className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
@@ -699,8 +741,8 @@ export const KaryawanManagement: React.FC<{
 
                 <div className="relative flex-1 min-w-[160px]">
                   <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     placeholder="Cari nama / NIK..."
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
@@ -779,8 +821,8 @@ export const KaryawanManagement: React.FC<{
                       const badgeInfo = emp.employmentType ? EMPLOYMENT_BADGE[emp.employmentType] : null;
 
                       return (
-                        <tr 
-                          key={emp.id} 
+                        <tr
+                          key={emp.id}
                           className="hover:bg-slate-50/40 dark:hover:bg-slate-850/10 border-b border-slate-100 dark:border-slate-805/40 transition last:border-b-0"
                         >
                           {/* Karyawan Profile */}
@@ -886,51 +928,51 @@ export const KaryawanManagement: React.FC<{
                             )}
                           </td>
 
-                        {/* Action Buttons */}
-                        <td className="py-3 px-4">
-                          <div className="flex flex-wrap gap-1.5">
-                            <button 
-                              onClick={() => handleOpenEdit(emp)}
-                              className="p-1 px-2.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-705 border border-slate-200 dark:border-slate-750 text-slate-600 dark:text-slate-300 rounded-lg text-[10px] font-semibold transition cursor-pointer flex items-center gap-1"
-                            >
-                              <Edit2 className="w-3 h-3" />
-                              <span>Edit</span>
-                            </button>
-                            
-                            {emp.status !== 'Nonaktif' ? (
-                              <>
-                                <button 
-                                  onClick={() => handleOpenResetPwd(emp)}
-                                  className="p-1 px-2 bg-amber-500 hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-700 text-white rounded-lg text-[10px] font-semibold transition cursor-pointer flex items-center gap-1"
-                                >
-                                  <Lock className="w-3 h-3" />
-                                  <span>Reset pwd</span>
-                                </button>
-                                
-                                <button 
-                                  onClick={() => handleOpenToggleStatus(emp)}
-                                  className="p-1 px-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-semibold transition cursor-pointer flex items-center gap-1 font-sans"
-                                >
-                                  <Ban className="w-3 h-3" />
-                                  <span>Nonaktif</span>
-                                </button>
-                              </>
-                            ) : (
-                              <button 
-                                onClick={() => handleOpenToggleStatus(emp)}
-                                className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition cursor-pointer flex items-center gap-1"
+                          {/* Action Buttons */}
+                          <td className="py-3 px-4">
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                onClick={() => handleOpenEdit(emp)}
+                                className="p-1 px-2.5 bg-slate-50 hover:bg-slate-100 dark:bg-slate-800 dark:hover:bg-slate-705 border border-slate-200 dark:border-slate-750 text-slate-600 dark:text-slate-300 rounded-lg text-[10px] font-semibold transition cursor-pointer flex items-center gap-1"
                               >
-                                <Check className="w-3 h-3" />
-                                <span>Aktifkan</span>
+                                <Edit2 className="w-3 h-3" />
+                                <span>Edit</span>
                               </button>
-                            )}
-                          </div>
-                        </td>
 
-                      </tr>
-                    );
-                  })
-                )}
+                              {emp.status !== 'Nonaktif' ? (
+                                <>
+                                  <button
+                                    onClick={() => handleOpenResetPwd(emp)}
+                                    className="p-1 px-2 bg-amber-500 hover:bg-amber-600 dark:bg-amber-600 dark:hover:bg-amber-700 text-white rounded-lg text-[10px] font-semibold transition cursor-pointer flex items-center gap-1"
+                                  >
+                                    <Lock className="w-3 h-3" />
+                                    <span>Reset pwd</span>
+                                  </button>
+
+                                  <button
+                                    onClick={() => handleOpenToggleStatus(emp)}
+                                    className="p-1 px-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-[10px] font-semibold transition cursor-pointer flex items-center gap-1 font-sans"
+                                  >
+                                    <Ban className="w-3 h-3" />
+                                    <span>Nonaktif</span>
+                                  </button>
+                                </>
+                              ) : (
+                                <button
+                                  onClick={() => handleOpenToggleStatus(emp)}
+                                  className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-[10px] font-bold transition cursor-pointer flex items-center gap-1"
+                                >
+                                  <Check className="w-3 h-3" />
+                                  <span>Aktifkan</span>
+                                </button>
+                              )}
+                            </div>
+                          </td>
+
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
@@ -950,12 +992,12 @@ export const KaryawanManagement: React.FC<{
 
             <div className="space-y-3.5">
               <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 mb-3">Data Pribadi</span>
-              
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nama Lengkap *</label>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={addForm.nama}
                     onChange={(e) => setAddForm({ ...addForm, nama: e.target.value })}
                     required
@@ -965,8 +1007,8 @@ export const KaryawanManagement: React.FC<{
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK Karyawan *</label>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={addForm.nik}
                     onChange={(e) => setAddForm({ ...addForm, nik: e.target.value })}
                     required
@@ -977,11 +1019,24 @@ export const KaryawanManagement: React.FC<{
               </div>
 
               <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK KTP *</label>
+                <input
+                  type="text"
+                  value={addForm.nikKtp}
+                  onChange={(e) => setAddForm({ ...addForm, nikKtp: e.target.value.replace(/[^0-9]/g, '') })}
+                  required
+                  maxLength={16}
+                  placeholder="16 digit NIK KTP"
+                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                />
+              </div>
+
+              <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
                   Email Kantor * <span className="text-[9px] text-slate-400 dark:text-slate-500 font-normal">(dipakai untuk login)</span>
                 </label>
-                <input 
-                  type="email" 
+                <input
+                  type="email"
                   value={addForm.email}
                   onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
                   required
@@ -993,18 +1048,19 @@ export const KaryawanManagement: React.FC<{
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nomor HP</label>
-                  <input 
-                    type="text" 
+                  <input
+                    type="text"
                     value={addForm.hp}
-                    onChange={(e) => setAddForm({ ...addForm, hp: e.target.value })}
-                    placeholder="08xx-xxxx-xxxx"
+                    onChange={(e) => setAddForm({ ...addForm, hp: e.target.value.replace(/[^0-9]/g, '') })}
+                    maxLength={13}
+                    placeholder="08xxxxxxxxxx"
                     className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-801/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
                 </div>
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Masuk *</label>
-                  <input 
-                    type="date" 
+                  <input
+                    type="date"
                     value={addForm.tanggalMasuk}
                     onChange={(e) => setAddForm({ ...addForm, tanggalMasuk: e.target.value })}
                     required
@@ -1014,11 +1070,11 @@ export const KaryawanManagement: React.FC<{
               </div>
 
               <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">Jabatan & Departemen</span>
-              
+
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Departemen *</label>
-                  <select 
+                  <select
                     value={addForm.dept}
                     onChange={(e) => setAddForm({ ...addForm, dept: e.target.value })}
                     required
@@ -1079,7 +1135,7 @@ export const KaryawanManagement: React.FC<{
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tipe Kerja</label>
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Status Kontrak</label>
                   <select
                     value={addForm.employmentType}
                     onChange={(e) => setAddForm({ ...addForm, employmentType: e.target.value })}
@@ -1134,7 +1190,7 @@ export const KaryawanManagement: React.FC<{
 
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Atasan Langsung</label>
-                <select 
+                <select
                   value={addForm.atasan}
                   onChange={(e) => setAddForm({ ...addForm, atasan: e.target.value })}
                   className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-804/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
@@ -1148,17 +1204,13 @@ export const KaryawanManagement: React.FC<{
 
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Batas Klaim Bulanan *</label>
-                <select 
-                  value={addForm.limit}
-                  onChange={(e) => setAddForm({ ...addForm, limit: Number(e.target.value) })}
-                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                >
-                  <option value={1000000}>Rp 1.000.000</option>
-                  <option value={1500000}>Rp 1.500.000</option>
-                  <option value={2000000}>Rp 2.000.000</option>
-                  <option value={3000000}>Rp 3.000.000</option>
-                  <option value={5000000}>Rp 5.000.000</option>
-                </select>
+                <input
+                  type="number"
+                  value={addForm.limit === null ? '' : addForm.limit}
+                  onChange={(e) => setAddForm({ ...addForm, limit: e.target.value === '' ? '' : Number(e.target.value) })}
+                  placeholder="Kosongkan jika tanpa batas"
+                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                />
               </div>
 
             </div>
@@ -1166,7 +1218,7 @@ export const KaryawanManagement: React.FC<{
 
           <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
             <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 mb-3">Role di Sistem</span>
-            
+
             <div className="bg-indigo-50/40 dark:bg-indigo-950/10 border border-indigo-100 dark:border-indigo-900/40 p-3.5 rounded-2xl text-xs text-indigo-900 dark:text-indigo-400 space-y-3">
               <div className="flex items-center gap-2 font-bold leading-tight">
                 <Lock className="w-4 h-4 text-indigo-650 text-indigo-600 shrink-0" />
@@ -1190,14 +1242,14 @@ export const KaryawanManagement: React.FC<{
               <div className="space-y-1 relative">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Password Awal *</label>
                 <div className="relative">
-                  <input 
+                  <input
                     type={addForm.showPassword ? 'text' : 'password'}
                     value={addForm.password}
                     onChange={(e) => setAddForm({ ...addForm, password: e.target.value })}
                     required
                     className="w-full text-xs p-2.5 pr-10 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                   />
-                  <button 
+                  <button
                     type="button"
                     onClick={() => setAddForm({ ...addForm, showPassword: !addForm.showPassword })}
                     className="absolute right-3 top-2.5 text-slate-400 dark:text-slate-500 hover:text-slate-650 transition"
@@ -1216,7 +1268,7 @@ export const KaryawanManagement: React.FC<{
 
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Konfirmasi Password *</label>
-                <input 
+                <input
                   type="password"
                   value={addForm.confirmPassword}
                   onChange={(e) => setAddForm({ ...addForm, confirmPassword: e.target.value })}
@@ -1238,14 +1290,14 @@ export const KaryawanManagement: React.FC<{
               )}
 
               <div className="flex gap-2.5 pt-4">
-                <button 
+                <button
                   type="button"
                   onClick={() => setViewMode('list')}
                   className="flex-1 py-3 border border-slate-200 dark:border-slate-800 dark:hover:bg-slate-805 text-slate-600 dark:text-slate-350 rounded-xl text-xs font-semibold transition cursor-pointer"
                 >
                   Batal
                 </button>
-                <button 
+                <button
                   type="submit"
                   disabled={addForm.password !== addForm.confirmPassword}
                   className="flex-1 py-3 bg-indigo-650 bg-indigo-600 hover:bg-indigo-750 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer disabled:opacity-50"
@@ -1263,9 +1315,9 @@ export const KaryawanManagement: React.FC<{
       {editEmployee && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setEditEmployee(null)} className="fixed inset-0 bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-xs" />
-          
+
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-lg p-6 shadow-2xl relative z-10 overflow-hidden leading-relaxed max-h-[90vh] flex flex-col">
-            
+
             {/* Modal Header */}
             <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800 shrink-0">
               <h3 className="text-sm font-bold text-slate-850 dark:text-slate-100 flex items-center gap-1.5">
@@ -1279,33 +1331,30 @@ export const KaryawanManagement: React.FC<{
 
             {/* Modal tab selectors */}
             <div className="flex items-center gap-1.5 py-3 border-b border-slate-100 dark:border-slate-800 shrink-0">
-              <button 
+              <button
                 onClick={() => setEditModalTab('info')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                  editModalTab === 'info' 
-                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400' 
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${editModalTab === 'info'
+                  ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
+                  }`}
               >
                 Data & Jabatan
               </button>
-              <button 
+              <button
                 onClick={() => setEditModalTab('limit')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                  editModalTab === 'limit' 
-                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400' 
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${editModalTab === 'limit'
+                  ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
+                  }`}
               >
                 Batas Klaim
               </button>
-              <button 
+              <button
                 onClick={() => setEditModalTab('log')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
-                  editModalTab === 'log' 
-                    ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400' 
-                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
-                }`}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${editModalTab === 'log'
+                  ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-300'
+                  }`}
               >
                 Riwayat Aktivitas
               </button>
@@ -1313,23 +1362,23 @@ export const KaryawanManagement: React.FC<{
 
             {/* Modal content body */}
             <div className="py-4 space-y-4 overflow-y-auto flex-1">
-              
+
               {editModalTab === 'info' && (
                 <div className="space-y-3.5">
                   <div className="grid grid-cols-2 gap-3.5">
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nama Lengkap *</label>
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         value={editForm.nama}
-                        onChange={(e) => setEditForm({...editForm, nama: e.target.value})}
+                        onChange={(e) => setEditForm({ ...editForm, nama: e.target.value })}
                         className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK (tidak bisa diubah)</label>
-                      <input 
-                        type="text" 
+                      <input
+                        type="text"
                         value={editForm.nik}
                         disabled
                         className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 focus:outline-none font-mono cursor-not-allowed"
@@ -1338,9 +1387,22 @@ export const KaryawanManagement: React.FC<{
                   </div>
 
                   <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK KTP *</label>
+                    <input
+                      type="text"
+                      value={editForm.nikKtp}
+                      onChange={(e) => setEditForm({ ...editForm, nikKtp: e.target.value.replace(/[^0-9]/g, '') })}
+                      required
+                      maxLength={16}
+                      placeholder="16 digit NIK KTP"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 dark:text-slate-505 block">Email Kantor (tidak bisa diubah)</label>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={editEmployee.email}
                       disabled
                       className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 text-slate-505 dark:text-slate-450 focus:outline-none"
@@ -1350,9 +1412,9 @@ export const KaryawanManagement: React.FC<{
                   <div className="grid grid-cols-2 gap-3.5">
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Departemen</label>
-                      <select 
+                      <select
                         value={editForm.dept}
-                        onChange={(e) => setEditForm({...editForm, dept: e.target.value})}
+                        onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
                         className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       >
                         {departments.map(d => (
@@ -1362,9 +1424,9 @@ export const KaryawanManagement: React.FC<{
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Role/Jabatan *</label>
-                      <select 
+                      <select
                         value={editForm.jabatan}
-                        onChange={(e) => setEditForm({...editForm, jabatan: e.target.value})}
+                        onChange={(e) => setEditForm({ ...editForm, jabatan: e.target.value })}
                         className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       >
                         <option value="employee">Employee</option>
@@ -1380,7 +1442,7 @@ export const KaryawanManagement: React.FC<{
                     <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Kantor Penempatan</label>
                     <select
                       value={editForm.officeId}
-                      onChange={(e) => setEditForm({...editForm, officeId: e.target.value === '' ? '' : Number(e.target.value)})}
+                      onChange={(e) => setEditForm({ ...editForm, officeId: e.target.value === '' ? '' : Number(e.target.value) })}
                       className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="">Belum ditentukan</option>
@@ -1395,7 +1457,9 @@ export const KaryawanManagement: React.FC<{
                     <input
                       type="text"
                       value={editForm.hp}
-                      onChange={(e) => setEditForm({...editForm, hp: e.target.value})}
+                      onChange={(e) => setEditForm({ ...editForm, hp: e.target.value.replace(/[^0-9]/g, '') })}
+                      maxLength={13}
+                      placeholder="08xxxxxxxxxx"
                       className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
@@ -1405,7 +1469,7 @@ export const KaryawanManagement: React.FC<{
                       <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tipe Kerja</label>
                       <select
                         value={editForm.employmentType}
-                        onChange={(e) => setEditForm({...editForm, employmentType: e.target.value})}
+                        onChange={(e) => setEditForm({ ...editForm, employmentType: e.target.value })}
                         className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                       >
                         <option value="">Belum ditentukan</option>
@@ -1420,7 +1484,7 @@ export const KaryawanManagement: React.FC<{
                       <input
                         type="date"
                         value={editForm.joinedDate}
-                        onChange={(e) => setEditForm({...editForm, joinedDate: e.target.value})}
+                        onChange={(e) => setEditForm({ ...editForm, joinedDate: e.target.value })}
                         className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                       />
                     </div>
@@ -1438,7 +1502,7 @@ export const KaryawanManagement: React.FC<{
                           <input
                             type="date"
                             value={editForm.contractStartDate}
-                            onChange={(e) => setEditForm({...editForm, contractStartDate: e.target.value})}
+                            onChange={(e) => setEditForm({ ...editForm, contractStartDate: e.target.value })}
                             className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                           />
                         </div>
@@ -1447,7 +1511,7 @@ export const KaryawanManagement: React.FC<{
                           <input
                             type="date"
                             value={editForm.contractEndDate}
-                            onChange={(e) => setEditForm({...editForm, contractEndDate: e.target.value})}
+                            onChange={(e) => setEditForm({ ...editForm, contractEndDate: e.target.value })}
                             className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                           />
                         </div>
@@ -1466,8 +1530,8 @@ export const KaryawanManagement: React.FC<{
                 <div className="space-y-3.5">
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Batas Klaim Bulanan Aktif saat ini</label>
-                    <input 
-                      type="text" 
+                    <input
+                      type="text"
                       value={formatCurrency(editEmployee.limit)}
                       disabled
                       className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 text-slate-600 dark:text-slate-350 font-semibold font-mono"
@@ -1476,17 +1540,13 @@ export const KaryawanManagement: React.FC<{
 
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Ubah Batas Klaim Baru</label>
-                    <select 
-                      value={editForm.limit}
-                      onChange={(e) => setEditForm({...editForm, limit: Number(e.target.value)})}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold font-mono"
-                    >
-                      <option value={1000000}>Rp 1.000.000</option>
-                      <option value={1500000}>Rp 1.500.000</option>
-                      <option value={2000000}>Rp 2.000.000</option>
-                      <option value={3000000}>Rp 3.000.000</option>
-                      <option value={5000000}>Rp 5.000.000</option>
-                    </select>
+                    <input
+                      type="number"
+                      value={editForm.limit === null ? '' : editForm.limit}
+                      onChange={(e) => setEditForm({ ...editForm, limit: e.target.value === '' ? '' : Number(e.target.value) })}
+                      placeholder="Kosongkan jika tanpa batas"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                    />
                   </div>
 
                   <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/30 rounded-xl text-[11px] text-amber-800 dark:text-amber-400 flex items-start gap-1.5 leading-relaxed">
@@ -1503,9 +1563,8 @@ export const KaryawanManagement: React.FC<{
                   ) : (
                     employeeLogs[editEmployee.id].map((lg, idx) => (
                       <div key={idx} className="flex gap-3 items-start border-b border-slate-100 dark:border-slate-800/70 pb-3 last:border-b-0 last:pb-0">
-                        <span className={`w-2.5 h-2.5 mt-1 rounded-full shrink-0 ${
-                          lg.type === 'success' ? 'bg-emerald-500' : lg.type === 'danger' ? 'bg-rose-500' : 'bg-indigo-500'
-                        }`} />
+                        <span className={`w-2.5 h-2.5 mt-1 rounded-full shrink-0 ${lg.type === 'success' ? 'bg-emerald-500' : lg.type === 'danger' ? 'bg-rose-500' : 'bg-indigo-500'
+                          }`} />
                         <div className="flex-1 text-[11px] leading-relaxed">
                           <p className="text-slate-800 dark:text-slate-250 font-bold">{lg.title}</p>
                           <p className="text-slate-400 mt-0.5">{lg.details}</p>
@@ -1521,14 +1580,14 @@ export const KaryawanManagement: React.FC<{
 
             {/* Modal actions bar */}
             <div className="flex gap-2.5 pt-3 border-t border-slate-150 dark:border-slate-800/80 shrink-0">
-              <button 
+              <button
                 type="button"
                 onClick={() => setEditEmployee(null)}
                 className="flex-1 py-2.5 border border-slate-200 dark:border-slate-800 dark:hover:bg-slate-805 text-slate-600 dark:text-slate-400 rounded-xl text-xs font-semibold hover:bg-slate-50 cursor-pointer"
               >
                 Batal
               </button>
-              <button 
+              <button
                 type="button"
                 onClick={handleSaveEditSubmit}
                 className="flex-1 py-2.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs shadow-sm shadow-indigo-500/10 cursor-pointer flex items-center justify-center gap-1.5"
@@ -1546,7 +1605,7 @@ export const KaryawanManagement: React.FC<{
       {resetPwdEmployee && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setResetPwdEmployee(null)} className="fixed inset-0 bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-sm" />
-          
+
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-md p-6 shadow-2xl relative z-10 leading-relaxed overflow-hidden">
             <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
               <h3 className="text-sm font-bold text-slate-850 dark:text-slate-100 flex items-center gap-1.5">
@@ -1577,29 +1636,29 @@ export const KaryawanManagement: React.FC<{
               <div className="space-y-3">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Password Baru *</label>
-                  <input 
-                    type="password" 
+                  <input
+                    type="password"
                     value={resetPwdForm.password}
-                    onChange={(e) => setResetPwdForm({...resetPwdForm, password: e.target.value})}
+                    onChange={(e) => setResetPwdForm({ ...resetPwdForm, password: e.target.value })}
                     className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none"
                   />
                 </div>
 
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Konfirmasi Password Baru *</label>
-                  <input 
-                    type="password" 
+                  <input
+                    type="password"
                     value={resetPwdForm.confirm}
-                    onChange={(e) => setResetPwdForm({...resetPwdForm, confirm: e.target.value})}
+                    onChange={(e) => setResetPwdForm({ ...resetPwdForm, confirm: e.target.value })}
                     className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none"
                   />
                 </div>
 
                 <div className="space-y-1 font-sans">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Alasan Reset (untuk Audit Log)</label>
-                  <select 
+                  <select
                     value={resetPwdForm.alasan}
-                    onChange={(e) => setResetPwdForm({...resetPwdForm, alasan: e.target.value})}
+                    onChange={(e) => setResetPwdForm({ ...resetPwdForm, alasan: e.target.value })}
                     className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-850 text-slate-800 dark:text-slate-100"
                   >
                     <option value="Karyawan lupa password">Karyawan lupa password</option>
@@ -1614,7 +1673,7 @@ export const KaryawanManagement: React.FC<{
 
             {/* Reset buttons */}
             <div className="flex gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
-              <button 
+              <button
                 type="button"
                 onClick={() => setResetPwdEmployee(null)}
                 disabled={showProgressReset}
@@ -1622,7 +1681,7 @@ export const KaryawanManagement: React.FC<{
               >
                 Batal
               </button>
-              <button 
+              <button
                 type="button"
                 onClick={handleResetPwdSubmit}
                 disabled={showProgressReset}
@@ -1641,7 +1700,7 @@ export const KaryawanManagement: React.FC<{
       {nonaktifEmployee && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
           <div onClick={() => setNonaktifEmployee(null)} className="fixed inset-0 bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-sm" />
-          
+
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-md p-6 shadow-2xl relative z-10 leading-relaxed overflow-hidden">
             <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-805">
               <h3 className="text-sm font-bold text-rose-600 dark:text-rose-450 flex items-center gap-1.5 font-sans">
@@ -1680,9 +1739,9 @@ export const KaryawanManagement: React.FC<{
               <div className="space-y-3 font-sans">
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Alasan Penonaktifan * (wajib untuk Audit)</label>
-                  <select 
+                  <select
                     value={nonaktifForm.alasan}
-                    onChange={(e) => setNonaktifForm({...nonaktifForm, alasan: e.target.value})}
+                    onChange={(e) => setNonaktifForm({ ...nonaktifForm, alasan: e.target.value })}
                     required
                     className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-850 text-slate-800 dark:text-slate-100"
                   >
@@ -1696,10 +1755,10 @@ export const KaryawanManagement: React.FC<{
 
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Catatan Tambahan</label>
-                  <textarea 
+                  <textarea
                     rows={2}
                     value={nonaktifForm.catatan}
-                    onChange={(e) => setNonaktifForm({...nonaktifForm, catatan: e.target.value})}
+                    onChange={(e) => setNonaktifForm({ ...nonaktifForm, catatan: e.target.value })}
                     placeholder="Tulis informasi detail tambahan..."
                     className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none"
                   />
@@ -1710,14 +1769,14 @@ export const KaryawanManagement: React.FC<{
 
             {/* Actions */}
             <div className="flex gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800/80">
-              <button 
+              <button
                 type="button"
                 onClick={() => setNonaktifEmployee(null)}
                 className="flex-1 py-2.5 border border-slate-200 dark:border-slate-800 dark:hover:bg-slate-805 text-slate-600 dark:text-slate-400 rounded-xl text-xs font-semibold hover:bg-slate-50 cursor-pointer"
               >
                 Batal
               </button>
-              <button 
+              <button
                 type="button"
                 onClick={handleNonaktifSubmit}
                 disabled={!nonaktifForm.alasan || showProgressNonaktif}

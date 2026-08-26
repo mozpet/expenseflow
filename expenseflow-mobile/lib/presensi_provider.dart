@@ -537,6 +537,22 @@ class PresensiProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  // ─── Preview hari EFEKTIF pengajuan (badge "Total N hari") ────
+  /// Meminta hitungan backend utk rentang tanggal. Backend melewatkan
+  /// libur nasional/perusahaan/cabang, cuti bersama accepted, cuti pribadi
+  /// yang sudah diajukan, libur mingguan kantor & off-day shift.
+  /// Return null bila gagal (mobile fallback ke hitungan kalender sederhana).
+  Future<Map<String, dynamic>?> fetchLeavePreview({
+    required String startDate,
+    required String endDate,
+  }) async {
+    try {
+      return await ApiService.leavePreview(startDate: startDate, endDate: endDate);
+    } catch (_) {
+      return null;
+    }
+  }
+
   // ─── Ajukan izin/cuti ke API ──────────────────────────────
   /// Kirim pengajuan. Lempar ApiException bila gagal.
   Future<void> submitLeave({

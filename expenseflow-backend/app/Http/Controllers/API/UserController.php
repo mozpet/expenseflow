@@ -39,7 +39,7 @@ class UserController extends Controller
             ->select([
                 'id', 'company_id', 'employee_code', 'name', 'email', 'phone',
                 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit',
-                'is_active', 'employment_type', 'joined_date',
+                'is_active', 'employment_type', 'joined_date', 'identity_number',
                 'contract_start_date', 'contract_end_date', 'created_at', 'updated_at',
             ])
             ->latest()
@@ -62,8 +62,9 @@ class UserController extends Controller
             'password'              => 'required|string|min:8',
             'role'                  => ['required', Rule::in(['employee', 'finance', 'hrd', 'admin', 'super_admin'])],
             'employee_code'         => 'nullable|string|max:50|unique:users,employee_code',
+            'identity_number'       => 'nullable|string|size:16|unique:users,identity_number',
             'department'            => 'nullable|string|max:100',
-            'phone'                 => 'nullable|string|max:20',
+            'phone'                 => 'nullable|string|max:13',
             // Kantor penempatan — harus milik perusahaan yang sama.
             'attendance_setting_id' => [
                 'nullable',
@@ -85,9 +86,10 @@ class UserController extends Controller
             'password'              => Hash::make($validated['password']),
             'role'                  => $validated['role'],
             'department'            => $validated['department'] ?? null,
+            'identity_number'       => $validated['identity_number'] ?? null,
             'phone'                 => $validated['phone'] ?? null,
             'attendance_setting_id' => $validated['attendance_setting_id'] ?? null,
-            'monthly_claim_limit'   => $validated['monthly_claim_limit'] ?? 0,
+            'monthly_claim_limit'   => $validated['monthly_claim_limit'] ?? null,
             'is_active'             => true,
             'employment_type'       => $validated['employment_type'] ?? null,
             'joined_date'           => $validated['joined_date'] ?? null,
@@ -101,6 +103,7 @@ class UserController extends Controller
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
+                'identity_number'
             ]),
         ], 201);
     }
@@ -123,8 +126,9 @@ class UserController extends Controller
             'email'                 => ['sometimes', 'required', 'email', Rule::unique('users')->ignore($user->id)],
             'role'                  => ['sometimes', 'required', Rule::in(['employee', 'finance', 'hrd', 'admin', 'super_admin'])],
             'employee_code'         => ['nullable', 'string', 'max:50', Rule::unique('users')->ignore($user->id)],
+            'identity_number'       => ['nullable', 'string', 'size:16', Rule::unique('users')->ignore($user->id)],
             'department'            => 'nullable|string|max:100',
-            'phone'                 => 'nullable|string|max:20',
+            'phone'                 => 'nullable|string|max:13',
             // Kantor penempatan — harus milik perusahaan karyawan tsb.
             'attendance_setting_id' => [
                 'sometimes',
@@ -154,6 +158,7 @@ class UserController extends Controller
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
+                'identity_number'
             ]),
         ]);
     }

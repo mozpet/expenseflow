@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../widgets/skeleton.dart';
 import 'ajukan_izin_screen.dart';
 
 class IzinCutiScreen extends StatefulWidget {
@@ -106,7 +107,14 @@ class _RiwayatIzinTab extends StatelessWidget {
     final leaves = prov.leaveRequests;
 
     if (prov.loadingLeaves && leaves.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return ShimmerLoading(
+        child: ListView.builder(
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          itemCount: 5,
+          itemBuilder: (_, __) => const SkeletonLeaveCard(),
+        ),
+      );
     }
 
     return RefreshIndicator(
@@ -334,7 +342,17 @@ class _SaldoCutiTab extends StatelessWidget {
             style: TextStyle(fontSize: 12, color: Colors.grey),
           ),
           const SizedBox(height: 20),
-          ...balances.map((b) => _BalanceCard(balance: b)),
+          if (prov.loadingBalance && balances.isEmpty)
+            const ShimmerLoading(
+              child: Column(
+                children: [
+                  SkeletonLeaveCard(),
+                  SkeletonLeaveCard(),
+                ],
+              ),
+            )
+          else
+            ...balances.map((b) => _BalanceCard(balance: b)),
           const SizedBox(height: 24),
           if (prov.leaveResetInfo != null && prov.leaveResetInfo!['leave_reset_date'] != null)
             Container(

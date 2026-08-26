@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/receipt_provider.dart';
 import '../utils.dart';
+import '../widgets/skeleton.dart';
 import 'detail_pengajuan_screen.dart';
 import 'submit_step1_screen.dart';
 
@@ -157,7 +158,14 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
             child: Consumer<ReceiptProvider>(
               builder: (context, prov, _) {
                 if (prov.loading && prov.receipts.isEmpty) {
-                  return const Center(child: CircularProgressIndicator());
+                  return ShimmerLoading(
+                    child: ListView.builder(
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
+                      itemCount: 6,
+                      itemBuilder: (_, __) => const SkeletonListTileItem(),
+                    ),
+                  );
                 }
                 final items = _filtered(prov.receipts);
                 return RefreshIndicator(

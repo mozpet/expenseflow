@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../widgets/skeleton.dart';
 import 'presensi_map_screen.dart';
 
 class PresensiHistoryScreen extends StatefulWidget {
@@ -406,8 +407,15 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
 
           // History ListView
           Expanded(
-            child: presensiProv.loadingHistory
-                ? const Center(child: CircularProgressIndicator())
+            child: presensiProv.loadingHistory && presensiProv.records.isEmpty
+                ? ShimmerLoading(
+                    child: ListView.builder(
+                      physics: const NeverScrollableScrollPhysics(),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      itemCount: 5,
+                      itemBuilder: (_, __) => const SkeletonAttendanceItem(),
+                    ),
+                  )
                 : presensiProv.records.isEmpty
                     ? Center(
                         child: Padding(

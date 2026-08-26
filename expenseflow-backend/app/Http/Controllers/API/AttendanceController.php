@@ -126,6 +126,11 @@ class AttendanceController extends Controller
     // Hanya cuti yang punya kuota. Izin & sakit tidak terbatas, hanya dihitung.
     private const DEFAULT_LEAVE_QUOTA = ['cuti' => 12];
 
+    // ANTI N+1 (2026-08-25): cache hasil workingDatesBetween() per instance controller
+    // (umur = satu request). Saat generate cuti bersama, countWorkingDays() dipanggil
+    // per karyawan dengan rentang & filter identik → query libur/off-map hanya 1x.
+    private array $workingDatesCache = [];
+
     // ─── Helper: kuota cuti default berdasarkan kantor user ────
     //     Kuota diambil dari attendance_settings.default_leave_quota kantor karyawan
     //     (attendance_setting_id); fallback ke kantor pertama perusahaan, lalu ke 12
@@ -223,8 +228,25 @@ class AttendanceController extends Controller
 
     // ─── Helper: hitung jumlah HARI KERJA dalam rentang (inklusif) ────
     //     Lewati weekend & libur. Dipakai saat pengajuan cuti agar kuota adil.
-    private function countWorkingDays(Carbon $start, Carbon $end, ?int $companyId, ?int $officeId = null, ?int $userId = null): int
+    private function countWorkingDays(Carbon $start, Carbon $end, ?int $companyId, ?int $officeId = null, ?int $userId = null, ?User $userModel = null): int
     {
+        return count($this->workingDatesBetween($start, $end, $companyId, $officeId, $userId, $userModel));
+    }
+
+    // ─── Helper: DAFTAR tanggal hari kerja dalam rentang (inklusif) ────
+    //     Versi array dari countWorkingDays() — dipakai untuk memecah pengajuan cuti
+    //     di sekitar tanggal reset kantor (splitLeaveAroundReset) dan hitungan total.
+    //     Shift-aware: off-day mengikuti jadwal shift efektif per tanggal; fallback
+    //     isWeekend() bila user tak diketahui. Libur reguler & cuti bersama yang
+    //     di-accept user juga dilewati. Hasil di-cache per request (anti N+1).
+    private function workingDatesBetween(Carbon $start, Carbon $end, ?int $companyId, ?int $officeId = null, ?int $userId = null, ?User $userModel = null): array
+    {
+        $cacheKey = $start->toDateString() . '|' . $end->toDateString() . '|' . ($companyId ?? 0)
+            . '|' . ($officeId ?? 0) . '|' . ($userId ?? 0);
+        if (isset($this->workingDatesCache[$cacheKey])) {
+            return $this->workingDatesCache[$cacheKey];
+        }
+
         // Ambil daftar libur dalam rentang sekali query (hindari N+1).
         $holidays = Holiday::with('excludedUsers:id')
             ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
@@ -274,14 +296,15 @@ class AttendanceController extends Controller
         // user menjadwalkan Minggu masuk). Jika user tak diketahui → fallback isWeekend().
         $offMap = [];
         if ($userId) {
-            $userModel = User::find($userId);
+            // ANTI N+1: model boleh di-pass dari pemanggil yang sudah prefetch (loop kolektif)
+            $userModel ??= User::find($userId);
             if ($userModel) {
                 $offMap = $this->resolveOffDatesForUser($userModel, $dates);
             }
         }
         $useShiftAware = $userId && ! empty($offMap);
 
-        $count = 0;
+        $working = [];
         foreach ($dates as $ds) {
             $isOff = $useShiftAware
                 ? (bool) ($offMap[$ds] ?? false)
@@ -292,10 +315,91 @@ class AttendanceController extends Controller
             if ($regularHolidays->has($ds) || $acceptedCollectiveLeaves->has($ds)) {
                 continue;
             }
-            $count++;
+            $working[] = $ds;
         }
 
-        return $count;
+        return $this->workingDatesCache[$cacheKey] = $working;
+    }
+
+    // ─── Helper: pecah pengajuan cuti di sekitar TANGGAL RESET kantor ────
+    //     Reset saldo memakai anniversary per kantor (attendance_settings.leave_reset_date),
+    //     BUKAN akhir tahun kalender. Pengajuan yang RENTANGNYA MELINTASI tanggal reset
+    //     valid diperiksa dua alokasi:
+    //       - hari kerja SEBELUM tanggal reset  → dibatasi sisa saldo berjalan (quota - used)
+    //       - hari kerja PADA/SETELAH reset     → dibatasi kuota baru hasil reset
+    //         (= default_leave_quota kantor, karena reset menset used = 0)
+    //     Contoh: reset 10 Juni, sisa saldo 2 hari, ajukan 8–11 Juni (4 hari kerja):
+    //     8–9 butuh 2 ≤ sisa 2 ✓ dan 10–11 butuh 2 ≤ kuota baru ✓ → DIPERBOLEHKAN.
+    //
+    //     Return: ['anniversary' => string|null, 'fresh_quota' => int,
+    //              'days_before' => int, 'days_after' => int]
+    //     anniversary NULL berarti tidak ada reset dalam rentang (atau kantor tanpa
+    //     jadwal reset) → pemanggil memakai days_before = total hari (perilaku lama).
+    //     CATATAN edge: rentang > 1 tahun hanya memakai anniversary PERTAMA (konservatif).
+    //
+    //     $effectiveDates (2026-08-26): pemanggil BOLEH menyuntikkan daftar tanggal
+    //     efektif hasil filter requestLeave (sudah termasuk skip personal leave yang
+    //     diajukan). Tanpa ini days_before/days_after bisa ≠ total_days karena
+    //     workingDatesBetween() tidak mengetahui skip personal leave. approveLeave()
+    //     tetap memanggil tanpa argumen ini (fallback hitung sendiri).
+    private function splitLeaveAroundReset(User $user, Carbon $start, Carbon $end, ?int $companyId, ?array $effectiveDates = null): array
+    {
+        $result = ['anniversary' => null, 'fresh_quota' => 0, 'days_before' => 0, 'days_after' => 0];
+
+        // Kantor karyawan → fallback kantor pertama perusahaan (pola sama dgn myLeaveBalance)
+        $office = $user->office
+            ?? ($companyId ? AttendanceSetting::where('company_id', $companyId)->orderBy('id')->first() : null);
+
+        if ($effectiveDates !== null) {
+            // Daftar efektif disuntik pemanggil — pakai apa adanya (konsisten dgn total_days)
+            $workingDates = $effectiveDates;
+        } else {
+            // Hitung daftar hari kerja sekali (cache membuat pemanggilan ulang murah)
+            $workingDates = $this->workingDatesBetween(
+                $start, $end, $companyId,
+                $office?->id ?? $user->attendance_setting_id,
+                $user->id,
+                $user
+            );
+        }
+
+        if (! $office || empty($office->leave_reset_date)) {
+            $result['days_before'] = count($workingDates);
+            return $result;
+        }
+
+        [$mm, $dd] = explode('-', $office->leave_reset_date);
+
+        // Cari anniversary PERTAMA yang jatuh dalam rentang [start, end]
+        $pivot = null;
+        for ($y = $start->year; $y <= $end->year && ! $pivot; $y++) {
+            try {
+                $candidate = Carbon::create($y, (int) $mm, (int) $dd, 0, 0, 0, 'Asia/Jakarta');
+            } catch (\Throwable) {
+                break; // format MM-DD tak valid → perlakukan tanpa pivot
+            }
+            if ($candidate->between($start->copy()->startOfDay(), $end->copy()->endOfDay())) {
+                $pivot = $candidate;
+            }
+        }
+
+        if (! $pivot) {
+            $result['days_before'] = count($workingDates);
+            return $result;
+        }
+
+        $pivotStr = $pivot->toDateString();
+        foreach ($workingDates as $ds) {
+            if ($ds < $pivotStr) {
+                $result['days_before']++;
+            } else {
+                $result['days_after']++;
+            }
+        }
+        $result['anniversary'] = $pivotStr;
+        $result['fresh_quota'] = (int) $office->default_leave_quota;
+
+        return $result;
     }
 
     // ─── Helper: format menit → "Xj Ym" ──────────────────────────
@@ -507,63 +611,96 @@ class AttendanceController extends Controller
     {
         $actor = $request->user();
 
-        $leave = LeaveRequest::when(
-            $actor->role !== 'super_admin',
-            fn ($q) => $q->where('company_id', $actor->company_id)
-        )->find($id);
+        // FIX BUG #6 (race condition): seluruh cek-saldo + update status + potong saldo
+        // dibungkus DB::transaction + lockForUpdate agar dua approval hampir bersamaan
+        // (HRD ganda) tidak bisa sama-sama lolos cek saldo lalu membuat saldo minus.
+        // Baris leave_request & leave_balance dikunci; transaksi lain yang mengunci
+        // baris yang sama akan menunggu sampai transaksi ini commit.
+        $leave = DB::transaction(function () use ($id, $actor) {
+            $leave = LeaveRequest::when(
+                $actor->role !== 'super_admin',
+                fn ($q) => $q->where('company_id', $actor->company_id)
+            )->lockForUpdate()->find($id);
 
-        if (! $leave) {
-            return response()->json(['message' => 'Permintaan tidak ditemukan.'], 404);
-        }
-
-        if ($leave->status !== 'pending') {
-            return response()->json(['message' => 'Permintaan sudah diproses sebelumnya.'], 403);
-        }
-
-        // Guard: cuti bersama (holiday_id != null) tidak bisa di-approve oleh HRD secara manual.
-        // Karyawan yang memutuskan sendiri via aplikasi mobile (accept/decline).
-        if ($leave->holiday_id !== null) {
-            return response()->json([
-                'message' => 'Cuti bersama tidak bisa disetujui secara manual. Karyawan memilih sendiri via aplikasi mobile.',
-            ], 403);
-        }
-
-        $balance = null;
-        $year    = Carbon::parse($leave->start_date)->year;
-
-        if ($leave->leave_type === 'cuti') {
-            // Cuti: cek & potong kuota (default kantor, sebelumnya hardcoded 12)
-            $balance = LeaveBalance::firstOrCreate(
-                ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'cuti'],
-                [
-                    'company_id' => $leave->company_id,
-                    'quota'      => self::defaultLeaveQuota($leave->company_id, $leave->user_id),
-                    'used'       => 0,
-                ]
-            );
-            $remaining = $balance->quota - $balance->used;
-            if ($leave->total_days > $remaining) {
-                return response()->json([
-                    'message' => "Saldo cuti tidak cukup. Sisa {$remaining} hari, diminta {$leave->total_days} hari.",
-                ], 422);
+            if (! $leave) {
+                abort(404, 'Permintaan tidak ditemukan.');
             }
-        } elseif (in_array($leave->leave_type, ['izin', 'sakit'])) {
-            // Izin & sakit: tidak ada batas kuota, hanya dihitung di kolom 'izin'
-            $balance = LeaveBalance::firstOrCreate(
-                ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'izin'],
-                ['company_id' => $leave->company_id, 'quota' => 0, 'used' => 0]
-            );
-        }
 
-        $leave->update([
-            'status'      => 'approved',
-            'approved_by' => $actor->id,
-            'approved_at' => now(),
-        ]);
+            if ($leave->status !== 'pending') {
+                abort(403, 'Permintaan sudah diproses sebelumnya.');
+            }
 
-        if ($balance) {
-            $balance->increment('used', $leave->total_days);
-        }
+            // Guard: cuti bersama (holiday_id != null) tidak bisa di-approve oleh HRD secara manual.
+            // Karyawan yang memutuskan sendiri via aplikasi mobile (accept/decline).
+            if ($leave->holiday_id !== null) {
+                abort(403, 'Cuti bersama tidak bisa disetujui secara manual. Karyawan memilih sendiri via aplikasi mobile.');
+            }
+
+            $balance = null;
+            $year    = Carbon::parse($leave->start_date)->year;
+
+            if ($leave->leave_type === 'cuti') {
+                // KEBIJAKAN 2026-08-25: saldo cuti karyawan NON-AKTIF secara default —
+                // baris dibuat dengan quota 0 dan hanya HRD yang mengisi kuota manual
+                // via tab Saldo Cuti (setLeaveBalance). Kuota kantor TIDAK lagi otomatis
+                // dipakai di sini (defaultLeaveQuota hanya jadi referensi tampilan HRD).
+                $balance = LeaveBalance::firstOrCreate(
+                    ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'cuti'],
+                    ['company_id' => $leave->company_id, 'quota' => 0, 'used' => 0]
+                );
+                // Kunci baris saldo SEBELUM baca used agar cek & increment atomik
+                $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
+                // Belum pernah diaktifkan HRD (kuota masih 0 & belum ada pemakaian)
+                if ((int) $balance->quota <= 0 && (int) $balance->used === 0) {
+                    abort(422, 'Saldo cuti karyawan ini belum diaktifkan oleh HRD. Aktifkan lewat menu Saldo Cuti dengan mengisi kuota cuti.');
+                }
+                $remaining = $balance->quota - $balance->used;
+
+                // KEBIJAKAN ANNIVERSARY SPLIT (2026-08-25): validasi dua alokasi bila
+                // rentang cuti melintasi tanggal reset kantor — hari sebelum reset vs
+                // sisa saldo berjalan; hari pada/setelah reset vs kuota baru.
+                $targetUser = User::find($leave->user_id);
+                if (! $targetUser) {
+                    abort(404, 'Karyawan tidak ditemukan.');
+                }
+                $split      = $this->splitLeaveAroundReset($targetUser, Carbon::parse($leave->start_date), Carbon::parse($leave->end_date), $leave->company_id);
+                $hasPivot   = $split['anniversary'] !== null;
+                $daysBefore = $hasPivot ? $split['days_before'] : (int) $leave->total_days;
+                $daysAfter  = $hasPivot ? $split['days_after'] : 0;
+
+                if ($daysBefore > $remaining) {
+                    abort(422, $hasPivot
+                        ? "Saldo cuti tidak cukup untuk hari sebelum tanggal reset ({$split['anniversary']}). Sisa {$remaining} hari, dibutuhkan {$daysBefore} hari."
+                        : "Saldo cuti tidak cukup. Sisa {$remaining} hari, diminta {$leave->total_days} hari.");
+                }
+                if ($daysAfter > $split['fresh_quota']) {
+                    abort(422, "Kuota cuti baru setelah tanggal reset ({$split['anniversary']}) tidak cukup. Tersedia {$split['fresh_quota']} hari, dibutuhkan {$daysAfter} hari.");
+                }
+                // CATATAN deduksi: potongan tetap penuh (total_days) ke saldo berjalan.
+                // Bila approval terjadi SEBELUM anniversary dan rentang melintasinya,
+                // sisa saldo bisa tampil minus sesaat — anniversary me-reset used=0
+                // sehingga kondisi akhir konsisten (hari setelah reset memang pakai alokasi baru).
+            } elseif (in_array($leave->leave_type, ['izin', 'sakit'])) {
+                // Izin & sakit: tidak ada batas kuota, hanya dihitung di kolom 'izin'
+                $balance = LeaveBalance::firstOrCreate(
+                    ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'izin'],
+                    ['company_id' => $leave->company_id, 'quota' => 0, 'used' => 0]
+                );
+                $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
+            }
+
+            $leave->update([
+                'status'      => 'approved',
+                'approved_by' => $actor->id,
+                'approved_at' => now(),
+            ]);
+
+            if ($balance) {
+                $balance->increment('used', $leave->total_days);
+            }
+
+            return $leave;
+        });
 
         $this->logActivity(
             $actor->id,
@@ -580,6 +717,24 @@ class AttendanceController extends Controller
             'leave_type'      => $leave->leave_type,
             'status'          => 'approved',
         ], 'leave_request', $leave->id);
+
+        // Kirim push notification FCM ke karyawan (konsisten dengan overtime approval)
+        $employee = User::find($leave->user_id);
+        if ($employee && $employee->fcm_token) {
+            $leaveLabel = match ($leave->leave_type) {
+                'cuti'  => 'Cuti',
+                'izin'  => 'Izin',
+                'sakit' => 'Sakit',
+                'wfh'   => 'WFH',
+                default => ucfirst($leave->leave_type),
+            };
+            $this->sendFcmPush(
+                $employee->fcm_token,
+                "✅ {$leaveLabel} Disetujui",
+                "Permintaan {$leave->leave_type} Anda (#{$leave->id}) telah disetujui oleh HRD.",
+                ['type' => 'leave_approved', 'leave_id' => (string) $leave->id]
+            );
+        }
 
         return response()->json([
             'message' => 'Permintaan berhasil disetujui.',
@@ -639,6 +794,24 @@ class AttendanceController extends Controller
             'status'           => 'rejected',
             'rejection_reason' => $request->rejection_reason,
         ], 'leave_request', $leave->id);
+
+        // Kirim push notification FCM ke karyawan (konsisten dengan overtime rejection)
+        $employee = User::find($leave->user_id);
+        if ($employee && $employee->fcm_token) {
+            $leaveLabel = match ($leave->leave_type) {
+                'cuti'  => 'Cuti',
+                'izin'  => 'Izin',
+                'sakit' => 'Sakit',
+                'wfh'   => 'WFH',
+                default => ucfirst($leave->leave_type),
+            };
+            $this->sendFcmPush(
+                $employee->fcm_token,
+                "❌ {$leaveLabel} Ditolak",
+                "Permintaan {$leave->leave_type} Anda ditolak. Alasan: {$request->rejection_reason}",
+                ['type' => 'leave_rejected', 'leave_id' => (string) $leave->id]
+            );
+        }
 
         return response()->json([
             'message' => 'Permintaan berhasil ditolak.',
@@ -890,16 +1063,33 @@ class AttendanceController extends Controller
             ->get()
             ->groupBy('user_id');
 
-        $balances = collect();
-        $leaveTypes = ['cuti', 'izin'];
-        $defaultQuotas = ['cuti' => self::DEFAULT_LEAVE_QUOTA['cuti'] ?? 12, 'izin' => 0];
-
         // Nama kantor per user (untuk filter kantor di UI Saldo Cuti)
         $officeNames = AttendanceSetting::whereIn('id', $users->pluck('attendance_setting_id')->filter()->unique())
             ->pluck('office_name', 'id');
 
+        $balances = collect();
+        $leaveTypes = ['cuti', 'izin'];
+        // FIX BUG #1 (2026-08-25): TIDAK ada lagi fallback hardcoded 12. Baris saldo yang
+        // belum dibuat ditampilkan sebagai NON-AKTIF (quota 0) sesuai kebijakan karyawan
+        // baru cutinya non-aktif. Kuota default kantor dikirim sebagai REFERENSI
+        // (office_default_quota) agar HRD tahu nilai wajar saat mau mengaktifkan.
+        // Preload kantor sekali untuk menghitung kuota referensi tanpa N+1
+        // (meniru logika defaultLeaveQuota: kantor milik user → fallback kantor pertama).
+        $officesForQuota = AttendanceSetting::whereIn('company_id', $users->pluck('company_id')->filter()->unique())
+            ->orderBy('id')
+            ->get(['id', 'company_id', 'default_leave_quota']);
+        $officeById        = $officesForQuota->keyBy('id');
+        $firstOfficeByCo   = $officesForQuota->groupBy('company_id')->map(fn ($g) => $g->first());
+
         foreach ($users as $user) {
             $userBalances = $existingBalances->get($user->id, collect());
+
+            // Kuota referensi: kantor milik user → fallback kantor pertama perusahaan → 12
+            $refOffice = ($user->attendance_setting_id && $officeById->has($user->attendance_setting_id))
+                ? $officeById->get($user->attendance_setting_id)
+                : ($firstOfficeByCo->get($user->company_id));
+            $officeDefaultQuota = $refOffice?->default_leave_quota
+                ?? self::DEFAULT_LEAVE_QUOTA['cuti'];
 
             foreach ($leaveTypes as $type) {
                 $common = [
@@ -914,17 +1104,21 @@ class AttendanceController extends Controller
 
                 if ($existing = $userBalances->firstWhere('leave_type', $type)) {
                     $balances->push($common + [
-                        'id'        => $existing->id,
-                        'quota'     => $existing->quota,
-                        'used'      => $existing->used,
-                        'remaining' => $existing->quota - $existing->used,
+                        'id'                   => $existing->id,
+                        'quota'                => $existing->quota,
+                        'used'                 => $existing->used,
+                        'remaining'            => $existing->quota - $existing->used,
+                        'active'               => (int) $existing->quota > 0 || (int) $existing->used > 0,
+                        'office_default_quota' => $officeDefaultQuota,
                     ]);
                 } else {
                     $balances->push($common + [
-                        'id'        => null,
-                        'quota'     => $defaultQuotas[$type],
-                        'used'      => 0,
-                        'remaining' => $defaultQuotas[$type],
+                        'id'                   => null,
+                        'quota'                => 0, // belum diaktifkan HRD
+                        'used'                 => 0,
+                        'remaining'            => 0,
+                        'active'               => false,
+                        'office_default_quota' => $officeDefaultQuota,
                     ]);
                 }
             }
@@ -1071,17 +1265,38 @@ class AttendanceController extends Controller
         }
 
         // Data attendance nyata (dari DB)
-        $attCounts = Attendance::where('user_id', $target->id)
+        // Ambil tanggal-tanggal presensi raw (tidak diagregasi) agar bisa difilter per hari kerja.
+        // Ini menghindari bug undercount absent: karyawan masuk di hari libur nasional sebelumnya
+        // membuat $attendanceDays naik sedangkan $workingDays tidak — absent jadi minus/undercount.
+        $attendanceRows = Attendance::where('user_id', $target->id)
             ->whereBetween('date', [$rangeStart, $countUntil])
-            ->select('status', DB::raw('COUNT(*) as total'))
-            ->groupBy('status')->pluck('total', 'status');
+            ->select('date', 'status')
+            ->get();
 
-        $typeCounts = Attendance::where('user_id', $target->id)
-            ->whereBetween('date', [$rangeStart, $rangeEnd])
-            ->select('check_in_type', DB::raw('COUNT(*) as total'))
-            ->groupBy('check_in_type')->pluck('total', 'check_in_type');
+        // Breakdown per status (untuk response present/late/early_leave) — semua presensi, termasuk
+        // yang jatuh di hari libur (agar angka ini tidak berubah dari perilaku lama).
+        $attCountsBreakdown = ['present' => 0, 'late' => 0, 'early_leave' => 0];
+        foreach ($attendanceRows as $row) {
+            $s = $row->status ?? '';
+            if (isset($attCountsBreakdown[$s])) {
+                $attCountsBreakdown[$s]++;
+            }
+        }
 
-        $attendanceDays = (int) array_sum($attCounts->toArray());
+        // total_check_in = jumlah hari hadir UNIK yang jatuh pada HARI KERJA (bukan libur/off-day).
+        // "distinct" tanggal diperlukan agar data kotor (dua baris di tanggal sama) tidak dobel.
+        $attendanceDays = $attendanceRows
+            ->pluck('date')
+            ->unique()
+            ->filter(function ($dateRaw) use ($regularHolidaySet, $acceptedCollectiveLeavesSet, $offMap) {
+                $ds = Carbon::parse($dateRaw)->format('Y-m-d');
+                $isHolidayForUser = isset($regularHolidaySet[$ds]) || isset($acceptedCollectiveLeavesSet[$ds]);
+                $isOffDay = array_key_exists($ds, $offMap)
+                    ? (bool) $offMap[$ds]
+                    : Carbon::parse($ds)->isWeekend();
+                return ! $isOffDay && ! $isHolidayForUser;
+            })
+            ->count();
 
         // Hari-hari leave yang disetujui (per tanggal unik agar tidak dobel)
         $leaveRequests = LeaveRequest::where('user_id', $target->id)
@@ -1118,13 +1333,20 @@ class AttendanceController extends Controller
             ->whereBetween('date', [$rangeStart, $rangeEnd])
             ->sum('overtime_minutes');
 
+        // Breakdown check-in by type (onsite/wfh/field) — tidak perlu difilter hari kerja,
+        // hanya untuk info statistik jenis presensi.
+        $typeCounts = Attendance::where('user_id', $target->id)
+            ->whereBetween('date', [$rangeStart, $rangeEnd])
+            ->select('check_in_type', DB::raw('COUNT(*) as total'))
+            ->groupBy('check_in_type')->pluck('total', 'check_in_type');
+
         return response()->json([
             'user'   => ['id' => $target->id, 'name' => $target->name, 'department' => $target->department],
             'period' => ['month' => (int) $month, 'year' => (int) $year],
             'attendance' => [
-                'present'        => (int) ($attCounts['present'] ?? 0),
-                'late'           => (int) ($attCounts['late'] ?? 0),
-                'early_leave'    => (int) ($attCounts['early_leave'] ?? 0),
+                'present'        => (int) ($attCountsBreakdown['present'] ?? 0),
+                'late'           => (int) ($attCountsBreakdown['late'] ?? 0),
+                'early_leave'    => (int) ($attCountsBreakdown['early_leave'] ?? 0),
                 'absent'         => $absentDays,
                 'total_check_in' => $attendanceDays,
                 'working_days'   => $workingDays,
@@ -1707,9 +1929,47 @@ class AttendanceController extends Controller
     }
 
     // 13. updateSettings() — ubah kantor
+    //
+    // PENGAMAN PERUBAHAN MENDADAK (2026-08-26, lihat doc/rules.md):
+    // Bila HRD mengubah FIELD BERBAHAYA (jam kerja, GPS/radius, toleransi,
+    // auto-checkout, lembur), request WAJIB menyertakan confirm_dangerous = "SIMPAN".
+    // Frontend wajib menampilkan dialog peringatan + input ketik "SIMPAN" sebelum
+    // mengirim ulang payload. Tujuan: mencegah salah tekan/salah paham dampak —
+    // kerusakan data hari ini sendiri sudah dicegah oleh snapshot check-in.
     public function updateSettings(Request $request, AttendanceSetting $attendanceSetting): JsonResponse
     {
         $validated = $request->validate($this->settingRules(forUpdate: true), $this->settingMessages());
+
+        // Buang nilai null agar field yang tidak dikirim tidak ikut ter-update.
+        // Khusus leave_reset_date: null eksplisit berarti HRD menghapus jadwal reset otomatis.
+        $data = array_filter($validated, fn ($v) => $v !== null);
+        if (array_key_exists('leave_reset_date', $validated) && $validated['leave_reset_date'] === null) {
+            $data['leave_reset_date']      = null;
+            $data['last_leave_reset_on']   = null; // reset ulang riwayat agar jadwal baru bisa diproses
+        }
+
+        // ─── Deteksi perubahan field berbahaya & gerbang konfirmasi ───
+        $changedDangerous = [];
+        foreach ($this->dangerousSettingFields() as $field) {
+            if (! array_key_exists($field, $data)) {
+                continue;
+            }
+            // Pakai accessor ter-cast agar array/bool/angka dibandingkan konsisten
+            if (! $this->settingValueEquals($attendanceSetting->{$field}, $data[$field])) {
+                $changedDangerous[] = $field;
+            }
+        }
+
+        if ($changedDangerous && $request->input('confirm_dangerous') !== 'SIMPAN') {
+            return response()->json([
+                'message' => 'Perubahan aturan presensi terdeteksi pada: ' . implode(', ', $changedDangerous) . '. ' .
+                    'Perubahan ini mempengaruhi karyawan yang BELUM check-in hari ini dan seluruh presensi esok hari. ' .
+                    "Kirim ulang dengan confirm_dangerous = \"SIMPAN\" untuk melanjutkan.",
+                'requires_confirmation'   => true,
+                'confirmation_phrase'     => 'SIMPAN',
+                'dangerous_changed_fields' => $changedDangerous,
+            ], 422);
+        }
 
         // Aturan Emas (lihat doc/rules.md): grace period HARUS lebih besar dari reminder,
         // agar karyawan sempat menerima pengingat sebelum sistem menutup presensinya.
@@ -1725,28 +1985,119 @@ class AttendanceController extends Controller
             ], 422);
         }
 
-        // Buang nilai null agar field yang tidak dikirim tidak ikut ter-update.
-        // Khusus leave_reset_date: null eksplisit berarti HRD menghapus jadwal reset otomatis.
-        $data = array_filter($validated, fn ($v) => $v !== null);
-        if (array_key_exists('leave_reset_date', $validated) && $validated['leave_reset_date'] === null) {
-            $data['leave_reset_date']      = null;
-            $data['last_leave_reset_on']   = null; // reset ulang riwayat agar jadwal baru bisa diproses
-        }
         $attendanceSetting->update($data);
 
         $this->logActivity(
             $request->user()->id,
             $attendanceSetting->company_id,
             'attendance_setting_updated',
-            "Update kantor {$attendanceSetting->office_name}",
+            "Update kantor {$attendanceSetting->office_name}"
+                . ($changedDangerous ? ' [aturan presensi: ' . implode(', ', $changedDangerous) . ']' : ''),
             'attendance_setting',
             $attendanceSetting->id
         );
 
+        // Notifikasi ke semua HRD/admin/super_admin perusahaan agar sadar ada perubahan aturan
+        $hrds = DB::table('users')
+            ->where('company_id', $attendanceSetting->company_id)
+            ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+            ->where('is_active', true)
+            ->pluck('id');
+
+        $pesanEfektif = $changedDangerous
+            ? ' Berlaku bagi presensi berikutnya (presensi yang sudah check-in tetap memakai aturan saat check-in).'
+            : '';
+        foreach ($hrds as $hrdId) {
+            $this->notifyUser($hrdId, 'attendance_setting_updated', [
+                'message'      => "Pengaturan kantor '{$attendanceSetting->office_name}' telah diubah oleh {$request->user()->name}.{$pesanEfektif}",
+                'office_name'  => $attendanceSetting->office_name,
+                'office_id'    => $attendanceSetting->id,
+                'updated_by'   => $request->user()->name,
+                'dangerous_changed_fields' => $changedDangerous,
+            ], 'attendance_setting', $attendanceSetting->id);
+        }
+
         return response()->json([
-            'message' => 'Pengaturan kantor berhasil diperbarui.',
-            'setting' => $attendanceSetting->fresh(),
+            'message' => $changedDangerous
+                ? 'Pengaturan kantor berhasil diperbarui. Perubahan aturan presensi (' . implode(', ', $changedDangerous) . ') berlaku bagi karyawan yang belum check-in & seluruh presensi esok hari.'
+                : 'Pengaturan kantor berhasil diperbarui.',
+            'setting'                  => $attendanceSetting->fresh(),
+            'dangerous_changed_fields' => $changedDangerous,
         ]);
+    }
+
+    // ─── Daftar field pengaturan yang berdampak langsung ke presensi berjalan ────
+    private function dangerousSettingFields(): array
+    {
+        return [
+            'work_start_time',
+            'work_end_time',
+            'work_days',
+            'custom_schedules',
+            'office_latitude',
+            'office_longitude',
+            'radius_meters',
+            'late_tolerance_minutes',
+            'early_leave_tolerance_minutes',
+            'overtime_enabled',
+            'min_overtime_minutes',
+            'checkout_reminder_minutes',
+            'auto_checkout_grace_minutes',
+        ];
+    }
+
+    // ─── Bandingkan nilai lama vs baru secara normalisasi ────
+    // Jam '08:00' vs '08:00:00' dianggap sama; angka dibandingkan numerik;
+    // array (work_days / custom_schedules) dibandingkan setelah dinormalisasi.
+    private function settingValueEquals(mixed $old, mixed $new): bool
+    {
+        // Normalisasi jam (H:i atau H:i:s)
+        $asTime = function ($v): ?string {
+            if ($v === null || ! is_string($v) || ! preg_match('/^\d{1,2}:\d{2}(:\d{2})?$/', $v)) {
+                return null;
+            }
+            return Carbon::parse($v)->format('H:i');
+        };
+
+        if (($t = $asTime($old)) !== null && ($t2 = $asTime($new)) !== null) {
+            return $t === $t2;
+        }
+
+        // Angka
+        if (is_numeric($old) && is_numeric($new)) {
+            return (int) $old === (int) $new || (float) $old === (float) $new;
+        }
+
+        // Boolean (termasuk campuran bool vs 0/1)
+        if (is_bool($old) || is_bool($new)) {
+            return (bool) $old === (bool) $new;
+        }
+
+        // Array (work_days, custom_schedules)
+        if (is_array($old) || is_array($new)) {
+            $normalize = function ($arr) use (&$normalize) {
+                if (! is_array($arr)) {
+                    // Normalisasi string berformat jam ke H:i agar '08:00' == '08:00:00'
+                    return is_string($arr) && preg_match('/^\d{1,2}:\d{2}(:\d{2})?$/', $arr)
+                        ? Carbon::parse($arr)->format('H:i')
+                        : $arr;
+                }
+                $out = [];
+                foreach ($arr as $k => $v) {
+                    $out[$k] = $normalize($v);
+                }
+                if (array_is_list($out)) {
+                    sort($out);
+                } else {
+                    ksort($out);
+                }
+                return $out;
+            };
+            return json_encode($normalize(is_array($old) ? $old : [$old]))
+                === json_encode($normalize(is_array($new) ? $new : [$new]));
+        }
+
+        return (string) $old === (string) $new;
     }
 
     // 14. destroySettings() — hapus kantor
@@ -2279,14 +2630,12 @@ class AttendanceController extends Controller
         }
 
         // Saldo cuti tahun ini
+        // KEBIJAKAN 2026-08-25: auto-create selalu NON-AKTIF (quota 0) — banner cuti
+        // bersama otomatis menolak (policy block) sampai HRD mengisi kuota manual.
         $year    = (int) now('Asia/Jakarta')->year;
         $balance = \App\Models\LeaveBalance::firstOrCreate(
             ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
-            [
-                'company_id' => $companyId,
-                'quota'      => self::defaultLeaveQuota($companyId, $user->id),
-                'used'       => 0,
-            ]
+            ['company_id' => $companyId, 'quota' => 0, 'used' => 0]
         );
         $remaining = $balance->quota - $balance->used;
 
@@ -2495,114 +2844,158 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Batas waktu memilih telah lewat.'], 422);
         }
 
-        // Cari leave_request milik karyawan ini untuk cuti bersama ini
-        $leave = \App\Models\LeaveRequest::where('user_id', $user->id)
-            ->where('holiday_id', $holiday->id)
-            ->first();
+        // FIX BUG #6 (race condition): seluruh baca-status → cek saldo → update →
+        // potong/kembalikan saldo dibungkus SATU transaksi dengan lockForUpdate pada
+        // baris leave_request & leave_balance. Dua respons paralel (dobel klik / dua tab)
+        // akan diserialisasi: respons kedua membaca status TERBARU setelah lock dilepas,
+        // sehingga tidak ada dobel potong (saldo minus) maupun dobel kembalikan.
+        $result = DB::transaction(function () use ($user, $holiday, $validated) {
+            // Kunci baris leave_request milik karyawan ini utk cuti bersama tsb
+            $leave = \App\Models\LeaveRequest::where('user_id', $user->id)
+                ->where('holiday_id', $holiday->id)
+                ->lockForUpdate()
+                ->first();
 
-        // Auto-create leave_request bila belum ada (mis. user dibuat/assigned cabang
-        // SETELAH cuti bersama di-generate, atau generate ter-skip krn kondisi tertentu).
-        // Karyawan tetap boleh memilih ikut/tidak tanpa harus menunggu re-generate HRD.
-        if (! $leave) {
-            $totalDays = $this->countWorkingDays(
-                Carbon::parse($holiday->date),
-                Carbon::parse($holiday->date),
-                $holiday->company_id,
-                $holiday->attendance_setting_id,
-                $user->id
+            // Auto-create leave_request bila belum ada (mis. user dibuat/assigned cabang
+            // SETELAH cuti bersama di-generate, atau generate ter-skip krn kondisi tertentu).
+            // Karyawan tetap boleh memilih ikut/tidak tanpa harus menunggu re-generate HRD.
+            if (! $leave) {
+                $totalDays = $this->countWorkingDays(
+                    Carbon::parse($holiday->date),
+                    Carbon::parse($holiday->date),
+                    $holiday->company_id,
+                    $holiday->attendance_setting_id,
+                    $user->id
+                );
+
+                $leave = \App\Models\LeaveRequest::create([
+                    'user_id'           => $user->id,
+                    'company_id'        => $holiday->company_id,
+                    'holiday_id'        => $holiday->id,
+                    'leave_type'        => 'cuti',
+                    'start_date'        => $holiday->date->toDateString(),
+                    'end_date'          => $holiday->date->toDateString(),
+                    'total_days'        => $totalDays,
+                    'reason'            => "Cuti bersama: {$holiday->name}",
+                    'status'            => 'pending',
+                    'collective_status' => 'pending',
+                ]);
+            }
+
+            // Jika pilihan sama, tidak perlu proses ulang (dicek DI DALAM lock agar
+            // respons duplikat paralel juga tertangkap)
+            if ($leave->collective_status === $validated['response']) {
+                return ['kind' => 'same', 'leave' => $leave];
+            }
+
+            $year = Carbon::parse($leave->start_date)->year;
+            // KEBIJAKAN 2026-08-25: auto-create saldo cuti selalu NON-AKTIF (quota 0);
+            // aktivasi hanya lewat HRD di tab Saldo Cuti.
+            $balance = \App\Models\LeaveBalance::firstOrCreate(
+                ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
+                ['company_id' => $user->company_id, 'quota' => 0, 'used' => 0]
             );
+            // Kunci baris saldo SEBELUM baca used agar cek & mutasi atomik
+            $balance = \App\Models\LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
 
-            $leave = \App\Models\LeaveRequest::create([
-                'user_id'           => $user->id,
-                'company_id'        => $holiday->company_id,
-                'holiday_id'        => $holiday->id,
-                'leave_type'        => 'cuti',
-                'start_date'        => $holiday->date->toDateString(),
-                'end_date'          => $holiday->date->toDateString(),
-                'total_days'        => $totalDays,
-                'reason'            => "Cuti bersama: {$holiday->name}",
-                'status'            => 'pending',
-                'collective_status' => 'pending',
+            if ($validated['response'] === 'accepted') {
+                $remaining = $balance->quota - $balance->used;
+
+                // Sesuai keputusan 2026-08-20: kebijakan saldo cuti bersama SELALU 'block'.
+                // Jika saldo cuti tidak cukup → user TIDAK bisa ikut cuti bersama.
+                if ($remaining < $leave->total_days) {
+                    return [
+                        'kind'          => 'insufficient',
+                        'leave'         => $leave,
+                        'remaining'     => $remaining,
+                        'required'      => $leave->total_days,
+                        // Bedakan "belum pernah diaktifkan HRD" dari "saldo habis"
+                        'not_activated' => (int) $balance->quota <= 0 && (int) $balance->used === 0,
+                    ];
+                }
+
+                // Jika sebelumnya sudah accepted (ganti dari declined → accepted), jangan double potong
+                $wasPreviouslyAccepted = $leave->collective_status === 'accepted';
+
+                $leave->update([
+                    'collective_status' => 'accepted',
+                    'status'            => 'approved',
+                    'approved_by'       => null,
+                    'approved_at'       => now(),
+                ]);
+
+                // Potong saldo cuti (selalu potong kecuali sudah pernah dipotong sebelumnya)
+                if (! $wasPreviouslyAccepted) {
+                    $balance->increment('used', $leave->total_days);
+                    $balance->refresh();
+                }
+
+                return [
+                    'kind'      => 'accepted',
+                    'leave'     => $leave,
+                    'remaining' => $balance->quota - $balance->used,
+                ];
+            }
+
+            // Response = 'declined'
+            $wasAccepted = $leave->collective_status === 'accepted';
+
+            $leave->update([
+                'collective_status' => 'declined',
+                'status'            => 'rejected',
             ]);
-        }
+
+            // Kembalikan saldo jika sebelumnya sudah accepted
+            if ($wasAccepted) {
+                $balance->decrement('used', $leave->total_days);
+                $balance->refresh();
+            }
+
+            return [
+                'kind'      => 'declined',
+                'leave'     => $leave,
+                'remaining' => $balance->quota - $balance->used,
+            ];
+        });
+
+        $leave = $result['leave'];
 
         // Jika pilihan sama, tidak perlu proses ulang
-        if ($leave->collective_status === $validated['response']) {
+        if ($result['kind'] === 'same') {
             return response()->json(['message' => 'Pilihan Anda sudah tersimpan.', 'collective_status' => $leave->collective_status]);
         }
 
-        $year    = Carbon::parse($leave->start_date)->year;
-        $balance = \App\Models\LeaveBalance::firstOrCreate(
-            ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
-            [
-                'company_id' => $user->company_id,
-                'quota'      => self::defaultLeaveQuota($user->company_id, $user->id),
-                'used'       => 0,
-            ]
-        );
+        if ($result['kind'] === 'insufficient') {
+            return response()->json([
+                'message'        => ! empty($result['not_activated'])
+                    ? "Saldo cuti Anda belum diaktifkan oleh HRD. Hubungi HRD untuk mengaktifkan saldo cuti terlebih dahulu."
+                    : "Saldo cuti Anda tidak cukup. Sisa {$result['remaining']} hari, dibutuhkan {$result['required']} hari. Hubungi HRD untuk informasi lebih lanjut.",
+                'remaining'      => $result['remaining'],
+                'required'       => $result['required'],
+                'policy'         => 'block',
+            ], 422);
+        }
 
-        if ($validated['response'] === 'accepted') {
-            $remaining = $balance->quota - $balance->used;
-
-            // Sesuai keputusan 2026-08-20: kebijakan saldo cuti bersama SELALU 'block'.
-            // Jika saldo cuti tidak cukup → user TIDAK bisa ikut cuti bersama.
-            if ($remaining < $leave->total_days) {
-                return response()->json([
-                    'message'        => "Saldo cuti Anda tidak cukup. Sisa {$remaining} hari, dibutuhkan {$leave->total_days} hari. Hubungi HRD untuk informasi lebih lanjut.",
-                    'remaining'      => $remaining,
-                    'required'       => $leave->total_days,
-                    'policy'         => 'block',
-                ], 422);
-            }
-
-            // Jika sebelumnya sudah accepted (ganti dari declined → accepted), jangan double potong
-            $wasPreviouslyAccepted = $leave->collective_status === 'accepted';
-
-            $leave->update([
-                'collective_status' => 'accepted',
-                'status'            => 'approved',
-                'approved_by'       => null,
-                'approved_at'       => now(),
-            ]);
-
-            // Potong saldo cuti (selalu potong kecuali sudah pernah dipotong sebelumnya)
-            if (! $wasPreviouslyAccepted) {
-                $balance->increment('used', $leave->total_days);
-            }
-
+        if ($result['kind'] === 'accepted') {
             $this->logActivity($user->id, $user->company_id, 'leave_approved',
                 "Ikut cuti bersama #{$holiday->id} {$holiday->name}", 'leave_request', $leave->id);
 
-            $remaining = $balance->fresh()->quota - $balance->fresh()->used;
             return response()->json([
                 'message'           => "Anda terdaftar ikut cuti bersama \"{$holiday->name}\".",
                 'collective_status' => 'accepted',
-                'remaining_quota'   => $remaining,
+                'remaining_quota'   => $result['remaining'],
                 'policy'            => 'block',
             ]);
         }
 
-        // Response = 'declined'
-        $wasAccepted = $leave->collective_status === 'accepted';
-
-        $leave->update([
-            'collective_status' => 'declined',
-            'status'            => 'rejected',
-        ]);
-
-        // Kembalikan saldo jika sebelumnya sudah accepted
-        if ($wasAccepted) {
-            $balance->decrement('used', $leave->total_days);
-        }
-
+        // kind = 'declined'
         $this->logActivity($user->id, $user->company_id, 'leave_rejected',
             "Tidak ikut cuti bersama #{$holiday->id} {$holiday->name}", 'leave_request', $leave->id);
 
-        $remaining = $balance->fresh()->quota - $balance->fresh()->used;
         return response()->json([
             'message'           => "Pilihan Anda tersimpan. Anda tidak ikut cuti bersama \"{$holiday->name}\".",
             'collective_status' => 'declined',
-            'remaining_quota'   => $remaining,
+            'remaining_quota'   => $result['remaining'],
         ]);
     }
 
@@ -2697,6 +3090,13 @@ class AttendanceController extends Controller
 
         $now = now();
         $rows = [];
+
+        // ANTI N+1 (2026-08-25): prefetch model User penuh SEKALI untuk seluruh loop.
+        // Sebelumnya countWorkingDays() memanggil User::find() per karyawan + query libur
+        // identik per karyawan. Kini: 1x prefetch users + cache workingDates per request
+        // → query libur & off-map hanya jalan untuk kombinasi unik, bukan per karyawan.
+        $fullUsers = User::whereIn('id', $users->pluck('id'))->get()->keyBy('id');
+
         foreach ($users as $u) {
             if ($existingUserIds->has($u->id)) {
                 continue; // sudah punya leave_request cuti bersama ini
@@ -2707,7 +3107,8 @@ class AttendanceController extends Controller
                 Carbon::parse($date),
                 $companyId,
                 $holiday->attendance_setting_id,
-                $u->id
+                $u->id,
+                $fullUsers->get($u->id)
             );
 
             if ($userDays < 1) {
@@ -2897,13 +3298,11 @@ class AttendanceController extends Controller
             }
 
             $year    = Carbon::parse($leave->start_date)->year;
+            // Fallback create NON-AKTIF (quota 0) — jangan pernah auto-aktifkan saldo.
+            // Normalnya baris sudah ada karena cuti-nya approved (saldo sempat dipotong).
             $balance = \App\Models\LeaveBalance::firstOrCreate(
                 ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'cuti'],
-                [
-                    'company_id' => $companyId,
-                    'quota'      => self::defaultLeaveQuota($companyId, $leave->user_id),
-                    'used'       => 0,
-                ]
+                ['company_id' => $companyId, 'quota' => 0, 'used' => 0]
             );
             $balance->increment('used', $deduct);
 
@@ -3032,6 +3431,10 @@ class AttendanceController extends Controller
         // Berjalan jika: (1) user memiliki radius_enabled=true & bukan hari WFH murni, ATAU (2) hari ini adalah shift Lapangan terjadwal (is_field = true)
         $needRadiusCheck = $isFieldScheduled || ($user->hasRadiusEnabled() && ! $isWfhScheduled);
 
+        // Kantor acuan presensi hari ini — dipakai untuk validasi radius & snapshot.
+        // Default: kantor penempatan karyawan; ditimpa kantor TERDEKAT bila radius check berjalan.
+        $acuanOffice = $jadwalHariIni['office'];
+
         if ($needRadiusCheck) {
             $offices = AttendanceSetting::where('company_id', $user->company_id)->get();
 
@@ -3058,6 +3461,9 @@ class AttendanceController extends Controller
 
             $distanceMeters = (int) round($minDist);
 
+            // Kantor acuan = kantor terdekat (acuan radius check-in & checkout)
+            $acuanOffice = $nearest;
+
             if ($minDist > $nearest->radius_meters) {
                 return response()->json([
                     'message'          => "Anda berada di luar area kerja. Jarak Anda {$distanceMeters} meter, batas radius {$nearest->radius_meters} meter dari {$nearest->office_name}.",
@@ -3074,6 +3480,14 @@ class AttendanceController extends Controller
         $jadwalHariIni = $this->getWorkSchedule($user, $today);
         $status        = $this->determineStatus($user, now(), $today);
 
+        // Jam pulang efektif hari ini (shift aktif; fallback jam pulang kantor pada
+        // hari libur shift). Dipakai untuk snapshot & jadwal notifikasi Flutter.
+        $office    = $jadwalHariIni['office'];
+        $jamPulang = $jadwalHariIni['work_end_time'];
+        if ($office && ! $jamPulang && ! empty($office->work_end_time)) {
+            $jamPulang = $office->work_end_time;
+        }
+
         $attendance = Attendance::updateOrCreate(
             ['user_id' => $user->id, 'date' => $today],
             [
@@ -3084,26 +3498,18 @@ class AttendanceController extends Controller
                 'check_in_distance_meters' => $distanceMeters,
                 'check_in_type'            => $checkInType,
                 'status'                   => $status,
-            ]
+                // SNAPSHOT: bekukan aturan yang berlaku saat check-in (jam kerja,
+                // kantor acuan, lembur, toleransi, auto-checkout). Perubahan setting
+                // HRD di siang hari tidak lagi mempengaruhi record ini — lihat
+                // doc/rules.md "Snapshot Acuan Jam Kerja".
+            ] + Attendance::make()->buildSnapshot($jadwalHariIni, $jamPulang, $acuanOffice)
         );
 
         $this->logActivity($user->id, $user->company_id, 'attendance_check_in', "Check-in ({$checkInType}) status {$status}", 'attendance', $attendance->id);
 
         // Hitung jadwal reminder & auto-checkout untuk Flutter (scheduling notif lokal).
-        // Gunakan jam pulang dari shift aktif jika ada; fallback ke kantor.
         $reminderAt        = null;
         $autoCheckoutAt    = null;
-        $office            = $jadwalHariIni['office'];
-        $jamPulang         = $jadwalHariIni['work_end_time'];
-
-        // Shift menandai hari ini LIBUR (is_off → work_end_time null)? Auto-checkout tetap
-        // AKTIF memakai jam pulang kantor — konsisten dengan AutoCheckoutCommand yang
-        // menutup presensi berdasarkan jam pulang kantor pada hari libur shift.
-        // Tanpa ini, karyawan yang masuk di hari libur shift tidak menerima notifikasi
-        // lokal reminder/auto-checkout, tapi sistem tetap menutup presensinya.
-        if ($office && ! $jamPulang && ! empty($office->work_end_time)) {
-            $jamPulang = $office->work_end_time;
-        }
 
         if ($office && $jamPulang) {
             $graceMinutes    = (int) ($office->auto_checkout_grace_minutes ?? 60);
@@ -3184,20 +3590,97 @@ class AttendanceController extends Controller
 
         $checkOutTime = now();
 
+        // ─── Validasi GPS radius checkout (konsisten dengan check-in) ────────
+        // Jika karyawan check-in sebagai 'onsite' atau 'field' (bukan WFH),
+        // checkout juga harus berada dalam radius kantor terdekat.
+        // Device binding sudah mengurangi risiko, tetapi tanpa validasi ini
+        // karyawan bisa checkout dari lokasi mana saja.
+        //
+        // SNAPSHOT (2026-08-26): bila record punya snapshot, validasi memakai
+        // koordinat & radius kantor acuan SAAT CHECK-IN — HRD yang memindah/
+        // memperkecil radius kantor di siang hari tidak menolak checkout
+        // karyawan yang masuk pagi dengan aturan lama.
+        $checkInType = $attendance->check_in_type;
+        if (in_array($checkInType, ['onsite', 'field'])) {
+            $lat = (float) $validated['latitude'];
+            $lng = (float) $validated['longitude'];
+            $locationService = app(LocationService::class);
+
+            if ($attendance->hasSnapshot()) {
+                // Jalur snapshot: satu kantor acuan yang dibekukan saat check-in
+                $snapOffice = $attendance->snapshotOffice();
+
+                if ($snapOffice && $attendance->snap_office_latitude !== null) {
+                    $distanceMeters = (int) round($locationService->calculateDistance(
+                        $lat,
+                        $lng,
+                        (float) $attendance->snap_office_latitude,
+                        (float) $attendance->snap_office_longitude
+                    ));
+
+                    $radiusMeters = (int) ($attendance->snap_radius_meters ?? 0);
+
+                    if ($distanceMeters > $radiusMeters) {
+                        return response()->json([
+                            'message'          => "Check-out ditolak: Anda berada di luar area kerja. Jarak Anda {$distanceMeters} meter, batas radius {$radiusMeters} meter dari {$snapOffice->office_name}.",
+                            'distance_meters'  => $distanceMeters,
+                            'radius_meters'    => $radiusMeters,
+                            'office_name'      => $snapOffice->office_name,
+                        ], 403);
+                    }
+                }
+                // Snapshot tanpa koordinat kantor (kasus langka: setting lama kosong)
+                // → lewati validasi radius, jangan blokir checkout.
+            } else {
+                // Baris lama (sebelum fitur snapshot) → perilaku lama: cari kantor terdekat live
+                $offices = AttendanceSetting::where('company_id', $user->company_id)->get();
+
+                if ($offices->isNotEmpty()) {
+                    $nearest  = null;
+                    $minDist  = PHP_FLOAT_MAX;
+                    foreach ($offices as $office) {
+                        $dist = $locationService->calculateDistance(
+                            $lat, $lng,
+                            (float) $office->office_latitude,
+                            (float) $office->office_longitude
+                        );
+                        if ($dist < $minDist) {
+                            $minDist = $dist;
+                            $nearest = $office;
+                        }
+                    }
+
+                    $distanceMeters = (int) round($minDist);
+
+                    if ($minDist > $nearest->radius_meters) {
+                        return response()->json([
+                            'message'          => "Check-out ditolak: Anda berada di luar area kerja. Jarak Anda {$distanceMeters} meter, batas radius {$nearest->radius_meters} meter dari {$nearest->office_name}.",
+                            'distance_meters'  => $distanceMeters,
+                            'radius_meters'    => $nearest->radius_meters,
+                            'office_name'      => $nearest->office_name,
+                        ], 403);
+                    }
+                }
+            }
+        }
+
         // ─── Hitung jam kerja & lembur otomatis ──────────────────
         // Titik awal jam kerja = jam jadwal masuk (bukan jam check-in).
         // Jika karyawan terlambat → titik awal = jam check-in aktual.
         // Jika karyawan datang sebelum jadwal → titik awal = jam jadwal.
-        $schedule    = $this->getWorkSchedule($user, $scheduleDate);
-        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate);
-        $workMinutes = (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta'));
+        //
+        // SNAPSHOT (2026-08-26): pakai aturan yang dibekukan saat check-in bila ada,
+        // agar edit setting HRD di siang hari tidak mengubah hasil checkout.
+        $schedule       = $attendance->snapshotSchedule() ?? $this->getWorkSchedule($user, $scheduleDate);
+        $workStart      = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate);
+        $workMinutes    = (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta'));
 
         // isNonWorkingDay: apakah tanggal shift libur nasional/weekend secara kalender.
         // Pass $user->id agar cuti bersama yang di-decline tidak dianggap hari libur karyawan ini.
         $nonWorking      = $this->isNonWorkingDay($scheduleDate, $user->company_id, null, $user->id);
         // calculateOvertime & checkEarlyLeave sudah mempertimbangkan shift aktif karyawan (cross-day aware)
-        $overtimeMinutes = $this->calculateOvertime($user, $scheduleDate, $checkOutTime, $workMinutes, $nonWorking);
-        $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking);
+        $overtimeMinutes = $this->calculateOvertime($user, $scheduleDate, $checkOutTime, $workMinutes, $nonWorking, $schedule);
+        $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking, $schedule);
 
         $updateData = [
             'check_out_time'   => $checkOutTime,
@@ -3242,9 +3725,12 @@ class AttendanceController extends Controller
     //       (berlaku meski hari ini adalah weekend/libur nasional — karyawan memang dijadwalkan masuk).
     //     - Fallback ke perilaku lama jika tidak ada shift: hari libur/weekend → full lembur
     //       (dengan minimum yang sama); hari kerja → selisih menit melewati work_end_time kantor.
-    private function calculateOvertime(User $user, string $date, Carbon $checkOutTime, int $workMinutes, bool $isNationalNonWorking): int
+    //
+    //     $schedule (opsional): jadwal yang sudah di-resolve caller — bila diisi,
+    //     helper TIDAK me-resolve ulang (dipakai jalur snapshot checkout).
+    private function calculateOvertime(User $user, string $date, Carbon $checkOutTime, int $workMinutes, bool $isNationalNonWorking, ?array $schedule = null): int
     {
-        $schedule = $this->getWorkSchedule($user, $date);
+        $schedule = $schedule ?? $this->getWorkSchedule($user, $date);
         $office   = $schedule['office'];
 
         // Tanpa setting kantor atau lembur dimatikan → tidak ada lembur.
@@ -3296,9 +3782,10 @@ class AttendanceController extends Controller
     // ─── Helper: deteksi pulang lebih awal (early leave) ────────
     //     Mempertimbangkan shift aktif: pakai jam pulang shift jika ada.
     //     Tidak berlaku di hari libur (per jadwal shift atau kalender).
-    private function checkEarlyLeave(User $user, string $date, Carbon $checkOutTime, bool $isNationalNonWorking): bool
+    //     $schedule (opsional): jadwal dari caller (jalur snapshot checkout).
+    private function checkEarlyLeave(User $user, string $date, Carbon $checkOutTime, bool $isNationalNonWorking, ?array $schedule = null): bool
     {
-        $schedule = $this->getWorkSchedule($user, $date);
+        $schedule = $schedule ?? $this->getWorkSchedule($user, $date);
         $office   = $schedule['office'];
 
         // Hari libur per jadwal shift → tidak ada konsep pulang awal
@@ -3466,18 +3953,23 @@ class AttendanceController extends Controller
             ]);
         }
 
-        // Ambil jadwal efektif saat karyawan check-in (shift aktif atau default kantor)
-        $scheduleDate = $attendance->date;
-        $jadwalHariIni = $this->getWorkSchedule($user, $scheduleDate);
+        // Ambil jadwal efektif saat karyawan check-in.
+        // SNAPSHOT (2026-08-26): bila record punya snapshot, PERHITUNGAN auto-checkout
+        // memakai aturan saat check-in (tidak digeser edit setting siang hari);
+        // tampilan shift aktif tetap dari resolve live agar info terkini.
+        $scheduleDate   = $attendance->date;
+        $jadwalHariIni  = $this->getWorkSchedule($user, $scheduleDate);
+        $jadwalSnapshot = $attendance->snapshotSchedule();
 
         // Hitung waktu auto-checkout yang dijadwalkan (untuk Flutter scheduling notif lokal).
-        // Gunakan jam pulang dari shift aktif jika ada; fallback ke kantor.
         $scheduledAutoCheckout = null;
         if (! $attendance->check_out_time) {
-            $office    = $jadwalHariIni['office'];
-            $jamPulang = $jadwalHariIni['work_end_time'];
+            $jadwalAcuan = $jadwalSnapshot ?? $jadwalHariIni;
+            $office      = $jadwalAcuan['office'];
+            $jamPulang   = $jadwalAcuan['work_end_time'];
 
-            // Shift libur (is_off) → pakai jam pulang kantor, konsisten dengan AutoCheckoutCommand
+            // Shift libur (is_off) → pakai jam pulang kantor, konsisten dengan AutoCheckoutCommand.
+            // (Snapshot sudah memuat fallback ini, tapi tetap aman untuk jalur live.)
             if ($office && ! $jamPulang && ! empty($office->work_end_time)) {
                 $jamPulang = $office->work_end_time;
             }
@@ -3485,7 +3977,7 @@ class AttendanceController extends Controller
             if ($office && $jamPulang) {
                 $graceMinutes = (int) ($office->auto_checkout_grace_minutes ?? 60);
                 // Shift lintas hari: jam pulang berada di hari BERIKUTNYA setelah tanggal check-in.
-                $isCrossDay  = ! empty($jadwalHariIni['is_cross_day']);
+                $isCrossDay  = ! empty($jadwalAcuan['is_cross_day']);
                 $workEndDate = $isCrossDay
                     ? Carbon::parse($scheduleDate, 'Asia/Jakarta')->addDay()->toDateString()
                     : $scheduleDate;
@@ -3953,14 +4445,11 @@ class AttendanceController extends Controller
         $user = $request->user();
         $year = (int) $request->query('year', now()->year);
 
-        // Pastikan baris saldo ada: cuti (kuota default kantor) dan izin (tanpa batas, quota=0)
+        // Pastikan baris saldo ada: cuti (NON-AKTIF, quota 0 sampai HRD isi kuota manual
+        // via tab Saldo Cuti) dan izin (tanpa batas, quota=0)
         LeaveBalance::firstOrCreate(
             ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
-            [
-                'company_id' => $user->company_id,
-                'quota'      => self::defaultLeaveQuota($user->company_id, $user->id),
-                'used'       => 0,
-            ]
+            ['company_id' => $user->company_id, 'quota' => 0, 'used' => 0]
         );
         LeaveBalance::firstOrCreate(
             ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'izin'],
@@ -4027,6 +4516,153 @@ class AttendanceController extends Controller
         return response()->json(['leaves' => $leaves]);
     }
 
+    // ─── Helper: hitung hari EFEKTIF pengajuan cuti + alasan skip per tanggal ────
+    //     DIPAKAI BERSAMA oleh leavePreview() (mobile) & requestLeave().
+    //     Sumber skip (konsisten dgn KEBIJAKAN EFEKTIF-HARI 2026-08-26):
+    //       - holiday_or_off_day : libur nasional/perusahaan/cabang, cuti bersama
+    //         yang di-accept, libur mingguan kantor default, off-day shift efektif
+    //       - already_requested  : cuti pribadi sendiri yang sudah diajukan
+    //         (pending/approved), dengan detail jenis pengajuan lama
+    //     Return: [
+    //       'total_days'     => int,
+    //       'effective_dates'=> string[],   // tanggal yang terhitung
+    //       'skipped'        => [ ['date'=>'Y-m-d','reason'=>..,'detail'=>..], .. ],
+    //     ]
+    private function effectiveLeaveDays(User $user, Carbon $start, Carbon $end): array
+    {
+        // Daftar tanggal kalender dalam rentang (inklusif)
+        $requestedDates = [];
+        for ($d = $start->copy(); $d->lte($end); $d->addDay()) {
+            $requestedDates[] = $d->toDateString();
+        }
+
+        // Tanggal efektif dasar: workingDatesBetween() menangani libur
+        // nasional/perusahaan/cabang, cuti bersama accepted, libur mingguan
+        // kantor default & off-day shift (shift-aware per tanggal).
+        $effectiveDates = $this->workingDatesBetween(
+            $start,
+            $end,
+            $user->company_id,
+            $user->attendance_setting_id,
+            $user->id,
+            $user
+        );
+
+        // Skip tanggal personal leave sendiri yang SUDAH diajukan (pending/approved),
+        // per tanggal. whereNull('holiday_id') → cuti bersama tidak memblokir.
+        $existingLeaves = LeaveRequest::where('user_id', $user->id)
+            ->whereIn('status', ['pending', 'approved'])
+            ->whereNull('holiday_id')
+            ->where('start_date', '<=', $end->toDateString())
+            ->where('end_date', '>=', $start->toDateString())
+            ->get(['leave_type', 'start_date', 'end_date']);
+
+        $takenMap = [];
+        foreach ($existingLeaves as $el) {
+            for ($d = Carbon::parse($el->start_date); $d->lte(Carbon::parse($el->end_date)); $d->addDay()) {
+                $takenMap[$d->toDateString()] = $el->leave_type;
+            }
+        }
+
+        $finalDates = ! empty($takenMap)
+            ? array_values(array_diff($effectiveDates, array_keys($takenMap)))
+            : $effectiveDates;
+
+        // Bangun daftar skip + penyebabnya untuk transparansi mobile.
+        // Detail libur (nama) diambil dari holidays bila ada — dipakai mobile utk pesan.
+        $skipped = [];
+        foreach ($requestedDates as $ds) {
+            if (in_array($ds, $finalDates, true)) {
+                continue; // hari efektif
+            }
+            if (isset($takenMap[$ds])) {
+                $skipped[] = ['date' => $ds, 'reason' => 'already_requested', 'detail' => $takenMap[$ds]];
+            } else {
+                $skipped[] = ['date' => $ds, 'reason' => 'holiday_or_off_day', 'detail' => null];
+            }
+        }
+
+        return [
+            'total_days'      => count($finalDates),
+            'effective_dates' => $finalDates,
+            'requested_dates' => $requestedDates,
+            'skipped'         => $skipped,
+            'taken_map'       => $takenMap,
+        ];
+    }
+
+    // 8b. leavePreview() — preview hitungan hari EFEKTIF sebelum submit pengajuan.
+    //     GET /api/v1/attendance/leave-preview?start_date=&end_date=
+    //     Dipakai Flutter agar badge "Total N hari" menampilkan hitungan backend
+    //     (skip libur/off-day/bentrok) beserta pemberitahuan per tanggal.
+    public function leavePreview(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'start_date' => 'required|date',
+            'end_date'   => 'required|date|after_or_equal:start_date',
+        ]);
+
+        $user  = $request->user();
+        $start = Carbon::parse($validated['start_date']);
+        $end   = Carbon::parse($validated['end_date']);
+
+        // Guard ringan: rentang maksimal 1 tahun (sama seperti date picker mobile)
+        if ($start->diffInDays($end) > 365) {
+            return response()->json(['message' => 'Rentang tanggal maksimal 365 hari.'], 422);
+        }
+
+        $result = $this->effectiveLeaveDays($user, $start, $end);
+
+        // Perkaya skipped dgn NAMA libur (untuk pesan "tanggal X adalah <nama>")
+        // & label ramah utk off-day shift/kantor.
+        $holidayNames = Holiday::whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->where(function ($q) use ($user) {
+                $q->whereNull('company_id')->orWhere('company_id', $user->company_id);
+            })
+            ->where(fn ($q) => $q->whereNull('attendance_setting_id')
+                ->when($user->attendance_setting_id, fn ($qq) => $qq->orWhere('attendance_setting_id', $user->attendance_setting_id)))
+            ->orderByDesc('is_national') // nasional menang bila dobel di tanggal sama
+            ->get(['date', 'name', 'is_collective'])
+            ->keyBy(fn ($h) => $h->date->toDateString());
+
+        // Off-day shift per tanggal (utk membedakan "libur mingguan/off shift")
+        $offFromSchedule = $this->resolveOffDatesForUser($user, $result['requested_dates']);
+
+        $typeLabels = ['wfh' => 'WFH', 'izin' => 'izin', 'sakit' => 'sakit', 'cuti' => 'cuti'];
+
+        $skipped = array_map(function ($item) use ($holidayNames, $offFromSchedule, $typeLabels) {
+            $ds = $item['date'];
+            if ($item['reason'] === 'already_requested') {
+                $label = $typeLabels[$item['detail']] ?? $item['detail'];
+                $item['label'] = "Sudah ada pengajuan {$label} di tanggal ini";
+            } elseif ($name = ($holidayNames[$ds]->name ?? null)) {
+                // Libur dari kalender holidays (nasional/perusahaan/cabang/cuti bersama)
+                $isCollective = (bool) ($holidayNames[$ds]->is_collective ?? false);
+                $jenis = $isCollective ? 'Cuti Bersama' : 'Hari Libur';
+                $item['label'] = "{$jenis}: {$name}";
+            } elseif (! empty($offFromSchedule[$ds])) {
+                $dow = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'][(int) Carbon::parse($ds)->dayOfWeek];
+                $item['label'] = "Libur jadwal kerja ({$dow})";
+            } else {
+                $item['label'] = 'Hari libur';
+            }
+
+            return [
+                'date'  => $ds,
+                'reason'=> $item['reason'],
+                'detail'=> $item['detail'],
+                'label' => $item['label'],
+            ];
+        }, $result['skipped']);
+
+        return response()->json([
+            'total_days'      => $result['total_days'],
+            'calendar_days'   => count($result['requested_dates']),
+            'effective_dates' => $result['effective_dates'],
+            'skipped_dates'   => $skipped,
+        ]);
+    }
+
     // 9. requestLeave() — ajukan WFH/izin/sakit/cuti
     public function requestLeave(Request $request): JsonResponse
     {
@@ -4056,94 +4692,71 @@ class AttendanceController extends Controller
             ], 422);
         }
 
-        // Hitung HARI KERJA saja (lewati weekend & libur nasional) agar kuota adil.
-        $totalDays = $this->countWorkingDays(
+        // KEBIJAKAN EFEKTIF-HARI (2026-08-26): pengajuan TETAP TERKIRIM ke dashboard
+        // HRD dengan start/end ASLI, tetapi total_days hanya menghitung tanggal
+        // efektif — skip libur nasional/perusahaan/cabang, cuti bersama accepted,
+        // cuti pribadi sendiri yang sudah diajukan (anti dobel), libur mingguan
+        // kantor default & off-day shift efektif. Hitungan dipusatkan di helper
+        // effectiveLeaveDays() agar konsisten dgn leavePreview() di mobile.
+        $calc = $this->effectiveLeaveDays(
+            $user,
             Carbon::parse($validated['start_date']),
-            Carbon::parse($validated['end_date']),
-            $user->company_id,
-            null,
-            $user->id
+            Carbon::parse($validated['end_date'])
         );
+        $finalDates     = $calc['effective_dates'];
+        $requestedDates = $calc['requested_dates'];
+        $takenMap       = $calc['taken_map'];
 
-        if ($totalDays < 1) {
+        // Tolak HANYA bila tidak ada satu pun tanggal efektif tersisa.
+        if ($calc['total_days'] < 1) {
             return response()->json([
-                'message' => 'Rentang tanggal tidak mengandung hari kerja (semua weekend/libur).',
+                'message' => 'Rentang tanggal tidak mengandung hari kerja efektif (semua hari adalah weekend/libur/off-day shift atau sudah diajukan).',
             ], 422);
         }
-
-        // Label ramah-pengguna untuk tiap jenis pengajuan (dipakai di beberapa pesan validasi).
-        $typeLabels = ['wfh' => 'WFH', 'izin' => 'izin', 'sakit' => 'sakit', 'cuti' => 'cuti'];
-
-        // Validasi jadwal shift: karyawan tidak boleh mengajukan cuti/izin/sakit/wfh
-        // pada tanggal yang di jadwal shift-nya sudah ditandai LIBUR (is_off = true).
-        // Menggunakan resolveOffDatesForUser() yang meniru logika resolveSchedule shift +
-        // fallback ke jadwal default kantor.
-        $requestedDates = [];
-        for (
-            $d = Carbon::parse($validated['start_date']);
-            $d->lte(Carbon::parse($validated['end_date']));
-            $d->addDay()
-        ) {
-            $requestedDates[] = $d->toDateString();
-        }
-
-        $offMap   = $this->resolveOffDatesForUser($user, $requestedDates);
-        $offDates = array_keys(array_filter($offMap, fn ($isOff) => $isOff === true));
-
-        if (! empty($offDates)) {
-            $formatted = collect($offDates)
-                ->map(fn ($d) => Carbon::parse($d)->isoFormat('D MMMM YYYY'))
-                ->implode(', ');
-            $typeLabel = $typeLabels[$validated['leave_type']] ?? $validated['leave_type'];
-
-            return response()->json([
-                'message'   => "Tidak dapat mengajukan {$typeLabel}. Pada tanggal {$formatted} Anda sudah dijadwalkan libur shift.",
-                'off_dates' => $offDates,
-            ], 422);
-        }
-
-        // Validasi overlap: karyawan tidak boleh punya pengajuan aktif (pending/approved)
-        // di rentang tanggal yang sama, apapun tipe leave-nya.
-        $overlap = LeaveRequest::where('user_id', $user->id)
-            ->whereIn('status', ['pending', 'approved'])
-            ->where('start_date', '<=', $validated['end_date'])
-            ->where('end_date', '>=', $validated['start_date'])
-            ->orderBy('start_date')
-            ->first();
-        if ($overlap) {
-            $typeLabel  = $typeLabels[$overlap->leave_type] ?? $overlap->leave_type;
-            $start      = Carbon::parse($overlap->start_date)->isoFormat('D MMMM YYYY');
-            $end        = Carbon::parse($overlap->end_date)->isoFormat('D MMMM YYYY');
-            $periodDesc = ($overlap->start_date === $overlap->end_date)
-                ? "tanggal {$start}"
-                : "periode {$start} – {$end}";
-            return response()->json([
-                'message' => "Anda sudah mengajukan {$typeLabel} pada {$periodDesc}. Tidak dapat mengajukan izin lain di tanggal yang sudah diajukan.",
-            ], 422);
-        }
+        $totalDays = $calc['total_days'];
 
         // Cek saldo cuti sebelum membuat pengajuan agar karyawan langsung tahu di awal
         if ($validated['leave_type'] === 'cuti') {
             $year    = Carbon::parse($validated['start_date'])->year;
+            // KEBIJAKAN 2026-08-25: auto-create saldo cuti NON-AKTIF (quota 0) —
+            // aktivasi hanya oleh HRD via tab Saldo Cuti.
             $balance = LeaveBalance::firstOrCreate(
                 ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
-                [
-                    'company_id' => $user->company_id,
-                    'quota'      => self::defaultLeaveQuota($user->company_id, $user->id),
-                    'used'       => 0,
-                ]
+                ['company_id' => $user->company_id, 'quota' => 0, 'used' => 0]
             );
             $remaining = $balance->quota - $balance->used;
-            if ($remaining <= 0) {
+            // Bedakan "belum pernah diaktifkan HRD" dari "saldo sudah habis"
+            if ((int) $balance->quota <= 0 && (int) $balance->used === 0) {
                 return response()->json([
-                    'message'          => 'Saldo cuti Anda sudah habis. Tidak dapat mengajukan cuti.',
+                    'message'          => 'Saldo cuti Anda belum diaktifkan oleh HRD. Silakan hubungi HRD untuk mengaktifkan saldo cuti Anda.',
                     'remaining_quota'  => 0,
                 ], 422);
             }
-            if ($totalDays > $remaining) {
+
+            // KEBIJAKAN ANNIVERSARY SPLIT (2026-08-25): bila rentang cuti MELINTASI
+            // tanggal reset kantor (leave_reset_date), validasi dipecah dua alokasi:
+            // hari sebelum reset pakai saldo berjalan, hari pada/setelah reset pakai
+            // kuota baru hasil reset (default_leave_quota). Contoh: reset 10 Juni,
+            // sisa 2 hari, ajukan 8–11 Juni → 2 hari pertama vs sisa lama ✓,
+            // 2 hari terakhir vs kuota baru ✓ → diperbolehkan.
+            // Suntikkan $finalDates agar days_before/days_after konsisten dgn total_days.
+            $split      = $this->splitLeaveAroundReset($user, Carbon::parse($validated['start_date']), Carbon::parse($validated['end_date']), $user->company_id, $finalDates);
+            $hasPivot   = $split['anniversary'] !== null;
+            $daysBefore = $hasPivot ? $split['days_before'] : $totalDays;
+            $daysAfter  = $hasPivot ? $split['days_after'] : 0;
+
+            if ($daysBefore > $remaining) {
                 return response()->json([
-                    'message'          => "Saldo cuti tidak cukup. Sisa {$remaining} hari, diminta {$totalDays} hari.",
-                    'remaining_quota'  => $remaining,
+                    'message'          => $hasPivot
+                        ? "Saldo cuti tidak cukup untuk hari sebelum tanggal reset ({$split['anniversary']}). Sisa {$remaining} hari, dibutuhkan {$daysBefore} hari."
+                        : "Saldo cuti Anda sudah habis. Tidak dapat mengajukan cuti.",
+                    'remaining_quota'  => max(0, $remaining),
+                ], 422);
+            }
+            if ($daysAfter > $split['fresh_quota']) {
+                return response()->json([
+                    'message'          => "Kuota cuti baru setelah tanggal reset ({$split['anniversary']}) tidak cukup. Tersedia {$split['fresh_quota']} hari, dibutuhkan {$daysAfter} hari.",
+                    'remaining_quota'  => max(0, $remaining),
                 ], 422);
             }
         }
@@ -4184,11 +4797,14 @@ class AttendanceController extends Controller
             ], 'leave_request', $leave->id);
         }
 
+        // Transparansi mobile: laporkan tanggal yang di-skip dari total_days
+        // beserta penyebabnya (hasil hitungan effectiveLeaveDays()).
         return response()->json([
             'message' => 'Permintaan berhasil diajukan.',
             'leave'   => $leave->only([
                 'id', 'leave_type', 'start_date', 'end_date', 'total_days', 'status',
             ]),
+            'skipped_dates' => $calc['skipped'],
         ], 201);
     }
 }

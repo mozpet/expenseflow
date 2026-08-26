@@ -15,9 +15,13 @@ use Illuminate\Support\Carbon;
  * HRD menentukan tanggal reset per kantor di attendance_settings.leave_reset_date
  * (format 'MM-DD' tanpa tahun, mis. '01-01' → reset ulang setiap 1 Januari).
  * Command ini dijalankan harian: bila anniversary sudah tiba (atau sudah lewat
- * dan belum diproses), saldo cuti semua karyawan aktif kantor tsb untuk TAHUN
- * BERJALAN dibuat ulang:
+ * dan belum diproses), saldo cuti TAHUN BERJALAN semua karyawan aktif kantor tsb
+ * yang SUDAH AKTIF (quota > 0) dibuat ulang:
  *   quota = default_leave_quota kantor, used = 0.
+ *
+ * KEBIJAKAN 2026-08-25: saldo cuti karyawan NON-AKTIF secara default — reset
+ * TIDAK mengaktifkan saldo yang belum pernah diaktifkan HRD (quota 0 / tanpa baris).
+ * Aktivasi tetap manual oleh HRD via tab Saldo Cuti.
  *
  * CATCH-UP: pemrosesan memakai last_leave_reset_on — bila server mati beberapa hari,
  * reset tetap dieksekusi sekali saat server menyala kembali (tidak dobel, tidak terlewat).
@@ -79,12 +83,24 @@ class ResetLeaveBalancesCommand extends Command
 
             $resetCount = 0;
             foreach ($userIds as $userId) {
-                // Buat-ulang saldo cuti TAHUN BERJALAN: kuota baru dari kantor, pemakaian nol.
+                // KEBIJAKAN 2026-08-25: hanya baris saldo AKTIF (quota > 0) yang di-reset.
+                // Karyawan yang belum pernah diaktifkan HRD (quota 0 / belum ada baris)
+                // dibiarkan non-aktif — reset tidak boleh mengaktifkan saldo otomatis.
+                $existing = LeaveBalance::where('user_id', $userId)
+                    ->where('year', $today->year)
+                    ->where('leave_type', 'cuti')
+                    ->first();
+
+                if (! $existing || (int) $existing->quota <= 0) {
+                    continue;
+                }
+
+                // Buat-ulang saldo TAHUN BERJALAN: kuota baru dari kantor, pemakaian nol.
                 // Baris tahun sebelumnya dibiarkan utk riwayat/audit.
-                LeaveBalance::updateOrCreate(
-                    ['user_id' => $userId, 'year' => $today->year, 'leave_type' => 'cuti'],
-                    ['company_id' => $office->company_id, 'quota' => $office->default_leave_quota, 'used' => 0]
-                );
+                $existing->update([
+                    'quota' => $office->default_leave_quota,
+                    'used'  => 0,
+                ]);
                 $resetCount++;
             }
 

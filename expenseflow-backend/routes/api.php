@@ -248,6 +248,8 @@ Route::prefix('v1')->group(function () {
             Route::get('/leave-balance', [AttendanceController::class, 'myLeaveBalance']);
             Route::get('/my-leaves', [AttendanceController::class, 'myLeaves']);
             Route::post('/leave-request', [AttendanceController::class, 'requestLeave']);
+            // Preview hitungan hari efektif (skip libur/off-day/bentrok) — badge mobile
+            Route::get('/leave-preview', [AttendanceController::class, 'leavePreview']);
 
             // Daftar overtime approval milik karyawan ini
             Route::get('/my-overtime', [AttendanceController::class, 'myOvertimeApprovals']);

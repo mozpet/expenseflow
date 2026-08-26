@@ -504,6 +504,7 @@ GET  /api/v1/attendance/status              → checkStatus (status presensi har
 ```
 GET  /api/v1/attendance/leave-balance       → myLeaveBalance (saldo cuti karyawan)
 POST /api/v1/attendance/leave-request       → requestLeave (total_days = HARI KERJA saja, lewati weekend/libur)
+GET  /api/v1/attendance/leave-preview       → leavePreview (hitungan hari efektif + skipped_dates berlabel utk badge mobile; ?start_date=&end_date=)
 GET  /api/v1/attendance/holidays            → listHolidays (read-only, untuk kalender mobile)
 GET  /api/v1/attendance/my-overtime         → myOvertimeApprovals (riwayat status lembur karyawan)
 POST /api/v1/attendance/fcm-token           → registerFcmToken (simpan FCM token device untuk push notif)
@@ -658,17 +659,37 @@ Tambah/Edit Kantor (Pengaturan → Kantor Presensi):
 
 | Kolom `attendance_settings` | Format | Keterangan |
 |---|---|---|
-| `default_leave_quota` | int, default 12 | Kuota awal karyawan baru di kantor tsb & kuota saat reset tahunan. |
+| `default_leave_quota` | int, default 12 | Kuota REFERENSI per kantor — tampil di tab Saldo Cuti sebagai panduan HRD (`office_default_quota`) & dipakai saat reset tahunan. TIDAK lagi otomatis diberikan ke karyawan. |
 | `leave_reset_date` | 'MM-DD' nullable (tanpa tahun) | Tanggal anniversary reset otomatis, ulang tiap tahun. NULL = mati. |
 | `last_leave_reset_on` | date nullable | Penanda anniversary terakhir yang sudah diproses (anti dobel + catch-up). |
 
-- Semua titik `LeaveBalance::firstOrCreate(... 'cuti' ...)` memakai helper
-  `AttendanceController::defaultLeaveQuota(companyId, userId)`: ambil kuota dari kantor
-  karyawan (`users.attendance_setting_id`) → fallback kantor pertama perusahaan → fallback 12.
+### Kebijakan Saldo Cuti Non-Aktif Default (UPDATE 2026-08-25)
+- **Karyawan baru / yang belum punya baris saldo → cuti NON-AKTIF.** Semua auto-create
+  `LeaveBalance::firstOrCreate(..., 'cuti', ...)` (myLeaveBalance, requestLeave,
+  approveLeave, respondCollectiveLeave, listCollectiveLeaves, reapply helper) kini membuat
+  baris dengan **`quota = 0`**. Konvensi: **`quota = 0` = non-aktif**.
+- **Aktivasi hanya oleh HRD manual** via tab Saldo Cuti (`POST /dashboard/attendance/leave-balances`
+  → `setLeaveBalance`, isi kuota > 0). Tidak ada endpoint/flag tambahan.
+- Penegakan memakai cek sisa saldo yang sudah ada di semua jalur (requestLeave, approveLeave,
+  respondCollectiveLeave policy block). Pesan dibedakan: quota=0 & used=0 → *"belum diaktifkan
+  oleh HRD"*; selain itu → *"saldo habis/tidak cukup"*.
+- **Cuti melintasi tanggal reset — Anniversary Split (2026-08-25):** pengajuan/approval cuti
+  yang rentangnya MELEWATI `leave_reset_date` kantor divalidasi DUA alokasi:
+  hari kerja SEBELUM tanggal reset dibatasi sisa saldo berjalan (`quota - used`);
+  hari PADA/SETELAH reset dibatasi kuota baru (`default_leave_quota`, karena reset menset used=0).
+  Contoh: reset 10 Juni, sisa 2 hari, ajukan 8–11 Juni → 2 hari sebelum vs sisa lama ✓,
+  2 hari sesudah vs kuota baru ✓ → diperbolehkan. Implementasi:
+  helper `splitLeaveAroundReset()` + `workingDatesBetween()` di AttendanceController;
+  dipakai requestLeave() & approveLeave(). Deduksi tetap penuh ke saldo berjalan — sisa bisa
+  tampil minus sesaat sampai anniversary me-reset used=0 (konsisten secara akhir).
+  Rentang tanpa pivot reset → perilaku lama (cek total vs sisa).
+- `listLeaveBalances()` menampilkan baris belum-dibuat sebagai non-aktif (quota 0) +
+  field referensi `office_default_quota` dan flag `active` — tidak ada lagi fallback hardcoded 12.
 - Reset otomatis: command `attendance:reset-leave-balances` (scheduler harian 00:03,
   `routes/console.php`). Bila tanggal anniversary sudah/sedang tiba dan belum diproses,
-  saldo cuti TAHUN BERJALAN semua karyawan aktif kantor itu dibuat-ulang:
-  `quota = default_leave_quota`, `used = 0`. Baris tahun lama dibiarkan untuk riwayat.
+  saldo cuti TAHUN BERJALAN hanya karyawan dengan baris AKTIF (quota > 0) dibuat-ulang:
+  `quota = default_leave_quota`, `used = 0`. **Reset tidak mengaktifkan saldo yang belum
+  pernah diaktifkan HRD** (quota 0 / tanpa baris dilewati). Baris tahun lama dibiarkan untuk riwayat.
 - Server mati beberapa hari → reset tetap dieksekusi sekali saat menyala lagi (catch-up
   via `last_leave_reset_on`); tidak pernah dobel.
 - HRD menghapus jadwal reset (null) → `last_leave_reset_on` ikut di-null agar jadwal baru
@@ -683,7 +704,18 @@ Karyawan requestLeave (via mobile, tanpa gerbang attendance_access)
   → Hitung total_days
   → Status: pending
   → Notifikasi ke semua HRD/admin perusahaan
+```
 
+> **KEBIJAKAN EFEKTIF-HARI (2026-08-26):** `requestLeave()` TIDAK lagi menolak pengajuan bila ada tanggal libur/off-day di tengah rentang (hard-reject off-day shift & overlap rentang penuh DIHAPUS). Pengajuan tetap terkirim ke dashboard HRD dengan `start_date`/`end_date` ASLI; `total_days` hanya menghitung tanggal efektif setelah skip:
+> 1. Libur nasional / perusahaan / **cabang** (`officeId` kini dikirim ke `workingDatesBetween()` — sebelumnya null sehingga libur cabang bocor)
+> 2. Cuti bersama yang di-*accept* karyawan (pending/declined tetap hari kerja — semantik mapan 2026-08-17)
+> 3. Cuti pribadi sendiri yang sudah diajukan (pending/approved, skip PER-TANGGAL via query `whereNull('holiday_id')`; rejected tidak di-skip) — anti doble pengajuan
+> 4. Libur mingguan kantor default (`work_days`)
+> 5. Off-day shift efektif (`resolveOffDatesForUser`, versi jadwal berlaku per tanggal)
+>
+> Contoh: ajukan 2–5 Agustus, tanggal 3 libur → tersimpan `total_days = 3`. Semua tanggal non-efektif dilaporkan di response `skipped_dates[]` (`{date, reason: holiday_or_off_day|already_requested, detail}`). Ditolak 422 hanya jika tidak ada satu pun hari efektif. `splitLeaveAroundReset()` menerima parameter optional `$effectiveDates` agar `days_before + days_after == total_days`.
+
+```
 HRD approveLeave (via web)
   → Cek saldo leave_balances (untuk cuti/sakit, default 12 hari/tahun)
   → Potong saldo jika cukup
@@ -875,7 +907,7 @@ reminder: tambahkan 1 data json untuk presensi mobile jika lembur approval di te
 
 ---
 
-# Analisis Performa Backend — Delay ~500ms Seragam (2026-07-14)
+# Analisis Performa Backend — Delay ~500ms Seragam (2026-07-14)✅ SELESAI
 
 ## Gejala
 Log `php artisan serve` menunjukkan **hampir semua request ~510–515ms** (device-changes,
@@ -930,15 +962,14 @@ buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu h
 - ✅ Batas jam kerja per minggu (UU 13/2003 Pasal 77) — toggle ON/OFF per kantor (`enforce_weekly_hours`, default OFF)
 
 ### P1 — Penting (Operasional & K3)
-- [ ] **Batas shift malam berturut-turut** (max 5–7 malam berurutan) — standar K3 ritme sirkadian; perlu counter shift malam per karyawan
+- [ ] **Batas shift malam berturut-turut** (max 5–7 malam berurutan) — standar K3 ritme sirkadian; perlu counter shift malam per karyawan --sedang di pertimbangkan
 - ✅ **Minimum notice perubahan jadwal** (H-N hari sebelum berlaku) — HRD dapat peringatan warning jika assign/ubah shift < N hari (N diatur per kantor, default 0=off)
-- [ ] **Shift swap antar karyawan** — request tukar shift + approval HRD; saat ini semua perubahan harus lewat HRD manual
+- [ ] **Shift swap antar karyawan** — request tukar shift + approval HRD; saat ini semua perubahan harus lewat HRD manual --soon
 - ✅ **Roster jadwal shift di mobile** — karyawan bisa lihat jadwal shift mereka ke depan; saat ini hanya ada `/my-schedule` statis
 
 ### P2 — Nilai Tambah
-- [ ] **Rotasi shift otomatis periodik** — sistem 3-roster saat ini assign manual; rotasi setiap N minggu perlu scheduling otomatis
-- [ ] **Notifikasi terdampak libur nasional** — jika libur nasional jatuh di hari shift aktif karyawan, kirim notif ke karyawan & HRD
-- [ ] **Unavailability karyawan** — karyawan bisa menyatakan tanggal tidak tersedia untuk dipertimbangkan HRD saat assign shift
+- [ ] **Rotasi shift otomatis periodik** — sistem 3-roster saat ini assign manual; rotasi setiap N minggu perlu scheduling otomatis --soon
+- [ ] **Unavailability karyawan** — karyawan bisa menyatakan tanggal tidak tersedia untuk dipertimbangkan HRD saat assign shift --di pertimbangkan
 
 
 
@@ -972,13 +1003,13 @@ refaktoring code untuk terakhir saja
 
 ---
 
-# Pengingat Penting — Form Edit Kantor & Perubahan Mendadak (2026-08-13)
+# Pengingat Penting — Form Edit Kantor & Perubahan Mendadak (2026-08-13) --selesai
 
 Peringatan untuk agent & developer: **Field di Form Edit Kantor (`attendance_settings`)**
 jangan diubah sembarangan karena berdampak langsung ke sistem presensi yang sedang berjalan **hari itu juga**.
 Setiap perubahan pada field berikut punya risiko bug/ketidakadilan data:
 
-## Dampak Perubahan Menyentuh Sistem Lain (Ceklis Saat Edit Kantor)
+## Dampak Perubahan Menyentuh Sistem Lain (Ceklis Saat Edit Kantor) --selesai 
 
 | Field Kantor | Dampak Jika Diubah Mendadak (di Tengah Hari) | Komponen Terdampak |
 |---|---|---|
@@ -1015,11 +1046,56 @@ $validated = $request->validate([
 > (grace period lebih besar dari reminder), agar Cron Job auto-checkout tidak menutup
 > presensi karyawan sebelum mereka sempat menerima pengingat.
 
-## Strategi Proteksi yang Disarankan
-1. **Kunci Acuan Jam Kerja Hari Ini**: Simpan/referensi jam kantor pada saat karyawan check-in, agar perubahan `work_start_time`/`work_end_time` tidak mempengaruhi presensi yang sudah terjadi hari ini.
-2. **UI Confirmation Dialog**: Saat HRD mengubah Jam Kerja / Lokasi GPS / Auto-Checkout di Form Edit Kantor, tampilkan dialog:
-   > "⚠️ Anda mengubah Jam Kerja / Lokasi GPS / Auto-Checkout. Perubahan ini akan mempengaruhi perhitungan presensi & Auto-Checkout karyawan yang aktif hari ini. Lanjutkan?"
-3. **Subscribe Notifikasi**: Kirim notifikasi (DB + FCM) ke seluruh HRD/Admin saat pengaturan kantor diubah, agar perubahan bisa diaudit.
+## Strategi Proteksi yang Disarankan (Untuk Dampak Perubahan Mendadak)
+Perubahan jam operasional, toleransi keterlambatan, atau radius GPS di tengah hari dapat merusak perhitungan presensi karyawan yang sedang bekerja. Berikut adalah urutan strategi mitigasi berdasarkan efektivitasnya:
+
+1. **(Rekomendasi Utama) Snapshot Acuan Jam Kerja Hari Ini**: Simpan/referensi jam kantor, radius, dan toleransi (salin nilainya dari `attendance_settings` ke `attendances`) pada saat karyawan check-in. Dengan begitu, perubahan pengaturan di siang hari tidak mempengaruhi perhitungan check-out & lembur karyawan yang masuk di pagi harinya. (Tingkat keamanan: Sangat Tinggi) ✅ SELESAI 2026-08-26
+2. **Efektif H+1 (Versioning Pengaturan)**: Perubahan pengaturan tidak langsung menimpa data aktif, melainkan disimpan sebagai draf/versi baru yang mulai berlaku jam 00:00 esok harinya (mirip dengan logika versioning shift). (Tingkat keamanan: Sangat Tinggi) — TIDAK DIPERLUKAN (redundan dengan snapshot #1)
+3. **UI Confirmation Dialog & Friction**: Saat HRD mengubah Jam Kerja / Lokasi GPS / Auto-Checkout di Form Edit Kantor, tampilkan peringatan mencolok dan harus di-ketik (misal: Ketik 'SIMPAN').
+   > "⚠️ Anda mengubah Jam Kerja / Lokasi GPS / Auto-Checkout di tengah hari. Ini akan mengubah aturan presensi & perhitungan otomatis untuk karyawan hari ini. Lanjutkan?" (Tingkat keamanan: Rendah - hanya mencegah *human error*) ✅ SELESAI 2026-08-26 (backend + frontend web — lihat bawah)
+4. **Subscribe Notifikasi**: Kirim notifikasi (DB + FCM) ke seluruh HRD/Admin saat pengaturan kantor diubah, agar perubahan bisa diaudit bersama. ✅ SELESAI (Tingkat Keamanan: Rendah - responsif bukan preventif)
+
+### Implementasi Snapshot + Gerbang Konfirmasi "SIMPAN" (2026-08-26)
+**Migration** `2026_08_26_000001_add_setting_snapshot_to_attendances_table.php` — kolom
+`snap_*` di `attendances` (semua nullable; baris lama otomatis pakai jalur lama tanpa backfill):
+kantor acuan (`snap_office_id`, lat/lng/radius), jadwal efektif saat check-in
+(`snap_source`, `snap_work_start_time`, `snap_work_end_time`, `snap_is_off`,
+`snap_is_cross_day`), aturan lembur/pulang-awal/auto-checkout (`snap_overtime_enabled`,
+`snap_min_overtime_minutes`, `snap_early_leave_tolerance_minutes`, `snap_reminder_minutes`,
+`snap_grace_minutes`).
+
+**Alur snapshot** (helper di `App\Models\Attendance`: `buildSnapshot()`, `hasSnapshot()`,
+`snapshotSchedule()`, `snapshotOffice()`):
+1. `checkIn()` → tulis snapshot jadwal efektif (hasil `resolveSchedule`) + kantor acuan
+   (kantor terdekat bila radius check berjalan) ke kolom `snap_*`.
+2. `checkOut()` → validasi radius checkout memakai koordinat/radius snapshot (HRD memindah/
+   memperkecil radius siang hari tidak menolak checkout); hitung work/lembur/early-leave dari
+   schedule snapshot.
+3. `AutoCheckoutCommand` → reminder & auto-checkout memakai jam pulang + grace/reminder
+   snapshot; konsisten dengan `checkOut()` manual.
+4. `checkStatus()` → `scheduled_auto_checkout_at` dari snapshot (tidak bergeser saat setting
+   diedit); tampilan shift aktif tetap live.
+5. Perubahan setting hanya berpengaruh ke karyawan yang **belum check-in** hari itu & seluruh
+   presensi esok hari.
+
+**Gerbang konfirmasi `updateSettings()`**: bila field "berbahaya" benar-benar BERUBAH nilainya
+(`work_start_time`, `work_end_time`, `work_days`, `custom_schedules`, `office_latitude`,
+`office_longitude`, `radius_meters`, `late_tolerance_minutes`, `early_leave_tolerance_minutes`,
+`overtime_enabled`, `min_overtime_minutes`, `checkout_reminder_minutes`,
+`auto_checkout_grace_minutes`) dan request TIDAK menyertakan `confirm_dangerous = "SIMPAN"` →
+**422** dengan `requires_confirmation`, `confirmation_phrase: "SIMPAN"`,
+`dangerous_changed_fields[]`. Frontend wajib menampilkan dialog ketik-"SIMPAN" lalu mengirim
+ulang payload + field konfirmasi. Field aman (mis. `office_name`) tidak butuh konfirmasi.
+Response sukses & notifikasi HRD menyertakan daftar field berbahaya yang berubah.
+Test: `tests/Feature/SettingSnapshotTest.php`.
+
+**Frontend web (2026-08-26):** `SettingsManagement.tsx` (OfficesTab) menangani 422
+`requires_confirmation` dari `doSave()` → menampilkan dialog peringatan berisi daftar field
+berbahaya yang berubah (dengan label ramah Indonesia) + input wajib ketik persis "SIMPAN"
+(tombol simpan disabled sampai frasa cocok). Konfirmasi mengirim ulang payload +
+`confirm_dangerous = "SIMPAN"`. Form Tambah Kantor tidak terdampak (endpoint create tanpa gerbang).
+
+Jadi bukan "ditunda ke besok", melainkan: siapa yang sudah terlanjur masuk, dia aman dengan aturan saat dia masuk. Sisanya langsung ikut aturan baru. Ini yang membuat perubahan mendadak tidak merugikan siapa pun yang sedang bekerja
 
 ------------------------------------------------------------------------------
 

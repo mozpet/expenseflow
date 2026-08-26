@@ -7,7 +7,7 @@
 
 ## 🔴 Bagian 1 — Bug / Cacat Logika
 
-### 1. KRITIS — Libur nasional bocor lintas perusahaan (multi-tenant leak)
+### 1. KRITIS — Libur nasional bocor lintas perusahaan (multi-tenant leak) ✅ lagi di pertimbangkan
 
 **Lokasi:** `AttendanceController::storeHolidays()` (~line 1869–1874), juga `updateHolidays()` & `destroyHolidays()`
 
@@ -77,7 +77,7 @@ $todayStr = now()->toDateString(); // ← UTC!
 
 ---
 
-### 4. SEDANG — Guard jam kerja membandingkan kolom yang salah
+### 4. SEDANG — Guard jam kerja membandingkan kolom yang salah **⏸ DITUNDA**
 
 **Lokasi:** `ShiftController::assignShift()` (~line 927)
 
@@ -90,9 +90,16 @@ $todayStr = now()->toDateString(); // ← UTC!
 
 **Fix:** bandingkan dengan assignment lama secara eksplisit, mis. simpan `$activeOld` dulu lalu exclude by id assignment itu, atau filter `where('shift_id', '!=', ...)` jika maksudnya shift baru.
 
+> **⏸ DITUNDA — risiko diterima (keputusan 2026-08-25):** TIDAK diperbaiki untuk saat ini karena secara praktis sudah tertutup fitur **Minimum Notice Perubahan Shift (H-N Hari)** di form Edit Kantor (`attendance_settings.shift_notice_days`):
+> - `checkNoticeError()` dieksekusi **SEBELUM** guard coversToday di `assignShift()` (line ~908 vs ~913). Bila notice ≥ 1 hari, start_date hari ini/mundur langsung ditolak 422 → `$coversToday` tidak mungkin true → query yang salah tidak pernah tereksekusi (dead path).
+> - Bila pun guard itu jalan (kantor tanpa notice), dampaknya sangat sempit: cek `duplicateActive` sudah menolak kombinasi shift-sama-masih-aktif lebih awal, jadi kegagalan hanya terjadi bila PK assignment lama kebetulan bernilai sama dengan shift_id baru (kasus langka).
+> - Lapisan lain tetap sehat: `updateAssignment()` & `destroyAssignment()` memakai objek `$userShift` nyata (tanpa kesalahan kolom), dan `bulkAssign()` sudah difix benar via Bug #5.
+>
+> **Syarat penerimaan risiko:** semua kantor sebaiknya mengisi `shift_notice_days` ≥ 1. Bila kelak ada kantor yang membiarkan notice kosong/0, fix-nya satu baris saja: ganti `where('id', '!=', $validated['shift_id'] ?? 0)` menjadi `where('shift_id', '!=', $validated['shift_id'])` (atau exclude by PK assignment lama secara eksplisit).
+
 ---
 
-### 5. SEDANG — `bulkAssign()` tidak konsisten dengan `assignShift()`
+### 5. SEDANG — `bulkAssign()` tidak konsisten dengan `assignShift()` ✅ SELESAI 2026-08-25
 
 **Lokasi:** `ShiftController::bulkAssign()`
 
@@ -101,9 +108,16 @@ $todayStr = now()->toDateString(); // ← UTC!
 
 **Fix:** replika guard coversToday per-karyawan di loop bulk (skip + laporkan seperti validasi lain).
 
+> **✅ DIPERBAIKI 2026-08-25** — `bulkAssign()` kini punya guard jam kerja yang konsisten dengan `assignShift()` individual:
+> 1. **Preload bulk (hindari N+1):** assignment shift LAMA yang sedang aktif hari ini untuk semua karyawan target diambil dalam satu query (`$activeOldByUser`, eager-load `shift`), dikelompokkan per `user_id` → ambil assignment terbaru yang aktif.
+> 2. **`$coversToday` dihitung sekali** (start_date & end_date seragam untuk semua target) — assignment baru dianggap berlaku hari ini jika `start_date <= today && (end_date null || end_date >= today)`.
+> 3. **Guard per-karyawan di dalam loop** (sebelum insert): bila `coversToday` dan ada shift lama aktif yang berbeda dari shift baru → panggil `checkWithinWorkingHours($activeOld)`. Bila sedang dalam jam kerja → karyawan **di-skip + dilaporkan** dengan alasan (konsisten pola validasi lain), tidak menggagalkan seluruh batch.
+>
+> Efisien: query aktif-lama hanya 1× untuk seluruh batch (bukan per karyawan). `php -l` lolos tanpa error.
+
 ---
 
-### 6. RENDAH — Race condition saldo cuti
+### 6. RENDAH — Race condition saldo cuti ✅ SELESAI 2026-08-25
 
 **Lokasi:** `approveLeave()` & `respondCollectiveLeave()`
 
@@ -112,9 +126,22 @@ $todayStr = now()->toDateString(); // ← UTC!
 
 **Fix:** bungkus dalam `DB::transaction` + `LeaveBalance::lockForUpdate()` saat cek & potong saldo.
 
+> **✅ DIPERBAIKI 2026-08-25** — keduanya kini memakai `DB::transaction` + `lockForUpdate()`:
+> 1. **`approveLeave()`:** seluruh alur (ambil leave + cek status pending + guard cuti bersama → firstOrCreate saldo → cek sisa → update status approved → increment used) dipindah ke dalam SATU transaksi.
+>    - Baris `leave_requests` dikunci via `lockForUpdate()->find($id)` → HRD ganda yang approve permintaan sama secara paralel: request kedua menunggu lock, lalu membaca status terbaru (`approved`) → ditolak 403, tidak dobel-potong.
+>    - Baris `leave_balances` dikunci ulang setelah `firstOrCreate` (`whereKey(...)->lockForUpdate()`, karena firstOrCreate tidak mengunci) → cek sisa & increment menjadi atomik; dua approval cuti berbeda milik karyawan yang sama tidak bisa membuat saldo minus.
+>    - Guard gagal (404/403/422) kini lewat `abort()` di dalam transaksi → transaksi rollback otomatis & response JSON tetap bentuk lama `{message}` (exception handler sudah `shouldRenderJsonWhen(api/*)`).
+> 2. **`respondCollectiveLeave()`:** baca-status → auto-create → cek "pilihan sama" → cek saldo (policy block) → update collective_status → increment/decrement, semuanya dalam satu transaksi dengan lock pada baris leave_request (per user+holiday) DAN baris saldo.
+>    - Dobel klik accept di dua tab: respons kedua menunggu lock, baca status terbaru → tertangkap guard "pilihan sama", tanpa dobel potong.
+>    - Ganti pikiran accepted→declined paralel dengan accept lainnya: serialisasi lock mencegah dobel kembalikan saldo.
+>    - Closure mengembalikan array `['kind' => same|insufficient|accepted|declined, ...]`; response HTTP dibangun di luar transaksi dengan shape JSON yang persis sama seperti sebelumnya (termasuk field `remaining_quota`, `remaining`, `required`, `policy`).
+>
+> Urutan penguncian konsisten di kedua endpoint (leave row dulu → balance row) untuk hindari deadlock silang.
+> Verifikasi: `php -l` lolos. Test suite feature AttendanceTest gagal semua karena masalah infrastruktur pre-existing (migration pakai `ALTER TABLE ... MODIFY COLUMN ENUM` MySQL-only, tidak jalan di SQLite in-memory test) — terbukti gagal juga tanpa perubahan ini (dicek via git stash).
+
 ---
 
-### 7. RENDAH — `monthlySummary()` absent undercount
+### 7. RENDAH — `monthlySummary()` absent undercount ✅ SELESAI 2026-08-26
 
 **Lokasi:** `AttendanceController::monthlySummary()`
 
@@ -127,16 +154,49 @@ $attendanceDays = (int) array_sum($attCounts->toArray());
 
 **Fix:** hitung `attendanceDays` hanya dari tanggal yang termasuk `working_days` (join/filter per tanggal off-map).
 
+> **✅ DIPERBAIKI 2026-08-26** — dua perubahan di `monthlySummary()`:
+> 1. **Hapus agregasi `groupBy('status')` lama** — ganti dengan query `select('date', 'status')->get()` untuk mendapat semua baris presensi raw, lalu breakdown status di-loop manual (`$attCountsBreakdown`). Breakdown ini tetap menghitung SEMUA presensi termasuk hari libur (agar angka `present`/`late`/`early_leave` tidak berubah perilakunya).
+> 2. **`$attendanceDays` (total_check_in) sekarang difilter hari kerja** — dari koleksi yang sudah diambil, `pluck('date')->unique()` lalu di-`filter()` menggunakan `$offMap` dan `$regularHolidaySet`/`$acceptedCollectiveLeavesSet` yang persis sama logikanya dengan penghitung `$workingDays` di atas. Ini memastikan konsistensi penuh: presensi di hari libur nasional tidak masuk hitungan, sehingga `absent = working_days - attendanceDays - totalLeaveDays` tidak bisa undercount (negatif).
+> - Bonus: duplikat baris attendance di tanggal sama (data kotor) ditangani dengan `.unique()` — tidak lagi dobel terhitung.
+> - `$typeCounts` (breakdown onsite/wfh/field) dipindah setelah kalkulasi utama agar tidak dipakai sebelum didefinisikan.
+> - `php -l` lolos tanpa error.
+
 ---
 
 ### 8. RENDAH — Lain-lain
 
 | Lokasi | Masalah |
 |--------|---------|
-| `ShiftController::store()` line ~257 | `'is_active' => $validated['is_active'] ?? true` — field `is_active` TIDAK ada di rules validasi → tidak pernah bisa di-set saat create (selalu true). Hapus baris atau tambahkan rule. |
-| `ShiftController::destroyAssignment()` | Assignment dibuat-hari-ini-lalu-diakhiri-hari-ini dapat `end_date = start_date` (= hari ini) → masih aktif hari ini, padahal pesan response mengklaim "kembali ke default mulai hari ini". |
-| `approveLeave()` / `rejectLeave()` | Notifikasi ke karyawan hanya DB notification, tanpa push FCM — tidak konsisten dengan overtime approval yang mengirim FCM. |
-| `checkOut()` | Tidak memvalidasi GPS sama sekali (check-in divalidasi ketat radius; checkout koordinatnya cuma disimpan). Device binding mengurangi risiko, tapi tetap celah "checkout dari mana saja". |
+| ~~`ShiftController::store()` line ~257~~ | ~~`'is_active' => $validated['is_active'] ?? true` — field `is_active` TIDAK ada di rules validasi → tidak pernah bisa di-set saat create (selalu true). Hapus baris atau tambahkan rule.~~ ✅ SELESAI 2026-08-26 — rule `is_active` => `sometimes|boolean` sudah ditambahkan pada array `$request->validate`. |
+| ~~`ShiftController::destroyAssignment()`~~ | ~~Assignment dibuat-hari-ini-lalu-diakhiri-hari-ini dapat `end_date = start_date` (= hari ini) → masih aktif hari ini, padahal pesan response mengklaim "kembali ke default mulai hari ini".~~ ✅ SELESAI 2026-08-26 — ditutup dengan validasi H+1 minimum pada `assignShift()` & `updateAssignment()` (start_date tidak bisa hari ini ke belakang). |
+| ~~`approveLeave()` / `rejectLeave()`~~ | ~~Notifikasi ke karyawan hanya DB notification, tanpa push FCM — tidak konsisten dengan overtime approval yang mengirim FCM.~~ ✅ SELESAI 2026-08-26 — kedua fungsi kini mengirim push FCM (`sendFcmPush`) ke karyawan setelah `notifyUser()`, dengan pola yang persis sama seperti `approveOvertime()`/`rejectOvertime()`. Judul notifikasi: "✅ Cuti Disetujui" / "❌ Izin Ditolak" dst. |
+| ~~`checkOut()`~~ | ~~Tidak memvalidasi GPS sama sekali (check-in divalidasi ketat radius; checkout koordinatnya cuma disimpan). Device binding mengurangi risiko, tapi tetap celah "checkout dari mana saja".~~ ✅ SELESAI 2026-08-26 — checkout untuk mode `onsite`/`field` kini divalidasi radius kantor terdekat (pola persis sama dengan checkIn). Mode `wfh` tetap tanpa validasi radius (konsisten dengan checkIn WFH). |
+
+---
+
+### 9. SEDANG — `listLeaveBalances()` fallback kuota hardcoded 12 + saldo cuti otomatis aktif ✅ SELESAI 2026-08-25
+
+**Lokasi:** `AttendanceController::listLeaveBalances()` (line ~903) + semua titik auto-create `LeaveBalance`
+
+```php
+$defaultQuotas = ['cuti' => self::DEFAULT_LEAVE_QUOTA['cuti'] ?? 12, 'izin' => 0];
+```
+
+- Daftar Saldo Cuti milik HRD menampilkan **kuota fallback hardcoded 12** untuk karyawan yang belum punya baris `leave_balances` — mengabaikan `default_leave_quota` kantor (kontradiksi dengan keputusan 2026-08-25 di rules.md).
+- Lebih dalam: 5 titik auto-create (`myLeaveBalance`, `requestLeave`, `approveLeave`, `respondCollectiveLeave`, `listCollectiveLeaves`) mengisi baris baru dengan kuota kantor penuh → karyawan baru **langsung punya saldo cuti aktif** tanpa sepengetahuan HRD.
+
+**✅ DIPERBAIKI 2026-08-25** — dua perubahan sekaligus:
+
+1. **Fix fallback:** baris belum-dibuat kini tampil NON-AKTIF (`quota=0`, `active=false`) — bukan lagi 12 fiktif. Kuota default kantor tetap dikirim sebagai referensi (`office_default_quota`) agar HRD tahu nilai wajar saat mengaktifkan. Preload kantor sekali (anti N+1).
+2. **Kebijakan BARU — saldo cuti non-aktif secara default:**
+   - Semua auto-create `cuti` kini membuat baris dengan **`quota = 0`** → karyawan baru (atau yang belum punya baris) **tidak bisa mengajukan/di-approve cuti sampai HRD mengisi kuota manual** di tab Saldo Cuti (`setLeaveBalance`).
+   - Penolakan dibedakan pesannya: *"Saldo cuti belum diaktifkan oleh HRD"* (quota=0 & used=0) vs *"saldo habis/tidak cukup"*.
+   - Titik yang disesuaikan: `approveLeave()`, `requestLeave()`, `myLeaveBalance()`, `respondCollectiveLeave()` (+flag `not_activated`), `listCollectiveLeaves()`, helper `reapplyLeaveDeductionAfterHolidayRemoval()`.
+   - **Reset tahunan** (`attendance:reset-leave-balances`) hanya me-reset baris AKTIF (quota > 0); baris quota 0 / tidak ada dibiarkan non-aktif — reset tidak boleh mengaktifkan saldo otomatis.
+   - Tanpa migration: memakai konvensi `quota = 0` = non-aktif; penegakan sudah ada lewat cek sisa saldo di semua jalur.
+   - ⚠️ Konsekuensi: karyawan lama yang belum punya baris saldo juga jadi non-aktif sampai diaktifkan HRD. Baris yang sudah ada tidak tersentuh.
+
+> Catatan terkait (belum diperbaiki): `setLeaveBalance()` masih menerima `leave_type=sakit` padahal sistem lain konsisten memakai `izin` (lihat analisis Bug #2 di percakapan review 2026-08-25).
 
 ---
 
@@ -146,7 +206,7 @@ $attendanceDays = (int) array_sum($attCounts->toArray());
 |---|-----------|-------------------|
 | 1 | **Tidak ada koreksi presensi manual** — HRD tidak bisa edit/lengkapi absen yang salah (lupa checkout sudah ter-handle auto-checkout, tapi check-in hilang/salah lokasi tidak bisa diperbaiki HRD) | Data laporan permanen salah; sudah tercatat di roadmap rules.md P3 |
 | 2 | **Tidak ada batas maksimal lembur** — UU 13/2003: lembur maks 4 jam/hari & 18 jam/minggu. Sistem menghitung lembur tanpa cap | Risiko kepatuhan ketenagakerjaan |
-| 3 | **Tidak ada notifikasi proaktif ke HRD saat pengaturan kantor diubah** — rekomendasi strategi proteksi #3 di rules.md sendiri belum diimplement | Perubahan `work_end_time`/grace mendadak bisa merusak auto-checkout hari itu; audit log ada tapi pasif (tidak ada yang membaca) |
+| 3 | ~~**Tidak ada notifikasi proaktif ke HRD saat pengaturan kantor diubah** — rekomendasi strategi proteksi #3 di rules.md sendiri belum diimplement~~ ✅ SELESAI 2026-08-26 — `AttendanceController::updateSettings()` kini melooping dan mengirim `notifyUser` ke semua HRD/Admin/SuperAdmin sesudah update. | Perubahan `work_end_time`/grace mendadak bisa merusak auto-checkout hari itu; audit log ada tapi pasif (tidak ada yang membaca) |
 | 4 | **Tarif/rate lembur belum ada** — approval lembur menghasilkan menit, tidak ada konversi nominal | Payroll (roadmap FASE 2) nanti mentok di sini |
 | 5 | **Shift swap antar karyawan belum ada** — semua perubahan harus lewat HRD manual | Beban admin tinggi untuk shift 24 jam (sudah di roadmap P1) |
 | 6 | **Delegasi approver** — kalau satu-satunya admin/super_admin berhalangan (cuti), approval lembur/device-change macet | Proses berhenti saat orang kuncinya tidak ada (roadmap P0 delegasi) |
@@ -167,9 +227,9 @@ $attendanceDays = (int) array_sum($attCounts->toArray());
 |--------|------|--------|
 | 1 | Bug #1 (multi-tenant holidays) | Kehilangan data lintas perusahaan — risiko tertinggi |
 | 2 | Bug #2 (total_days cuti bersama) | Langsung memengaruhi karyawan shift & akurasi dashboard HRD |
-| 3 | Bug #3 & #4 (one-line fix) | Murah, cepat, menghilangkan perilaku tak terduga |
-| 4 | Bug #5–#8 | Masuk sprint berikutnya |
+| 3 | Bug #3 & #4 (one-line fix) | Murah, cepat, menghilangkan perilaku tak terduga — #4 DITUNDA (risiko diterima, tertutup fitur notice period) |
+| 4 | Bug #7–#8 | Masuk sprint berikutnya (#5 ✅ & #6 ✅ SELESAI 2026-08-25) |
 | 5 | Kekurangan HRD #2 (batas lembur UU) & #6 (delegasi) | Kepatuhan & resiliensi proses |
 
 ---
-*Catatan dibuat otomatis hasil review Claude — 2026-08-25. Status: Bug #2 & Bug #3 SELESAI (2026-08-25); sisanya masih open/belum diperbaiki.*
+*Catatan dibuat otomatis hasil review Claude — 2026-08-25. Status: Bug #2, #3, #5, #6, #7, & #9 SELESAI (2026-08-25/26); Bug #4 DITUNDA (risiko diterima, tertutup fitur notice period); sisanya (#1, #8) masih open/belum diperbaiki.*

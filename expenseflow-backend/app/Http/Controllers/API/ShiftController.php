@@ -212,6 +212,7 @@ class ShiftController extends Controller
             'schedules.*.is_wfh'           => 'sometimes|boolean',
             'schedules.*.is_field'         => 'sometimes|boolean',
             'schedules.*.is_cross_day'     => 'sometimes|boolean',
+            'is_active'                    => 'sometimes|boolean',
         ]);
 
         // Validasi 7 hari unik + jam kerja terisi untuk hari non-libur + jeda K3
@@ -831,8 +832,8 @@ class ShiftController extends Controller
             'shift_id'   => 'nullable|integer|exists:shifts,id',
             'start_date' => 'required|date',
             // end_date opsional — tanggal karyawan otomatis kembali ke default kantor.
-            // Harus >= start_date. Null = shift berlaku tanpa batas.
-            'end_date'   => 'nullable|date|after_or_equal:start_date',
+            // Harus > start_date (minimal H+1). Null = shift berlaku tanpa batas.
+            'end_date'   => 'nullable|date|after:start_date',
             'notes'      => 'nullable|string|max:500',
         ]);
 
@@ -902,6 +903,18 @@ class ShiftController extends Controller
                 'prev_end_at'    => $k3['prev_end_at'],
                 'new_start_at'   => $k3['new_start_at'],
                 'earliest_start' => $k3['earliest_start'],
+            ], 422);
+        }
+
+        // Guard minimum H+1: start_date tidak boleh hari ini atau mundur.
+        // Ini berlaku terlepas dari shift_notice_days, dan mencegah bug pada destroyAssignment:
+        // jika assignment dibuat hari ini lalu langsung dihapus hari ini, maka
+        // end_date = start_date = hari ini → assignment masih aktif hari itu.
+        $todayForGuard = Carbon::now('Asia/Jakarta')->toDateString();
+        if ($validated['start_date'] <= $todayForGuard) {
+            $minStart = Carbon::tomorrow('Asia/Jakarta')->translatedFormat('d F Y');
+            return response()->json([
+                'message' => "Tanggal mulai shift harus minimal besok ({$minStart}). Tidak bisa menetapkan shift berlaku hari ini atau tanggal yang sudah lewat.",
             ], 422);
         }
 
@@ -1199,10 +1212,10 @@ class ShiftController extends Controller
             'notes'      => 'nullable|string|max:500',
         ]);
 
-        // Validasi silang: end_date >= start_date
+        // Validasi silang: end_date > start_date (minimal H+1)
         $effectiveStart = $validated['start_date'] ?? $userShift->start_date->toDateString();
-        if (! empty($validated['end_date']) && $validated['end_date'] < $effectiveStart) {
-            return response()->json(['message' => 'end_date harus sama dengan atau setelah start_date.'], 422);
+        if (! empty($validated['end_date']) && $validated['end_date'] <= $effectiveStart) {
+            return response()->json(['message' => 'end_date harus setelah start_date (minimal 1 hari setelah tanggal mulai).'], 422);
         }
 
         $targetUser = $userShift->user;
@@ -1267,6 +1280,20 @@ class ShiftController extends Controller
                 ], 422);
             }
             $k3Warnings = $k3['warnings'];
+        }
+
+        // Guard minimum H+1 (konsisten dengan assignShift): hanya berlaku jika
+        // HRD mengubah start_date ke nilai baru (bukan sekadar update notes/end_date).
+        // Assignment yang start_date-nya sudah di masa lalu (sudah berlaku) tidak diblokir
+        // saat update bidang lain — hanya perubahan ke start_date baru yang dicek.
+        if (array_key_exists('start_date', $validated)) {
+            $todayForGuard = Carbon::now('Asia/Jakarta')->toDateString();
+            if ($validated['start_date'] <= $todayForGuard) {
+                $minStart = Carbon::tomorrow('Asia/Jakarta')->translatedFormat('d F Y');
+                return response()->json([
+                    'message' => "Tanggal mulai shift baru harus minimal besok ({$minStart}). Tidak bisa mengubah start_date ke hari ini atau tanggal yang sudah lewat.",
+                ], 422);
+            }
         }
 
         // Validasi minimum notice period (HARD ERROR)
@@ -1509,7 +1536,7 @@ class ShiftController extends Controller
             'start_date' => 'required|date',
             // end_date opsional — semua karyawan target akan mendapat end_date yang sama.
             // Setelah end_date, masing-masing karyawan otomatis kembali ke default kantor.
-            'end_date'   => 'nullable|date|after_or_equal:start_date',
+            'end_date'   => 'nullable|date|after:start_date',
             'notes'      => 'nullable|string|max:500',
         ]);
 
@@ -1555,13 +1582,33 @@ class ShiftController extends Controller
                 ->flip()
             : collect();
 
+        // Preload assignment shift LAMA yang sedang AKTIF hari ini untuk semua
+        // karyawan target (satu query, hindari N+1). Dipakai untuk guard anti
+        // "ubah jadwal di tengah jam kerja" — sama seperti assignShift() individual.
+        $activeOldByUser = UserShift::with('shift')
+            ->whereIn('user_id', $validated['user_ids'])
+            ->whereNotNull('shift_id')
+            ->where('start_date', '<=', $todayStr)
+            ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
+            ->orderByDesc('start_date')
+            ->get()
+            ->groupBy('user_id')
+            ->map(fn ($rows) => $rows->first()); // assignment terbaru yang aktif
+
+        // Apakah assignment BARU ini berlaku HARI INI? (sama untuk semua karyawan
+        // karena start_date & end_date seragam). Jika ya, perlu guard jam kerja.
+        $newStartDate = $validated['start_date'];
+        $newEndDate   = $validated['end_date'] ?? null;
+        $coversToday  = $newStartDate <= $todayStr
+            && ($newEndDate === null || $newEndDate >= $todayStr);
+
         $shiftName = $shift ? $shift->name : 'Default Kantor';
         $tglMulai  = Carbon::parse($validated['start_date'])->translatedFormat('d F Y');
 
         $berhasil = [];
         $dilewati = [];
 
-        DB::transaction(function () use ($validated, $targets, $shift, $tanggalTerpakai, $alreadyActive, $shiftName, $tglMulai, $actor, &$berhasil, &$dilewati) {
+        DB::transaction(function () use ($validated, $targets, $shift, $tanggalTerpakai, $alreadyActive, $activeOldByUser, $coversToday, $shiftName, $tglMulai, $actor, &$berhasil, &$dilewati) {
             foreach ($validated['user_ids'] as $uid) {
                 $user = $targets->get($uid);
 
@@ -1601,6 +1648,21 @@ class ShiftController extends Controller
                 if ($noticeErr = $this->checkNoticeError($user, $validated['start_date'])) {
                     $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $noticeErr];
                     continue;
+                }
+
+                // CEGAH BUG (konsisten dengan assignShift individual): jika assignment
+                // baru mulai/berlaku HARI INI, pastikan karyawan tidak sedang dalam jam
+                // kerja shift LAMA yang akan digantikan. Lewati & laporkan bila sedang
+                // jam kerja agar jadwal hari ini tidak berubah di tengah shift.
+                if ($coversToday) {
+                    $activeOld = $activeOldByUser->get($uid);
+                    if ($activeOld && $activeOld->shift_id && $activeOld->shift_id !== $validated['shift_id']) {
+                        $blocked = $this->checkWithinWorkingHours($activeOld);
+                        if ($blocked) {
+                            $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => "Tidak bisa mengubah shift karyawan sekarang. " . $blocked];
+                            continue;
+                        }
+                    }
                 }
 
                 // Semua validasi lolos → simpan assignment ke DB

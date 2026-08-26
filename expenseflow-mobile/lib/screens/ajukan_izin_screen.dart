@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
@@ -19,12 +20,60 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   final _reasonController = TextEditingController();
   bool _isLoading = false;
 
+  // Preview hari EFEKTIF dari backend (skip libur/off-day/bentrok).
+  // null = belum termuat / gagal → UI fallback ke hitungan kalender sederhana.
+  int? _effectiveDays;
+  List<Map<String, dynamic>> _skippedDates = [];
+  bool _previewLoading = false;
+  Timer? _previewDebounce;
+  bool _showSkippedInfo = false;
+
   @override
   void initState() {
     super.initState();
     final tomorrow = DateTime.now().add(const Duration(days: 1));
     _startDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
     _endDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
+    // Muat preview awal (rentang default 1 hari)
+    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPreview());
+  }
+
+  // Ambil hitungan efektif dari backend (dengan debounce agar tidak spam API
+  // saat user menelusuri tanggal). Gagal → biarkan null, fallback kalender.
+  void _fetchPreview() {
+    _previewDebounce?.cancel();
+    _previewDebounce = Timer(const Duration(milliseconds: 400), () async {
+      if (!mounted) return;
+      setState(() => _previewLoading = true);
+      final prov = Provider.of<PresensiProvider>(context, listen: false);
+      final res = await prov.fetchLeavePreview(
+        startDate: _toStr(_startDate),
+        endDate: _toStr(_endDate),
+      );
+      if (!mounted) return;
+      setState(() {
+        _previewLoading = false;
+        if (res != null) {
+          _effectiveDays = (res['total_days'] ?? 0) as int;
+          _skippedDates = ((res['skipped_dates'] as List?) ?? [])
+              .whereType<Map<String, dynamic>>()
+              .toList();
+        } else {
+          _effectiveDays = null;
+          _skippedDates = [];
+        }
+      });
+    });
+  }
+
+  String _toStr(DateTime dt) =>
+      '${dt.year}-${dt.month.toString().padLeft(2, '0')}-${dt.day.toString().padLeft(2, '0')}';
+
+  @override
+  void dispose() {
+    _previewDebounce?.cancel();
+    _reasonController.dispose();
+    super.dispose();
   }
 
   // Lampiran surat dokter (wajib untuk jenis 'sakit')
@@ -40,6 +89,21 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   ];
 
   int get _totalDays => _endDate.difference(_startDate).inDays + 1;
+
+  // Ringkasan alasan skip utk banner, contoh:
+  // "karena tanggal 6 Sep adalah Hari Libur: X" /
+  // "karena tanggal 6 Sep (Hari Libur: X) dan 7 Sep (Libur jadwal kerja)"
+  String get _skippedReasonSummary {
+    if (_skippedDates.isEmpty) return '';
+    final parts = _skippedDates.map((s) {
+      final tgl = _formatDate(DateTime.parse(s['date'] as String));
+      final label = (s['label'] as String?) ?? 'hari libur';
+      return 'tanggal $tgl adalah $label';
+    }).toList();
+    if (parts.length == 1) return 'karena ${parts[0]}';
+    final head = parts.sublist(0, parts.length - 1).join(', ');
+    return 'karena $head dan ${parts.last}';
+  }
 
   Future<void> _pickDate({required bool isStart}) async {
     final tomorrow = DateTime.now().add(const Duration(days: 1));
@@ -62,6 +126,8 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
         _endDate = picked;
       }
     });
+    // Tanggal berubah → muat ulang hitungan efektif dari backend
+    _fetchPreview();
   }
 
   String _formatDate(DateTime dt) {
@@ -174,12 +240,6 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   }
 
   @override
-  void dispose() {
-    _reasonController.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
@@ -264,23 +324,144 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
               ],
             ),
             const SizedBox(height: 8),
+
+            // Badge "Total N hari" — memakai hitungan EFEKTIF dari backend
+            // (skip libur/off-day/bentrok). Fallback kalender saat backend gagal.
             Center(
-              child: Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFE3F2FD),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  'Total $_totalDays hari',
-                  style: const TextStyle(
-                      color: Color(0xFF1565C0),
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13),
-                ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFE3F2FD),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: _previewLoading && _effectiveDays == null
+                        ? const SizedBox(
+                            width: 14,
+                            height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (_previewLoading) ...[
+                                const SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                                const SizedBox(width: 8),
+                              ],
+                              Text(
+                                'Total ${_effectiveDays ?? _totalDays} hari',
+                                style: const TextStyle(
+                                    color: Color(0xFF1565C0),
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 13),
+                              ),
+                            ],
+                          ),
+                  ),
+                  if ((_effectiveDays ?? _totalDays) != _totalDays && !_previewLoading) ...[
+                    const SizedBox(width: 6),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          _showSkippedInfo = !_showSkippedInfo;
+                        });
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(5),
+                        decoration: BoxDecoration(
+                          color: _showSkippedInfo
+                              ? const Color(0xFFE65100)
+                              : const Color(0xFFFFF3E0),
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: const Color(0xFFFFB74D),
+                            width: 1.2,
+                          ),
+                        ),
+                        child: Icon(
+                          Icons.priority_high_rounded,
+                          size: 14,
+                          color: _showSkippedInfo ? Colors.white : const Color(0xFFE65100),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
               ),
             ),
+
+            // Pemberitahuan: tanggal yang tidak dihitung + alasannya (toggleable).
+            if ((_effectiveDays ?? _totalDays) != _totalDays &&
+                !_previewLoading &&
+                _showSkippedInfo) ...[
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF8E1),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFFFE082)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(Icons.info_outline,
+                            size: 16, color: Colors.orange.shade800),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            'Total ${_effectiveDays ?? _totalDays} hari '
+                            '$_skippedReasonSummary',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.orange.shade900,
+                              fontWeight: FontWeight.w600,
+                              height: 1.4,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        GestureDetector(
+                          onTap: () => setState(() => _showSkippedInfo = false),
+                          child: Icon(
+                            Icons.close_rounded,
+                            size: 16,
+                            color: Colors.orange.shade800,
+                          ),
+                        ),
+                      ],
+                    ),
+                    // Rincian per tanggal yang di-skip
+                    for (final s in _skippedDates) ...[
+                      const SizedBox(height: 4),
+                      Padding(
+                        padding: const EdgeInsets.only(left: 22),
+                        child: Text(
+                          '• ${_formatDate(DateTime.parse(s['date']))} — '
+                          '${s['label'] ?? 'hari libur'}',
+                          style: TextStyle(
+                            fontSize: 11.5,
+                            color: Colors.orange.shade800,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
             const SizedBox(height: 24),
 
             // Alasan

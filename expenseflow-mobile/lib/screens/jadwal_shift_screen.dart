@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/shift_provider.dart';
+import '../widgets/skeleton.dart';
 
 class JadwalShiftScreen extends StatefulWidget {
   const JadwalShiftScreen({super.key});
@@ -192,8 +193,61 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
       ),
       body: Consumer<ShiftProvider>(
         builder: (context, prov, _) {
-          if (prov.loading) {
-            return const Center(child: CircularProgressIndicator());
+          if (prov.loading && prov.shiftInfo == null && prov.calendarDays.isEmpty) {
+            return ShimmerLoading(
+              child: SingleChildScrollView(
+                physics: const NeverScrollableScrollPhysics(),
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    const SkeletonShiftCard(),
+                    const SizedBox(height: 16),
+                    Container(
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(color: const Color(0xFFF1F5F9)),
+                      ),
+                      child: Column(
+                        children: [
+                          const Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              SkeletonBox(width: 140, height: 18, borderRadius: 4),
+                              SkeletonBox(width: 60, height: 28, borderRadius: 8),
+                            ],
+                          ),
+                          const SizedBox(height: 16),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceAround,
+                            children: List.generate(
+                              7,
+                              (index) => const SkeletonBox(width: 24, height: 14, borderRadius: 4),
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          GridView.builder(
+                            shrinkWrap: true,
+                            physics: const NeverScrollableScrollPhysics(),
+                            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 7,
+                              childAspectRatio: 1,
+                              crossAxisSpacing: 4,
+                              mainAxisSpacing: 4,
+                            ),
+                            itemCount: 35,
+                            itemBuilder: (_, __) => const SkeletonBox(borderRadius: 8),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    const SkeletonShiftCard(),
+                  ],
+                ),
+              ),
+            );
           }
           if (prov.error != null) {
             return _buildError(prov);

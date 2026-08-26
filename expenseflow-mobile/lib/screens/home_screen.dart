@@ -9,6 +9,7 @@ import '../presensi_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/receipt_provider.dart';
 import '../providers/shift_provider.dart';
+import '../widgets/skeleton.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userName;
@@ -458,22 +459,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   Widget _buildTodayScheduleCard(ShiftProvider prov) {
     if (prov.loading) {
-      return Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: const [
-            BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, 2)),
-          ],
-        ),
-        child: const Center(
-          child: SizedBox(
-            width: 20, height: 20,
-            child: CircularProgressIndicator(strokeWidth: 2),
-          ),
-        ),
+      return const ShimmerLoading(
+        child: SkeletonShiftCard(),
       );
     }
 

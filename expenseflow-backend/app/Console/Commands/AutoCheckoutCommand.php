@@ -80,31 +80,52 @@ class AutoCheckoutCommand extends Command
             $companyId = $attendance->company_id;
             $office    = ($officeSettings[$companyId] ?? collect())->first();
 
-            if (! $office || ! $office->work_end_time) {
-                // Tidak ada setting kantor → tidak bisa tentukan batas waktu
-                continue;
-            }
-
             // Tanggal shift asli record ini (bisa kemarin/lama untuk catch-up,
             // atau kemarin untuk shift malam lintas hari)
             $attDate = Carbon::parse($attendance->date)->toDateString();
 
-            // Ambil jadwal efektif karyawan pada tanggal shift-nya (shift aktif atau default kantor).
-            // Jam pulang shift dipakai agar auto-checkout konsisten dengan checkOut manual.
-            $schedule  = $attendance->user
-                ? ShiftController::resolveSchedule($attendance->user, $attDate)
-                : null;
+            /*
+             * SNAPSHOT (2026-08-26): bila record punya snapshot pengaturan saat check-in,
+             * gunakan aturan TERSEBUT (jam pulang, grace, reminder, lembur, kantor acuan).
+             * HRD yang mengubah setting kantor di siang hari tidak lagi mempengaruhi
+             * presensi yang sudah berjalan — konsisten dengan checkOut() manual.
+             * Baris lama (tanpa snapshot) tetap pakai jalur live seperti sebelumnya.
+             */
+            $snapshot = $attendance->snapshotSchedule();
 
-            $isCrossDay = $schedule && ! empty($schedule['is_cross_day']) && ! $schedule['is_off'];
+            if ($snapshot && $snapshot['work_end_time'] && $snapshot['office']) {
+                // Jam pulang snapshot sudah termasuk fallback jam pulang kantor di hari libur shift.
+                $jamPulang       = $snapshot['work_end_time'];
+                $isCrossDay      = ! empty($snapshot['is_cross_day']) && ! $snapshot['is_off'];
+                $graceMins       = (int) ($attendance->snap_grace_minutes ?? 60);
+                $reminderMins    = (int) ($attendance->snap_reminder_minutes ?? 30);
+                $scheduleForCalc = $snapshot;
+                $officeForCalc   = $snapshot['office'];
+            } else {
+                if (! $office || ! $office->work_end_time) {
+                    // Tidak ada setting kantor → tidak bisa tentukan batas waktu
+                    continue;
+                }
 
-            // Jika hari ini ditandai libur oleh shift (is_off) → jam pulang tidak relevan,
-            // pakai jam pulang kantor sebagai acuan grace period auto-checkout.
-            $jamPulang = ($schedule && ! $schedule['is_off'] && $schedule['work_end_time'])
-                ? $schedule['work_end_time']
-                : $office->work_end_time;
+                // Ambil jadwal efektif karyawan pada tanggal shift-nya (shift aktif atau default kantor).
+                // Jam pulang shift dipakai agar auto-checkout konsisten dengan checkOut manual.
+                $schedule = $attendance->user
+                    ? ShiftController::resolveSchedule($attendance->user, $attDate)
+                    : null;
 
-            $graceMins    = (int) ($office->auto_checkout_grace_minutes ?? 60);
-            $reminderMins = (int) ($office->checkout_reminder_minutes ?? 30);
+                $isCrossDay = $schedule && ! empty($schedule['is_cross_day']) && ! $schedule['is_off'];
+
+                // Jika hari ini ditandai libur oleh shift (is_off) → jam pulang tidak relevan,
+                // pakai jam pulang kantor sebagai acuan grace period auto-checkout.
+                $jamPulang = ($schedule && ! $schedule['is_off'] && $schedule['work_end_time'])
+                    ? $schedule['work_end_time']
+                    : $office->work_end_time;
+
+                $graceMins    = (int) ($office->auto_checkout_grace_minutes ?? 60);
+                $reminderMins = (int) ($office->checkout_reminder_minutes ?? 30);
+                $scheduleForCalc = $schedule;
+                $officeForCalc   = $office;
+            }
 
             // Shift lintas hari: jam pulang berada di HARI BERIKUTNYA setelah tanggal shift.
             $jamPulangDate = $isCrossDay
@@ -137,7 +158,7 @@ class AutoCheckoutCommand extends Command
                     $skipOvertime      = true;
                 }
 
-                $this->doAutoCheckout($attendance, $office, $attDate, $effectiveCheckOut, $skipOvertime);
+                $this->doAutoCheckout($attendance, $officeForCalc, $attDate, $effectiveCheckOut, $skipOvertime, $scheduleForCalc);
                 $totalAutoCheckout++;
                 continue;
             }
@@ -209,16 +230,20 @@ class AutoCheckoutCommand extends Command
     // ─── Lakukan auto-checkout ────────────────────────────────────────────────
     // $attDate = tanggal shift asli (bisa kemarin untuk shift malam lintas hari),
     //            bukan tanggal hari ini. Penting untuk resolveSchedule() yang benar.
-    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $attDate, Carbon $checkOutTime, bool $skipOvertime = false): void
+    // $schedule = jadwal acuan perhitungan — snapshot check-in bila ada, selain itu
+    //             hasil resolveSchedule() live (baris lama). Null → resolve di sini.
+    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $attDate, Carbon $checkOutTime, bool $skipOvertime = false, ?array $schedule = null): void
     {
         $user = $attendance->user;
 
-        // Ambil jadwal efektif karyawan pada tanggal shift aslinya.
+        // Jadwal efektif karyawan pada tanggal shift aslinya.
         // Untuk shift malam (check-in kemarin, checkout pagi ini), $attDate = kemarin —
         // sehingga resolveSchedule() membaca jadwal shift malam, bukan jadwal hari ini.
-        $schedule = $user
-            ? ShiftController::resolveSchedule($user, $attDate)
-            : null;
+        if ($schedule === null) {
+            $schedule = $user
+                ? ShiftController::resolveSchedule($user, $attDate)
+                : null;
+        }
 
         // Hitung jam kerja dari jam JADWAL masuk (bukan jam check-in).
         // Konsisten dengan manual checkOut() di AttendanceController.

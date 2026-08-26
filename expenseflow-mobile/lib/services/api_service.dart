@@ -261,6 +261,18 @@ class ApiService {
     return _request('GET', '/attendance/my-leaves');
   }
 
+  // Preview hitungan hari EFEKTIF pengajuan (backend skip libur/off-day/bentrok).
+  // Response: { total_days, calendar_days, effective_dates[], skipped_dates[] }
+  static Future<Map<String, dynamic>> leavePreview({
+    required String startDate,
+    required String endDate,
+  }) async {
+    return _request('GET', '/attendance/leave-preview', query: {
+      'start_date': startDate,
+      'end_date': endDate,
+    });
+  }
+
   static Future<Map<String, dynamic>> requestLeave({
     required String leaveType,
     required String startDate,

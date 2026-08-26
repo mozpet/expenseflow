@@ -1,4 +1,4 @@
-﻿import 'package:flutter/material.dart';
+import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/shift_provider.dart';
 
@@ -7,6 +7,7 @@ Future<DateTime?> showCustomDatePicker({
   required DateTime initialDate,
   required DateTime firstDate,
   required DateTime lastDate,
+  bool disableUnavailable = true,
 }) {
   return showDialog<DateTime>(
     context: context,
@@ -14,6 +15,7 @@ Future<DateTime?> showCustomDatePicker({
       initialDate: initialDate,
       firstDate: firstDate,
       lastDate: lastDate,
+      disableUnavailable: disableUnavailable,
     ),
   );
 }
@@ -22,11 +24,13 @@ class _CustomDatePickerDialog extends StatefulWidget {
   final DateTime initialDate;
   final DateTime firstDate;
   final DateTime lastDate;
+  final bool disableUnavailable;
 
   const _CustomDatePickerDialog({
     required this.initialDate,
     required this.firstDate,
     required this.lastDate,
+    this.disableUnavailable = true,
   });
 
   @override
@@ -212,7 +216,6 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                     final isSelected = date.year == _selectedDate.year &&
                         date.month == _selectedDate.month &&
                         date.day == _selectedDate.day;
-                    final isDisabled = date.isBefore(minDate) || date.isAfter(maxDate);
 
                     final isCrossDayToday = schedule?.isCrossDay ?? false;
                     final prevDate = date.subtract(const Duration(days: 1));
@@ -242,6 +245,12 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                         !isHoliday &&
                         !isCollectiveLeave &&
                         !isPersonalLeave;
+
+                    final bool isUnavailable =
+                        isOff || isHoliday || isCollectiveLeave || isPersonalLeave;
+                    final bool isDisabled = date.isBefore(minDate) ||
+                        date.isAfter(maxDate) ||
+                        (widget.disableUnavailable && isUnavailable);
                         
                     final holidayAccent = isCollectiveLeave || isPersonalLeave
                         ? const Color(0xFFD97706)
@@ -268,25 +277,29 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                           height: 58,
                           margin: const EdgeInsets.all(1.5),
                           decoration: BoxDecoration(
-                            color: isSelected
-                                ? cellColor.withValues(alpha: 0.12)
-                                : holidayAccent != null
-                                    ? holidayAccent.withValues(alpha: 0.15)
-                                    : isOff
-                                        ? Colors.red.shade50.withValues(alpha: 0.5)
-                                        : Colors.transparent,
+                            color: isDisabled
+                                ? (isUnavailable
+                                    ? Colors.grey.shade100.withValues(alpha: 0.6)
+                                    : Colors.transparent)
+                                : isSelected
+                                    ? cellColor.withValues(alpha: 0.12)
+                                    : holidayAccent != null
+                                        ? holidayAccent.withValues(alpha: 0.15)
+                                        : isOff
+                                            ? Colors.red.shade50.withValues(alpha: 0.5)
+                                            : Colors.transparent,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
-                              color: isSelected
+                              color: !isDisabled && isSelected
                                   ? cellColor
-                                  : isToday
+                                  : isToday && !isDisabled
                                       ? const Color(0xFF1E88E5)
                                       : Colors.transparent,
-                              width: isSelected || isToday ? 2 : 0,
+                              width: (!isDisabled && isSelected) || (isToday && !isDisabled) ? 2 : 0,
                             ),
                           ),
                           child: Opacity(
-                            opacity: isDisabled ? 0.3 : 1.0,
+                            opacity: isDisabled ? 0.35 : 1.0,
                             child: Column(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
@@ -305,7 +318,7 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                                   height: 26,
                                   alignment: Alignment.center,
                                   decoration: BoxDecoration(
-                                    color: isToday
+                                    color: isToday && !isDisabled
                                         ? const Color(0xFF1E88E5)
                                         : Colors.transparent,
                                     shape: BoxShape.circle,
@@ -315,7 +328,7 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                                     style: TextStyle(
                                       fontSize: 13,
                                       fontWeight: FontWeight.w600,
-                                      color: isToday
+                                      color: (isToday && !isDisabled)
                                           ? Colors.white
                                           : holidayAccent ?? (isOff
                                               ? Colors.red.shade400

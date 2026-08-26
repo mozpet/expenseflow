@@ -107,6 +107,17 @@ const hhmm = (t?: string | null) => (t ? t.slice(0, 5) : '');
 
 const todayStr = () => new Date().toISOString().slice(0, 10);
 
+const addDays = (dateStr: string, days: number = 1): string => {
+  if (!dateStr) return '';
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (!y || !m || !d) return '';
+  const date = new Date(y, m - 1, d + days);
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, '0');
+  const dd = String(date.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
 const fmtDate = (iso?: string | null) => {
   if (!iso) return '-';
   return new Date(iso).toLocaleDateString('id-ID', {
@@ -253,6 +264,7 @@ interface ShiftFormProps {
 function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFormProps) {
   const [name, setName] = useState(editing?.name ?? '');
   const [description, setDescription] = useState(editing?.description ?? '');
+  const [isActive, setIsActive] = useState(editing?.is_active ?? true);
   const [color, setColor] = useState(editing?.color ?? '#6366f1');
   const [branchId, setBranchId] = useState<string>(
     editing?.attendance_setting_id ? String(editing.attendance_setting_id) : '',
@@ -436,6 +448,7 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
       name: name.trim(),
       description: description.trim() || undefined,
       color: color || null,
+      is_active: isActive,
       schedules: schedules.map((s) => ({
         day_of_week: s.day_of_week,
         is_off: s.is_off,
@@ -643,14 +656,39 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
                 <span className="text-[10px] text-slate-400">— tampilan di kalender</span>
               </div>
             </div>
-            <div className="sm:col-span-2">
-              <label className="text-xs font-semibold text-slate-600 block mb-1.5">Deskripsi</label>
-              <input
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Opsional — keterangan singkat shift"
-                className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none focus:border-indigo-400"
-              />
+            <div className="sm:col-span-2 flex flex-col sm:flex-row gap-4">
+              <div className="flex-1">
+                <label className="text-xs font-semibold text-slate-600 block mb-1.5">Deskripsi</label>
+                <input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Opsional — keterangan singkat shift"
+                  className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none focus:border-indigo-400"
+                />
+              </div>
+              {!editing && (
+                <div className="w-full sm:w-56 shrink-0">
+                  <label className="text-xs font-semibold text-slate-600 block mb-1.5">Status Shift</label>
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsActive(!isActive)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:ring-offset-2 ${
+                        isActive ? 'bg-indigo-600' : 'bg-slate-200'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          isActive ? 'translate-x-2' : '-translate-x-2'
+                        }`}
+                      />
+                    </button>
+                    <span className="text-[11px] text-slate-600 font-medium">
+                      {isActive ? 'Aktif (Dapat ditugaskan)' : 'Nonaktif (Draf)'}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 
@@ -972,8 +1010,8 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
       setErr('Silakan pilih shift terlebih dahulu.');
       return;
     }
-    if (endDate && endDate < startDate) {
-      setErr('Tanggal berakhir tidak boleh sebelum tanggal mulai.');
+    if (endDate && endDate <= startDate) {
+      setErr('Tanggal berakhir harus setelah tanggal mulai (minimal 1 hari setelah tanggal mulai).');
       return;
     }
     setBusy(true);
@@ -1079,7 +1117,13 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
                 <input
                   type="date"
                   value={startDate}
-                  onChange={(e) => setStartDate(e.target.value)}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setStartDate(val);
+                    if (endDate && endDate <= val) {
+                      setEndDate('');
+                    }
+                  }}
                   className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                 />
               </div>
@@ -1091,7 +1135,7 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
                 <input
                   type="date"
                   value={endDate}
-                  min={startDate}
+                  min={startDate ? addDays(startDate, 1) : undefined}
                   onChange={(e) => setEndDate(e.target.value)}
                   className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                 />
@@ -1247,8 +1291,8 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
       setErr('Silakan pilih shift terlebih dahulu.');
       return;
     }
-    if (endDate && endDate < startDate) {
-      setErr('Tanggal berakhir tidak boleh sebelum tanggal mulai.');
+    if (endDate && endDate <= startDate) {
+      setErr('Tanggal berakhir harus setelah tanggal mulai (minimal 1 hari setelah tanggal mulai).');
       return;
     }
     setBusy(true);
@@ -1333,7 +1377,13 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
                   <input
                     type="date"
                     value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setStartDate(val);
+                      if (endDate && endDate <= val) {
+                        setEndDate('');
+                      }
+                    }}
                     className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                   />
                 </div>
@@ -1345,7 +1395,7 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
                   <input
                     type="date"
                     value={endDate}
-                    min={startDate}
+                    min={startDate ? addDays(startDate, 1) : undefined}
                     onChange={(e) => setEndDate(e.target.value)}
                     className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                   />
