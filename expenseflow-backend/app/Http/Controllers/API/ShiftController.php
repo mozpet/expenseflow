@@ -937,7 +937,10 @@ class ShiftController extends Controller
             // Assignment shift lama yang sedang aktif hari ini
             $activeOld = UserShift::with('shift')
                 ->where('user_id', $targetUser->id)
-                ->where('id', '!=', $validated['shift_id'] ?? 0) // bukan shift baru
+                ->when(
+                    ! empty($validated['shift_id']),
+                    fn ($q) => $q->where('shift_id', '!=', $validated['shift_id'])
+                )
                 ->where('start_date', '<=', $todayStr)
                 ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
                 ->orderByDesc('start_date')
@@ -1394,13 +1397,41 @@ class ShiftController extends Controller
         }
 
         if ($isActive) {
-            // SOFT-END: akhiri assignment kemarin → karyawan pindah ke jadwal kantor
-            // default mulai hari ini. Histori shift tetap tersimpan.
-            // Guard: jangan biarkan end_date < start_date (terjadi jika assignment
-            // dibuat hari ini lalu langsung dihapus hari ini juga).
+            $startStr = $userShift->start_date->toDateString();
+
+            // Jika assignment baru dimulai HARI INI (start_date == today), belum ada
+            // histori hari-hari kemarin yang perlu dipertahankan -> hapus permanen
+            // agar karyawan langsung kembali ke default kantor hari ini tanpa tertahan end_date = today.
+            if ($startStr === $today) {
+                $userShift->delete();
+
+                $this->logActivity(
+                    $actor->id,
+                    $actor->company_id,
+                    'shift_assignment_deleted',
+                    "Menghapus assignment shift {$targetUser->name} (mulai {$tglMulai}) — karyawan kembali ke jadwal kantor default",
+                    'user',
+                    $targetUser->id
+                );
+
+                $this->notifyEmployee(
+                    $targetUser,
+                    'shift_removed',
+                    "Jadwal shift Anda (mulai " . Carbon::parse($tglMulai)->translatedFormat('d F Y') . ") telah dihapus HRD. Anda kembali ke jadwal kantor default mulai hari ini.",
+                    null
+                );
+
+                return response()->json([
+                    'message' => "Assignment shift dihapus. {$targetUser->name} kembali ke jadwal kantor default mulai hari ini.",
+                    'soft_end' => false,
+                ]);
+            }
+
+            // Jika assignment sudah berjalan sejak masa lalu (start_date < today) -> SOFT-END:
+            // set end_date = kemarin. Histori masa lalu tetap tersimpan utuh,
+            // dan karyawan otomatis kembali ke jadwal kantor default mulai hari ini.
             $yesterday = Carbon::yesterday('Asia/Jakarta')->toDateString();
-            $startStr  = $userShift->start_date->toDateString();
-            $userShift->end_date = $yesterday >= $startStr ? $yesterday : $startStr;
+            $userShift->end_date = $yesterday;
             $userShift->save();
 
             $this->logActivity(
@@ -2094,10 +2125,14 @@ class ShiftController extends Controller
     {
         $dayOfWeek = Carbon::parse($date)->dayOfWeek; // 0=Minggu … 6=Sabtu
 
-        // Cari shift aktif: start_date terbaru yang sudah <= tanggal ini
+        // Cari shift aktif pada tanggal $date:
+        // - start_date <= $date (sudah mulai)
+        // - DAN (end_date is null ATAU end_date >= $date) (belum berakhir)
+        // Urutkan DESC start_date untuk mengambil assignment yang paling baru yang mencakup tanggal ini.
         $userShift = UserShift::with('shift')
             ->where('user_id', $user->id)
             ->where('start_date', '<=', $date)
+            ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date))
             ->orderByDesc('start_date')
             ->first();
 
@@ -2114,16 +2149,8 @@ class ShiftController extends Controller
                 ->first();
         }
 
-        // Cek apakah assignment masih berlaku berdasarkan end_date:
-        //   - end_date = null  → berlaku tanpa batas (perilaku lama)
-        //   - end_date terisi  → shift hanya berlaku sampai end_date (inklusif).
-        //     Jika tanggal yang diminta > end_date → shift sudah berakhir;
-        //     karyawan otomatis kembali ke jam default kantor.
-        $shiftStillActive = $userShift
-            && ($userShift->end_date === null || $userShift->end_date->toDateString() >= $date);
-
         // Jika ada shift aktif dengan shift_id terisi DAN template masih aktif → gunakan jadwal shift
-        if ($shiftStillActive && $userShift->shift_id && optional($userShift->shift)->is_active) {
+        if ($userShift && $userShift->shift_id && optional($userShift->shift)->is_active) {
             // Versi jadwal yang berlaku pada tanggal tsb (effective_date <= tanggal)
             $shiftSchedule = self::scheduleForDate($userShift->shift_id, $dayOfWeek, $date);
 

@@ -13,6 +13,7 @@ import {
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { vendorApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
+import { useDebounce } from '../hooks/useDebounce';
 
 interface Vendor {
   id: string; // id numerik backend (string)
@@ -96,16 +97,19 @@ export const MasterVendor: React.FC<{
     onConfirm: () => void;
   } | null>(null);
 
+  const debouncedSearch = useDebounce(searchQuery, 500);
+
   // Filter and search
   const filteredVendors = useMemo(() => {
     return vendors.filter(v => {
-      const matchSearch = v.nama.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          v.npwp.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          v.bank.toLowerCase().includes(searchQuery.toLowerCase());
+      const matchSearch = !debouncedSearch ||
+                          v.nama.toLowerCase().includes(debouncedSearch.toLowerCase()) || 
+                          v.npwp.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                          v.bank.toLowerCase().includes(debouncedSearch.toLowerCase());
       const matchStatus = statusFilter === 'all' || v.status === statusFilter;
       return matchSearch && matchStatus;
     });
-  }, [vendors, searchQuery, statusFilter]);
+  }, [vendors, debouncedSearch, statusFilter]);
 
   const [submitting, setSubmitting] = useState(false);
 
@@ -287,6 +291,29 @@ export const MasterVendor: React.FC<{
           <span>
             Vendor harus didaftarkan dulu sebelum bisa dipilih saat input invoice. Data rekening bank vendor tersimpan di sini dan otomatis muncul saat proses pembayaran.
           </span>
+        </div>
+
+        {/* Tab status filter */}
+        <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800 -mb-px">
+          {[
+            { key: 'all' as const, label: 'Semua Vendor', count: vendors.length },
+            { key: 'Aktif' as const, label: 'Aktif', count: vendors.filter(v => v.status === 'Aktif').length },
+            { key: 'Nonaktif' as const, label: 'Nonaktif', count: vendors.filter(v => v.status === 'Nonaktif').length },
+          ].map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setStatusFilter(t.key)}
+              className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${statusFilter === t.key
+                ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
+                }`}
+            >
+              {t.label}
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${statusFilter === t.key ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                {t.count}
+              </span>
+            </button>
+          ))}
         </div>
 
         {/* The Card List matching layout & design colors of image.png exactly */}

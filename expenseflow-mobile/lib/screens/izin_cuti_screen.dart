@@ -112,7 +112,7 @@ class _RiwayatIzinTab extends StatelessWidget {
           physics: const NeverScrollableScrollPhysics(),
           padding: const EdgeInsets.all(16),
           itemCount: 5,
-          itemBuilder: (_, __) => const SkeletonLeaveCard(),
+          itemBuilder: (context, index) => const SkeletonLeaveCard(),
         ),
       );
     }
@@ -458,25 +458,44 @@ class _BalanceCard extends StatelessWidget {
                 ),
                 const Spacer(),
                 if (isCuti)
-                  RichText(
-                    text: TextSpan(
-                      children: [
-                        TextSpan(
-                          text: '${balance.remaining}',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: color,
+                  if (balance.quota > 0)
+                    RichText(
+                      text: TextSpan(
+                        children: [
+                          TextSpan(
+                            text: '${balance.remaining}',
+                            style: TextStyle(
+                              fontSize: 22,
+                              fontWeight: FontWeight.bold,
+                              color: color,
+                            ),
                           ),
+                          TextSpan(
+                            text: ' / ${balance.quota} hari',
+                            style: const TextStyle(
+                                fontSize: 13, color: Colors.grey),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.grey.shade100,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.grey.shade300),
+                      ),
+                      child: Text(
+                        'Tidak Aktif',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                          color: Colors.grey.shade600,
                         ),
-                        TextSpan(
-                          text: ' / ${balance.quota} hari',
-                          style: const TextStyle(
-                              fontSize: 13, color: Colors.grey),
-                        ),
-                      ],
-                    ),
-                  )
+                      ),
+                    )
                 else
                   RichText(
                     text: TextSpan(
@@ -500,35 +519,54 @@ class _BalanceCard extends StatelessWidget {
             ),
             const SizedBox(height: 12),
             if (isCuti) ...[
-              ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: LinearProgressIndicator(
-                  value: (balance.quota > 0
-                          ? balance.used / balance.quota
-                          : 0.0)
-                      .clamp(0.0, 1.0),
-                  minHeight: 8,
-                  backgroundColor: Colors.grey.shade200,
-                  color: color,
+              if (balance.quota > 0) ...[
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: LinearProgressIndicator(
+                    value: (balance.used / balance.quota).clamp(0.0, 1.0),
+                    minHeight: 8,
+                    backgroundColor: Colors.grey.shade200,
+                    color: color,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 8),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    'Terpakai: ${balance.used} hari',
-                    style: const TextStyle(fontSize: 12, color: Colors.grey),
-                  ),
-                  Text(
-                    'Sisa: ${balance.remaining} hari',
-                    style: TextStyle(
+                const SizedBox(height: 8),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      'Terpakai: ${balance.used} hari',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    Text(
+                      'Sisa: ${balance.remaining} hari',
+                      style: TextStyle(
+                          fontSize: 12,
+                          color: color,
+                          fontWeight: FontWeight.bold),
+                    ),
+                  ],
+                ),
+              ] else ...[
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      balance.used > 0
+                          ? 'Terpakai: ${balance.used} hari'
+                          : 'Belum diaktifkan oleh HRD',
+                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                    ),
+                    Text(
+                      'Status: Tidak Aktif',
+                      style: TextStyle(
                         fontSize: 12,
-                        color: color,
-                        fontWeight: FontWeight.bold),
-                  ),
-                ],
-              ),
+                        color: Colors.grey.shade600,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ] else ...[
               Text(
                 'Total hari izin & sakit yang digunakan',

@@ -19,6 +19,7 @@ import {
   Save,
   RefreshCw
 } from 'lucide-react';
+import { useDebounce } from '../hooks/useDebounce';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { receiptApi } from '../services/endpoints';
 
@@ -96,10 +97,13 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   };
 
 
+  const debouncedSearch = useDebounce(searchQuery, 500);
+
   // Filter receipt list
   const filteredReceipts = receipts.filter(r => {
-    const matchesSearch = r.karyawan.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          r.merchant.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSearch = !debouncedSearch ||
+                          r.karyawan.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                          r.merchant.toLowerCase().includes(debouncedSearch.toLowerCase());
     
     if (!matchesSearch) return false;
     if (filter === 'all') return true;
@@ -278,27 +282,27 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
       {/* Main Container with Tabs */}
       <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-sm">
         {/* Tab Bar */}
-        <div className="flex border-b border-slate-100 dark:border-slate-800 items-center">
+        <div className="flex border-b border-slate-200 dark:border-slate-800 items-center">
           <button
             onClick={() => setActiveTab('inbox')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition border-b-2 ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${
               activeTab === 'inbox'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
             }`}
           >
-            <Inbox className="w-4 h-4" />
+            <Inbox className="w-3.5 h-3.5" />
             Inbox Struk
           </button>
           <button
             onClick={() => setActiveTab('settings')}
-            className={`flex items-center gap-2 px-5 py-3 text-sm font-medium transition border-b-2 ${
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${
               activeTab === 'settings'
-                ? 'border-indigo-600 text-indigo-600 dark:text-indigo-400 dark:border-indigo-400'
-                : 'border-transparent text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-300'
+                ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
             }`}
           >
-            <SlidersHorizontal className="w-4 h-4" />
+            <SlidersHorizontal className="w-3.5 h-3.5" />
             Pengaturan
           </button>
 

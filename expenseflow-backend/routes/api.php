@@ -145,6 +145,7 @@ Route::prefix('v1')->group(function () {
                 Route::patch('/users/{user}/deactivate', [UserController::class, 'deactivate']);
                 Route::patch('/users/{user}/activate', [UserController::class, 'activate']);
                 Route::post('/users/{user}/reset-password', [UserController::class, 'resetPassword']);
+                Route::delete('/users/{user}', [UserController::class, 'destroy']);
             });
         });
 

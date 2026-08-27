@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 import { shiftApi, attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
+import { useDebounce } from '../hooks/useDebounce';
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -1659,13 +1660,15 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     }
   }, []);
 
+  const debouncedRosterSearch = useDebounce(rosterSearch, 500);
+
   const loadRoster = useCallback(async () => {
     setLoadingRoster(true);
     setError('');
     try {
       const filters: { date?: string; attendance_setting_id?: number; search?: string } = { date: rosterDate };
       if (rosterBranch) filters.attendance_setting_id = Number(rosterBranch);
-      if (rosterSearch.trim()) filters.search = rosterSearch.trim();
+      if (debouncedRosterSearch.trim()) filters.search = debouncedRosterSearch.trim();
       const res: any = await shiftApi.roster(filters);
       setRoster((res?.data ?? []) as RosterRow[]);
       setRosterDayName(res?.day_name ?? '');
@@ -1675,7 +1678,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     } finally {
       setLoadingRoster(false);
     }
-  }, [rosterDate, rosterBranch, rosterSearch]);
+  }, [rosterDate, rosterBranch, debouncedRosterSearch]);
 
   const loadCalendar = useCallback(async () => {
     setLoadingCal(true);
@@ -1807,7 +1810,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   return (
     <div className="p-4 md:p-6 space-y-5 animate-in fade-in slide-in-from-bottom-2 duration-300">
       {/* Tabs */}
-      <div className="flex items-center gap-1 border-b border-slate-200">
+      <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800">
         {[
           { key: 'roster' as Tab, label: 'Roster Harian', icon: <CalendarDays className="w-3.5 h-3.5" /> },
           { key: 'templates' as Tab, label: 'Template Shift', icon: <Layers className="w-3.5 h-3.5" /> },
@@ -1816,15 +1819,15 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           <button
             key={t.key}
             onClick={() => setTab(t.key)}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition ${tab === t.key
-              ? 'border-indigo-500 text-indigo-600'
-              : 'border-transparent text-slate-400 hover:text-slate-600'
+            className={`flex items-center gap-1.5 px-3.5 sm:px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${tab === t.key
+              ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
               }`}
           >
             {t.icon}
             {t.label}
             {t.key === 'templates' && shifts.length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-500 font-mono">
+              <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${tab === t.key ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
                 {shifts.length}
               </span>
             )}

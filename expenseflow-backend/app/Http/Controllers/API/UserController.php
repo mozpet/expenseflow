@@ -34,8 +34,17 @@ class UserController extends Controller
     {
         $companyId = $request->user()->company_id;
 
-        $users = User::where('company_id', $companyId)
-            ->with('office:id,office_name')
+        $query = User::where('company_id', $companyId);
+
+        if ($request->has('status')) {
+            if ($request->status === 'active') {
+                $query->where('is_active', true);
+            } elseif ($request->status === 'inactive') {
+                $query->where('is_active', false);
+            }
+        }
+
+        $users = $query->with('office:id,office_name')
             ->select([
                 'id', 'company_id', 'employee_code', 'name', 'email', 'phone',
                 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit',
@@ -235,6 +244,44 @@ class UserController extends Controller
 
         return response()->json([
             'message' => 'Password berhasil direset.',
+        ]);
+    }
+
+    /**
+     * Hapus akun karyawan (Soft Delete).
+     * DELETE /api/v1/admin/users/{user}
+     */
+    public function destroy(Request $request, User $user): JsonResponse
+    {
+        $actor = $request->user();
+
+        // Cegah admin menghapus akun super_admin.
+        if ($deny = $this->denyIfProtectedTarget($actor, $user)) {
+            return $deny;
+        }
+
+        // Cegah menghapus akun sendiri
+        if ($actor->id === $user->id) {
+            return response()->json([
+                'message' => 'Anda tidak bisa menghapus akun Anda sendiri.',
+            ], 403);
+        }
+
+        // Cegah menghapus user yang masih aktif — harus dinonaktifkan terlebih dahulu
+        if ($user->is_active) {
+            return response()->json([
+                'message' => 'Akun karyawan masih aktif. Silakan nonaktifkan akun terlebih dahulu sebelum menghapus.',
+            ], 422);
+        }
+
+        // Cabut semua token sesi user
+        $user->tokens()->delete();
+
+        // Lakukan soft delete Eloquent (mengisi kolom deleted_at)
+        $user->delete();
+
+        return response()->json([
+            'message' => 'Akun karyawan berhasil dihapus (soft delete).',
         ]);
     }
 }

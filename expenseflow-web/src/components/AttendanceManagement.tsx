@@ -31,6 +31,8 @@ import {
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
+import { useDebounce } from '../hooks/useDebounce';
+import { useAuth } from '../auth/AuthContext';
 
 type TabKey = 'today' | 'leaves' | 'users' | 'balances' | 'report' | 'holidays';
 
@@ -590,18 +592,24 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [searchOffToday, setSearchOffToday] = useState('');
   const [searchOnLeave, setSearchOnLeave] = useState('');
 
+  const debouncedSearchCheckedIn = useDebounce(searchCheckedIn, 500);
+  const debouncedSearchNotCheckedIn = useDebounce(searchNotCheckedIn, 500);
+  const debouncedSearchOffToday = useDebounce(searchOffToday, 500);
+  const debouncedSearchOnLeave = useDebounce(searchOnLeave, 500);
+  const debouncedLeaveSearch = useDebounce(leaveSearch, 500);
+  const debouncedUserSearch = useDebounce(userSearch, 500);
+  const debouncedBalanceSearch = useDebounce(balanceSearch, 500);
+  const debouncedReportSearch = useDebounce(reportSearch, 500);
+
   useEffect(() => {
     attendanceApi.settings.list().then(res => setOffices((res as any)?.settings ?? [])).catch(() => { });
   }, []);
 
   useEffect(() => {
-    const handler = setTimeout(() => {
-      if (reportFilter.search !== reportSearch) {
-        setReportFilterAndReset({ ...reportFilter, search: reportSearch });
-      }
-    }, 500);
-    return () => clearTimeout(handler);
-  }, [reportSearch]);
+    if (reportFilter.search !== debouncedReportSearch) {
+      setReportFilterAndReset({ ...reportFilter, search: debouncedReportSearch });
+    }
+  }, [debouncedReportSearch]);
 
   const [reportNameSort, setReportNameSort] = useState<'asc' | 'desc' | null>(null);
   const [holidays, setHolidays] = useState<any[]>([]);
@@ -852,15 +860,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   return (
     <div className="space-y-5 font-sans">
       {/* Tabs & Refresh */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex gap-1.5 overflow-x-auto pb-1 flex-1">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 dark:border-slate-800">
+        <div className="flex flex-wrap items-center gap-1">
           {TABS.map(({ key, label, icon: Icon }) => (
             <button
               key={key}
               onClick={() => setTab(key)}
-              className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition ${tab === key
-                ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-500/20'
-                : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
+              className={`flex items-center gap-1.5 px-3.5 sm:px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${tab === key
+                ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
                 }`}
             >
               <Icon className="w-3.5 h-3.5" />
@@ -868,7 +876,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             </button>
           ))}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 pb-1.5 self-end sm:self-center">
           {tab === 'report' && (
             <button
               onClick={() => setShowLegend(true)}
@@ -976,10 +984,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 const offTodayRaw = (today.not_checked_in ?? []).filter((p: any) => p.is_off);
                 const onLeaveRaw = today.on_leave ?? [];
 
-                const checkedIn = checkedInRaw.filter((p: any) => filterPerson(p, searchCheckedIn));
-                const notCheckedIn = notCheckedInRaw.filter((p: any) => filterPerson(p, searchNotCheckedIn));
-                const offToday = offTodayRaw.filter((p: any) => filterPerson(p, searchOffToday));
-                const onLeave = onLeaveRaw.filter((p: any) => filterPerson(p, searchOnLeave));
+                const checkedIn = checkedInRaw.filter((p: any) => filterPerson(p, debouncedSearchCheckedIn));
+                const notCheckedIn = notCheckedInRaw.filter((p: any) => filterPerson(p, debouncedSearchNotCheckedIn));
+                const offToday = offTodayRaw.filter((p: any) => filterPerson(p, debouncedSearchOffToday));
+                const onLeave = onLeaveRaw.filter((p: any) => filterPerson(p, debouncedSearchOnLeave));
 
                 return (
                   <>
@@ -1137,9 +1145,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             } else if (leaveOfficeFilter) {
               result = result.filter((l: any) => String(l.attendance_setting_id) === leaveOfficeFilter);
             }
-            return result.filter((l: any) =>
-              l.user_name.toLowerCase().includes(leaveSearch.toLowerCase())
-            );
+            if (debouncedLeaveSearch) {
+              result = result.filter((l: any) =>
+                l.user_name.toLowerCase().includes(debouncedLeaveSearch.toLowerCase())
+              );
+            }
+            return result;
           })();
 
           // ── Deteksi bentrok: hanya untuk baris pending ────────
@@ -1483,8 +1494,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             <div className="overflow-x-auto">
               {(() => {
                 const filtered = users.filter(u => {
-                  const q = userSearch.toLowerCase();
-                  const matchSearch = u.name.toLowerCase().includes(q) ||
+                  const q = debouncedUserSearch.toLowerCase();
+                  const matchSearch = !q ||
+                    u.name.toLowerCase().includes(q) ||
                     (u.employee_code && u.employee_code.toLowerCase().includes(q)) ||
                     (u.nik && u.nik.toLowerCase().includes(q));
                   const matchOffice = !userOfficeFilter ||
@@ -1582,8 +1594,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               return true;
             })
             .filter(([name, data]: [string, any]) => {
-              const q = balanceSearch.toLowerCase();
-              return name.toLowerCase().includes(q) || (data.employeeCode && data.employeeCode.toLowerCase().includes(q));
+              const q = debouncedBalanceSearch.toLowerCase();
+              return !q || name.toLowerCase().includes(q) || (data.employeeCode && data.employeeCode.toLowerCase().includes(q));
             });
 
           const progressColor = (remaining: number, quota: number) => {
@@ -2207,6 +2219,9 @@ const HolidaysTab: React.FC<{
   year: number;
   onYearChange: (y: number) => void;
 }> = ({ holidays, offices, users, reload, onAddAuditLog, onError, year, onYearChange }) => {
+  const { user } = useAuth();
+  const isSuperAdmin = user?.role === 'super_admin';
+
   const today = new Date();
   // Tanggal hari ini (YYYY-MM-DD) untuk menentukan sel kalender yang lewat/sedang berjalan
   const todayStr = toDateStr(today);
@@ -2354,6 +2369,10 @@ const HolidaysTab: React.FC<{
   };
 
   const startEdit = (h: any) => {
+    if ((h.scope === 'nasional' || h.is_national) && !isSuperAdmin) {
+      onError(null, 'Hanya Super Admin yang berwenang mengubah hari libur nasional.');
+      return;
+    }
     setEditingId(h.id);
     setForm({
       date: String(h.date).slice(0, 10),
@@ -2429,6 +2448,10 @@ const HolidaysTab: React.FC<{
   };
 
   const remove = async (h: any) => {
+    if ((h.scope === 'nasional' || h.is_national) && !isSuperAdmin) {
+      onError(null, 'Hanya Super Admin yang berwenang menghapus hari libur nasional.');
+      return;
+    }
     if (!confirm(`Hapus libur "${h.name}" (${h.date})?`)) return;
     try {
       await attendanceApi.holidays.destroy(h.id);
@@ -2540,7 +2563,7 @@ const HolidaysTab: React.FC<{
               onChange={(e) => setForm({ ...form, type: e.target.value })}
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
             >
-              <option value="nasional">Libur Nasional</option>
+              {isSuperAdmin && <option value="nasional">Libur Nasional</option>}
               <option value="collective">Cuti Bersama</option>
               <option value="perusahaan">Libur Perusahaan</option>
             </select>
@@ -2908,20 +2931,28 @@ const HolidaysTab: React.FC<{
                         <div className="flex items-center gap-1 ml-auto">
                           {/* Tombol Ubah/Hapus hanya untuk tanggal masa depan — status historis tidak diubah/dihapus */}
                           {!isDetailLocked && (
-                            <>
-                              <button
-                                onClick={() => startEdit(h)}
-                                className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition"
-                              >
-                                <Pencil className="w-3 h-3" /> Ubah
-                              </button>
-                              <button
-                                onClick={() => remove(h)}
-                                className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition"
-                              >
-                                <Trash2 className="w-3 h-3" /> Hapus
-                              </button>
-                            </>
+                            (h.scope !== 'nasional' && !h.is_national) || isSuperAdmin ? (
+                              <>
+                                <button
+                                  onClick={() => startEdit(h)}
+                                  className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition cursor-pointer"
+                                  title="Ubah hari libur"
+                                >
+                                  <Pencil className="w-3 h-3" /> Ubah
+                                </button>
+                                <button
+                                  onClick={() => remove(h)}
+                                  className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition cursor-pointer"
+                                  title="Hapus hari libur"
+                                >
+                                  <Trash2 className="w-3 h-3" /> Hapus
+                                </button>
+                              </>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 dark:text-slate-500 italic px-1.5 py-0.5" title="Hanya Super Admin yang dapat mengubah atau menghapus libur nasional">
+                                Libur Nasional (Terkunci)
+                              </span>
+                            )
                           )}
                         </div>
                       </div>

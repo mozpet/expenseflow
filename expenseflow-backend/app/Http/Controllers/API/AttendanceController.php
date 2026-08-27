@@ -948,14 +948,14 @@ class AttendanceController extends Controller
         $notCheckedIn = [];
         $leaveList = [];
 
-        // Cek apakah hari ini libur nasional/perusahaan
-        $holidaysToday = \App\Models\Holiday::whereDate('date', $today)
+        // Cek apakah hari ini libur nasional/perusahaan/cabang beserta pengecualian karyawan (holiday_exclusions)
+        $holidaysToday = \App\Models\Holiday::with('excludedUsers:id')
+            ->whereDate('date', $today)
             ->where(function ($q) use ($actor) {
                 $q->whereNull('company_id')
                   ->orWhere('company_id', $actor->company_id);
-            })->get(['id', 'is_collective']);
+            })->get();
 
-        $regularHoliday = $holidaysToday->where('is_collective', false)->isNotEmpty();
         $collectiveHolidayIds = $holidaysToday->where('is_collective', true)->pluck('id');
 
         $acceptedCollectiveLeaveUserIds = [];
@@ -1003,7 +1003,21 @@ class AttendanceController extends Controller
 
                 $isOff = false;
                 if ($empModel) {
-                    $isHolidayForUser = $regularHoliday || in_array($empModel->id, $acceptedCollectiveLeaveUserIds);
+                    // Libur reguler (non-collective) yang berlaku untuk karyawan ini:
+                    // 1. Berlaku untuk semua cabang (attendance_setting_id null) ATAU cabang karyawan cocok
+                    // 2. Karyawan TIDAK dikecualikan dari libur ini (holiday_exclusions)
+                    $regularHolidayForEmp = $holidaysToday->first(function ($h) use ($empModel) {
+                        if ($h->is_collective) return false;
+                        if ($h->attendance_setting_id && $h->attendance_setting_id !== $empModel->attendance_setting_id) {
+                            return false;
+                        }
+                        if ($h->excludedUsers->contains('id', $empModel->id)) {
+                            return false;
+                        }
+                        return true;
+                    }) !== null;
+
+                    $isHolidayForUser = $regularHolidayForEmp || in_array($empModel->id, $acceptedCollectiveLeaveUserIds);
                     if ($isHolidayForUser) {
                         $isOff = true;
                     } else {
@@ -1134,7 +1148,7 @@ class AttendanceController extends Controller
 
         $validated = $request->validate([
             'user_id'    => 'required|integer',
-            'leave_type' => 'required|in:cuti,sakit',
+            'leave_type' => 'required|in:cuti,izin',
             'year'       => 'nullable|integer',
             'quota'      => 'required|integer|min:0',
         ]);
@@ -2210,6 +2224,11 @@ class AttendanceController extends Controller
         $isNational   = $type === 'nasional';
         $isCollective = $type !== null ? $type === 'collective' : (bool) ($validated['is_collective'] ?? false);
 
+        // 1. Guard hak akses: Hanya super_admin yang boleh membuat libur bertipe nasional
+        if ($isNational && $user->role !== 'super_admin') {
+            return response()->json(['message' => 'Hanya super admin yang berwenang menambahkan hari libur nasional.'], 403);
+        }
+
         // Libur nasional tidak terikat perusahaan/cabang → company_id NULL.
         $holidayCompanyId = $isNational ? null : $companyId;
         $officeId         = $isNational
@@ -2237,7 +2256,7 @@ class AttendanceController extends Controller
                 $officeNames = $conflictingHolidays->map(function($h) {
                     return $h->office ? $h->office->office_name : 'Semua Cabang (Kantor Pusat)';
                 })->unique()->implode(', ');
-                
+
                 $formattedDate = \Carbon\Carbon::parse($date)->format('d-m-Y');
                 return response()->json([
                     'message' => "Tidak bisa menambahkan libur nasional pada tanggal {$formattedDate}, di karenakan kantor {$officeNames} sedang mengadakan cuti bersama, hubungi pihak kantor agar menghapus cuti bersama pada tanggal tersebut"
@@ -2255,10 +2274,15 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Tanggal libur tersebut sudah terdaftar pada scope yang dipilih.'], 422);
         }
 
-        // Jika menambah libur nasional, timpa/hapus libur perusahaan biasa (is_collective = false) di tanggal yang sama
+        // Jika menambah libur nasional, timpa/hapus libur perusahaan biasa (is_collective = false) HANYA untuk libur nasional lama/perusahaan aktor
+        // (PERBAIKAN MULTI-TENANT LEAK: jangan hapus libur perusahaan tenant lain)
         if ($isNational) {
             Holiday::whereDate('date', $date)
                 ->where('is_collective', false)
+                ->where(function ($q) use ($companyId) {
+                    $q->whereNull('company_id')
+                        ->orWhere('company_id', $companyId);
+                })
                 ->delete();
         }
 
@@ -2326,9 +2350,14 @@ class AttendanceController extends Controller
     {
         $user = $request->user();
 
-        // HRD boleh edit libur nasional (company_id NULL) DAN libur milik perusahaannya
+        // 1. Guard hak akses edit libur nasional: hanya super_admin yang berwenang mengubah libur nasional
+        if (($holiday->company_id === null || $holiday->is_national) && $user->role !== 'super_admin') {
+            return response()->json(['message' => 'Hanya super admin yang berwenang mengubah hari libur nasional.'], 403);
+        }
+
+        // Libur perusahaan lain tidak boleh diubah
         if ($holiday->company_id !== null && $holiday->company_id !== $user->company_id) {
-            return response()->json(['message' => 'Libur tidak ditemukan.'], 403);
+            return response()->json(['message' => 'Libur tidak ditemukan di perusahaan Anda.'], 403);
         }
 
         $validated = $request->validate([
@@ -2407,9 +2436,14 @@ class AttendanceController extends Controller
         $oldDate = $holiday->date->toDateString();
 
         // Jika mengupdate libur nasional, timpa/hapus libur perusahaan biasa (is_collective = false) di tanggal tujuan
+        // HANYA untuk libur nasional lama atau libur perusahaan aktor (mencegah leak multi-tenant)
         if ($isNational) {
             Holiday::whereDate('date', $newDate)
                 ->where('is_collective', false)
+                ->where(function ($q) use ($user) {
+                    $q->whereNull('company_id')
+                        ->orWhere('company_id', $user->company_id);
+                })
                 ->where('id', '!=', $holiday->id)
                 ->delete();
         }
@@ -2465,6 +2499,11 @@ class AttendanceController extends Controller
     public function destroyHolidays(Request $request, Holiday $holiday): JsonResponse
     {
         $user = $request->user();
+
+        // 1. Guard hak akses hapus libur nasional: hanya super_admin yang berwenang
+        if (($holiday->company_id === null || $holiday->is_national) && $user->role !== 'super_admin') {
+            return response()->json(['message' => 'Hanya super admin yang berwenang menghapus hari libur nasional.'], 403);
+        }
 
         // Libur perusahaan lain tidak boleh dihapus
         if ($holiday->company_id !== null && $holiday->company_id !== $user->company_id) {
@@ -2750,14 +2789,15 @@ class AttendanceController extends Controller
         foreach ($dateList as $date) {
             $dayOfWeek = Carbon::parse($date)->dayOfWeek;
 
-            // 1) Cari UserShift terbaru dengan start_date <= tanggal (sama seperti resolveSchedule)
-            $candidates = $userShifts->filter(fn ($us) => $us->start_date->toDateString() <= $date);
+            // 1) Cari UserShift terbaru yang AKTIF pada $date (start_date <= date DAN (end_date null || end_date >= date))
+            //    Sama persis dengan logika ShiftController::resolveSchedule()
+            $candidates = $userShifts->filter(function ($us) use ($date) {
+                return $us->start_date->toDateString() <= $date
+                    && ($us->end_date === null || $us->end_date->toDateString() >= $date);
+            });
             $userShift = $candidates->sortByDesc(fn ($us) => $us->start_date->toDateString())->first();
 
-            $shiftStillActive = $userShift
-                && ($userShift->end_date === null || $userShift->end_date->toDateString() >= $date);
-
-            if ($shiftStillActive && $userShift->shift_id && ($activeShifts[$userShift->shift_id] ?? false)) {
+            if ($userShift && $userShift->shift_id && ($activeShifts[$userShift->shift_id] ?? false)) {
                 $versions = $schedulesByShift[$userShift->shift_id][$dayOfWeek] ?? [];
                 $schedule = null;
                 if ($versions) {
@@ -4725,8 +4765,10 @@ class AttendanceController extends Controller
                 ['company_id' => $user->company_id, 'quota' => 0, 'used' => 0]
             );
             $remaining = $balance->quota - $balance->used;
-            // Bedakan "belum pernah diaktifkan HRD" dari "saldo sudah habis"
-            if ((int) $balance->quota <= 0 && (int) $balance->used === 0) {
+            // KEBIJAKAN 2026-08-28: quota=0 = saldo cuti NON-AKTIF → karyawan tidak bisa
+            // mengajukan cuti sama sekali, berapapun nilai used. Kondisi sebelumnya
+            // (quota<=0 && used===0) salah: karyawan dgn quota=0 & used>0 bisa lolos.
+            if ((int) $balance->quota <= 0) {
                 return response()->json([
                     'message'          => 'Saldo cuti Anda belum diaktifkan oleh HRD. Silakan hubungi HRD untuk mengaktifkan saldo cuti Anda.',
                     'remaining_quota'  => 0,

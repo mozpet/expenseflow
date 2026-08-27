@@ -87,7 +87,7 @@ export const vendorApi = {
 
 // ─── Users (karyawan) ───────────────────────────────────────
 export const userApi = {
-  list: () => apiGet('/admin/users'),
+  list: (params?: { include_inactive?: boolean }) => apiGet('/admin/users', params),
   create: (payload: Record<string, unknown>) => apiPost('/admin/users', payload),
   update: (id: number | string, payload: Record<string, unknown>) =>
     apiPut(`/admin/users/${id}`, payload),
@@ -95,6 +95,7 @@ export const userApi = {
   activate: (id: number | string) => apiPatch(`/admin/users/${id}/activate`),
   resetPassword: (id: number | string, password: string) =>
     apiPost(`/admin/users/${id}/reset-password`, { password }),
+  destroy: (id: number | string) => apiDelete<{ message: string }>(`/admin/users/${id}`),
 };
 
 // ─── Notifications ──────────────────────────────────────────

@@ -92,6 +92,7 @@ export default function App() {
     user?.role === 'hrd' ? 'invoice-inbox' : 'inbox',
   );
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
 
   const [receipts, setReceipts] = useState<Receipt[]>([]);
   const [receiptHistory, setReceiptHistory] = useState<StrukApproval[]>([]);
@@ -547,56 +548,90 @@ export default function App() {
 
       <div className="flex flex-1 relative overflow-hidden">
         
-        {/* SIDEBAR NAVIGATION PANEL (Responsive overlay on mobile, fixed left panel on desk) */}
+        {/* SIDEBAR NAVIGATION PANEL (Responsive overlay on mobile, collapsible left panel on desk) */}
         <aside className={`
-          fixed inset-y-0 left-0 z-50 lg:z-30 w-64 bg-[#0f172a] text-slate-300 flex flex-col select-none transform transition-transform duration-300 ease-in-out
+          fixed inset-y-0 left-0 z-50 lg:z-30 bg-[#0f172a] text-slate-300 flex flex-col select-none transform transition-all duration-300 ease-in-out
           lg:translate-x-0 lg:static lg:h-auto
-          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full'}
+          ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}
+          ${isSidebarCollapsed ? 'lg:w-[72px] w-64' : 'lg:w-64 w-64'}
         `}>
           {/* Sidebar Top branding header */}
-          <div className="h-14 lg:h-16 px-5 border-b border-slate-800/60 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 bg-indigo-500 rounded-lg flex items-center justify-center shrink-0 shadow-md shadow-indigo-500/20">
-                <div className="w-4 h-4 border-2 border-white rounded-sm"></div>
-              </div>
-              <div>
-                <h1 className="font-bold text-white text-md font-sans tracking-tight leading-none">ExpenseFlow</h1>
-                <span className="text-[10px] text-slate-400 block font-medium mt-1">Finance Portal</span>
-              </div>
+          <div className={`h-14 lg:h-16 px-4 border-b border-slate-800/60 flex items-center shrink-0 ${isSidebarCollapsed ? 'lg:justify-center justify-between' : 'justify-between'}`}>
+            <div className="flex items-center gap-2.5 min-w-0">
+              {/* Burger Button in Sidebar Header (Always beside ExpenseFlow logo in all screens/full screen) */}
+              <button 
+                onClick={() => {
+                  if (window.innerWidth < 1024) {
+                    setIsSidebarOpen(false);
+                  } else {
+                    setIsSidebarCollapsed(!isSidebarCollapsed);
+                  }
+                }}
+                className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-400 hover:text-white transition cursor-pointer shrink-0"
+                title={isSidebarCollapsed ? 'Perluas Sidebar' : 'Ciutkan Sidebar'}
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+
+              {(!isSidebarCollapsed || window.innerWidth < 1024) && (
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-7.5 h-7.5 bg-indigo-500 rounded-lg flex items-center justify-center shrink-0 shadow-md shadow-indigo-500/20">
+                    <div className="w-3.5 h-3.5 border-2 border-white rounded-xs"></div>
+                  </div>
+                  <div className="min-w-0">
+                    <h1 className="font-bold text-white text-sm font-sans tracking-tight leading-none truncate">ExpenseFlow</h1>
+                    <span className="text-[9px] text-slate-400 block font-medium mt-0.5 truncate">Finance Portal</span>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Mobile close sidebar drawer button */}
             <button 
               onClick={() => setIsSidebarOpen(false)}
-              className="lg:hidden p-1.5 hover:bg-slate-800 rounded-full text-slate-400 transition"
+              className="lg:hidden p-1.5 hover:bg-slate-800 rounded-full text-slate-400 transition cursor-pointer"
             >
               <X className="w-4 h-4" />
             </button>
           </div>
 
           {/* Sidebar Groups Links scrollbar list */}
-          <div className="flex-1 overflow-y-auto px-4 py-5 space-y-6">
+          <div className={`flex-1 overflow-y-auto ${isSidebarCollapsed ? 'lg:px-2 px-4' : 'px-4'} py-5 space-y-6`}>
             
             {/* Group 1: Employee Receipts — disembunyikan untuk HRD (struk khusus finance) */}
             {!isHrd && (
             <div className="space-y-1.5">
-              <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
-                Struk Karyawan
-              </span>
+              {!isSidebarCollapsed ? (
+                <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
+                  Struk Karyawan
+                </span>
+              ) : (
+                <div className="hidden lg:block my-2 border-t border-slate-800/60" />
+              )}
               
               <button
                 onClick={() => navigateTo('inbox')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
+                } ${
                   activePage === 'inbox' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Inbox Struk' : undefined}
               >
-                <div className="flex items-center gap-2.5">
-                  <Inbox className="w-4 h-4 opacity-80" />
-                  <span>Inbox Struk</span>
+                <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
+                  <div className="relative">
+                    <Inbox className="w-4 h-4 opacity-80" />
+                    {isSidebarCollapsed && pendingReceiptCount > 0 && (
+                      <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-indigo-500 text-white text-[8px] font-bold items-center justify-center">
+                        {pendingReceiptCount}
+                      </span>
+                    )}
+                  </div>
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Inbox Struk</span>}
                 </div>
-                {pendingReceiptCount > 0 && (
+                {!isSidebarCollapsed && pendingReceiptCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500 text-white font-bold font-mono">
                     {pendingReceiptCount}
                   </span>
@@ -605,37 +640,54 @@ export default function App() {
 
               <button
                 onClick={() => navigateTo('riwayat-struk')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'riwayat-struk' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Riwayat Approval' : undefined}
               >
                 <CheckCheck className="w-4 h-4 opacity-80" />
-                <span>Riwayat Approval</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Riwayat Approval</span>}
               </button>
             </div>
             )}
 
             {/* Group 2: Vendor Invoices */}
             <div className="space-y-1.5">
-              <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
-                Invoice Vendor
-              </span>
+              {!isSidebarCollapsed ? (
+                <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
+                  Invoice Vendor
+                </span>
+              ) : (
+                <div className="hidden lg:block my-2 border-t border-slate-800/60" />
+              )}
               
               <button
                 onClick={() => navigateTo('invoice-inbox')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
+                } ${
                   activePage === 'invoice-inbox' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Inbox Invoice' : undefined}
               >
-                <div className="flex items-center gap-2.5">
-                  <FileText className="w-4 h-4 opacity-80" />
-                  <span>Inbox Invoice</span>
+                <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
+                  <div className="relative">
+                    <FileText className="w-4 h-4 opacity-80" />
+                    {isSidebarCollapsed && pendingInvoiceCount > 0 && (
+                      <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-amber-500 text-white text-[8px] font-bold items-center justify-center">
+                        {pendingInvoiceCount}
+                      </span>
+                    )}
+                  </div>
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Inbox Invoice</span>}
                 </div>
-                {pendingInvoiceCount > 0 && (
+                {!isSidebarCollapsed && pendingInvoiceCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-500 text-white font-bold font-mono">
                     {pendingInvoiceCount}
                   </span>
@@ -644,109 +696,144 @@ export default function App() {
 
               <button
                 onClick={() => navigateTo('input-invoice')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'input-invoice' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Input Invoice' : undefined}
               >
                 <FilePlus className="w-4 h-4 opacity-80" />
-                <span>Input Invoice</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Input Invoice</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('scan-invoice')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'scan-invoice' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Scan Invoice OCR' : undefined}
               >
                 <Scan className="w-4 h-4 opacity-80" />
-                <span>Scan Invoice OCR</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Scan Invoice OCR</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('riwayat-invoice')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'riwayat-invoice' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Riwayat Invoice' : undefined}
               >
                 <History className="w-4 h-4 opacity-80" />
-                <span>Riwayat Invoice</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Riwayat Invoice</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('master-vendor')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'master-vendor' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Master Vendor' : undefined}
               >
                 <Building className="w-4 h-4 opacity-80" />
-                <span>Master Vendor</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Master Vendor</span>}
               </button>
             </div>
 
             {/* Group 2.5: Manajemen — disembunyikan untuk finance (ranah HRD/admin) */}
             {!isFinance && (
             <div className="space-y-1.5">
-              <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
-                Manajemen
-              </span>
+              {!isSidebarCollapsed ? (
+                <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
+                  Manajemen
+                </span>
+              ) : (
+                <div className="hidden lg:block my-2 border-t border-slate-800/60" />
+              )}
               
               <button
                 onClick={() => navigateTo('karyawan')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'karyawan'
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Karyawan' : undefined}
               >
                 <Users className="w-4 h-4 opacity-80" />
-                <span>Karyawan</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Karyawan</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('presensi')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'presensi'
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Presensi & Cuti' : undefined}
               >
                 <CalendarCheck className="w-4 h-4 opacity-80" />
-                <span>Presensi & Cuti</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Presensi & Cuti</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('shift')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'shift'
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Shift & Jadwal' : undefined}
               >
                 <CalendarClock className="w-4 h-4 opacity-80" />
-                <span>Shift & Jadwal</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Shift & Jadwal</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('overtime')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
+                } ${
                   activePage === 'overtime'
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Approval Lembur' : undefined}
               >
-                <div className="flex items-center gap-2.5">
-                  <FileSpreadsheet className="w-4 h-4 opacity-80" />
-                  <span>Approval Lembur</span>
+                <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
+                  <div className="relative">
+                    <FileSpreadsheet className="w-4 h-4 opacity-80" />
+                    {isSidebarCollapsed && pendingOvertimeCount > 0 && (
+                      <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-orange-500 text-white text-[8px] font-bold items-center justify-center">
+                        {pendingOvertimeCount}
+                      </span>
+                    )}
+                  </div>
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Approval Lembur</span>}
                 </div>
-                {pendingOvertimeCount > 0 && (
+                {!isSidebarCollapsed && pendingOvertimeCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-orange-500 text-white font-bold font-mono">
                     {pendingOvertimeCount}
                   </span>
@@ -755,17 +842,27 @@ export default function App() {
 
               <button
                 onClick={() => navigateTo('device-changes')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
+                } ${
                   activePage === 'device-changes'
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Pindah Perangkat' : undefined}
               >
-                <div className="flex items-center gap-2.5">
-                  <Smartphone className="w-4 h-4 opacity-80" />
-                  <span>Pindah Perangkat</span>
+                <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
+                  <div className="relative">
+                    <Smartphone className="w-4 h-4 opacity-80" />
+                    {isSidebarCollapsed && pendingDeviceCount > 0 && (
+                      <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-orange-500 text-white text-[8px] font-bold items-center justify-center">
+                        {pendingDeviceCount}
+                      </span>
+                    )}
+                  </div>
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Pindah Perangkat</span>}
                 </div>
-                {pendingDeviceCount > 0 && (
+                {!isSidebarCollapsed && pendingDeviceCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-orange-500 text-white font-bold font-mono">
                     {pendingDeviceCount}
                   </span>
@@ -776,47 +873,67 @@ export default function App() {
 
             {/* Group 3: Reporting & Systems */}
             <div className="space-y-1.5">
-              <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
-                Laporan & Sistem
-              </span>
+              {!isSidebarCollapsed ? (
+                <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
+                  Laporan & Sistem
+                </span>
+              ) : (
+                <div className="hidden lg:block my-2 border-t border-slate-800/60" />
+              )}
 
               <button
                 onClick={() => navigateTo('laporan')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'laporan' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Laporan Gabungan' : undefined}
               >
                 <BarChart3 className="w-4 h-4 opacity-80" />
-                <span>Laporan Gabungan</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Laporan Gabungan</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('auditlog')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'auditlog' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Audit Log' : undefined}
               >
                 <ShieldCheck className="w-4 h-4 opacity-80" />
-                <span>Audit Log</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Audit Log</span>}
               </button>
 
               <button
                 onClick={() => navigateTo('notif')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center justify-between transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
+                } ${
                   activePage === 'notif' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5' 
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Notifikasi' : undefined}
               >
-                <div className="flex items-center gap-2.5">
-                  <Bell className="w-4 h-4 opacity-80" />
-                  <span>Notifikasi</span>
+                <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
+                  <div className="relative">
+                    <Bell className="w-4 h-4 opacity-80" />
+                    {isSidebarCollapsed && unreadNotifCount > 0 && (
+                      <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-rose-500 text-white text-[8px] font-bold items-center justify-center animate-pulse">
+                        {unreadNotifCount}
+                      </span>
+                    )}
+                  </div>
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Notifikasi</span>}
                 </div>
-                {unreadNotifCount > 0 && (
+                {!isSidebarCollapsed && unreadNotifCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500 text-white font-bold font-mono animate-pulse">
                     {unreadNotifCount}
                   </span>
@@ -830,14 +947,17 @@ export default function App() {
               {isAdminOrSuperAdmin && (
               <button
                 onClick={() => navigateTo('setting')}
-                className={`w-full text-left py-2 px-3 rounded-lg text-xs font-semibold flex items-center gap-2.5 transition-colors duration-150 ${
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
                   activePage === 'setting'
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500 pl-2.5'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
+                title={isSidebarCollapsed ? 'Pengaturan Aturan' : undefined}
               >
                 <Settings className="w-4 h-4 opacity-80" />
-                <span>Pengaturan Aturan</span>
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Pengaturan Aturan</span>}
               </button>
               )}
             </div>
@@ -845,22 +965,27 @@ export default function App() {
           </div>
 
           {/* Fixed bottom footer with avatar */}
-          <div className="p-4 border-t border-slate-800 shrink-0 space-y-2">
-            <div className="flex items-center gap-3 bg-slate-900/60 p-2.5 rounded-xl border border-slate-850">
-              <span className="w-8 h-8 rounded-full bg-indigo-550 bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 font-bold text-xs flex items-center justify-center shrink-0 font-mono">
+          <div className={`p-4 border-t border-slate-800 shrink-0 ${isSidebarCollapsed ? 'lg:flex lg:flex-col lg:items-center lg:gap-2 lg:px-2 space-y-2' : 'space-y-2'}`}>
+            <div className={`flex items-center gap-3 bg-slate-900/60 p-2 rounded-xl border border-slate-850 ${isSidebarCollapsed ? 'lg:justify-center lg:p-1.5' : ''}`}>
+              <span className="w-8 h-8 rounded-full bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 font-bold text-xs flex items-center justify-center shrink-0 font-mono" title={userName}>
                 {userInitials}
               </span>
-              <div className="min-w-0">
-                <p className="text-[11px] font-bold text-white truncate">{userName}</p>
-                <p className="text-[10px] text-slate-400 truncate">{roleLabel[userRole] ?? userRole}</p>
-              </div>
+              {(!isSidebarCollapsed || window.innerWidth < 1024) && (
+                <div className="min-w-0">
+                  <p className="text-[11px] font-bold text-white truncate">{userName}</p>
+                  <p className="text-[10px] text-slate-400 truncate">{roleLabel[userRole] ?? userRole}</p>
+                </div>
+              )}
             </div>
             <button
               onClick={() => logout()}
-              className="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-[11px] font-semibold text-slate-300 hover:bg-slate-800 hover:text-white border border-slate-800 transition"
+              className={`flex items-center justify-center gap-2 rounded-lg text-[11px] font-semibold text-slate-300 hover:bg-slate-800 hover:text-white border border-slate-800 transition cursor-pointer ${
+                isSidebarCollapsed ? 'lg:w-8 lg:h-8 lg:p-0 w-full py-2' : 'w-full py-2'
+              }`}
+              title="Keluar"
             >
               <LogOut className="w-3.5 h-3.5" />
-              <span>Keluar</span>
+              {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Keluar</span>}
             </button>
           </div>
         </aside>
@@ -877,22 +1002,33 @@ export default function App() {
         <main className="flex-1 flex flex-col min-w-0">
           
           {/* Main Top Header Navbar (Desktop Only) */}
-          <header className="hidden lg:flex h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-8 items-center justify-between sticky top-0 z-20 select-none">
+          <header className="hidden lg:flex h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 items-center justify-between sticky top-0 z-20 select-none">
             <div className="flex items-center gap-3">
-              <h2 className="font-bold text-slate-800 dark:text-white text-sm tracking-tight font-sans uppercase">System Portal</h2>
-              <span className="text-slate-300">/</span>
-              <span className="text-xs font-semibold text-slate-500 font-sans">
-                {pageTitles[activePage] || 'Portal'}
-              </span>
+              {/* Burger Button next to Logo / Title in Desktop Header */}
+              <button
+                onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+                className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition cursor-pointer"
+                title={isSidebarCollapsed ? 'Perluas Sidebar' : 'Ciutkan Sidebar'}
+              >
+                <Menu className="w-5 h-5" />
+              </button>
+
+              <div className="flex items-center gap-2">
+                <h2 className="font-bold text-slate-800 dark:text-white text-sm tracking-tight font-sans uppercase">System Portal</h2>
+                <span className="text-slate-300">/</span>
+                <span className="text-xs font-semibold text-slate-500 font-sans">
+                  {pageTitles[activePage] || 'Portal'}
+                </span>
+              </div>
             </div>
 
             <div className="flex items-center gap-4">
               {/* Shortcut buttons */}
               <button 
                 onClick={() => alert('Exporting global ledger reports...')}
-                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-350 transition"
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-350 transition cursor-pointer"
               >
-                <Download className="w-3.5 h-3.5 text-indigo-550 text-indigo-500" />
+                <Download className="w-3.5 h-3.5 text-indigo-500" />
                 <span>Export Gabungan</span>
               </button>
 

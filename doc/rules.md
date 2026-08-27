@@ -670,9 +670,10 @@ Tambah/Edit Kantor (Pengaturan → Kantor Presensi):
   baris dengan **`quota = 0`**. Konvensi: **`quota = 0` = non-aktif**.
 - **Aktivasi hanya oleh HRD manual** via tab Saldo Cuti (`POST /dashboard/attendance/leave-balances`
   → `setLeaveBalance`, isi kuota > 0). Tidak ada endpoint/flag tambahan.
-- Penegakan memakai cek sisa saldo yang sudah ada di semua jalur (requestLeave, approveLeave,
-  respondCollectiveLeave policy block). Pesan dibedakan: quota=0 & used=0 → *"belum diaktifkan
-  oleh HRD"*; selain itu → *"saldo habis/tidak cukup"*.
+- Penegakan di `requestLeave()`: **cek cukup `quota <= 0`** (UPDATE 2026-08-28 — kondisi lama
+  `quota=0 && used=0` salah karena karyawan dgn quota=0 & used>0 bisa lolos). Pesan selalu
+  *"belum diaktifkan oleh HRD"* bila quota ≤ 0, berapapun nilai used. Saldo habis (quota>0,
+  remaining=0) tetap menghasilkan pesan *"saldo habis/tidak cukup"* dari cek remaining di bawahnya.
 - **Cuti melintasi tanggal reset — Anniversary Split (2026-08-25):** pengajuan/approval cuti
   yang rentangnya MELEWATI `leave_reset_date` kantor divalidasi DUA alokasi:
   hari kerja SEBELUM tanggal reset dibatasi sisa saldo berjalan (`quota - used`);
@@ -811,93 +812,10 @@ Tabel `holidays` (company_id, date, name). Dipakai untuk:
 
 ---
 
-# Roadmap Fitur Payroll (Gaji) — Rencana Task
-
-> Ditulis 2026-07-04 sebagai rencana sesi berikutnya. **Payroll = perhitungan gaji
-> bulanan karyawan** berdasarkan gaji pokok + tunjangan − potongan, memakai data
-> presensi/lembur/cuti yang sudah ada. Belum ada satu tabel pun untuk ini.
-
-## Prasyarat / Dependensi (data yang sudah tersedia)
-- **Kehadiran** → `attendances` (work_minutes, status present/late/absent/early_leave)
-- **Lembur** → `overtime_approvals` (hanya yang `status=approved` yang dibayar)
-- **Cuti/izin** → `leave_requests` + `leave_balances` (potongan bila melebihi kuota)
-- **Jam kerja/shift** → `shifts`/`user_shifts` (untuk hitung hari kerja seharusnya)
-- **Libur** → `holidays` (jangan potong gaji di hari libur)
-- **Karyawan & cabang** → `users.attendance_setting_id`
-
-## Prinsip Desain (WAJIB diikuti agar konsisten dgn sistem)
-1. **Isolasi `company_id`** di semua tabel & query (pakai CompanyMiddleware).
-2. **Multi-cabang**: komponen gaji boleh berbeda per cabang bila perlu (ikuti pola shift).
-3. **Immutable setelah final**: payroll yang sudah `paid` tidak boleh diedit — buat
-   revisi/adjustment baru, jangan ubah histori (audit trail).
-4. **Snapshot, bukan referensi**: saat generate payslip, **salin** nilai komponen &
-   ringkasan presensi ke baris payslip. Jika master salary berubah bulan depan,
-   payslip lama tidak ikut berubah.
-5. **Semua uang pakai `decimal` / integer rupiah**, JANGAN float.
-6. **Timezone WIB** untuk penentuan periode (tgl 1–akhir bulan).
-7. **Activity logs** untuk setiap aksi: `payroll_generated`, `payroll_approved`,
-   `payroll_paid`, `salary_component_updated`.
-8. Integrasi dengan roadmap **P0 pembayaran** (`payments`): payslip `approved → paid`
-   memakai mekanisme disbursement yang sama.
-
-## Daftar Task (urutan disarankan)
-
-### FASE 1 — Master Data Gaji
-- [ ] **T1. Migration `salary_components`** — master komponen gaji per perusahaan:
-  `company_id`, `code`, `name`, `type` [earning/deduction], `is_taxable`,
-  `calc_type` [fixed/percentage/per_day/per_hour], `is_active`.
-  Contoh: Gaji Pokok, Tunjangan Transport, Tunjangan Makan, BPJS, PPh21, Potongan Alpha.
-- [ ] **T2. Migration `employee_salaries`** — gaji dasar per karyawan (berlaku efektif):
-  `user_id`, `basic_salary`, `effective_date`, `notes`. Pola "efektif terbaru ≤ tanggal"
-  sama seperti `user_shifts` (biar konsisten).
-- [ ] **T3. Migration `employee_salary_components`** — komponen tetap per karyawan:
-  `user_id`, `salary_component_id`, `amount` / `percentage`, `effective_date`.
-- [ ] **T4. Models + relasi** — `SalaryComponent`, `EmployeeSalary`, `EmployeeSalaryComponent`.
-- [ ] **T5. CRUD master** — endpoint HRD: kelola `salary_components`, set gaji pokok &
-  komponen tetap per karyawan (mirip pola ShiftController). Isolasi company_id.
-
-### FASE 2 — Perhitungan & Generate Payslip
-- [ ] **T6. Migration `payrolls`** (header periode) — `company_id`, `period_month`,
-  `period_year`, `status` [draft/approved/paid], `generated_by`, `approved_by`,
-  `total_amount`, `notes`. Unique(company_id, period_month, period_year).
-- [ ] **T7. Migration `payslips`** (detail per karyawan) — `payroll_id`, `user_id`,
-  snapshot: `basic_salary`, `total_earning`, `total_deduction`, `net_salary`,
-  ringkasan presensi (`work_days`, `present_days`, `late_count`, `absent_days`,
-  `overtime_minutes`, `overtime_pay`), `status`, `paid_at`.
-- [ ] **T8. Migration `payslip_lines`** — rincian komponen per payslip (snapshot
-  nama & nominal tiap earning/deduction) untuk transparansi slip gaji.
-- [ ] **T9. `PayrollService::generate(company, month, year)`** — service inti:
-  - Ambil karyawan aktif per perusahaan/cabang.
-  - Hitung hari kerja seharusnya dari shift/jam kantor − libur.
-  - Tarik rekap presensi (hadir/telat/alpha), lembur **approved**, cuti melebihi kuota.
-  - Terapkan komponen earning/deduction (fixed/percentage/per_day/per_hour).
-  - Hitung potongan alpha (absen) & lembur dibayar; hasilkan `net_salary`.
-  - Simpan sebagai snapshot (idempoten: regenerate hapus draft lama periode itu).
-- [ ] **T10. Endpoint generate** — `POST /dashboard/payroll/generate` (body: month, year,
-  optional attendance_setting_id untuk generate per cabang). Hasil status `draft`.
-
-### FASE 3 — Approval, Pembayaran & Slip
-- [ ] **T11. Approval payroll** — `POST /dashboard/payroll/{id}/approve` (draft→approved),
-  kunci dari edit. Role admin/super_admin (HR boleh generate, keuangan approve — TBD).
-- [ ] **T12. Tandai dibayar** — integrasi dgn tabel `payments` (P0 roadmap):
-  `approved → paid`, catat `paid_at`, `paid_by`, `reference_no`. Cegah bayar dobel.
-- [ ] **T13. Endpoint slip karyawan (mobile)** — `GET /attendance/my-payslips` &
-  `GET /attendance/my-payslips/{id}` (read-only, hanya milik sendiri).
-- [ ] **T14. Export payslip PDF/CSV** — untuk cetak/kirim slip gaji.
-
-### FASE 4 — Pajak & Penyempurnaan (opsional/lanjutan)
-- [ ] **T15. Perhitungan PPh21** (TER/PTKP) — bisa disederhanakan dulu jadi komponen
-  persentase, disempurnakan kemudian.
-- [ ] **T16. THR / bonus** — payroll tipe khusus di luar siklus bulanan.
-- [ ] **T17. Dashboard ringkasan payroll** — total pengeluaran gaji per bulan/cabang.
-
-## Keputusan yang Perlu Ditanyakan Sebelum Mulai (jangan diasumsikan)
-1. **Basis potongan alpha**: gaji pokok dibagi hari kerja, atau angka tetap per hari?
-2. **Siapa approve payroll**: HRD, finance, atau keduanya (dua langkah)?
-3. **Lembur dibayar**: pakai tarif per menit dari mana? (belum ada `overtime_rate`).
-4. **PPh21**: implementasi penuh (TER 2024) atau komponen persentase sederhana dulu?
-5. **Komponen per cabang atau per perusahaan**: apakah tunjangan beda tiap cabang?
-6. **Periode cut-off**: tanggal 1–akhir bulan, atau custom (mis. 26–25)?
+# Roadmap Fitur Payroll (Gaji)
+> 📄 **Dokumentasi & Spesifikasi Lengkap Telah Dipindahkan:**  
+> Roadmap detail, analisis kekurangan data/tabel, aturan PPh 21 TER 2024 (PP 58/2023), BPJS Ketenagakerjaan & Kesehatan, lembur (PP 35/2021), THR (Permenaker 6/2016), multi-cabang, skema database, dan daftar API endpoint kini terdokumentasi lengkap di:  
+> **👉 [doc/07-PAYROLL-ROADMAP.md](07-PAYROLL-ROADMAP.md)**
 
 reminders: bug user statusnya sedang cuti di hari itu masih bisa presensi, 
 fix: ✅ SELESAI 2026-07-09 — checkIn() di AttendanceController sekarang mengecek LeaveRequest (approved, leave_type cuti/sakit/izin) yang mencakup tanggal hari ini; jika ada → tolak 403 dengan pesan status cuti/sakit/izin.

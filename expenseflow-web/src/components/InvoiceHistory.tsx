@@ -10,6 +10,7 @@ import {
   FileText,
   Filter
 } from 'lucide-react';
+import { useDebounce } from '../hooks/useDebounce';
 
 interface InvoiceHistoryProps {
   historyInvoices: Invoice[];
@@ -18,11 +19,13 @@ interface InvoiceHistoryProps {
 export const InvoiceHistory: React.FC<InvoiceHistoryProps> = ({ historyInvoices }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('semua');
+  const debouncedSearch = useDebounce(searchQuery, 500);
 
   const filteredHistory = historyInvoices.filter(i => {
-    const matchesSearch = i.vendor.toLowerCase().includes(searchQuery.toLowerCase()) ||
-           i.id.toLowerCase().includes(searchQuery.toLowerCase()) ||
-           (i.catatan && i.catatan.toLowerCase().includes(searchQuery.toLowerCase()));
+    const matchesSearch = !debouncedSearch ||
+           i.vendor.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+           i.id.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+           (i.catatan && i.catatan.toLowerCase().includes(debouncedSearch.toLowerCase()));
 
     const matchesStatus = statusFilter === 'semua' ||
            (statusFilter === 'dibayar' && i.status === 'Dibayar') ||
@@ -64,20 +67,34 @@ export const InvoiceHistory: React.FC<InvoiceHistoryProps> = ({ historyInvoices 
               className="w-full pl-9 pr-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-none"
             />
           </div>
-          <select
-            value={statusFilter}
-            onChange={(e) => setStatusFilter(e.target.value)}
-            className="px-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs font-medium bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer focus:outline-none focus:ring-2 focus:ring-indigo-500"
-          >
-            <option value="semua">Semua Status</option>
-            <option value="dibayar">✓ Dibayar</option>
-            <option value="ditolak">✗ Ditolak</option>
-          </select>
           <button className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 transition">
             <Download className="w-3.5 h-3.5" />
             <span>Export PDF</span>
           </button>
         </div>
+      </div>
+
+      {/* Tab status filter */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800 -mb-px">
+        {[
+          { key: 'semua', label: 'Semua Riwayat', count: historyInvoices.length },
+          { key: 'dibayar', label: 'Dibayar', count: historyInvoices.filter(i => i.status === 'Dibayar').length },
+          { key: 'ditolak', label: 'Ditolak', count: historyInvoices.filter(i => i.status === 'Ditolak').length },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setStatusFilter(t.key)}
+            className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${statusFilter === t.key
+              ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
+              }`}
+          >
+            {t.label}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${statusFilter === t.key ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+              {t.count}
+            </span>
+          </button>
+        ))}
       </div>
 
       {/* History Table */}

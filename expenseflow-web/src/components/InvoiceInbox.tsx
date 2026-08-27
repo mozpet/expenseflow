@@ -15,6 +15,7 @@ import {
   Building
 } from 'lucide-react';
 import { ConfirmationDialog } from './ConfirmationDialog';
+import { useDebounce } from '../hooks/useDebounce';
 
 interface InvoiceInboxProps {
   invoices: Invoice[];
@@ -105,10 +106,13 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
   };
 
 
+  const debouncedSearch = useDebounce(searchQuery, 500);
+
   // Filter invoice list
   const filteredInvoices = invoices.filter(inv => {
-    const matchesSearch = inv.vendor.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          inv.id.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSearch = !debouncedSearch ||
+                          inv.vendor.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+                          inv.id.toLowerCase().includes(debouncedSearch.toLowerCase());
     
     if (!matchesSearch) return false;
     if (filter === 'all') return true;
@@ -250,38 +254,28 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
       <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
         {/* Filters and Search Bar */}
         <div className="flex flex-col sm:flex-row gap-3 justify-between items-center mb-5 pb-4 border-b border-slate-100 dark:border-slate-800/80">
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-            <button
-              onClick={() => setFilter('all')}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium transition ${
-                filter === 'all'
-                  ? 'bg-indigo-600 text-white'
-                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
-              }`}
-            >
-              Semua ({invoices.length})
-            </button>
-            <button
-              onClick={() => setFilter('due')}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium flex items-center gap-1.5 transition ${
-                filter === 'due'
-                  ? 'bg-rose-600 text-white'
-                  : 'bg-rose-50 text-rose-700 hover:bg-rose-100 dark:bg-rose-950/30 dark:text-rose-400 dark:hover:bg-rose-950/50'
-              }`}
-            >
-              <Clock className="w-3.5 h-3.5" />
-              Jatuh Tempo ({dueCount})
-            </button>
-            <button
-              onClick={() => setFilter('review')}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium transition ${
-                filter === 'review'
-                  ? 'bg-amber-600 text-white'
-                  : 'bg-slate-50 text-slate-600 hover:bg-slate-100 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700'
-              }`}
-            >
-              Pending ({pendingCount})
-            </button>
+          {/* Tab filter bar */}
+          <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800 -mb-px">
+            {[
+              { key: 'all' as const, label: 'Semua', count: invoices.length, icon: null },
+              { key: 'due' as const, label: 'Jatuh Tempo', count: dueCount, icon: <Clock className="w-3.5 h-3.5" /> },
+              { key: 'review' as const, label: 'Pending', count: pendingCount, icon: null },
+            ].map((t) => (
+              <button
+                key={t.key}
+                onClick={() => setFilter(t.key)}
+                className={`flex items-center gap-1.5 px-3 py-2 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${filter === t.key
+                  ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+                  : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
+                  }`}
+              >
+                {t.icon}
+                {t.label}
+                <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${filter === t.key ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+                  {t.count}
+                </span>
+              </button>
+            ))}
           </div>
 
           <div className="relative w-full sm:w-64">

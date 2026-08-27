@@ -7,22 +7,31 @@
 
 ## 🔴 Bagian 1 — Bug / Cacat Logika
 
-### 1. KRITIS — Libur nasional bocor lintas perusahaan (multi-tenant leak) ✅ lagi di pertimbangkan
+### 1. KRITIS — Libur nasional bocor lintas perusahaan (multi-tenant leak) & Guard Super Admin ✅ SELESAI 2026-08-28
 
-**Lokasi:** `AttendanceController::storeHolidays()` (~line 1869–1874), juga `updateHolidays()` & `destroyHolidays()`
+**Lokasi:** `AttendanceController::storeHolidays()` (~line 2213 & 2260), `updateHolidays()` (~line 2339 & 2426), & `destroyHolidays()` (~line 2482)
 
 ```php
-// Saat menambah libur nasional:
-Holiday::whereDate('date', $date)->where('is_collective', false)->delete();
+// Guard Super Admin untuk Libur Nasional:
+if ($isNational && $user->role !== 'super_admin') {
+    return response()->json(['message' => 'Hanya super admin yang berwenang menambahkan hari libur nasional.'], 403);
+}
+
+// Pencegahan Multi-Tenant Delete Leak:
+if ($isNational) {
+    Holiday::whereDate('date', $date)
+        ->where('is_collective', false)
+        ->where(function ($q) use ($companyId) {
+            $q->whereNull('company_id')->orWhere('company_id', $companyId);
+        })
+        ->delete();
+}
 ```
 
-- Query delete **tanpa filter `company_id`** → HRD perusahaan A yang menambah libur nasional ikut **menghapus libur milik perusahaan B dan C** di tanggal yang sama.
-- `storeHolidays()`, `updateHolidays()`, dan `destroyHolidays()` **tidak punya guard super_admin** untuk tipe nasional. Padahal `rules.md` mencatat fix 2026-08-22 klaim "libur nasional hanya bisa di-CRUD super_admin" — guard-nya tidak ada di kode (regresi / kelupaan implementasi).
-- Dampak: kehilangan data lintas tenant + privilege escalation HRD.
-
-**Fix yang disarankan:**
-1. Tambah guard: tipe `nasional` hanya boleh dibuat/diubah/dihapus oleh `super_admin`.
-2. Scope semua query delete/update dengan `company_id` sesuai konteks.
+- **Cacat Sebelumnya:** Query delete tidak membatasi `company_id` sehingga penambahan libur nasional menghapus libur milik tenant lain, serta belum adanya guard hak akses `super_admin`.
+- **✅ DIPERBAIKI 2026-08-28:** 
+  1. Ditambahkan guard: tipe libur `nasional` HANYA boleh dibuat, diubah, dan dihapus oleh akun ber-role `super_admin`.
+  2. Scope query pembersihan libur lama saat tambah/update libur nasional dibatasi HANYA untuk libur nasional lama (company_id NULL) atau libur milik perusahaan aktor sendiri, melindungi data milik tenant/perusahaan lain dari penghapusan tidak sengaja.
 
 ---
 
@@ -196,7 +205,54 @@ $defaultQuotas = ['cuti' => self::DEFAULT_LEAVE_QUOTA['cuti'] ?? 12, 'izin' => 0
    - Tanpa migration: memakai konvensi `quota = 0` = non-aktif; penegakan sudah ada lewat cek sisa saldo di semua jalur.
    - ⚠️ Konsekuensi: karyawan lama yang belum punya baris saldo juga jadi non-aktif sampai diaktifkan HRD. Baris yang sudah ada tidak tersentuh.
 
-> Catatan terkait (belum diperbaiki): `setLeaveBalance()` masih menerima `leave_type=sakit` padahal sistem lain konsisten memakai `izin` (lihat analisis Bug #2 di percakapan review 2026-08-25).
+| ⚠️ Catatan (Fix 2026-08-28) | `setLeaveBalance()` sebelumnya masih menerima `leave_type=sakit` | ✅ SELESAI 2026-08-28 — validasi `leave_type` di `setLeaveBalance()` telah diperbaiki menjadi `required|in:cuti,izin` agar konsisten dengan tabel `leave_balances`. |
+
+---
+
+### 10. TINGGI — Ketidakkonsistenan Pengambilan Shift Aktif (`resolveSchedule` vs `roster` & `myScheduleCalendar`) ✅ SELESAI 2026-08-28
+
+**Lokasi:** `ShiftController::resolveSchedule()` (line ~2098) & `AttendanceController::resolveOffDatesForUser()` (line ~2753)
+
+```php
+// Di resolveSchedule():
+$userShift = UserShift::with('shift')
+    ->where('user_id', $user->id)
+    ->where('start_date', '<=', $date)
+    ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date))
+    ->orderByDesc('start_date')
+    ->first();
+```
+
+- **Cacat Logika Sebelumnya:** Query mengambil 1 baris `user_shifts` terbaru berdasarkan `start_date <= date` **tanpa memfilter `end_date` di SQL**. Kemudian di PHP dicek apakah `end_date >= date`. Jika `end_date` sudah lewat (shift sementara sudah kadaluarsa), sistem **langsung jatuh ke jam default kantor**, mengabaikan assignment shift utama/reguler yang `start_date`-nya lebih lama dan `end_date`-nya `null`.
+- **Skenario Nyata:**
+  1. Karyawan punya Shift Utama: `start_date: 2026-01-01`, `end_date: null` (Shift Pagi reguler).
+  2. HRD memberi Shift Sementara: `start_date: 2026-08-01`, `end_date: 2026-08-10` (Shift Proyek 10 hari).
+  3. Pada **15 Agustus 2026**:
+     - `roster()` (Web HRD) & `myScheduleCalendar()` (Mobile) memfilter `where(end_date null or end_date >= date)` di SQL sehingga menemukan **Shift Utama (Shift Pagi)**.
+     - `resolveSchedule()` (Dipakai saat Check-In/Out) mengambil baris 1 Agustus (karena start_date terbaru), melihat sudah expired di PHP, lalu **jatuh ke Default Kantor**!
+- **Dampak:** Di kalender mobile karyawan melihat jadwalnya kembali ke Shift Pagi, tapi saat absen check-in/out dihitung berdasarkan Jam Kantor Default (bisa salah hitung status telat & lembur).
+- **✅ DIPERBAIKI 2026-08-28:** Filter `where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date))` ditambahkan langsung pada query SQL di `ShiftController::resolveSchedule()` dan pencarian kandidat di `AttendanceController::resolveOffDatesForUser()`. Sekarang penentuan shift aktif konsisten 100% di semua controller & tampilan.
+
+---
+
+### 11. SEDANG — `destroyAssignment()` Menetapkan `end_date = today` untuk Assignment Mulai Hari Ini ✅ SELESAI 2026-08-28
+
+**Lokasi:** `ShiftController::destroyAssignment()` (line ~1399)
+
+```php
+// Jika assignment mulai hari ini -> hapus permanen agar langsung kembali ke default kantor hari ini
+if ($startStr === $today) {
+    $userShift->delete();
+} else {
+    // Jika assignment masa lalu -> soft-end: set end_date = kemarin
+    $userShift->end_date = Carbon::yesterday('Asia/Jakarta')->toDateString();
+    $userShift->save();
+}
+```
+
+- **Cacat Logika Sebelumnya:** Jika ada assignment yang dibuat hari ini (`start_date = today`) lalu langsung dihapus/diakhiri oleh HRD hari ini juga, nilai `$yesterday < $startStr` menyebabkan `end_date` di-set menjadi `$startStr` (= hari ini).
+- **Dampak:** Karena `end_date` adalah inklusif (`end_date >= today` bernilai `true` sepanjang sisa hari), assignment tersebut **masih dianggap aktif hari ini**, bertentangan dengan pesan API *"karyawan kembali ke jadwal kantor default mulai hari ini"*.
+- **✅ DIPERBAIKI 2026-08-28:** Diperiksa kondisi `$startStr === $today`. Jika assignment baru dibuat hari ini (belum ada histori hari-hari kemarin), baris langsung dihapus permanen (`delete()`) sehingga karyawan seketika kembali ke jam kantor default tanpa tertahan `end_date = today`. Jika assignment sudah berjalan sejak masa lalu (`start_date < today`), sistem tetap melakukan soft-end (`end_date = yesterday`) agar histori hari kemarin tetap utuh.
 
 ---
 

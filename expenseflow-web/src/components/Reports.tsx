@@ -8,7 +8,10 @@ import {
   DollarSign, 
   Activity, 
   Percent, 
-  Briefcase 
+  Briefcase,
+  Receipt as ReceiptIcon,
+  FileText,
+  Layers
 } from 'lucide-react';
 
 interface ReportsProps {
@@ -119,38 +122,25 @@ export const Reports: React.FC<ReportsProps> = ({
 
   return (
     <div className="space-y-6">
-      {/* Tab Pills */}
-      <div className="flex gap-2 p-1.5 bg-slate-100 dark:bg-slate-800 rounded-xl max-w-sm">
-        <button
-          onClick={() => setActiveTab('gabungan')}
-          className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition ${
-            activeTab === 'gabungan'
-              ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
-              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-          }`}
-        >
-          Gabungan
-        </button>
-        <button
-          onClick={() => setActiveTab('struk')}
-          className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition ${
-            activeTab === 'struk'
-              ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
-              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-          }`}
-        >
-          Struk Karyawan
-        </button>
-        <button
-          onClick={() => setActiveTab('invoice')}
-          className={`flex-1 py-1.5 rounded-lg text-xs font-semibold transition ${
-            activeTab === 'invoice'
-              ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
-              : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200'
-          }`}
-        >
-          Invoice Vendor
-        </button>
+      {/* Tabs */}
+      <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800">
+        {[
+          { key: 'gabungan' as const, label: 'Laporan Gabungan', icon: <Layers className="w-3.5 h-3.5" /> },
+          { key: 'struk' as const, label: 'Struk Karyawan', icon: <ReceiptIcon className="w-3.5 h-3.5" /> },
+          { key: 'invoice' as const, label: 'Invoice Vendor', icon: <FileText className="w-3.5 h-3.5" /> },
+        ].map((t) => (
+          <button
+            key={t.key}
+            onClick={() => setActiveTab(t.key)}
+            className={`flex items-center gap-1.5 px-3.5 sm:px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${activeTab === t.key
+              ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
+              : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
+              }`}
+          >
+            {t.icon}
+            {t.label}
+          </button>
+        ))}
       </div>
 
       {/* Conditionally Render Content */}
