@@ -7,6 +7,8 @@ import {
 import { shiftApi, attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
+import CustomDatePicker from './CustomDatePicker';
+
 
 // ═══════════════════════════════════════════════════════════════
 // Types
@@ -1115,17 +1117,16 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">Berlaku Mulai</label>
-                <input
-                  type="date"
+                <CustomDatePicker
                   value={startDate}
-                  onChange={(e) => {
-                    const val = e.target.value;
+                  onChange={(val) => {
                     setStartDate(val);
-                    if (endDate && endDate <= val) {
+                    if (endDate && endDate < val) {
                       setEndDate('');
                     }
                   }}
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                  placeholder="Pilih tgl mulai"
+                  size="sm"
                 />
               </div>
               <div>
@@ -1133,18 +1134,20 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
                   Berlaku Sampai
                   <span className="ml-1 text-slate-400 normal-case font-normal">(opsional)</span>
                 </label>
-                <input
-                  type="date"
+                <CustomDatePicker
                   value={endDate}
-                  min={startDate ? addDays(startDate, 1) : undefined}
-                  onChange={(e) => setEndDate(e.target.value)}
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                  min={startDate || undefined}
+                  onChange={setEndDate}
+                  placeholder="Pilih tgl selesai"
+                  size="sm"
+                  align="right"
                 />
                 <p className="text-[10px] text-slate-400 mt-1">
-                  Kosongkan = berlaku tanpa batas. Setelah tanggal ini karyawan otomatis kembali ke jam kantor.
+                  Kosongkan = berlaku tanpa batas.
                 </p>
               </div>
             </div>
+
             <div>
               <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">Catatan</label>
               <input
@@ -1375,17 +1378,16 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">Berlaku Mulai</label>
-                  <input
-                    type="date"
+                  <CustomDatePicker
                     value={startDate}
-                    onChange={(e) => {
-                      const val = e.target.value;
+                    onChange={(val) => {
                       setStartDate(val);
-                      if (endDate && endDate <= val) {
+                      if (endDate && endDate < val) {
                         setEndDate('');
                       }
                     }}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                    placeholder="Pilih tgl mulai"
+                    size="sm"
                   />
                 </div>
                 <div>
@@ -1393,15 +1395,17 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
                     Berlaku Sampai
                     <span className="ml-1 text-slate-400 normal-case font-normal">(opsional)</span>
                   </label>
-                  <input
-                    type="date"
+                  <CustomDatePicker
                     value={endDate}
-                    min={startDate ? addDays(startDate, 1) : undefined}
-                    onChange={(e) => setEndDate(e.target.value)}
-                    className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                    min={startDate || undefined}
+                    onChange={setEndDate}
+                    placeholder="Pilih tgl selesai"
+                    size="sm"
+                    align="right"
                   />
                 </div>
               </div>
+
               <div>
                 <label className="text-[11px] font-semibold text-slate-500 uppercase block mb-1">Catatan</label>
                 <input
@@ -1856,16 +1860,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 </span>
               </div>
             )}
-            <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-2.5">
-              <div>
-                <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Tanggal</label>
-                <input
-                  type="date"
-                  value={rosterDate}
-                  onChange={(e) => setRosterDate(e.target.value)}
-                  className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
-                />
-              </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
               <div>
                 <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Cabang</label>
                 <select
@@ -1893,7 +1888,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   ))}
                 </select>
               </div>
-              <div className="sm:col-span-3 lg:col-span-2">
+              <div className="sm:col-span-2">
                 <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Cari Karyawan</label>
                 <div className="flex gap-2">
                   <div className="relative flex-1">
@@ -1909,13 +1904,14 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   </div>
                   <button
                     onClick={loadRoster}
-                    className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition shrink-0"
+                    className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition shrink-0 cursor-pointer"
                   >
                     Terapkan
                   </button>
                 </div>
               </div>
             </div>
+
           </div>
 
           {/* Bulk action bar */}

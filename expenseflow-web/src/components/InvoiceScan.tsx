@@ -13,8 +13,10 @@ import {
 } from 'lucide-react';
 import { vendorApi, invoiceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
+import CustomDatePicker from './CustomDatePicker';
 
 interface InvoiceScanProps {
+
   onAddInvoice: (invoice: Invoice) => void;
 }
 
@@ -251,23 +253,24 @@ export const InvoiceScan: React.FC<InvoiceScanProps> = ({ onAddInvoice }) => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="font-semibold text-slate-700 dark:text-slate-300 block">Tanggal Faktur</label>
-                  <input
-                    type="date"
+                  <CustomDatePicker
                     value={invoiceDate}
-                    onChange={(e) => setInvoiceDate(e.target.value)}
-                    className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none"
+                    onChange={setInvoiceDate}
+                    placeholder="Pilih tanggal faktur"
+                    size="sm"
                   />
                 </div>
                 <div className="space-y-1">
                   <label className="font-semibold text-slate-700 dark:text-slate-300 block">Jatuh Tempo</label>
-                  <input
-                    type="date"
+                  <CustomDatePicker
                     value={dueDate}
-                    onChange={(e) => setDueDate(e.target.value)}
-                    className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none"
+                    onChange={setDueDate}
+                    placeholder="Pilih jatuh tempo"
+                    size="sm"
                   />
                 </div>
               </div>
+
 
               <div className="space-y-1">
                 <label className="font-semibold text-slate-700 dark:text-slate-300 block">Subtotal (sebelum PPN)</label>

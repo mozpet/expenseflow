@@ -5,7 +5,9 @@ use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\AuthController;
 use App\Http\Controllers\API\InvoiceController;
 use App\Http\Controllers\API\NotificationController;
+use App\Http\Controllers\API\PublicRecruitmentController;
 use App\Http\Controllers\API\ReceiptController;
+use App\Http\Controllers\API\RecruitmentController;
 use App\Http\Controllers\API\SettingsController;
 use App\Http\Controllers\API\ShiftController;
 use App\Http\Controllers\API\UserController;
@@ -266,4 +268,38 @@ Route::prefix('v1')->group(function () {
             Route::get('/collective-leaves', [AttendanceController::class, 'listCollectiveLeaves']);
             Route::post('/collective-leave/{holiday}/respond', [AttendanceController::class, 'respondCollectiveLeave']);
         });
+
+    // ── Rekrutmen — Public (tanpa autentikasi) ───────────────────────────────
+    // Portal karir publik: lihat lowongan & kirim lamaran
+    Route::prefix('public')->group(function () {
+        Route::get('/jobs', [PublicRecruitmentController::class, 'jobList']);
+        Route::get('/jobs/{id}', [PublicRecruitmentController::class, 'jobDetail']);
+        Route::post('/jobs/{id}/apply', [PublicRecruitmentController::class, 'apply']);
+        Route::get('/postal-code/{code}', [PublicRecruitmentController::class, 'searchPostalCode']);
+    });
+
+
+    // ── Rekrutmen — HRD / Admin / Super Admin ────────────────────────────────
+    Route::middleware(['auth:sanctum', 'role:hrd,admin,super_admin', 'company'])
+        ->prefix('recruitment')
+        ->group(function () {
+            // Manajemen lowongan
+            Route::get('/postings', [RecruitmentController::class, 'index']);
+            Route::post('/postings', [RecruitmentController::class, 'store']);
+            Route::get('/postings/{id}', [RecruitmentController::class, 'show']);
+            Route::put('/postings/{id}', [RecruitmentController::class, 'update']);
+            Route::delete('/postings/{id}', [RecruitmentController::class, 'destroy']);
+            Route::patch('/postings/{id}/publish', [RecruitmentController::class, 'publish']);
+            Route::patch('/postings/{id}/close', [RecruitmentController::class, 'close']);
+
+            // Pelamar
+            Route::get('/applications', [RecruitmentController::class, 'allApplications']);
+            Route::get('/postings/{id}/applications', [RecruitmentController::class, 'applications']);
+            Route::get('/applications/{id}', [RecruitmentController::class, 'applicationDetail']);
+            Route::patch('/applications/{id}/status', [RecruitmentController::class, 'updateApplicationStatus']);
+            Route::delete('/applications/{id}', [RecruitmentController::class, 'destroyApplication']);
+            Route::get('/applications/{id}/resume', [RecruitmentController::class, 'downloadResume']);
+        });
 });
+
+

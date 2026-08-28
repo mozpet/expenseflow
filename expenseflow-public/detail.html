@@ -1,0 +1,636 @@
+<!DOCTYPE html>
+<html lang="id" class="dark scroll-smooth">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Detail Lowongan — ExpenseFlow</title>
+  <meta name="description" content="Kirimkan lamaran kerja Anda dan bergabung bersama tim kami.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+    rel="stylesheet">
+
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Plus Jakarta Sans"', 'sans-serif'],
+          },
+          colors: {
+            brand: {
+              50: '#f5f3ff',
+              100: '#ede9fe',
+              200: '#ddd6fe',
+              300: '#c4b5fd',
+              400: '#a78bfa',
+              500: '#8b5cf6',
+              600: '#7c3aed',
+              700: '#6d28d9',
+              800: '#5b21b6',
+              900: '#4c1d95',
+            },
+            dark: {
+              base: '#09090e',
+              surface: '#111118',
+              card: '#161622',
+              border: '#232333',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Custom Styling -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+
+<body
+  class="bg-dark-base text-slate-100 font-sans antialiased min-h-screen flex flex-col selection:bg-brand-500 selection:text-white">
+
+  <!-- Toast Container -->
+  <div id="toast-container" class="fixed top-5 right-5 z-50 flex flex-col gap-2 max-w-sm w-full pointer-events-none">
+  </div>
+
+  <!-- Ambient Background Glows -->
+  <div class="fixed inset-0 pointer-events-none overflow-hidden -z-10">
+    <div class="absolute top-0 right-1/4 w-[550px] h-[450px] bg-brand-600/10 rounded-full blur-[140px]"></div>
+    <div class="absolute bottom-10 left-10 w-[450px] h-[350px] bg-blue-600/10 rounded-full blur-[120px]"></div>
+  </div>
+
+  <!-- ── Top Navbar ── -->
+  <header class="sticky top-0 z-40 bg-dark-base/85 backdrop-blur-xl border-b border-white/5">
+    <div class="max-w-6xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between">
+      <a href="index.html" class="flex items-center gap-3 group">
+        <div
+          class="w-9 h-9 rounded-xl bg-gradient-to-tr from-brand-600 to-brand-400 flex items-center justify-center text-white shadow-lg shadow-brand-500/25 group-hover:scale-105 transition-transform">
+          <i data-lucide="briefcase" class="w-5 h-5"></i>
+        </div>
+        <div>
+          <span class="font-extrabold text-base tracking-tight text-white block leading-none">ExpenseFlow</span>
+          <span class="text-[10px] text-brand-400 font-semibold tracking-wider uppercase mt-0.5 block">Portal
+            Karir</span>
+        </div>
+      </a>
+
+      <a href="index.html"
+        class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-xl text-xs font-semibold glass-card text-slate-300 hover:text-white hover:bg-white/10 transition-all border border-white/5">
+        <i data-lucide="arrow-left" class="w-4 h-4"></i>
+        <span>Kembali ke Lowongan</span>
+      </a>
+    </div>
+  </header>
+
+  <!-- ── Loading State ── -->
+  <div id="detail-loading" class="flex-1 flex flex-col items-center justify-center py-24">
+    <div class="w-10 h-10 border-3 border-brand-500/30 border-t-brand-500 rounded-full animate-spin mb-4"></div>
+    <p class="text-sm text-slate-400 font-medium">Memuat rincian lowongan...</p>
+  </div>
+
+  <!-- ── Error State ── -->
+  <div id="detail-error" class="hidden flex-1 flex flex-col items-center justify-center py-24 px-4 text-center">
+    <div
+      class="w-16 h-16 rounded-2xl bg-rose-500/10 border border-rose-500/20 flex items-center justify-center text-rose-400 mb-4">
+      <i data-lucide="alert-circle" class="w-8 h-8"></i>
+    </div>
+    <h2 class="text-xl font-bold text-white mb-2">Lowongan Tidak Ditemukan</h2>
+    <p id="error-message" class="text-sm text-slate-400 max-w-md mx-auto mb-6">Lowongan kerja ini mungkin telah ditutup
+      atau link sudah kedaluwarsa.</p>
+    <a href="index.html"
+      class="px-5 py-2.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white text-sm font-semibold transition-all shadow-lg shadow-brand-600/30">
+      Lihat Lowongan Lainnya
+    </a>
+  </div>
+
+  <!-- ── Main Content ── -->
+  <main id="detail-content" class="hidden flex-1 py-10 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto w-full">
+
+    <!-- Breadcrumb -->
+    <nav class="flex items-center gap-2 text-xs text-slate-400 mb-6">
+      <a href="index.html" class="hover:text-slate-200 transition-colors">Beranda Karir</a>
+      <i data-lucide="chevron-right" class="w-3.5 h-3.5 text-slate-600"></i>
+      <span id="breadcrumb-title" class="text-slate-200 font-medium truncate max-w-xs">Detail Posisi</span>
+    </nav>
+
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+
+      <!-- ── Left Column: Job Overview, Specs, Description & Requirements (5 Columns) ── -->
+      <div class="lg:col-span-5 space-y-5">
+
+        <!-- Job Header Card -->
+        <div class="glass-card rounded-3xl p-6 sm:p-7 border border-white/10 shadow-xl space-y-4">
+          <div class="space-y-2.5">
+            <!-- Company Full Name Badge -->
+            <div
+              class="inline-flex items-center gap-2 px-3 py-1 rounded-xl bg-brand-500/10 border border-brand-500/20 text-brand-300 text-xs font-bold">
+              <i data-lucide="building-2" class="w-3.5 h-3.5 text-brand-400"></i>
+              <span id="job-company-name">PT Maju Bersama</span>
+            </div>
+
+            <!-- Position Title -->
+            <h1 id="job-title" class="text-2xl sm:text-3xl font-extrabold text-white tracking-tight leading-snug">
+              Memuat Posisi...
+            </h1>
+
+            <!-- Badges -->
+            <div class="flex flex-wrap items-center gap-2 pt-1">
+              <span id="job-type-badge"
+                class="text-xs font-semibold px-3 py-1 rounded-full border bg-emerald-500/10 text-emerald-400 border-emerald-500/20">
+                Full Time
+              </span>
+              <span id="job-department"
+                class="text-xs text-slate-300 bg-white/5 px-3 py-1 rounded-full border border-white/10 font-medium">
+                Engineering
+              </span>
+            </div>
+          </div>
+
+
+          <!-- Quick Specs Grid -->
+          <div class="grid grid-cols-2 gap-2.5 pt-4 border-t border-white/10">
+            <div class="p-3 rounded-xl bg-white/5 border border-white/5">
+              <span class="text-[11px] text-slate-400 block mb-0.5 flex items-center gap-1">
+                <i data-lucide="map-pin" class="w-3 h-3 text-brand-400"></i> Lokasi
+              </span>
+              <p id="job-location" class="text-xs font-semibold text-white truncate">-</p>
+            </div>
+
+            <div class="p-3 rounded-xl bg-white/5 border border-white/5">
+              <span class="text-[11px] text-slate-400 block mb-0.5 flex items-center gap-1">
+                <i data-lucide="calendar" class="w-3 h-3 text-brand-400"></i> Batas Waktu
+              </span>
+              <p id="job-deadline" class="text-xs font-semibold text-white truncate">-</p>
+            </div>
+
+            <div id="job-salary-row" class="p-3 rounded-xl bg-white/5 border border-white/5 col-span-2">
+              <span class="text-[11px] text-slate-400 block mb-0.5 flex items-center gap-1">
+                <i data-lucide="wallet" class="w-3 h-3 text-emerald-400"></i> Kisaran Gaji
+              </span>
+              <p id="job-salary" class="text-xs font-semibold text-emerald-400 truncate">-</p>
+            </div>
+
+            <div id="job-quota-row"
+              class="hidden p-3 rounded-xl bg-purple-500/10 border border-purple-500/20 col-span-2">
+              <span class="text-[11px] text-purple-300 block mb-0.5 flex items-center gap-1">
+                <i data-lucide="users" class="w-3 h-3 text-purple-400"></i> Kuota Pelamar
+              </span>
+              <p id="job-quota" class="text-xs font-semibold text-white truncate">-</p>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Job Description Card -->
+        <div class="glass-card rounded-3xl p-6 border border-white/10 space-y-3">
+          <div class="flex items-center gap-2 text-brand-400 font-bold text-xs uppercase tracking-wider">
+            <i data-lucide="file-text" class="w-4 h-4"></i>
+            <span>Deskripsi Pekerjaan</span>
+          </div>
+          <div id="job-description" class="text-xs sm:text-sm text-slate-300 leading-relaxed"></div>
+        </div>
+
+        <!-- Job Requirements Card -->
+        <div id="job-requirements-card" class="glass-card rounded-3xl p-6 border border-white/10 space-y-3">
+          <div class="flex items-center justify-between pb-2 border-b border-white/10">
+            <div class="flex items-center gap-2 text-brand-400 font-bold text-xs uppercase tracking-wider">
+              <i data-lucide="check-square" class="w-4 h-4"></i>
+              <span>Kualifikasi &amp; Persyaratan</span>
+            </div>
+            <span id="requirements-count-badge"
+              class="text-[11px] font-semibold text-brand-300 bg-brand-500/15 px-2.5 py-0.5 rounded-full border border-brand-500/30">
+              Kriteria
+            </span>
+          </div>
+          <div id="job-requirements"></div>
+        </div>
+
+      </div>
+
+      <!-- ── Right Column: 2-Step Application Form (7 Columns - Widened & Enlarged) ── -->
+      <div class="lg:col-span-7">
+        <div class="glass-card rounded-3xl p-6 sm:p-8 lg:p-9 border border-white/10 shadow-2xl sticky top-24">
+
+          <!-- Success Screen (Shown after apply) -->
+          <div id="form-success" class="hidden text-center py-8">
+            <div
+              class="w-16 h-16 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 mx-auto mb-5 shadow-lg shadow-emerald-500/10">
+              <i data-lucide="check-circle" class="w-9 h-9"></i>
+            </div>
+            <h2 class="text-2xl font-bold text-white mb-2">Lamaran Terkirim!</h2>
+            <p class="text-sm text-slate-300 mb-6 leading-relaxed">
+              Terima kasih, <strong id="applicant-success-name" class="text-white">Pelamar</strong>! Berkas lamaran Anda
+              untuk posisi <span id="job-success-title" class="text-brand-400 font-semibold">Posisi</span> telah kami
+              terima.
+            </p>
+            <div
+              class="p-4 rounded-2xl bg-white/5 border border-white/5 text-xs text-slate-400 mb-6 text-left space-y-1.5">
+              <p class="font-semibold text-white flex items-center gap-1.5 mb-1.5 text-sm">
+                <i data-lucide="info" class="w-4 h-4 text-brand-400"></i> Tahapan Selanjutnya:
+              </p>
+              <p>1. Tim HRD akan melakukan seleksi administrasi berkas lamaran Anda.</p>
+              <p>2. Kandidat yang lolos kualifikasi akan dihubungi melalui Email atau WhatsApp.</p>
+            </div>
+            <a href="index.html"
+              class="inline-flex items-center justify-center gap-2 w-full py-3.5 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-bold text-sm tracking-wide transition-all shadow-lg shadow-brand-600/30">
+              <i data-lucide="arrow-left" class="w-4 h-4"></i> Kembali ke Daftar Lowongan
+            </a>
+          </div>
+
+          <!-- Application Form -->
+          <form id="apply-form" class="space-y-6">
+            <div class="border-b border-white/10 pb-4">
+              <h2 class="text-xl sm:text-2xl font-extrabold text-white tracking-tight">Kirimkan Lamaran</h2>
+              <p class="text-xs sm:text-sm text-slate-400 mt-1">Lengkapi formulir di bawah ini untuk mengirimkan berkas
+                lamaran kerja.</p>
+            </div>
+
+            <!-- Step Progress Indicators (2 Steps) -->
+            <div class="grid grid-cols-2 gap-3 py-1">
+
+              <div id="indicator-1"
+                class="flex items-center gap-2.5 p-2 rounded-xl border border-brand-500/40 bg-brand-500/10">
+                <div
+                  class="step-dot w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold border transition-all bg-brand-600 text-white border-brand-500 shrink-0">
+                  1
+                </div>
+                <div class="min-w-0">
+                  <span class="step-label text-xs font-bold text-brand-400 block truncate">Langkah 1</span>
+                  <span class="text-[11px] text-slate-300 block truncate">Data Diri &amp; Profil</span>
+                </div>
+              </div>
+
+              <div id="indicator-2"
+                class="flex items-center gap-2.5 p-2 rounded-xl border border-white/5 bg-white/[0.02]">
+                <div
+                  class="step-dot w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold border transition-all bg-white/5 text-slate-400 border-white/10 shrink-0">
+                  2
+                </div>
+                <div class="min-w-0">
+                  <span class="step-label text-xs font-medium text-slate-500 block truncate">Langkah 2</span>
+                  <span class="text-[11px] text-slate-400 block truncate">Berkas &amp; CV</span>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- ── STEP 1: Data Diri & Profil ── -->
+            <div id="step-1" class="space-y-4">
+
+              <!-- Nama Lengkap & Jenis Kelamin -->
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div class="sm:col-span-2">
+                  <label for="full_name" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Nama Lengkap <span class="text-rose-400">*</span>
+                  </label>
+                  <input type="text" id="full_name" name="full_name" placeholder="Contoh: Budi Pratama, S.Kom"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                  <p id="error-full_name" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+
+                <div>
+                  <label for="gender" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Jenis Kelamin <span class="text-rose-400">*</span>
+                  </label>
+                  <select id="gender" name="gender" class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <option value="">Pilih Gender</option>
+                    <option value="Laki-laki">Laki-laki</option>
+                    <option value="Perempuan">Perempuan</option>
+                  </select>
+                  <p id="error-gender" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+              </div>
+
+              <!-- Tempat Lahir, Tanggal Lahir, Kewarganegaraan -->
+              <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label for="birth_place" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Tempat Lahir <span class="text-rose-400">*</span>
+                  </label>
+                  <input type="text" id="birth_place" name="birth_place" placeholder="Contoh: Jakarta"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                  <p id="error-birth_place" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+
+                <div>
+                  <label for="birth_date" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Tanggal Lahir <span class="text-rose-400">*</span>
+                  </label>
+                  <input type="date" id="birth_date" name="birth_date"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                  <p id="error-birth_date" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+
+                <div>
+                  <label for="nationality" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Kewarganegaraan <span class="text-rose-400">*</span>
+                  </label>
+                  <select id="nationality" name="nationality"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <option value="WNI (Indonesia)">WNI (Indonesia)</option>
+                    <option value="WNA (Asing)">WNA (Asing)</option>
+                  </select>
+                  <p id="error-nationality" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+              </div>
+
+              <!-- Kontak: Email & WhatsApp -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label for="email"
+                    class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5 flex items-center justify-between">
+                    <span>Alamat Email <span class="text-rose-400">*</span></span>
+                    <span class="text-[11px] font-semibold text-brand-400">(Gunakan Email Aktif)</span>
+                  </label>
+                  <input type="email" id="email" name="email" placeholder="nama.anda@gmail.com (Email Aktif)"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                  <p id="error-email" class="hidden text-xs text-rose-400 mt-1"></p>
+                  <span class="text-[11px] text-slate-400 block mt-1">Pastikan email aktif untuk menerima undangan
+                    interview &amp; kabar seleksi.</span>
+                </div>
+
+                <div>
+                  <label for="phone" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    No. WhatsApp / HP <span class="text-rose-400">*</span>
+                  </label>
+                  <input type="tel" id="phone" name="phone" placeholder="081234567890"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                  <p id="error-phone" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+              </div>
+
+              <!-- Pendidikan Terakhir & Nama Sekolah/Kampus -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label for="education" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Pendidikan Terakhir <span class="text-rose-400">*</span>
+                  </label>
+                  <select id="education" name="education"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <option value="">Pilih Jenjang Pendidikan</option>
+                    <option value="SMA / SMK">SMA / SMK Sederajat</option>
+                    <option value="Diploma (D3)">Diploma (D3)</option>
+                    <option value="Sarjana (S1)">Sarjana (S1)</option>
+                    <option value="Magister (S2)">Magister (S2)</option>
+                    <option value="Doktor (S3)">Doktor (S3)</option>
+                  </select>
+                  <p id="error-education" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+
+                <div>
+                  <label for="institution_name" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Nama Sekolah / Universitas <span class="text-rose-400">*</span>
+                  </label>
+                  <input type="text" id="institution_name" name="institution_name"
+                    placeholder="Contoh: Universitas Indonesia / SMKN 1"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                  <p id="error-institution_name" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+              </div>
+
+              <!-- Pengalaman Kerja & Notice Period -->
+              <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label for="experience_years" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Pengalaman Kerja (Tahun) <span class="text-rose-400">*</span>
+                  </label>
+                  <input type="number" id="experience_years" name="experience_years" min="0" max="50"
+                    placeholder="0 (Isi 0 jika Fresh Graduate)"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                  <p id="error-experience_years" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+
+                <div>
+                  <label for="notice_period" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Ketersediaan Mulai Bekerja <span class="text-rose-400">*</span>
+                  </label>
+                  <select id="notice_period" name="notice_period"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <option value="">Pilih Ketersediaan (Notice Period)</option>
+                    <option value="Langsung (Immediate)">Langsung Bekerja (Immediate)</option>
+                    <option value="1 Minggu">1 Minggu (1 Week Notice)</option>
+                    <option value="2 Minggu">2 Minggu (2 Weeks Notice)</option>
+                    <option value="1 Bulan (1 Month Notice)">1 Bulan (1 Month Notice)</option>
+                    <option value="Lebih dari 1 Bulan">&gt; 1 Bulan</option>
+                  </select>
+                  <p id="error-notice_period" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+              </div>
+
+              <!-- ── BAGIAN ALAMAT LENGKAP (KODE POS DI PALING ATAS) ── -->
+              <div class="pt-3 border-t border-white/10 space-y-3.5">
+                <div class="flex items-center justify-between">
+                  <span class="text-xs font-bold text-brand-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <i data-lucide="map-pin" class="w-3.5 h-3.5"></i> Alamat &amp; Domisili Pelamar
+                  </span>
+                  <span class="text-[11px] text-slate-400">Ketik kode pos untuk auto-detect wilayah</span>
+                </div>
+
+                <!-- 1. Kode Pos (Paling Atas) -->
+                <div>
+                  <label for="postal_code"
+                    class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5 flex items-center justify-between">
+                    <span>Kode Pos <span class="text-rose-400">*</span></span>
+                    <span id="postal-badge" class="text-[11px] text-slate-400 font-normal">Contoh: 12190, 40115,
+                      60271</span>
+                  </label>
+                  <div class="relative">
+                    <input type="text" id="postal_code" name="postal_code" maxlength="10"
+                      placeholder="Masukkan 5 digit kode pos domisili Anda (Contoh: 12190)"
+                      class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm font-mono tracking-wider focus:border-brand-500">
+                    <div id="postal-spinner" class="hidden absolute right-3.5 top-1/2 -translate-y-1/2 text-brand-400">
+                      <i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i>
+                    </div>
+                  </div>
+                  <p id="postal-hint" class="hidden text-[11px] text-emerald-400 mt-1 flex items-center gap-1">
+                    <i data-lucide="check-circle" class="w-3.5 h-3.5"></i> <span id="postal-hint-text">Wilayah
+                      terdeteksi otomatis.</span>
+                  </p>
+                  <p id="error-postal_code" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+
+                <!-- 2. Provinsi & Kota / Kabupaten -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label for="province" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                      Provinsi <span class="text-rose-400">*</span>
+                    </label>
+                    <input type="text" id="province" name="province" placeholder="Contoh: DKI Jakarta / Jawa Barat"
+                      class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <p id="error-province" class="hidden text-xs text-rose-400 mt-1"></p>
+                  </div>
+
+                  <div>
+                    <label for="city" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                      Kota / Kabupaten <span class="text-rose-400">*</span>
+                    </label>
+                    <input type="text" id="city" name="city" placeholder="Contoh: Jakarta Selatan / Bandung"
+                      class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <p id="error-city" class="hidden text-xs text-rose-400 mt-1"></p>
+                  </div>
+                </div>
+
+                <!-- 3. Kecamatan & Kelurahan / Desa -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div>
+                    <label for="district" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                      Kecamatan <span class="text-rose-400">*</span>
+                    </label>
+                    <input type="text" id="district" name="district" placeholder="Contoh: Kebayoran Baru"
+                      class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <p id="error-district" class="hidden text-xs text-rose-400 mt-1"></p>
+                  </div>
+
+                  <div>
+                    <label for="subdistrict"
+                      class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5 flex items-center justify-between">
+                      <span>Kelurahan / Desa</span>
+                      <span class="text-[10px] text-slate-400 font-normal">Opsional</span>
+                    </label>
+                    <input type="text" id="subdistrict" name="subdistrict" placeholder="Contoh: Senayan / Melawai"
+                      class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm">
+                    <p id="error-subdistrict" class="hidden text-xs text-rose-400 mt-1"></p>
+                  </div>
+                </div>
+
+                <!-- 4. Alamat Lengkap / Nama Jalan -->
+                <div>
+                  <label for="address" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                    Alamat Lengkap <pan class="text-rose-400">*</span>
+                  </label>
+                  <textarea id="address" name="address" rows="2"
+                    placeholder="Contoh: Jl. Jenderal Sudirman No. 45, RT 02 / RW 03"
+                    class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm resize-none"></textarea>
+                  <p id="error-address" class="hidden text-xs text-rose-400 mt-1"></p>
+                </div>
+              </div>
+
+            </div>
+
+
+            <!-- ── STEP 2: Berkas CV & Surat Lamaran ── -->
+            <div id="step-2" class="hidden space-y-5">
+
+              <!-- Upload Box -->
+              <div>
+                <label class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                  Upload Resume / CV (PDF, Maks. 5MB) <span class="text-rose-400">*</span>
+                </label>
+
+                <div id="file-dropzone"
+                  class="border-2 border-dashed border-white/15 hover:border-brand-500/60 rounded-2xl p-7 text-center cursor-pointer transition-all bg-white/[0.02] hover:bg-white/[0.04]">
+                  <input type="file" id="resume-file" accept="application/pdf" class="hidden">
+                  <i data-lucide="upload-cloud" class="w-9 h-9 text-brand-400 mx-auto mb-2"></i>
+                  <p class="text-sm font-bold text-white">Klik untuk memilih file PDF dari komputer / HP</p>
+                  <p class="text-xs text-slate-400 mt-1">atau seret file berkas CV Anda ke area ini</p>
+                </div>
+
+                <!-- File Selected Preview -->
+                <div id="file-preview"
+                  class="hidden p-4 rounded-2xl bg-brand-500/10 border border-brand-500/30 flex items-center justify-between">
+                  <div class="flex items-center gap-3 min-w-0">
+                    <div
+                      class="w-10 h-10 rounded-xl bg-brand-600/20 flex items-center justify-center text-brand-400 shrink-0">
+                      <i data-lucide="file-text" class="w-5 h-5"></i>
+                    </div>
+                    <div class="min-w-0">
+                      <p id="file-name" class="text-sm font-bold text-white truncate">resume.pdf</p>
+                      <p id="file-size" class="text-xs text-slate-400">0 MB</p>
+                    </div>
+                  </div>
+                  <button type="button" id="file-remove-btn"
+                    class="p-2 rounded-xl hover:bg-white/10 text-rose-400 transition-colors" title="Hapus file">
+                    <i data-lucide="trash-2" class="w-4 h-4"></i>
+                  </button>
+                </div>
+                <p id="error-resume" class="hidden text-xs text-rose-400 mt-1"></p>
+              </div>
+
+              <!-- Cover Letter -->
+              <div>
+                <label for="cover_letter" class="block text-xs sm:text-sm font-semibold text-slate-200 mb-1.5">
+                  Catatan Tambahan / Cover Letter <span class="text-rose-400">*</span>
+                </label>
+                <textarea id="cover_letter" name="cover_letter" rows="3"
+                  placeholder="Ceritakan secara singkat keahlian utama, portofolio, atau alasan ketertarikan Anda pada posisi ini..."
+                  class="w-full px-4 py-3 rounded-xl custom-input text-xs sm:text-sm resize-none"></textarea>
+                <p id="error-cover_letter" class="hidden text-xs text-rose-400 mt-1"></p>
+              </div>
+
+
+              <!-- Summary Card -->
+              <div class="p-4 rounded-2xl bg-white/[0.03] border border-white/10 space-y-2 text-xs">
+                <p class="font-bold text-brand-300 flex items-center gap-1.5 mb-2 text-xs uppercase tracking-wider">
+                  <i data-lucide="clipboard-check" class="w-4 h-4 text-brand-400"></i> Ringkasan Data Pelamar
+                </p>
+                <div class="flex justify-between py-1 border-b border-white/5 text-slate-400">
+                  <span>Nama:</span>
+                  <span id="summary-name" class="font-bold text-white text-right">-</span>
+                </div>
+                <div class="flex justify-between py-1 border-b border-white/5 text-slate-400">
+                  <span>Email:</span>
+                  <span id="summary-email" class="font-bold text-white text-right">-</span>
+                </div>
+                <div class="flex justify-between py-1 text-slate-400">
+                  <span>Pendidikan &amp; Pengalaman:</span>
+                  <span id="summary-education" class="font-bold text-white text-right">-</span>
+                </div>
+              </div>
+
+            </div>
+
+            <!-- Form Actions -->
+            <div class="flex items-center gap-3 pt-2">
+              <button type="button" id="btn-prev-step"
+                class="hidden px-5 py-3 rounded-xl glass-card hover:bg-white/10 text-slate-300 font-bold text-xs sm:text-sm transition-all border border-white/10">
+                &larr; Kembali
+              </button>
+
+              <button type="button" id="btn-next-step"
+                class="w-full py-3.5 px-6 rounded-xl bg-brand-600 hover:bg-brand-500 text-white font-bold text-xs sm:text-sm tracking-wide shadow-lg shadow-brand-600/30 transition-all flex items-center justify-center gap-2">
+                <span>Lanjutkan ke Unggah CV</span>
+                <i data-lucide="arrow-right" class="w-4 h-4"></i>
+              </button>
+
+              <button type="submit" id="btn-submit"
+                class="hidden w-full py-3.5 px-6 rounded-xl bg-gradient-to-r from-brand-600 to-purple-600 hover:from-brand-500 hover:to-purple-500 text-white font-bold text-xs sm:text-sm tracking-wide shadow-lg shadow-brand-600/35 transition-all flex items-center justify-center gap-2">
+                <i data-lucide="send" class="w-4 h-4"></i>
+                <span>Kirim Lamaran Sekarang</span>
+              </button>
+            </div>
+
+          </form>
+
+        </div>
+      </div>
+
+    </div>
+  </main>
+
+
+  <!-- ── Footer ── -->
+  <footer class="border-t border-white/10 bg-dark-base py-6 text-center text-xs text-slate-500 mt-auto">
+    <div class="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <p>&copy; 2026 ExpenseFlow. Seluruh hak cipta dilindungi undang-undang.</p>
+      <div class="flex items-center gap-6">
+        <a href="index.html" class="hover:text-slate-300 transition-colors">Lowongan Kerja</a>
+        <a href="javascript:void(0)" class="hover:text-slate-300 transition-colors">Kebijakan Privasi</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/datepicker.js"></script>
+  <script src="js/apply.js"></script>
+</body>
+
+</html>

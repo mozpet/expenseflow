@@ -45,6 +45,7 @@ const ShiftManagement = lazy(() => import('./components/ShiftManagement').then(m
 const OvertimeApprovalView = lazy(() => import('./components/OvertimeApprovalView').then(m => ({ default: m.OvertimeApprovalView })));
 const DeviceChangeApprovalView = lazy(() => import('./components/DeviceChangeApprovalView').then(m => ({ default: m.DeviceChangeApprovalView })));
 const SettingsManagement = lazy(() => import('./components/SettingsManagement').then(m => ({ default: m.SettingsManagement })));
+const RecruitmentManagement = lazy(() => import('./components/RecruitmentManagement').then(m => ({ default: m.RecruitmentManagement })));
 
 import { 
   Inbox, 
@@ -68,7 +69,8 @@ import {
   AlertCircle,
   CalendarCheck,
   CalendarClock,
-  Smartphone
+  Smartphone,
+  Briefcase
 } from 'lucide-react';
 
 export default function App() {
@@ -80,7 +82,7 @@ export default function App() {
 
   // Finance tidak punya akses menu Manajemen (Karyawan & Presensi/Cuti = ranah HRD).
   const isFinance = user?.role === 'finance';
-  const MANAGEMENT_PAGES = ['karyawan', 'presensi', 'shift', 'overtime', 'device-changes'];
+  const MANAGEMENT_PAGES = ['karyawan', 'presensi', 'shift', 'overtime', 'device-changes', 'rekrutmen'];
 
   // Pengaturan Aturan hanya untuk admin & super_admin.
   const isAdminOrSuperAdmin = user?.role === 'admin' || user?.role === 'super_admin';
@@ -356,7 +358,8 @@ export default function App() {
     'presensi': 'Manajemen Presensi & Cuti',
     'shift': 'Manajemen Shift & Jadwal',
     'overtime': 'Approval Lembur Karyawan',
-    'device-changes': 'Approval Pindah Perangkat'
+    'device-changes': 'Approval Pindah Perangkat',
+    'rekrutmen': 'Rekrutmen & Seleksi',
   };
 
   // Render proper view based on activePage
@@ -453,6 +456,8 @@ export default function App() {
         return <OvertimeApprovalView />;
       case 'device-changes':
         return <DeviceChangeApprovalView />;
+      case 'rekrutmen':
+        return <RecruitmentManagement />;
       default:
         return (
           <ReceiptInbox
@@ -867,6 +872,21 @@ export default function App() {
                     {pendingDeviceCount}
                   </span>
                 )}
+              </button>
+
+              <button
+                onClick={() => navigateTo('rekrutmen')}
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
+                  activePage === 'rekrutmen'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+                title={isSidebarCollapsed ? 'Rekrutmen' : undefined}
+              >
+                <Briefcase className="w-4 h-4 opacity-80" />
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Rekrutmen</span>}
               </button>
             </div>
             )}

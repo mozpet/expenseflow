@@ -9,8 +9,10 @@ import {
 } from 'lucide-react';
 import { vendorApi, invoiceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
+import CustomDatePicker from './CustomDatePicker';
 
 interface InvoiceInputProps {
+
   onAddInvoice: (invoice: Invoice) => void;
 }
 
@@ -260,25 +262,24 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div>
               <label className="text-slate-500 dark:text-slate-400 font-medium mb-1 block">Tanggal Invoice</label>
-              <input
-                type="date"
+              <CustomDatePicker
                 value={tanggalInv}
-                onChange={(e) => setTanggalInv(e.target.value)}
-                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-150 focus:outline-none"
+                onChange={setTanggalInv}
+                placeholder="Pilih tanggal invoice"
                 required
               />
             </div>
             <div>
               <label className="text-slate-500 dark:text-slate-400 font-medium mb-1 block">Tanggal Jatuh Tempo</label>
-              <input
-                type="date"
+              <CustomDatePicker
                 value={jatuhTempo}
-                onChange={(e) => setJatuhTempo(e.target.value)}
-                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                onChange={setJatuhTempo}
+                placeholder="Pilih jatuh tempo"
                 required
               />
             </div>
           </div>
+
 
           <div>
             <label className="text-slate-500 dark:text-slate-400 font-medium mb-1 block">Keterangan Tambahan / Deskripsi</label>

@@ -1,7 +1,8 @@
 // Fungsi pemanggil API per-resource. Semua mengembalikan data mentah backend;
 // transformasi ke tipe frontend dilakukan di mappers.ts / komponen.
 
-import { apiGet, apiPost, apiPut, apiPatch, apiDelete, apiDownload, setToken, setStoredUser, clearToken, getToken, setTokenExpiresAt, BASE_URL } from './api';
+import { apiGet, apiPost, apiPut, apiPatch, apiDelete, apiDownload, apiViewFile, setToken, setStoredUser, clearToken, getToken, setTokenExpiresAt, BASE_URL } from './api';
+
 
 // ─── Auth ───────────────────────────────────────────────────
 export const authApi = {
@@ -351,3 +352,51 @@ export const settingsApi = {
     threshold_three: string;
   }) => apiPut<{ settings: any }>('/dashboard/settings', payload),
 };
+
+// ─── Recruitment — HRD & Admin ──────────────────────────────
+export const recruitmentApi = {
+  listPostings: (filters?: { status?: string; search?: string; page?: number; per_page?: number }) =>
+    apiGet<{ data: any[]; meta: any; summary: any }>('/recruitment/postings', filters as Record<string, string | number>),
+
+  createPosting: (payload: any) =>
+    apiPost<{ message: string; data: any }>('/recruitment/postings', payload),
+
+  getPosting: (id: number | string) =>
+    apiGet<{ data: any }>(`/recruitment/postings/${id}`),
+
+  updatePosting: (id: number | string, payload: any) =>
+    apiPut<{ message: string; data: any }>(`/recruitment/postings/${id}`, payload),
+
+  deletePosting: (id: number | string) =>
+    apiDelete<{ message: string }>(`/recruitment/postings/${id}`),
+
+  publishPosting: (id: number | string) =>
+    apiPatch<{ message: string; data: any }>(`/recruitment/postings/${id}/publish`),
+
+  closePosting: (id: number | string) =>
+    apiPatch<{ message: string; data: any }>(`/recruitment/postings/${id}/close`),
+
+  listApplications: (postingId?: number | string, filters?: { status?: string; search?: string; page?: number; per_page?: number }) => {
+    const url = postingId ? `/recruitment/postings/${postingId}/applications` : '/recruitment/applications';
+    return apiGet<{ posting?: any; data: any[]; meta: any; summary?: any }>(url, filters as Record<string, string | number>);
+  },
+
+  getApplication: (id: number | string) =>
+    apiGet<{ data: any }>(`/recruitment/applications/${id}`),
+
+  updateApplicationStatus: (id: number | string, payload: { status: string; notes?: string }) =>
+    apiPatch<{ message: string; data: any }>(`/recruitment/applications/${id}/status`, payload),
+
+  deleteApplication: (id: number | string) =>
+    apiDelete<{ message: string }>(`/recruitment/applications/${id}`),
+
+  viewResume: async (id: number | string, fullName?: string) =>
+    apiViewFile(`/recruitment/applications/${id}/resume`, fullName ? `CV — ${fullName}` : 'Berkas CV'),
+
+
+  downloadResume: async (id: number | string, fullName: string) =>
+    apiDownload(`/recruitment/applications/${id}/resume`, `CV_${fullName.replace(/\s+/g, '_')}.pdf`),
+};
+
+
+

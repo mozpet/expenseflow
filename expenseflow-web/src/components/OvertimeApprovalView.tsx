@@ -7,6 +7,8 @@ import {
 import { overtimeApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
+import CustomDatePicker from './CustomDatePicker';
+
 
 // ─── Types ───────────────────────────────────────────────────
 interface OvertimeRecord {
@@ -453,24 +455,25 @@ export function OvertimeApprovalView() {
           {/* Tanggal mulai */}
           <div>
             <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Dari Tanggal</label>
-            <input
-              type="date"
+            <CustomDatePicker
               value={filterStart}
-              onChange={(e) => setFilterStart(e.target.value)}
-              className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+              onChange={setFilterStart}
+              placeholder="Dari tanggal"
+              size="sm"
             />
           </div>
 
           {/* Tanggal akhir */}
           <div>
             <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Sampai Tanggal</label>
-            <input
-              type="date"
+            <CustomDatePicker
               value={filterEnd}
-              onChange={(e) => setFilterEnd(e.target.value)}
-              className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+              onChange={setFilterEnd}
+              placeholder="Sampai tanggal"
+              size="sm"
             />
           </div>
+
 
           {/* Search nama */}
           <div>

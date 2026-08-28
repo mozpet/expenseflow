@@ -800,10 +800,12 @@ Tabel `holidays` (company_id, date, name). Dipakai untuk:
 > pembayaran & enforce anggaran karena keduanya berdampak langsung ke uang perusahaan.
 ### fiture depannya
 
-
 - buat web site terpisa untuk calon rekrutmen kerja.
+  → ✅ SELESAI 2026-08-28 (`expenseflow-public` — Static HTML, JS, CSS, Tailwind CDN)
 - buat form untuk hrd untuk kualifikasi calon karyawan 
+  → ✅ SELESAI 2026-08-28 (Tab Form Rekrutmen di `expenseflow-web` via `RecruitmentManagement.tsx`)
 - list / halaman untuk hrd untuk menyeleksi calon karyawan yang masuk sesuai kualifikasi 
+  → ✅ SELESAI 2026-08-28 (Tab Pelamar & Detail Seleksi di `expenseflow-web` via `RecruitmentManagement.tsx`)
 
 - karyawan bisa di ajust oleh hrd masuk di hari sabtu atau minggu
   → ✅ SELESAI 2026-07-04 (fitur Custom Shift/Scheduling, lihat perubahan.md sesi 2026-07-04)

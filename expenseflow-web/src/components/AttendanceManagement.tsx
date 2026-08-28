@@ -33,6 +33,8 @@ import { attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../auth/AuthContext';
+import CustomDatePicker from './CustomDatePicker';
+
 
 type TabKey = 'today' | 'leaves' | 'users' | 'balances' | 'report' | 'holidays';
 
@@ -1779,12 +1781,30 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             <div className="grid grid-cols-2 md:grid-cols-6 gap-4 items-end">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Dari Tanggal</label>
-                <input type="date" value={reportFilter.start_date} onChange={(e) => setReportFilterAndReset({ ...reportFilter, start_date: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors" />
+                <CustomDatePicker
+                  value={reportFilter.start_date}
+                  onChange={(val) => {
+                    const next = { ...reportFilter, start_date: val };
+                    if (reportFilter.end_date && val && reportFilter.end_date < val) {
+                      next.end_date = '';
+                    }
+                    setReportFilterAndReset(next);
+                  }}
+                  placeholder="Pilih tanggal mulai"
+                  size="sm"
+                />
               </div>
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Sampai Tanggal</label>
-                <input type="date" value={reportFilter.end_date} onChange={(e) => setReportFilterAndReset({ ...reportFilter, end_date: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors" />
+                <CustomDatePicker
+                  value={reportFilter.end_date}
+                  min={reportFilter.start_date || undefined}
+                  onChange={(val) => setReportFilterAndReset({ ...reportFilter, end_date: val })}
+                  placeholder="Pilih tanggal akhir"
+                  size="sm"
+                />
               </div>
+
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Status</label>
                 <select value={reportFilter.status} onChange={(e) => setReportFilterAndReset({ ...reportFilter, status: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors">

@@ -18,8 +18,10 @@ import {
 } from 'lucide-react';
 import { receiptApi } from '../services/endpoints';
 import { useDebounce } from '../hooks/useDebounce';
+import CustomDatePicker from './CustomDatePicker';
 
 interface ReceiptHistoryProps {
+
   approvals: StrukApproval[];
   onRefresh?: () => void;
   refreshing?: boolean;
@@ -125,33 +127,26 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
               />
             </div>
 
-            <div className="flex gap-1.5 items-center">
-              <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-              <input
-                type="date"
-                value={startDate}
-                onChange={(e) => setStartDate(e.target.value)}
-                className="px-2 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                title="Tanggal mulai"
-              />
+            <div className="flex gap-2 items-center">
+              <div className="w-36">
+                <CustomDatePicker
+                  value={startDate}
+                  onChange={setStartDate}
+                  placeholder="Dari tanggal"
+                  size="sm"
+                />
+              </div>
               <span className="text-slate-400 text-xs">–</span>
-              <input
-                type="date"
-                value={endDate}
-                onChange={(e) => setEndDate(e.target.value)}
-                className="px-2 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                title="Tanggal akhir"
-              />
-              {(startDate || endDate) && (
-                <button
-                  onClick={() => { setStartDate(''); setEndDate(''); }}
-                  className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-300 transition"
-                  title="Bersihkan filter tanggal"
-                >
-                  <XCircle className="w-3.5 h-3.5" />
-                </button>
-              )}
+              <div className="w-36">
+                <CustomDatePicker
+                  value={endDate}
+                  onChange={setEndDate}
+                  placeholder="Sampai tanggal"
+                  size="sm"
+                />
+              </div>
             </div>
+
 
             <button className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 transition">
               <Download className="w-3.5 h-3.5" />

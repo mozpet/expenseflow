@@ -43,8 +43,10 @@ import { ConfirmationDialog } from './ConfirmationDialog';
 import { userApi, attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
+import CustomDatePicker from './CustomDatePicker';
 
 interface Employee {
+
   id: string; // employee_code / NIK (tampilan)
   backendId: number; // id numerik backend (untuk aksi API)
   nama: string;
@@ -1576,12 +1578,12 @@ export const KaryawanManagement: React.FC<{
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Bergabung (Joined Date) *</label>
-                    <input
-                      type="date"
+                    <CustomDatePicker
                       value={addForm.joinedDate}
-                      onChange={(e) => setAddForm({ ...addForm, joinedDate: e.target.value, tanggalMasuk: e.target.value })}
+                      onChange={(val) => setAddForm({ ...addForm, joinedDate: val, tanggalMasuk: val })}
+                      placeholder="Pilih tgl bergabung"
+                      size="sm"
                       required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-801/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
 
@@ -1589,12 +1591,12 @@ export const KaryawanManagement: React.FC<{
                   {addForm.employmentType === 'PKWT' && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-blue-600 dark:text-blue-400 block">Selesai Kontrak (Expired Date) *</label>
-                      <input
-                        type="date"
+                      <CustomDatePicker
                         value={addForm.contractEndDate}
-                        onChange={(e) => setAddForm({ ...addForm, contractEndDate: e.target.value })}
+                        onChange={(val) => setAddForm({ ...addForm, contractEndDate: val })}
+                        placeholder="Pilih tgl selesai"
+                        size="sm"
                         required={addForm.employmentType === 'PKWT'}
-                        className="w-full text-xs p-2.5 border border-blue-300 dark:border-blue-800 rounded-xl bg-blue-50/40 dark:bg-blue-950/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
                       />
                     </div>
                   )}
@@ -1603,12 +1605,12 @@ export const KaryawanManagement: React.FC<{
                   {addForm.employmentType === 'Probation' && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-amber-600 dark:text-amber-400 block">Target Selesai Probasi (3-6 Bln) *</label>
-                      <input
-                        type="date"
+                      <CustomDatePicker
                         value={addForm.contractEndDate}
-                        onChange={(e) => setAddForm({ ...addForm, contractEndDate: e.target.value })}
+                        onChange={(val) => setAddForm({ ...addForm, contractEndDate: val })}
+                        placeholder="Pilih target probasi"
+                        size="sm"
                         required={addForm.employmentType === 'Probation'}
-                        className="w-full text-xs p-2.5 border border-amber-300 dark:border-amber-800 rounded-xl bg-amber-50/40 dark:bg-amber-950/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </div>
                   )}
@@ -1617,11 +1619,11 @@ export const KaryawanManagement: React.FC<{
                   {addForm.employmentType === 'Internship' && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-purple-600 dark:text-purple-400 block">Target Selesai Magang</label>
-                      <input
-                        type="date"
+                      <CustomDatePicker
                         value={addForm.contractEndDate}
-                        onChange={(e) => setAddForm({ ...addForm, contractEndDate: e.target.value })}
-                        className="w-full text-xs p-2.5 border border-purple-300 dark:border-purple-800 rounded-xl bg-purple-50/40 dark:bg-purple-950/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        onChange={(val) => setAddForm({ ...addForm, contractEndDate: val })}
+                        placeholder="Pilih selesai magang"
+                        size="sm"
                       />
                     </div>
                   )}
@@ -1633,14 +1635,15 @@ export const KaryawanManagement: React.FC<{
                     <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
                       <Clock className="w-3.5 h-3.5" /> Tanggal Mulai Kontrak PKWT
                     </p>
-                    <input
-                      type="date"
+                    <CustomDatePicker
                       value={addForm.contractStartDate || addForm.joinedDate}
-                      onChange={(e) => setAddForm({ ...addForm, contractStartDate: e.target.value })}
-                      className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      onChange={(val) => setAddForm({ ...addForm, contractStartDate: val })}
+                      placeholder="Pilih tgl mulai kontrak"
+                      size="sm"
                     />
                   </div>
                 )}
+
 
                 <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
                   Penempatan & Akses Sistem
@@ -2292,11 +2295,11 @@ export const KaryawanManagement: React.FC<{
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Bergabung (Joined Date)</label>
-                    <input
-                      type="date"
+                    <CustomDatePicker
                       value={editForm.joinedDate}
-                      onChange={(e) => setEditForm({ ...editForm, joinedDate: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-801/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      onChange={(val) => setEditForm({ ...editForm, joinedDate: val })}
+                      placeholder="Pilih tgl bergabung"
+                      size="sm"
                     />
                   </div>
 
@@ -2304,12 +2307,12 @@ export const KaryawanManagement: React.FC<{
                   {editForm.employmentType === 'PKWT' && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-blue-600 dark:text-blue-400 block">Selesai Kontrak (Expired Date) *</label>
-                      <input
-                        type="date"
+                      <CustomDatePicker
                         value={editForm.contractEndDate}
-                        onChange={(e) => setEditForm({ ...editForm, contractEndDate: e.target.value })}
+                        onChange={(val) => setEditForm({ ...editForm, contractEndDate: val })}
+                        placeholder="Pilih tgl selesai"
+                        size="sm"
                         required={editForm.employmentType === 'PKWT'}
-                        className="w-full text-xs p-2.5 border border-blue-300 dark:border-blue-800 rounded-xl bg-blue-50/40 dark:bg-blue-950/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
                       />
                     </div>
                   )}
@@ -2318,12 +2321,12 @@ export const KaryawanManagement: React.FC<{
                   {editForm.employmentType === 'Probation' && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-amber-600 dark:text-amber-400 block">Target Selesai Probasi (3-6 Bln) *</label>
-                      <input
-                        type="date"
+                      <CustomDatePicker
                         value={editForm.contractEndDate}
-                        onChange={(e) => setEditForm({ ...editForm, contractEndDate: e.target.value })}
+                        onChange={(val) => setEditForm({ ...editForm, contractEndDate: val })}
+                        placeholder="Pilih target probasi"
+                        size="sm"
                         required={editForm.employmentType === 'Probation'}
-                        className="w-full text-xs p-2.5 border border-amber-300 dark:border-amber-800 rounded-xl bg-amber-50/40 dark:bg-amber-950/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-amber-500"
                       />
                     </div>
                   )}
@@ -2332,11 +2335,11 @@ export const KaryawanManagement: React.FC<{
                   {editForm.employmentType === 'Internship' && (
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-purple-600 dark:text-purple-400 block">Target Selesai Magang</label>
-                      <input
-                        type="date"
+                      <CustomDatePicker
                         value={editForm.contractEndDate}
-                        onChange={(e) => setEditForm({ ...editForm, contractEndDate: e.target.value })}
-                        className="w-full text-xs p-2.5 border border-purple-300 dark:border-purple-800 rounded-xl bg-purple-50/40 dark:bg-purple-950/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-purple-500"
+                        onChange={(val) => setEditForm({ ...editForm, contractEndDate: val })}
+                        placeholder="Pilih selesai magang"
+                        size="sm"
                       />
                     </div>
                   )}
@@ -2348,14 +2351,15 @@ export const KaryawanManagement: React.FC<{
                     <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
                       <Clock className="w-3.5 h-3.5" /> Tanggal Mulai Kontrak PKWT
                     </p>
-                    <input
-                      type="date"
+                    <CustomDatePicker
                       value={editForm.contractStartDate || editForm.joinedDate}
-                      onChange={(e) => setEditForm({ ...editForm, contractStartDate: e.target.value })}
-                      className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      onChange={(val) => setEditForm({ ...editForm, contractStartDate: val })}
+                      placeholder="Pilih tgl mulai kontrak"
+                      size="sm"
                     />
                   </div>
                 )}
+
 
                 <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
                   Penempatan & Akses Sistem

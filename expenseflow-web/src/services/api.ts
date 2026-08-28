@@ -204,4 +204,61 @@ export async function apiDownload(
   URL.revokeObjectURL(url);
 }
 
+// Buka file langsung di tab baru browser (mis. preview PDF berkas CV)
+export async function apiViewFile(
+  path: string,
+  title: string = 'Berkas CV',
+  query?: RequestOptions['query'],
+): Promise<void> {
+  const headers: Record<string, string> = { 'X-Platform': 'web' };
+  const token = getToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+
+  const res = await fetch(buildUrl(path, query), { headers });
+  if (res.status === 401) {
+    clearToken();
+    if (onUnauthorized) onUnauthorized();
+    throw new ApiError('Sesi Anda telah berakhir. Silakan login kembali.', 401);
+  }
+  if (!res.ok) {
+    let errMsg = `Gagal membuka berkas (${res.status}).`;
+    try {
+      const errData = await res.json();
+      if (errData?.message) errMsg = errData.message;
+    } catch { /* ignore */ }
+    throw new ApiError(errMsg, res.status);
+  }
+
+  const blob = await res.blob();
+  const pdfBlob = new Blob([blob], { type: 'application/pdf' });
+  const blobUrl = URL.createObjectURL(pdfBlob);
+
+  const newTab = window.open('', '_blank');
+  if (newTab) {
+    newTab.document.write(`
+      <!DOCTYPE html>
+      <html lang="id">
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <title>${title}</title>
+          <style>
+            html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #0f172a; }
+            iframe { width: 100%; height: 100%; border: none; display: block; }
+          </style>
+        </head>
+        <body>
+          <iframe src="${blobUrl}#toolbar=1" type="application/pdf"></iframe>
+        </body>
+      </html>
+    `);
+    newTab.document.close();
+  } else {
+    // Fallback jika popup diblokir
+    window.open(blobUrl, '_blank');
+  }
+}
+
+
 export { BASE_URL };
+
