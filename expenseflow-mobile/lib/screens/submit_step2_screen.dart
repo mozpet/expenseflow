@@ -157,9 +157,10 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
           ),
         ),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 16, 16, 36),
+          child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             // Preview foto
@@ -191,8 +192,9 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 
   Widget _buildOcrStatusPanel() {
     switch (_phase) {

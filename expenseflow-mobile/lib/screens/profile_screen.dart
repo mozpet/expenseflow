@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../presensi_provider.dart';
 import '../providers/auth_provider.dart';
 import 'login_screen.dart';
 import 'notification_screen.dart';
@@ -23,7 +24,7 @@ class ProfileScreen extends StatelessWidget {
     final name = user?.name ?? '-';
     final email = user?.email ?? '-';
     final role = user?.role ?? 'employee';
-    final wfh = user?.wfhEnabled ?? false;
+    final wfh = context.watch<PresensiProvider>().wfhEnabled;
 
     return Scaffold(
       appBar: AppBar(

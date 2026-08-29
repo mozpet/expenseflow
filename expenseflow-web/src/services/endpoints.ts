@@ -214,9 +214,11 @@ export const attendanceApi = {
   holidays: {
     list: (year?: number) =>
       apiGet('/dashboard/attendance/holidays', { year }),
-    create: (payload: { date: string; name: string; type?: 'nasional' | 'collective' | 'perusahaan'; is_collective?: boolean; attendance_setting_id?: number | null }) =>
+    previewCollective: (payload: { holiday_id?: number | null; date: string; name: string; attendance_setting_id?: number | null; excluded_user_ids?: number[] }) =>
+      apiPost('/dashboard/attendance/holidays/collective-preview', payload),
+    create: (payload: { date: string; name: string; type?: 'nasional' | 'collective' | 'perusahaan'; is_collective?: boolean; attendance_setting_id?: number | null; excluded_user_ids?: number[] }) =>
       apiPost('/dashboard/attendance/holidays', payload),
-    update: (id: number | string, payload: { date: string; name: string; type?: 'nasional' | 'collective' | 'perusahaan'; attendance_setting_id?: number | null }) =>
+    update: (id: number | string, payload: { date: string; name: string; type?: 'nasional' | 'collective' | 'perusahaan'; attendance_setting_id?: number | null; excluded_user_ids?: number[] }) =>
       apiPut(`/dashboard/attendance/holidays/${id}`, payload),
     destroy: (id: number | string) =>
       apiDelete(`/dashboard/attendance/holidays/${id}`),

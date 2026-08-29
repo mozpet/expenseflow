@@ -34,7 +34,8 @@ class _CustomDatePickerDialog extends StatefulWidget {
   });
 
   @override
-  State<_CustomDatePickerDialog> createState() => _CustomDatePickerDialogState();
+  State<_CustomDatePickerDialog> createState() =>
+      _CustomDatePickerDialogState();
 }
 
 class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
@@ -42,9 +43,29 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
   late DateTime _selectedDate;
 
   final List<String> _monthNames = [
-    '', 'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+    '',
+    'Januari',
+    'Februari',
+    'Maret',
+    'April',
+    'Mei',
+    'Juni',
+    'Juli',
+    'Agustus',
+    'September',
+    'Oktober',
+    'November',
+    'Desember',
   ];
-  final List<String> _dayHeaders = ['Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab', 'Min'];
+  final List<String> _dayHeaders = [
+    'Sen',
+    'Sel',
+    'Rab',
+    'Kam',
+    'Jum',
+    'Sab',
+    'Min',
+  ];
 
   @override
   void initState() {
@@ -63,14 +84,22 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
 
   void _prevMonth() {
     setState(() {
-      _displayedMonth = DateTime(_displayedMonth.year, _displayedMonth.month - 1, 1);
+      _displayedMonth = DateTime(
+        _displayedMonth.year,
+        _displayedMonth.month - 1,
+        1,
+      );
     });
     _loadMonth();
   }
 
   void _nextMonth() {
     setState(() {
-      _displayedMonth = DateTime(_displayedMonth.year, _displayedMonth.month + 1, 1);
+      _displayedMonth = DateTime(
+        _displayedMonth.year,
+        _displayedMonth.month + 1,
+        1,
+      );
     });
     _loadMonth();
   }
@@ -121,8 +150,16 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
 
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
-    final minDate = DateTime(widget.firstDate.year, widget.firstDate.month, widget.firstDate.day);
-    final maxDate = DateTime(widget.lastDate.year, widget.lastDate.month, widget.lastDate.day);
+    final minDate = DateTime(
+      widget.firstDate.year,
+      widget.firstDate.month,
+      widget.firstDate.day,
+    );
+    final maxDate = DateTime(
+      widget.lastDate.year,
+      widget.lastDate.month,
+      widget.lastDate.day,
+    );
 
     return Dialog(
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -142,57 +179,81 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
               children: [
                 IconButton(
                   onPressed: () {
-                    final target = DateTime(_displayedMonth.year, _displayedMonth.month - 1, 1);
+                    final target = DateTime(
+                      _displayedMonth.year,
+                      _displayedMonth.month - 1,
+                      1,
+                    );
                     if (target.year < widget.firstDate.year ||
-                        (target.year == widget.firstDate.year && target.month < widget.firstDate.month)) return;
+                        (target.year == widget.firstDate.year &&
+                            target.month < widget.firstDate.month)) {
+                      return;
+                    }
                     _prevMonth();
                   },
                   icon: const Icon(Icons.chevron_left),
                   style: IconButton.styleFrom(
                     backgroundColor: Colors.grey.shade100,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
                 ),
                 Text(
                   '${_monthNames[month]} $year',
-                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.black87,
+                  ),
                 ),
                 IconButton(
                   onPressed: () {
-                    final target = DateTime(_displayedMonth.year, _displayedMonth.month + 1, 1);
+                    final target = DateTime(
+                      _displayedMonth.year,
+                      _displayedMonth.month + 1,
+                      1,
+                    );
                     if (target.year > widget.lastDate.year ||
-                        (target.year == widget.lastDate.year && target.month > widget.lastDate.month)) return;
+                        (target.year == widget.lastDate.year &&
+                            target.month > widget.lastDate.month)) {
+                      return;
+                    }
                     _nextMonth();
                   },
                   icon: const Icon(Icons.chevron_right),
                   style: IconButton.styleFrom(
                     backgroundColor: Colors.grey.shade100,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
                   ),
                 ),
               ],
             ),
             const SizedBox(height: 20),
-            
+
             // Header hari
             Row(
               children: _dayHeaders
-                  .map((h) => Expanded(
-                        child: Center(
-                          child: Text(
-                            h,
-                            style: TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.grey.shade500,
-                            ),
+                  .map(
+                    (h) => Expanded(
+                      child: Center(
+                        child: Text(
+                          h,
+                          style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.grey.shade500,
                           ),
                         ),
-                      ))
+                      ),
+                    ),
+                  )
                   .toList(),
             ),
             const SizedBox(height: 12),
-            
+
             // Grid tanggal
             ...List.generate(rows, (row) {
               return Padding(
@@ -207,7 +268,7 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                     final day = cellIndex - leadingBlanks + 1;
                     final date = DateTime(year, month, day);
                     final apiDow = _toApiDow(date);
-                    
+
                     final calDay = prov.getScheduleForDate(date);
                     final schedule = calDay != null
                         ? ShiftScheduleDay(
@@ -219,17 +280,22 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                             isCrossDay: calDay.isCrossDay,
                           )
                         : prov.getScheduleForDayOfWeek(apiDow);
-                        
+
                     final isOff = schedule?.isOff ?? false;
-                    final isToday = date.year == today.year && date.month == today.month && date.day == today.day;
-                    final isSelected = date.year == _selectedDate.year &&
+                    final isToday =
+                        date.year == today.year &&
+                        date.month == today.month &&
+                        date.day == today.day;
+                    final isSelected =
+                        date.year == _selectedDate.year &&
                         date.month == _selectedDate.month &&
                         date.day == _selectedDate.day;
 
                     final isCrossDayToday = schedule?.isCrossDay ?? false;
                     final prevDate = date.subtract(const Duration(days: 1));
                     final prevCalDay = prov.getScheduleForDate(prevDate);
-                    final isCrossDayFromYesterday = prevCalDay != null &&
+                    final isCrossDayFromYesterday =
+                        prevCalDay != null &&
                         prevCalDay.isCrossDay &&
                         !prevCalDay.isOff;
 
@@ -241,45 +307,57 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                         ? _parseColor(calDay!.color!)
                         : defaultShiftColor;
 
-                    final bool isShiftDay = (calDay?.source == 'shift') ||
+                    final bool isShiftDay =
+                        (calDay?.source == 'shift') ||
                         (calDay == null && prov.source == 'shift');
 
                     final holiday = calDay?.holiday;
                     final isHoliday = holiday != null;
-                    final isCollectiveLeave = calDay?.shiftName == 'Cuti Bersama';
+                    final isCollectiveLeave =
+                        calDay?.shiftName == 'Cuti Bersama';
                     final bool isPersonalLeave =
-                        (calDay?.personalLeave ?? false) || calDay?.shiftName == 'Cuti Mandiri';
-                    final bool isWfhDay = (calDay?.isWfh ?? false) &&
+                        (calDay?.personalLeave ?? false) ||
+                        calDay?.shiftName == 'Cuti Mandiri';
+                    final bool isWfhDay =
+                        (calDay?.isWfh ?? false) &&
                         !isOff &&
                         !isHoliday &&
                         !isCollectiveLeave &&
                         !isPersonalLeave;
 
                     final bool isUnavailable =
-                        isOff || isHoliday || isCollectiveLeave || isPersonalLeave;
-                    final bool isDisabled = date.isBefore(minDate) ||
+                        isOff ||
+                        isHoliday ||
+                        isCollectiveLeave ||
+                        isPersonalLeave;
+                    final bool isDisabled =
+                        date.isBefore(minDate) ||
                         date.isAfter(maxDate) ||
                         (widget.disableUnavailable && isUnavailable);
-                        
+
                     final holidayAccent = isCollectiveLeave || isPersonalLeave
                         ? const Color(0xFFD97706)
                         : holiday != null
-                            ? (holiday.isNational
-                                ? const Color(0xFFEF4444)
-                                : const Color(0xFF3B82F6))
-                            : null;
+                        ? (holiday.isNational
+                              ? const Color(0xFFEF4444)
+                              : const Color(0xFF3B82F6))
+                        : null;
 
                     return Expanded(
                       child: GestureDetector(
                         onTap: isDisabled
                             ? null
                             : () {
+                                final nav = Navigator.of(context);
                                 setState(() => _selectedDate = date);
-                                Future.delayed(const Duration(milliseconds: 150), () {
-                                  if (mounted) {
-                                    Navigator.of(context).pop(date);
-                                  }
-                                });
+                                Future.delayed(
+                                  const Duration(milliseconds: 150),
+                                  () {
+                                    if (mounted) {
+                                      nav.pop(date);
+                                    }
+                                  },
+                                );
                               },
                         child: AnimatedContainer(
                           duration: const Duration(milliseconds: 150),
@@ -288,23 +366,29 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                           decoration: BoxDecoration(
                             color: isDisabled
                                 ? (isUnavailable
-                                    ? Colors.grey.shade100.withValues(alpha: 0.6)
-                                    : Colors.transparent)
+                                      ? Colors.grey.shade100.withValues(
+                                          alpha: 0.6,
+                                        )
+                                      : Colors.transparent)
                                 : isSelected
-                                    ? cellColor.withValues(alpha: 0.12)
-                                    : holidayAccent != null
-                                        ? holidayAccent.withValues(alpha: 0.15)
-                                        : isOff
-                                            ? Colors.red.shade50.withValues(alpha: 0.5)
-                                            : Colors.transparent,
+                                ? cellColor.withValues(alpha: 0.12)
+                                : holidayAccent != null
+                                ? holidayAccent.withValues(alpha: 0.15)
+                                : isOff
+                                ? Colors.red.shade50.withValues(alpha: 0.5)
+                                : Colors.transparent,
                             borderRadius: BorderRadius.circular(10),
                             border: Border.all(
                               color: !isDisabled && isSelected
                                   ? cellColor
                                   : isToday && !isDisabled
-                                      ? const Color(0xFF1E88E5)
-                                      : Colors.transparent,
-                              width: (!isDisabled && isSelected) || (isToday && !isDisabled) ? 2 : 0,
+                                  ? const Color(0xFF1E88E5)
+                                  : Colors.transparent,
+                              width:
+                                  (!isDisabled && isSelected) ||
+                                      (isToday && !isDisabled)
+                                  ? 2
+                                  : 0,
                             ),
                           ),
                           child: Opacity(
@@ -339,9 +423,10 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                                       fontWeight: FontWeight.w600,
                                       color: (isToday && !isDisabled)
                                           ? Colors.white
-                                          : holidayAccent ?? (isOff
-                                              ? Colors.red.shade400
-                                              : Colors.grey.shade800),
+                                          : holidayAccent ??
+                                                (isOff
+                                                    ? Colors.red.shade400
+                                                    : Colors.grey.shade800),
                                     ),
                                   ),
                                 ),
@@ -349,9 +434,12 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                                 Row(
                                   mainAxisAlignment: MainAxisAlignment.center,
                                   children: [
-                                    if (isCrossDayToday || isCrossDayFromYesterday)
+                                    if (isCrossDayToday ||
+                                        isCrossDayFromYesterday)
                                       Padding(
-                                        padding: const EdgeInsets.only(right: 2),
+                                        padding: const EdgeInsets.only(
+                                          right: 2,
+                                        ),
                                         child: Icon(
                                           Icons.nights_stay,
                                           size: 9,
@@ -359,20 +447,26 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                                         ),
                                       ),
                                     if (isCollectiveLeave)
-                                      Text('CUTI',
-                                          style: TextStyle(
-                                              fontSize: 8,
-                                              fontWeight: FontWeight.w700,
-                                              color: const Color(0xFFD97706)))
+                                      Text(
+                                        'CUTI',
+                                        style: TextStyle(
+                                          fontSize: 8,
+                                          fontWeight: FontWeight.w700,
+                                          color: const Color(0xFFD97706),
+                                        ),
+                                      )
                                     else if (isPersonalLeave)
                                       Flexible(
-                                        child: Text('CUTI MANDIRI',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: TextStyle(
-                                                fontSize: 7,
-                                                fontWeight: FontWeight.w700,
-                                                color: const Color(0xFFD97706))),
+                                        child: Text(
+                                          'CUTI MANDIRI',
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 7,
+                                            fontWeight: FontWeight.w700,
+                                            color: const Color(0xFFD97706),
+                                          ),
+                                        ),
                                       )
                                     else if (isHoliday)
                                       Flexible(
@@ -381,25 +475,34 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                                           maxLines: 1,
                                           overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
-                                              fontSize: 7,
-                                              fontWeight: FontWeight.w700,
-                                              color: holidayAccent ?? Colors.red.shade400),
+                                            fontSize: 7,
+                                            fontWeight: FontWeight.w700,
+                                            color:
+                                                holidayAccent ??
+                                                Colors.red.shade400,
+                                          ),
                                         ),
                                       )
                                     else if (isOff)
-                                      Text('OFF',
-                                          style: TextStyle(
-                                              fontSize: 8,
-                                              fontWeight: FontWeight.w700,
-                                              color: Colors.red.shade400))
+                                      Text(
+                                        'OFF',
+                                        style: TextStyle(
+                                          fontSize: 8,
+                                          fontWeight: FontWeight.w700,
+                                          color: Colors.red.shade400,
+                                        ),
+                                      )
                                     else if (schedule != null &&
                                         schedule.workStartTime != null)
                                       Text(
                                         _shortTime(schedule.workStartTime!),
                                         style: TextStyle(
-                                            fontSize: 8,
-                                            fontWeight: FontWeight.w600,
-                                            color: isShiftDay ? cellColor : Colors.grey.shade600),
+                                          fontSize: 8,
+                                          fontWeight: FontWeight.w600,
+                                          color: isShiftDay
+                                              ? cellColor
+                                              : Colors.grey.shade600,
+                                        ),
                                       ),
                                   ],
                                 ),
@@ -413,17 +516,20 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                 ),
               );
             }),
-            
+
             const SizedBox(height: 12),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 TextButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Batal', style: TextStyle(color: Colors.grey)),
+                  child: const Text(
+                    'Batal',
+                    style: TextStyle(color: Colors.grey),
+                  ),
                 ),
               ],
-            )
+            ),
           ],
         ),
       ),

@@ -185,6 +185,7 @@ Route::prefix('v1')->group(function () {
 
             // Kalender libur nasional / cuti bersama perusahaan
             Route::get('/holidays', [AttendanceController::class, 'listHolidays']);
+            Route::post('/holidays/collective-preview', [AttendanceController::class, 'previewCollectiveLeave']);
             Route::post('/holidays', [AttendanceController::class, 'storeHolidays']);
             Route::match(['put', 'patch'], '/holidays/{holiday}', [AttendanceController::class, 'updateHolidays']);
             Route::delete('/holidays/{holiday}', [AttendanceController::class, 'destroyHolidays']);
@@ -238,15 +239,15 @@ Route::prefix('v1')->group(function () {
         ->group(function () {
             Route::post('/check-in', [AttendanceController::class, 'checkIn']);
             Route::post('/check-out', [AttendanceController::class, 'checkOut']);
-            Route::get('/status', [AttendanceController::class, 'checkStatus']);
         });
 
-    // Riwayat presensi & cuti/izin — semua karyawan, tanpa gerbang attendance_access.
-    // Karyawan onsite (WFH OFF) tetap bisa lihat riwayat presensinya sendiri
+    // Status, riwayat presensi & cuti/izin — semua karyawan, tanpa gerbang attendance_access.
+    // Karyawan onsite (WFH OFF) tetap bisa baca status WFH/presensi & riwayat presensinya sendiri
     // (misalnya presensi kantor yang dicatat via hardware).
     Route::middleware(['auth:sanctum', 'company'])
         ->prefix('attendance')
         ->group(function () {
+            Route::get('/status', [AttendanceController::class, 'checkStatus']);
             Route::get('/my', [AttendanceController::class, 'myAttendance']);
             Route::get('/leave-balance', [AttendanceController::class, 'myLeaveBalance']);
             Route::get('/my-leaves', [AttendanceController::class, 'myLeaves']);
@@ -267,6 +268,7 @@ Route::prefix('v1')->group(function () {
             // Cuti Bersama — karyawan lihat & pilih ikut/tidak
             Route::get('/collective-leaves', [AttendanceController::class, 'listCollectiveLeaves']);
             Route::post('/collective-leave/{holiday}/respond', [AttendanceController::class, 'respondCollectiveLeave']);
+            Route::post('/dismiss-cancellation/{id}', [AttendanceController::class, 'dismissCancellation']);
         });
 
     // ── Rekrutmen — Public (tanpa autentikasi) ───────────────────────────────

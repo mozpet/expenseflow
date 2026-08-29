@@ -18,8 +18,17 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
     // Riwayat presensi selalu dimuat, terlepas dari status WFH.
     // Backend /attendance/my kini tidak membutuhkan attendance_access.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<PresensiProvider>(context, listen: false)
-          .fetchMyAttendance();
+      Provider.of<PresensiProvider>(context, listen: false).fetchMyAttendance();
+    });
+  }
+
+  void _goToPresensiMap() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const PresensiMapScreen()),
+    ).then((_) {
+      if (!mounted) return;
+      Provider.of<PresensiProvider>(context, listen: false).fetchMyAttendance();
     });
   }
 
@@ -33,17 +42,17 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
       // 1. wfhEnabled = true  → bisa check-in baru (WFH aktif)
       // 2. canCheckOut = true → sudah check-in, belum checkout (harus bisa checkout
       //    meski HRD mematikan WFH di tengah shift)
-      floatingActionButton: (presensiProv.wfhEnabled || presensiProv.canCheckOut)
+      floatingActionButton:
+          (presensiProv.wfhEnabled || presensiProv.canCheckOut)
           ? FloatingActionButton.extended(
               heroTag: 'presensi_history_fab',
-              onPressed: () => Navigator.push(
-                context,
-                MaterialPageRoute(builder: (_) => const PresensiMapScreen()),
-              ),
+              onPressed: _goToPresensiMap,
               backgroundColor: const Color(0xFF0088FF),
               foregroundColor: Colors.white,
               icon: const Icon(Icons.add),
-              label: Text(presensiProv.canCheckOut ? 'Catat Pulang' : 'Catat Presensi'),
+              label: Text(
+                presensiProv.canCheckOut ? 'Catat Pulang' : 'Catat Presensi',
+              ),
             )
           : null,
       appBar: AppBar(
@@ -55,19 +64,21 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
             const Padding(
               padding: EdgeInsets.all(16),
               child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                      strokeWidth: 2, color: Colors.white)),
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              ),
             )
           else
             IconButton(
               icon: const Icon(Icons.refresh),
               tooltip: 'Muat ulang riwayat',
               onPressed: () {
-                // Muat ulang riwayat + status WFH (menentukan tombol Catat Presensi)
+                // Muat ulang riwayat + status WFH live dari backend
                 presensiProv.fetchMyAttendance();
-                presensiProv.syncStatusFromBackend();
               },
             ),
         ],
@@ -86,7 +97,9 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                   return Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFFE3F2FD),
                       borderRadius: BorderRadius.circular(12),
@@ -94,27 +107,29 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.logout_outlined,
-                            color: Colors.blue, size: 18),
+                        const Icon(
+                          Icons.logout_outlined,
+                          color: Colors.blue,
+                          size: 18,
+                        ),
                         const SizedBox(width: 8),
                         const Expanded(
                           child: Text(
                             'Anda sedang check-in — tekan tombol untuk mencatat pulang.',
                             style: TextStyle(
-                                color: Colors.blue,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12),
+                              color: Colors.blue,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
                         GestureDetector(
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) => const PresensiMapScreen()),
-                          ),
+                          onTap: _goToPresensiMap,
                           child: Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.blue,
                               borderRadius: BorderRadius.circular(8),
@@ -122,9 +137,10 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                             child: const Text(
                               'Catat Pulang',
                               style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 11),
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11,
+                              ),
                             ),
                           ),
                         ),
@@ -136,7 +152,9 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                   return Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFFE8F5E9),
                       borderRadius: BorderRadius.circular(12),
@@ -144,28 +162,30 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                     ),
                     child: Row(
                       children: [
-                        const Icon(Icons.home_work_outlined,
-                            color: Colors.green, size: 18),
+                        const Icon(
+                          Icons.home_work_outlined,
+                          color: Colors.green,
+                          size: 18,
+                        ),
                         const SizedBox(width: 8),
                         const Expanded(
                           child: Text(
                             'Mode WFH aktif — tekan tombol + untuk presensi.',
                             style: TextStyle(
-                                color: Colors.green,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12),
+                              color: Colors.green,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
                         // Shortcut tombol presensi di dalam banner
                         GestureDetector(
-                          onTap: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) => const PresensiMapScreen()),
-                          ),
+                          onTap: _goToPresensiMap,
                           child: Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
+                              horizontal: 10,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.green,
                               borderRadius: BorderRadius.circular(8),
@@ -173,9 +193,10 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                             child: const Text(
                               'Presensi',
                               style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 11),
+                                color: Colors.white,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 11,
+                              ),
                             ),
                           ),
                         ),
@@ -187,7 +208,9 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                   return Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
+                      horizontal: 14,
+                      vertical: 10,
+                    ),
                     decoration: BoxDecoration(
                       color: const Color(0xFFFFF3E0),
                       borderRadius: BorderRadius.circular(12),
@@ -195,17 +218,21 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                     ),
                     child: const Row(
                       children: [
-                        Icon(Icons.business_outlined,
-                            color: Colors.orange, size: 18),
+                        Icon(
+                          Icons.business_outlined,
+                          color: Colors.orange,
+                          size: 18,
+                        ),
                         SizedBox(width: 8),
                         Expanded(
                           child: Text(
                             'Presensi kantor via perangkat absensi. '
                             'Riwayat Anda ditampilkan di bawah.',
                             style: TextStyle(
-                                color: Colors.orange,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 12),
+                              color: Colors.orange,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
                           ),
                         ),
                       ],
@@ -224,7 +251,9 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
               padding: const EdgeInsets.symmetric(vertical: 24, horizontal: 16),
               decoration: BoxDecoration(
                 color: const Color(0xFF0066CC), // Rich corporate blue
-                borderRadius: BorderRadius.circular(8), // matching screenshot style
+                borderRadius: BorderRadius.circular(
+                  8,
+                ), // matching screenshot style
                 boxShadow: [
                   BoxShadow(
                     color: Colors.black.withValues(alpha: 0.1),
@@ -271,11 +300,7 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                         ],
                       ),
                       // Divider line
-                      Container(
-                        height: 40,
-                        width: 1,
-                        color: Colors.white30,
-                      ),
+                      Container(height: 40, width: 1, color: Colors.white30),
                       // Pulang Column
                       Column(
                         children: [
@@ -310,7 +335,9 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                         // Chip jam kerja
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 12, vertical: 6),
+                            horizontal: 12,
+                            vertical: 6,
+                          ),
                           decoration: BoxDecoration(
                             color: Colors.white.withValues(alpha: 0.15),
                             borderRadius: BorderRadius.circular(20),
@@ -318,8 +345,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                           child: Row(
                             mainAxisSize: MainAxisSize.min,
                             children: [
-                              const Icon(Icons.access_time_outlined,
-                                  size: 14, color: Colors.white70),
+                              const Icon(
+                                Icons.access_time_outlined,
+                                size: 14,
+                                color: Colors.white70,
+                              ),
                               const SizedBox(width: 6),
                               Text(
                                 'Kerja: ${presensiProv.todayTotalJamKerja}',
@@ -336,7 +366,9 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                         if (presensiProv.todayOvertimeMinutes > 0)
                           Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.orange.withValues(alpha: 0.85),
                               borderRadius: BorderRadius.circular(20),
@@ -344,8 +376,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(Icons.timer_outlined,
-                                    size: 14, color: Colors.white),
+                                const Icon(
+                                  Icons.timer_outlined,
+                                  size: 14,
+                                  color: Colors.white,
+                                ),
                                 const SizedBox(width: 6),
                                 Text(
                                   'Lembur: ${_fmtMenit(presensiProv.todayOvertimeMinutes)}',
@@ -362,7 +397,9 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                         if (presensiProv.todayLateMinutes > 0)
                           Container(
                             padding: const EdgeInsets.symmetric(
-                                horizontal: 12, vertical: 6),
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
                             decoration: BoxDecoration(
                               color: Colors.red.withValues(alpha: 0.85),
                               borderRadius: BorderRadius.circular(20),
@@ -370,8 +407,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                             child: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                const Icon(Icons.warning_amber_outlined,
-                                    size: 14, color: Colors.white),
+                                const Icon(
+                                  Icons.warning_amber_outlined,
+                                  size: 14,
+                                  color: Colors.white,
+                                ),
                                 const SizedBox(width: 6),
                                 Text(
                                   'Telat: ${presensiProv.todayLateMinutes}m',
@@ -405,48 +445,67 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
             ),
           ),
 
-          // History ListView
+          // History ListView with Pull to Refresh
           Expanded(
-            child: presensiProv.loadingHistory && presensiProv.records.isEmpty
-                ? ShimmerLoading(
-                    child: ListView.builder(
-                      physics: const NeverScrollableScrollPhysics(),
-                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                      itemCount: 5,
-                      itemBuilder: (_, __) => const SkeletonAttendanceItem(),
-                    ),
-                  )
-                : presensiProv.records.isEmpty
-                    ? Center(
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 32),
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(Icons.assignment_ind_outlined,
-                                  size: 48, color: Colors.grey.shade300),
-                              const SizedBox(height: 12),
-                              const Text(
-                                'Belum ada riwayat presensi',
-                                style: TextStyle(color: Colors.grey),
-                                textAlign: TextAlign.center,
-                              ),
-                              const SizedBox(height: 4),
-                              const Text(
-                                'Data presensi Anda akan muncul di sini\nsetelah tercatat di sistem.',
-                                style: TextStyle(
-                                    color: Colors.grey, fontSize: 12),
-                                textAlign: TextAlign.center,
-                              ),
-                            ],
-                          ),
+            child: RefreshIndicator(
+              onRefresh: presensiProv.fetchMyAttendance,
+              child: presensiProv.loadingHistory && presensiProv.records.isEmpty
+                  ? ShimmerLoading(
+                      child: ListView.builder(
+                        physics: const AlwaysScrollableScrollPhysics(),
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 8,
                         ),
-                      )
-                    : RefreshIndicator(
-                        onRefresh: presensiProv.fetchMyAttendance,
-                        child: ListView.builder(
+                        itemCount: 5,
+                        itemBuilder: (_, _) => const SkeletonAttendanceItem(),
+                      ),
+                    )
+                  : presensiProv.records.isEmpty
+                      ? ListView(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          children: [
+                            SizedBox(
+                              height: MediaQuery.of(context).size.height * 0.12,
+                            ),
+                            Center(
+                              child: Padding(
+                                padding:
+                                    const EdgeInsets.symmetric(horizontal: 32),
+                                child: Column(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(
+                                      Icons.assignment_ind_outlined,
+                                      size: 48,
+                                      color: Colors.grey.shade300,
+                                    ),
+                                    const SizedBox(height: 12),
+                                    const Text(
+                                      'Belum ada riwayat presensi',
+                                      style: TextStyle(color: Colors.grey),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                    const SizedBox(height: 4),
+                                    const Text(
+                                      'Data presensi Anda akan muncul di sini\nsetelah tercatat di sistem.',
+                                      style: TextStyle(
+                                        color: Colors.grey,
+                                        fontSize: 12,
+                                      ),
+                                      textAlign: TextAlign.center,
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : ListView.builder(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 16.0, vertical: 8.0),
+                            horizontal: 16.0,
+                            vertical: 8.0,
+                          ),
                           physics: const AlwaysScrollableScrollPhysics(),
                           itemCount: presensiProv.records.length,
                           itemBuilder: (context, index) {
@@ -454,7 +513,7 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                             return _buildHistoryCard(record);
                           },
                         ),
-                      ),
+            ),
           ),
         ],
       ),
@@ -462,8 +521,8 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
   }
 
   Widget _buildHistoryCard(PresensiRecord record) {
-    final total   = record.totalJamKerja;
-    final lembur  = record.totalLembur;
+    final total = record.totalJamKerja;
+    final lembur = record.totalLembur;
     final hasData = total != '-';
 
     return Card(
@@ -500,11 +559,23 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                         runSpacing: 3,
                         children: [
                           if (record.isHoliday)
-                            _badge('Hari Libur', Colors.red.shade600, Colors.red.shade50),
+                            _badge(
+                              'Hari Libur',
+                              Colors.red.shade600,
+                              Colors.red.shade50,
+                            ),
                           if (record.isAutoCheckout)
-                            _badge('Auto-Checkout', Colors.purple.shade600, Colors.purple.shade50),
+                            _badge(
+                              'Auto-Checkout',
+                              Colors.purple.shade600,
+                              Colors.purple.shade50,
+                            ),
                           if (record.lateMinutes > 0)
-                            _badge('Telat ${record.lateMinutes}m', Colors.orange.shade700, Colors.orange.shade50),
+                            _badge(
+                              'Telat ${record.lateMinutes}m',
+                              Colors.orange.shade700,
+                              Colors.orange.shade50,
+                            ),
                         ],
                       ),
                     ],
@@ -561,7 +632,8 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                 runSpacing: 4,
                 crossAxisAlignment: WrapCrossAlignment.center,
                 children: [
-                  if (record.checkInType != null && record.checkInType!.isNotEmpty) ...[
+                  if (record.checkInType != null &&
+                      record.checkInType!.isNotEmpty) ...[
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
@@ -587,14 +659,21 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                         ),
                       ],
                     ),
-                    Container(width: 1, height: 12, color: Colors.grey.shade300),
+                    Container(
+                      width: 1,
+                      height: 12,
+                      color: Colors.grey.shade300,
+                    ),
                   ],
                   // Jam kerja
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.access_time_outlined,
-                          size: 13, color: Colors.blue.shade400),
+                      Icon(
+                        Icons.access_time_outlined,
+                        size: 13,
+                        color: Colors.blue.shade400,
+                      ),
                       const SizedBox(width: 4),
                       Text(
                         'Kerja: $total',
@@ -608,12 +687,19 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                   ),
                   // Lembur + status approval
                   if (lembur.isNotEmpty) ...[
-                    Container(width: 1, height: 12, color: Colors.grey.shade300),
+                    Container(
+                      width: 1,
+                      height: 12,
+                      color: Colors.grey.shade300,
+                    ),
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Icon(Icons.timer_outlined,
-                            size: 13, color: Colors.orange.shade600),
+                        Icon(
+                          Icons.timer_outlined,
+                          size: 13,
+                          color: Colors.orange.shade600,
+                        ),
                         const SizedBox(width: 4),
                         Text(
                           'Lembur: $lembur',
@@ -647,7 +733,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
       ),
       child: Text(
         label,
-        style: TextStyle(fontSize: 10, color: textColor, fontWeight: FontWeight.bold),
+        style: TextStyle(
+          fontSize: 10,
+          color: textColor,
+          fontWeight: FontWeight.bold,
+        ),
       ),
     );
   }
@@ -663,7 +753,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
       case 'rejected':
         return _badge('Ditolak', Colors.red.shade700, Colors.red.shade50);
       default: // pending
-        return _badge('Menunggu HRD', Colors.orange.shade700, Colors.orange.shade50);
+        return _badge(
+          'Menunggu HRD',
+          Colors.orange.shade700,
+          Colors.orange.shade50,
+        );
     }
   }
 }

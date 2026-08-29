@@ -1,4 +1,6 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:provider/provider.dart';
 import 'riwayat_screen.dart';
 import 'presensi_history_screen.dart';
@@ -57,10 +59,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _requestLocationPermission() async {
+    if (kIsWeb) return;
+    try {
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        // GPS belum aktif di HP
+        return;
+      }
+      LocationPermission permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        await Geolocator.requestPermission();
+      }
+    } catch (_) {}
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _requestLocationPermission();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       Provider.of<ReceiptProvider>(context, listen: false).fetchMyReceipts();
       Provider.of<ShiftProvider>(context, listen: false).fetchMySchedule();
@@ -102,8 +120,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
-    final navBarHeight = 70.0 + bottomPadding;
-    final totalBarHeight = 100.0 + bottomPadding;
+    // Adaptif: jika ada navigasi gestur (bottomPadding > 0) gunakan bottomPadding,
+    // jika HP memakai 3 tombol navbar (bottomPadding == 0) beri 10px breathing room.
+    final safeBottomPadding = bottomPadding > 0 ? bottomPadding : 10.0;
+    final navBarHeight = 65.0 + safeBottomPadding;
+    final totalBarHeight = 95.0 + safeBottomPadding;
 
     return Scaffold(
       extendBody: true,
@@ -155,7 +176,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ),
                 Positioned.fill(
                   child: Padding(
-                    padding: EdgeInsets.only(bottom: bottomPadding),
+                    padding: EdgeInsets.only(bottom: safeBottomPadding),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
                       crossAxisAlignment: CrossAxisAlignment.end,
@@ -206,12 +227,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     if (index == 1) {
       Provider.of<ReceiptProvider>(context, listen: false).fetchMyReceipts();
     }
-    // Tab Presensi: sync status dari backend
+    // Tab Presensi: muat riwayat dan sync status WFH/presensi dari backend
     if (index == 2) {
       Provider.of<PresensiProvider>(
         context,
         listen: false,
-      ).syncStatusFromBackend();
+      ).fetchMyAttendance();
     }
     // Tab Izin & Cuti: ambil data terbaru
     if (index == 3) {
@@ -311,7 +332,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final dept = (user?.department?.isNotEmpty == true)
             ? user!.department!
             : 'No Department';
-        final collectiveBanners = presensiProv.activeCollectiveLeaveBanners;
+        final totalUnread = presensiProv.unreadNotificationCount;
 
         return SafeArea(
           child: RefreshIndicator(
@@ -359,7 +380,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                               },
                             ),
                           ),
-                          if (collectiveBanners.isNotEmpty)
+                          if (totalUnread > 0)
                             Positioned(
                               right: -2,
                               top: -2,
@@ -370,7 +391,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                   shape: BoxShape.circle,
                                 ),
                                 child: Text(
-                                  '${collectiveBanners.length}',
+                                  '$totalUnread',
                                   style: const TextStyle(
                                     color: Colors.white,
                                     fontSize: 10,
@@ -677,7 +698,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 child: Consumer<PresensiProvider>(
                   builder: (context, presensiProv, _) {
                     final banners = presensiProv.activeCollectiveLeaveBanners;
-                    if (banners.isEmpty) {
+                    final cancellations = presensiProv.leaveCancellations;
+                    if (banners.isEmpty && cancellations.isEmpty) {
                       return const Center(
                         child: Text(
                           'Tidak ada pesan baru.',
@@ -685,13 +707,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         ),
                       );
                     }
-                    return ListView.separated(
+                    return ListView(
                       padding: const EdgeInsets.all(16),
-                      itemCount: banners.length,
-                      separatorBuilder: (context, index) => const SizedBox(height: 16),
-                      itemBuilder: (context, index) {
-                        return _buildCollectiveLeaveBanner(presensiProv, banners[index]);
-                      },
+                      children: [
+                        // Kartu notifikasi pembatalan cuti bersama / cuti mandiri
+                        ...cancellations.map((c) => Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _buildCancellationBanner(presensiProv, c),
+                        )),
+                        // Kartu ajakan cuti bersama mendatang
+                        ...banners.map((b) => Padding(
+                          padding: const EdgeInsets.only(bottom: 16),
+                          child: _buildCollectiveLeaveBanner(presensiProv, b),
+                        )),
+                      ],
                     );
                   },
                 ),
@@ -700,6 +729,118 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         );
       },
+    );
+  }
+
+  // ─── Banner: pemberitahuan cuti bersama / cuti mandiri dibatalkan ───
+  Widget _buildCancellationBanner(
+    PresensiProvider prov,
+    LeaveCancellationRecord c,
+  ) {
+    final bool isCollective = c.type == 'collective_leave_cancelled';
+    final Color headerColor = isCollective ? const Color(0xFFC62828) : const Color(0xFFD84315);
+    final Color bgColor = isCollective ? const Color(0xFFFDECEA) : const Color(0xFFFBE9E7);
+    final Color borderColor = isCollective ? const Color(0xFFEF9A9A) : const Color(0xFFFFCCBC);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: borderColor),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                isCollective ? Icons.event_busy : Icons.cancel_outlined,
+                color: headerColor,
+                size: 22,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  c.title,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: headerColor,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          if (c.name.isNotEmpty) ...[
+            Text(
+              c.name,
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF37474F),
+              ),
+            ),
+            const SizedBox(height: 2),
+          ],
+          if (c.date.isNotEmpty) ...[
+            Text(
+              c.dateLabel.isNotEmpty ? c.dateLabel : _formatDateLabel(c.date),
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: borderColor),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(Icons.info_outline, size: 16, color: headerColor),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    c.message.isNotEmpty
+                        ? c.message
+                        : 'Cuti bersama dibatalkan oleh HRD. Saldo cuti Anda telah dikembalikan.',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      height: 1.4,
+                      color: Color(0xFF37474F),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: headerColor,
+                foregroundColor: Colors.white,
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              onPressed: () => prov.dismissCancellation(c.id),
+              child: const Text(
+                'Mengerti',
+                style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 

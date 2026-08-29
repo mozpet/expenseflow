@@ -66,8 +66,10 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
           Consumer<ReceiptProvider>(
             builder: (context, prov, _) {
               return Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 child: Row(
                   children: [
                     // Total bulan ini
@@ -84,7 +86,9 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                             const Text(
                               'Total bulan ini',
                               style: TextStyle(
-                                  color: Colors.grey, fontSize: 12),
+                                color: Colors.grey,
+                                fontSize: 12,
+                              ),
                             ),
                             const SizedBox(height: 4),
                             prov.loading && prov.receipts.isEmpty
@@ -92,7 +96,9 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                                     height: 20,
                                     width: 20,
                                     child: CircularProgressIndicator(
-                                        strokeWidth: 2))
+                                      strokeWidth: 2,
+                                    ),
+                                  )
                                 : Text(
                                     formatCurrency(prov.totalThisMonth),
                                     style: const TextStyle(
@@ -120,7 +126,9 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                             const Text(
                               'Disetujui',
                               style: TextStyle(
-                                  color: Colors.grey, fontSize: 12),
+                                color: Colors.grey,
+                                fontSize: 12,
+                              ),
                             ),
                             const SizedBox(height: 4),
                             Text(
@@ -163,7 +171,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                       physics: const NeverScrollableScrollPhysics(),
                       padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
                       itemCount: 6,
-                      itemBuilder: (_, __) => const SkeletonListTileItem(),
+                      itemBuilder: (_, _) => const SkeletonListTileItem(),
                     ),
                   );
                 }
@@ -209,10 +217,8 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
       },
       selectedColor: Theme.of(context).primaryColor,
       backgroundColor: Colors.grey.shade100,
-      labelStyle:
-          TextStyle(color: selected ? Colors.white : Colors.black87),
-      shape:
-          RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      labelStyle: TextStyle(color: selected ? Colors.white : Colors.black87),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     );
   }
 }
@@ -271,14 +277,18 @@ class _ReceiptCard extends StatelessWidget {
                     child: Text(
                       receipt.displayMerchant,
                       style: const TextStyle(
-                          fontWeight: FontWeight.bold, fontSize: 15),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                      ),
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
                   const SizedBox(width: 8),
                   Container(
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 4),
+                      horizontal: 10,
+                      vertical: 4,
+                    ),
                     decoration: BoxDecoration(
                       color: statusBg,
                       borderRadius: BorderRadius.circular(12),
@@ -286,9 +296,10 @@ class _ReceiptCard extends StatelessWidget {
                     child: Text(
                       status,
                       style: TextStyle(
-                          color: statusColor,
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold),
+                        color: statusColor,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ),
                 ],
@@ -303,9 +314,10 @@ class _ReceiptCard extends StatelessWidget {
                 Text(
                   'Ketuk untuk lihat aksi',
                   style: TextStyle(
-                      color: Colors.blue.shade400,
-                      fontSize: 10,
-                      fontStyle: FontStyle.italic),
+                    color: Colors.blue.shade400,
+                    fontSize: 10,
+                    fontStyle: FontStyle.italic,
+                  ),
                 ),
               ],
               const Divider(height: 24, thickness: 0.5),
@@ -316,7 +328,9 @@ class _ReceiptCard extends StatelessWidget {
                     child: Text(
                       receipt.category ?? '-',
                       style: const TextStyle(
-                          color: Colors.black87, fontSize: 13),
+                        color: Colors.black87,
+                        fontSize: 13,
+                      ),
                     ),
                   ),
                   Text(
@@ -324,7 +338,9 @@ class _ReceiptCard extends StatelessWidget {
                         ? formatCurrency(receipt.displayAmount)
                         : '-',
                     style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 15),
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                    ),
                   ),
                 ],
               ),
@@ -345,17 +361,19 @@ class _ReceiptCard extends StatelessWidget {
                       const Text(
                         'Alasan Penolakan:',
                         style: TextStyle(
-                            color: Colors.red,
-                            fontWeight: FontWeight.bold,
-                            fontSize: 11),
+                          color: Colors.red,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 11,
+                        ),
                       ),
                       const SizedBox(height: 2),
                       Text(
                         receipt.rejectionReason!,
                         style: TextStyle(
-                            color: Colors.red.shade900,
-                            fontSize: 11,
-                            height: 1.4),
+                          color: Colors.red.shade900,
+                          fontSize: 11,
+                          height: 1.4,
+                        ),
                       ),
                     ],
                   ),

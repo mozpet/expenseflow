@@ -67,3 +67,42 @@ class CollectiveLeaveRecord {
     );
   }
 }
+
+class LeaveCancellationRecord {
+  final String id;
+  final String type; // collective_leave_cancelled | personal_leave_cancelled
+  final String title;
+  final String name;
+  final String date;
+  final String dateLabel;
+  final String message;
+  final int refundedDays;
+  final String createdAt;
+
+  LeaveCancellationRecord({
+    required this.id,
+    required this.type,
+    required this.title,
+    required this.name,
+    required this.date,
+    required this.dateLabel,
+    required this.message,
+    required this.refundedDays,
+    required this.createdAt,
+  });
+
+  factory LeaveCancellationRecord.fromJson(Map<String, dynamic> json) {
+    return LeaveCancellationRecord(
+      id: (json['id'] ?? '').toString(),
+      type: (json['type'] ?? 'collective_leave_cancelled').toString(),
+      title: (json['title'] ?? 'Cuti Bersama Dibatalkan').toString(),
+      name: (json['name'] ?? '').toString(),
+      date: (json['date'] ?? '').toString(),
+      dateLabel: (json['date_label'] ?? json['date'] ?? '').toString(),
+      message: (json['message'] ?? '').toString(),
+      refundedDays: (json['refunded_days'] as num?)?.toInt() ?? 0,
+      createdAt: (json['created_at'] ?? '').toString(),
+    );
+  }
+}
+

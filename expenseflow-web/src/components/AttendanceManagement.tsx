@@ -28,12 +28,19 @@ import {
   Info,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  ChevronUp,
+  UserCheck,
+  UserX,
+  Loader2,
+  ShieldAlert,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../auth/AuthContext';
 import CustomDatePicker from './CustomDatePicker';
+import { ConfirmationDialog } from './ConfirmationDialog';
 
 
 type TabKey = 'today' | 'leaves' | 'users' | 'balances' | 'report' | 'holidays';
@@ -827,6 +834,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         currentQuota > 0 ? 'bg-slate-600' : 'bg-teal-600'
       );
       await loadBalances();
+      // Perbarui juga data allUsers agar status leave_active userOptions langsung sinkron
+      attendanceApi.allUsers().catch(() => {});
     } catch (e) {
       reportApiError(e, 'Gagal mengubah kuota cuti.');
     } finally {
@@ -2258,11 +2267,18 @@ const HolidaysTab: React.FC<{
   const [excludeSearch, setExcludeSearch] = useState('');
   const [excludeDropdownOpen, setExcludeDropdownOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [loadingPreview, setLoadingPreview] = useState(false);
+  const [showCollectiveConfirm, setShowCollectiveConfirm] = useState(false);
+  const [collectivePreviewData, setCollectivePreviewData] = useState<any | null>(null);
+  const [showEligibleAccordion, setShowEligibleAccordion] = useState(false);
+  const [holidayAutoExcluded, setHolidayAutoExcluded] = useState<any[]>([]);
+  const [deleteConfirmHoliday, setDeleteConfirmHoliday] = useState<any | null>(null);
+  const [deletingHoliday, setDeletingHoliday] = useState(false);
   // Daftar karyawan untuk dropdown pengecualian — selalu diambil mandiri via /users/all
   // (jangan pakai prop users: itu paginated 20 saja, tidak memuat semua karyawan)
   const [userOptions, setUserOptions] = useState<any[]>([]);
 
-  // Muat semua karyawan aktif untuk dropdown pengecualian (dengan cache: hanya sekali)
+  // Muat semua karyawan aktif untuk dropdown pengecualian
   const ensureUserOptions = useCallback(() => {
     if (userOptions.length > 0) return;
     attendanceApi.allUsers()
@@ -2272,13 +2288,22 @@ const HolidaysTab: React.FC<{
       })
       .catch(() => {});
   }, [userOptions.length]);
+
+  const handleTypeChange = (newType: string) => {
+    setForm(f => ({ ...f, type: newType }));
+  };
+
+  const handleOfficeChange = (newOfficeId: string) => {
+    setForm(f => ({ ...f, attendance_setting_id: newOfficeId }));
+  };
+
   const [detailDate, setDetailDate] = useState<string | null>(null);
   // Modal rekap cuti bersama (HRD)
   const [collectiveDetailHoliday, setCollectiveDetailHoliday] = useState<any | null>(null);
   const [collectiveDetailData, setCollectiveDetailData] = useState<any | null>(null);
   const [loadingCollectiveDetail, setLoadingCollectiveDetail] = useState(false);
   // Modal peringatan hasil tambah libur:
-  //  - autoExcluded    : karyawan yang otomatis dikecualikan dari cuti bersama (sudah punya cuti approved)
+  //  - autoExcluded    : karyawan yang otomatis dikecualikan dari cuti bersama (sudah punya cuti approved / cuti nonaktif)
   //  - balanceRestored : karyawan yang saldo cutinya dikembalikan karena libur nasional/cabang
   const [holidayWarning, setHolidayWarning] = useState<{
     title: string;
@@ -2370,13 +2395,19 @@ const HolidaysTab: React.FC<{
 
   const resetForm = () => {
     setForm({ date: '', name: '', type: 'perusahaan', attendance_setting_id: calOfficeFilter || '', excluded_users: [] });
+    setHolidayAutoExcluded([]);
     setEditingId(null);
     setShowForm(false);
+    setShowCollectiveConfirm(false);
+    setCollectivePreviewData(null);
+    setShowEligibleAccordion(false);
   };
 
   const startCreate = (date?: string) => {
     // Jika ada filter cabang yang aktif, gunakan cabang tersebut sebagai default form
-    const defaultOffice = calOfficeFilter || '';
+    // Jika bukan Super Admin, default ke cabang filter / cabang user / cabang pertama
+    const defaultOffice = calOfficeFilter || (!isSuperAdmin ? (user?.attendance_setting_id ? String(user.attendance_setting_id) : (offices.length > 0 ? String(offices[0].id) : '')) : '');
+    setHolidayAutoExcluded([]);
     if (editingId !== null) {
       setEditingId(null);
       setForm({ date: date ?? '', name: '', type: 'perusahaan', attendance_setting_id: defaultOffice, excluded_users: [] });
@@ -2393,11 +2424,23 @@ const HolidaysTab: React.FC<{
       onError(null, 'Hanya Super Admin yang berwenang mengubah hari libur nasional.');
       return;
     }
+    if (h.attendance_setting_id === null && !h.is_national && h.scope !== 'nasional' && !isSuperAdmin) {
+      onError(null, 'Hanya Super Admin yang berwenang mengubah libur / cuti bersama untuk semua cabang.');
+      return;
+    }
+    const officeId = h.attendance_setting_id ? String(h.attendance_setting_id) : '';
     setEditingId(h.id);
+
+    const allExcluded = h.excluded_users ?? [];
+    // Pisahkan: manual excluded (bisa dikembalikan HRD) vs auto excluded (permanen tidak ikut)
+    const manualEx = allExcluded.filter((u: any) => u.is_manual !== false);
+    const autoEx = allExcluded.filter((u: any) => u.is_manual === false);
+    setHolidayAutoExcluded(autoEx);
+
     setForm({
       date: String(h.date).slice(0, 10),
       name: h.name,
-      excluded_users: h.excluded_users ?? [],
+      excluded_users: manualEx,
       // Tipe diturunkan dari data holiday:
       //  - scope 'nasional' / is_national=true → libur nasional
       //  - is_collective=true                  → cuti bersama
@@ -2407,9 +2450,10 @@ const HolidaysTab: React.FC<{
         : h.is_collective
           ? 'collective'
           : 'perusahaan',
-      attendance_setting_id: h.attendance_setting_id ? String(h.attendance_setting_id) : '',
+      attendance_setting_id: officeId,
     });
     setShowForm(true);
+    ensureUserOptions();
   };
 
   const submit = async (e: React.FormEvent) => {
@@ -2420,6 +2464,39 @@ const HolidaysTab: React.FC<{
       onError(null, 'Tanggal sudah lewat / hari ini tidak bisa untuk menambah libur.');
       return;
     }
+
+    // Guard hak akses: Hanya Super Admin yang boleh membuat libur/cuti bersama untuk Semua Cabang
+    if (form.type !== 'nasional' && !form.attendance_setting_id && !isSuperAdmin) {
+      onError(null, 'Hanya Super Admin yang berwenang mengatur libur / cuti bersama untuk semua cabang. Silakan pilih kantor cabang spesifik.');
+      return;
+    }
+
+    // Jika Cuti Bersama: Panggil kalkulasi preview untuk memetakan karyawan yang tidak ikut beserta alasannya
+    if (form.type === 'collective') {
+      setLoadingPreview(true);
+      try {
+        const previewRes: any = await attendanceApi.holidays.previewCollective({
+          holiday_id: editingId ?? undefined,
+          date: form.date,
+          name: form.name.trim(),
+          attendance_setting_id: form.attendance_setting_id ? Number(form.attendance_setting_id) : null,
+          excluded_user_ids: form.excluded_users.map(u => u.id),
+        });
+        setCollectivePreviewData(previewRes);
+        setShowEligibleAccordion(false);
+        setShowCollectiveConfirm(true);
+      } catch (err) {
+        onError(err, 'Gagal memuat pratinjau cuti bersama.');
+      } finally {
+        setLoadingPreview(false);
+      }
+      return;
+    }
+
+    await executeSave();
+  };
+
+  const executeSave = async () => {
     setSaving(true);
     try {
       const isCollective = form.type === 'collective';
@@ -2459,6 +2536,7 @@ const HolidaysTab: React.FC<{
 
       resetForm();
       setDetailDate(null);
+      setShowCollectiveConfirm(false);
       await reload();
     } catch (err) {
       onError(err, editingId !== null ? 'Gagal mengubah hari libur.' : 'Gagal menambah hari libur.');
@@ -2467,19 +2545,32 @@ const HolidaysTab: React.FC<{
     }
   };
 
-  const remove = async (h: any) => {
+  const remove = (h: any) => {
     if ((h.scope === 'nasional' || h.is_national) && !isSuperAdmin) {
       onError(null, 'Hanya Super Admin yang berwenang menghapus hari libur nasional.');
       return;
     }
-    if (!confirm(`Hapus libur "${h.name}" (${h.date})?`)) return;
+    if (h.attendance_setting_id === null && !h.is_national && h.scope !== 'nasional' && !isSuperAdmin) {
+      onError(null, 'Hanya Super Admin yang berwenang menghapus libur / cuti bersama untuk semua cabang.');
+      return;
+    }
+    setDeleteConfirmHoliday(h);
+  };
+
+  const executeDelete = async () => {
+    if (!deleteConfirmHoliday) return;
+    const h = deleteConfirmHoliday;
+    setDeletingHoliday(true);
     try {
       await attendanceApi.holidays.destroy(h.id);
       onAddAuditLog('Hari libur dihapus', `${h.name} (${h.date})`, 'bg-rose-500');
       if (detailDate) setDetailDate(null);
+      setDeleteConfirmHoliday(null);
       await reload();
     } catch (err) {
       onError(err, 'Gagal menghapus hari libur.');
+    } finally {
+      setDeletingHoliday(false);
     }
   };
 
@@ -2580,7 +2671,7 @@ const HolidaysTab: React.FC<{
             <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Tipe Libur</label>
             <select
               value={form.type}
-              onChange={(e) => setForm({ ...form, type: e.target.value })}
+              onChange={(e) => handleTypeChange(e.target.value)}
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
             >
               {isSuperAdmin && <option value="nasional">Libur Nasional</option>}
@@ -2590,15 +2681,27 @@ const HolidaysTab: React.FC<{
           </div>
 
           {/* Kantor Cabang — langsung setelah Tipe Libur agar sebaris (kolom ke-4) */}
-          {form.type !== 'nasional' && offices.length > 0 && (
+          {form.type !== 'nasional' && (
             <div className="space-y-1.5 sm:col-span-1">
-              <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor Cabang</label>
+              <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider flex items-center justify-between">
+                <span>Kantor Cabang</span>
+                {!isSuperAdmin && (
+                  <span className="text-[9px] font-normal text-amber-600 dark:text-amber-400 normal-case">
+                    (Khusus Cabang)
+                  </span>
+                )}
+              </label>
               <select
                 value={form.attendance_setting_id}
-                onChange={(e) => setForm({ ...form, attendance_setting_id: e.target.value })}
+                onChange={(e) => handleOfficeChange(e.target.value)}
                 className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                required={!isSuperAdmin}
               >
-                <option value="">Semua Kantor (Semua Cabang)</option>
+                {isSuperAdmin ? (
+                  <option value="">Semua Kantor (Semua Cabang)</option>
+                ) : (
+                  <option value="" disabled>Pilih Kantor Cabang...</option>
+                )}
                 {offices.map((o: any) => (
                   <option key={o.id} value={String(o.id)}>{o.office_name}</option>
                 ))}
@@ -2616,7 +2719,7 @@ const HolidaysTab: React.FC<{
             <div className="sm:col-span-4 bg-amber-50 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/30 rounded-lg p-3">
               <p className="text-xs font-bold text-amber-900 dark:text-amber-300">Cuti Bersama (Potong Saldo)</p>
               <p className="text-[11px] text-amber-700 dark:text-amber-400">
-                Karyawan akan menerima notifikasi di aplikasi mobile H-7 dan dapat memilih untuk ikut atau tidak. <span className="font-bold">Saldo cuti karyawan yang mengikuti cuti ini akan terpotong otomatis.</span>
+                Karyawan akan menerima notifikasi di aplikasi mobile H-7 dan dapat memilih untuk ikut atau tidak. <span className="font-bold">Saldo cuti karyawan yang mengikuti cuti ini akan terpotong otomatis.</span> Karyawan dengan cuti nonaktif otomatis masuk daftar pengecualian.
               </p>
             </div>
           ) : (
@@ -2624,24 +2727,40 @@ const HolidaysTab: React.FC<{
               Libur perusahaan hanya berlaku untuk perusahaan Anda dan tampil <span className="font-bold text-indigo-600 dark:text-indigo-400">biru</span> di kalender. Pilih kantor cabang untuk membatasi libur ke cabang tertentu.
             </p>
           )}
-          {/* Input Pengecualian Karyawan */}
-          <div className="sm:col-span-1 mt-2 space-y-1.5">
-            <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">
-              Pengecualian Karyawan <span className="lowercase normal-case font-normal">(Tidak ikut libur)</span>
-            </label>
+          {/* Input Pengecualian Karyawan (Manual HRD) — disesuaikan 1 kolom seperti kolom Tanggal */}
+          <div className="sm:col-span-1 mt-1 space-y-1.5">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider truncate">
+                {form.type === 'collective' ? 'Pengecualian Manual' : 'Pengecualian Karyawan'}
+                <span className="lowercase normal-case font-normal text-slate-400 dark:text-slate-500 text-[9px] ml-1">
+                  {form.type === 'collective' ? '(Manual HRD)' : '(Tidak ikut)'}
+                </span>
+              </label>
+            </div>
             <div className="relative">
               <div
                 className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 focus-within:ring-1 focus-within:ring-indigo-400 cursor-text min-h-[38px]"
                 onClick={() => { ensureUserOptions(); setExcludeDropdownOpen(true); }}
               >
-                <div className="flex flex-wrap gap-1.5 mb-1">
+                <div className="flex flex-wrap gap-1 mb-0.5">
                   {form.excluded_users.length === 0 && !excludeDropdownOpen && (
-                    <span className="text-slate-400 py-0.5">Pilih karyawan...</span>
+                    <span className="text-slate-400 py-0.5 text-[11px]">Pilih karyawan...</span>
                   )}
                   {form.excluded_users.map(u => (
-                    <span key={u.id} className="inline-flex items-center gap-1 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 px-2 py-0.5 rounded text-[10px] font-medium border border-slate-200 dark:border-slate-600">
-                      {u.name}
-                      <button type="button" onClick={(e) => { e.stopPropagation(); setForm(f => ({ ...f, excluded_users: f.excluded_users.filter(x => x.id !== u.id) })); }} className="hover:text-rose-500">
+                    <span
+                      key={u.id}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium border bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-200 border-slate-200 dark:border-slate-700"
+                    >
+                      <span>{u.name}</span>
+                      <button
+                        type="button"
+                        title={form.type === 'collective' ? 'Kembalikan agar ikut cuti bersama' : 'Hapus dari pengecualian'}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setForm(f => ({ ...f, excluded_users: f.excluded_users.filter(x => x.id !== u.id) }));
+                        }}
+                        className="text-slate-400 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 p-0.5 rounded transition"
+                      >
                         <X className="w-3 h-3" />
                       </button>
                     </span>
@@ -2655,7 +2774,7 @@ const HolidaysTab: React.FC<{
                     value={excludeSearch}
                     onChange={e => setExcludeSearch(e.target.value)}
                     onBlur={() => setTimeout(() => setExcludeDropdownOpen(false), 200)}
-                    className="w-full bg-transparent outline-none text-slate-800 dark:text-slate-100 placeholder-slate-400 mt-1"
+                    className="w-full bg-transparent outline-none text-slate-800 dark:text-slate-100 placeholder-slate-400 mt-0.5 text-xs"
                   />
                 )}
               </div>
@@ -2676,8 +2795,10 @@ const HolidaysTab: React.FC<{
                         const userCode = String(u.employee_code || '').toLowerCase();
                         if (!userName.includes(q) && !userCode.includes(q)) return false;
                       }
-                      // Filter out already selected
+                      // Filter out already selected in manual
                       if (form.excluded_users.some(x => x.id === u.id)) return false;
+                      // Filter out auto-excluded in edit mode
+                      if (holidayAutoExcluded.some((x: any) => x.id === u.id)) return false;
                       return true;
                     });
 
@@ -2716,18 +2837,52 @@ const HolidaysTab: React.FC<{
             </div>
           </div>
 
+          {/* Pengecualian Otomatis Sistem (Hanya Nama / Chips Sederhana) */}
+          {form.type === 'collective' && holidayAutoExcluded.length > 0 && (
+            <div className="sm:col-span-1 mt-1 space-y-1.5">
+              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider truncate">
+                Pengecualian Otomatis
+                <span className="lowercase normal-case font-normal text-slate-400 dark:text-slate-500 text-[9px] ml-1">
+                  ({holidayAutoExcluded.length} Auto)
+                </span>
+              </label>
+              <div className="flex flex-wrap gap-1 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50/60 dark:bg-slate-800/20 min-h-[38px] items-center">
+                {holidayAutoExcluded.map((u: any) => (
+                  <span
+                    key={u.id}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-600"
+                    title={u.reason_detail || u.reason_label}
+                  >
+                    <span>{u.name}</span>
+                    <span className="text-[9px] text-amber-600 dark:text-amber-400 font-semibold">
+                      ({u.reason_label || 'Auto'})
+                    </span>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex items-center gap-2 sm:col-span-4 justify-end mt-2">
             <button
               type="submit"
-              disabled={saving}
-              className="px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition"
+              disabled={saving || loadingPreview}
+              className="px-3 py-2.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5"
             >
-              {saving ? 'Menyimpan...' : editingId !== null ? 'Simpan Perubahan' : 'Simpan'}
+              {saving || loadingPreview ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  {loadingPreview ? 'Menganalisis...' : 'Menyimpan...'}
+                </>
+              ) : (
+                editingId !== null ? 'Simpan Perubahan' : 'Simpan'
+              )}
             </button>
             <button
               type="button"
+              disabled={saving || loadingPreview}
               onClick={resetForm}
-              className="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-bold transition"
+              className="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg text-xs font-bold transition disabled:opacity-50"
             >
               Batal
             </button>
@@ -2928,13 +3083,30 @@ const HolidaysTab: React.FC<{
                       {/* Pengecualian Karyawan */}
                       {h.excluded_users && h.excluded_users.length > 0 && (
                         <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-                          <p className="text-[9px] font-bold text-slate-500 uppercase mb-1">Dikecualikan (Kerja)</p>
+                          <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase mb-1 flex items-center justify-between">
+                            <span>Dikecualikan (Kerja)</span>
+                            <span className="text-[8px] font-normal normal-case text-slate-400">{h.excluded_users.length} karyawan</span>
+                          </p>
                           <div className="flex flex-wrap gap-1">
-                            {h.excluded_users.map((u: any) => (
-                              <span key={u.id} className="text-[9px] bg-slate-100 dark:bg-slate-700/50 text-slate-600 dark:text-slate-300 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-600">
-                                {u.name}
-                              </span>
-                            ))}
+                            {h.excluded_users.map((u: any) => {
+                              const isAuto = u.is_manual === false;
+                              return (
+                                <span
+                                  key={u.id}
+                                  className={`text-[9px] px-1.5 py-0.5 rounded border inline-flex items-center gap-1 font-medium ${
+                                    isAuto
+                                      ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/60'
+                                      : 'bg-slate-100 dark:bg-slate-700/50 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600'
+                                  }`}
+                                  title={u.reason_detail || (isAuto ? 'Dikecualikan otomatis oleh sistem' : 'Pengecualian manual HRD')}
+                                >
+                                  <span>{u.name}</span>
+                                  <span className={`text-[8px] font-bold ${isAuto ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'}`}>
+                                    {isAuto ? `(${u.reason_label || 'Auto'})` : '(Manual)'}
+                                  </span>
+                                </span>
+                              );
+                            })}
                           </div>
                         </div>
                       )}
@@ -3119,6 +3291,216 @@ const HolidaysTab: React.FC<{
         </div>
       )}
 
+      {/* Modal Konfirmasi Simpan Cuti Bersama */}
+      {showCollectiveConfirm && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4 py-6"
+          onClick={(e) => { if (e.target === e.currentTarget && !saving) setShowCollectiveConfirm(false); }}
+        >
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-xl max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200 border border-slate-100 dark:border-slate-800 flex flex-col">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900 z-10">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 dark:bg-amber-950/60 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+                  <CalendarDays className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm text-slate-800 dark:text-slate-100">
+                    Konfirmasi Cuti Bersama
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Periksa ringkasan kepesertaan & alasan karyawan yang tidak dapat ikut
+                  </p>
+                </div>
+              </div>
+              <button
+                disabled={saving}
+                onClick={() => setShowCollectiveConfirm(false)}
+                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-5 space-y-4 flex-1">
+              {/* Ringkasan Cuti */}
+              <div className="bg-slate-50 dark:bg-slate-800/40 rounded-xl p-3.5 border border-slate-100 dark:border-slate-800 space-y-2">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-400">Nama Acara / Libur</span>
+                  <span className="font-bold text-slate-800 dark:text-slate-100">{collectivePreviewData?.holiday?.name || form.name}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-400">Tanggal Pelaksanaan</span>
+                  <span className="font-bold text-indigo-600 dark:text-indigo-400">{fmtDate(collectivePreviewData?.holiday?.date || form.date)}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-slate-400">Cakupan Kantor</span>
+                  <span className="font-semibold text-slate-700 dark:text-slate-200">
+                    {collectivePreviewData?.holiday?.office_name || (form.attendance_setting_id
+                      ? (offices.find((o: any) => String(o.id) === form.attendance_setting_id)?.office_name ?? 'Cabang Terpilih')
+                      : 'Semua Kantor (Semua Cabang)')}
+                  </span>
+                </div>
+              </div>
+
+              {/* 2 Stat Cards */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="bg-emerald-50/70 dark:bg-emerald-950/30 border border-emerald-200/80 dark:border-emerald-900/50 rounded-xl p-3 flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-emerald-100 dark:bg-emerald-900/60 flex items-center justify-center text-emerald-600 dark:text-emerald-400 shrink-0">
+                    <UserCheck className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-emerald-700/80 dark:text-emerald-400">Diikutsertakan</p>
+                    <p className="text-base font-extrabold text-emerald-800 dark:text-emerald-300">
+                      {collectivePreviewData?.summary?.total_eligible ?? 0} <span className="text-xs font-normal text-emerald-600 dark:text-emerald-400">orang</span>
+                    </p>
+                  </div>
+                </div>
+
+                <div className="bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/50 rounded-xl p-3 flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-lg bg-amber-100 dark:bg-amber-900/60 flex items-center justify-center text-amber-600 dark:text-amber-400 shrink-0">
+                    <UserX className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <p className="text-[10px] uppercase font-bold text-amber-700/80 dark:text-amber-400">Tidak Ikut / Dikecualikan</p>
+                    <p className="text-base font-extrabold text-amber-800 dark:text-amber-300">
+                      {collectivePreviewData?.summary?.total_excluded ?? 0} <span className="text-xs font-normal text-amber-600 dark:text-amber-400">orang</span>
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Rincian Karyawan yang Dikecualikan */}
+              <div className="space-y-2">
+                <label className="text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center justify-between">
+                  <span className="flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-amber-500" />
+                    Karyawan yang Dikecualikan ({collectivePreviewData?.excluded_users?.length ?? 0})
+                  </span>
+                  <span className="text-[10px] font-normal text-slate-400">Beserta alasan pengecualian</span>
+                </label>
+
+                {(!collectivePreviewData?.excluded_users || collectivePreviewData.excluded_users.length === 0) ? (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/20 p-3 text-center">
+                    <p className="text-xs text-slate-500 dark:text-slate-400">
+                      Tidak ada karyawan yang dikecualikan. Seluruh karyawan aktif di cabang ini memenuhi syarat dan akan diikutsertakan.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 max-h-56 overflow-y-auto space-y-2 divide-y divide-slate-100 dark:divide-slate-800/60">
+                    {collectivePreviewData.excluded_users.map((u: any, idx: number) => {
+                      let badgeClass = 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700';
+                      if (u.reason_type === 'inactive_leave') {
+                        badgeClass = 'bg-amber-100 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-300 dark:border-amber-800/60';
+                      } else if (u.reason_type === 'quota_exhausted') {
+                        badgeClass = 'bg-rose-100 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 border-rose-300 dark:border-rose-800/60';
+                      } else if (u.reason_type === 'existing_leave') {
+                        badgeClass = 'bg-purple-100 dark:bg-purple-950/60 text-purple-800 dark:text-purple-300 border-purple-300 dark:border-purple-800/60';
+                      } else if (u.reason_type === 'shift_off') {
+                        badgeClass = 'bg-sky-100 dark:bg-sky-950/60 text-sky-800 dark:text-sky-300 border-sky-300 dark:border-sky-800/60';
+                      }
+
+                      return (
+                        <div key={u.id || idx} className="pt-2 first:pt-0 flex items-start justify-between gap-2.5">
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
+                                {u.name}
+                              </p>
+                              {u.employee_code && (
+                                <span className="text-[10px] font-mono text-slate-400 shrink-0">({u.employee_code})</span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">
+                              {u.reason_detail || u.reason_label}
+                            </p>
+                          </div>
+                          <span className={`inline-flex shrink-0 items-center px-2 py-0.5 rounded-md text-[10px] font-bold border shadow-2xs ${badgeClass}`}>
+                            {u.reason_label}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Accordion Karyawan Diikutsertakan */}
+              {collectivePreviewData?.eligible_users && collectivePreviewData.eligible_users.length > 0 && (
+                <div className="border border-slate-100 dark:border-slate-800 rounded-xl overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setShowEligibleAccordion(v => !v)}
+                    className="w-full px-3.5 py-2.5 bg-slate-50/70 dark:bg-slate-800/40 hover:bg-slate-100 dark:hover:bg-slate-800 text-left flex items-center justify-between text-xs font-semibold text-slate-700 dark:text-slate-200 transition"
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <UserCheck className="w-3.5 h-3.5 text-emerald-500" />
+                      Lihat Daftar Karyawan yang Diikutsertakan ({collectivePreviewData.eligible_users.length})
+                    </span>
+                    {showEligibleAccordion ? <ChevronUp className="w-3.5 h-3.5 text-slate-400" /> : <ChevronDown className="w-3.5 h-3.5 text-slate-400" />}
+                  </button>
+
+                  {showEligibleAccordion && (
+                    <div className="p-3 bg-white dark:bg-slate-900 max-h-40 overflow-y-auto space-y-1.5 border-t border-slate-100 dark:border-slate-800">
+                      <div className="flex flex-wrap gap-1.5">
+                        {collectivePreviewData.eligible_users.map((u: any) => (
+                          <span
+                            key={u.id}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-50/80 dark:bg-emerald-950/40 text-emerald-900 dark:text-emerald-200 border border-emerald-200 dark:border-emerald-800/60"
+                          >
+                            <span>{u.name}</span>
+                            {u.remaining_quota !== undefined && (
+                              <span className="text-[9px] opacity-75 font-normal">
+                                (sisa {u.remaining_quota} hari)
+                              </span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <p className="text-[11px] text-slate-400 leading-relaxed">
+                💡 Karyawan dalam daftar pengecualian di atas otomatis dikecualikan secara permanen di sistem, tidak akan menerima notifikasi Cuti Bersama di aplikasi mobile, dan saldo cutinya tidak akan terpotong.
+              </p>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="px-5 py-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-end gap-2 bg-slate-50/50 dark:bg-slate-900/50 rounded-b-2xl">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setShowCollectiveConfirm(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-bold transition disabled:opacity-50"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={executeSave}
+                className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl text-xs font-bold transition shadow-sm flex items-center gap-1.5 disabled:opacity-50"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    Menyimpan...
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    Ya, Simpan Cuti Bersama
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal Peringatan Hasil Tambah Libur / Cuti Bersama */}
       {holidayWarning && (
         <div
@@ -3196,6 +3578,46 @@ const HolidaysTab: React.FC<{
             </div>
           </div>
         </div>
+      )}
+
+      {/* Confirmation Dialog Hapus Hari Libur / Cuti Bersama */}
+      {deleteConfirmHoliday && (
+        <ConfirmationDialog
+          isOpen={!!deleteConfirmHoliday}
+          onClose={() => setDeleteConfirmHoliday(null)}
+          onConfirm={executeDelete}
+          title="Hapus Hari Libur"
+          message={
+            <div className="space-y-2.5 text-xs text-slate-600 dark:text-slate-300 text-left">
+              <p>Apakah Anda yakin ingin menghapus data hari libur ini?</p>
+              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/80 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <p className="font-bold text-slate-800 dark:text-slate-100 text-sm">{deleteConfirmHoliday.name}</p>
+                  <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase ${
+                    deleteConfirmHoliday.is_collective
+                      ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                      : (deleteConfirmHoliday.scope === 'nasional' ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400' : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-400')
+                  }`}>
+                    {deleteConfirmHoliday.is_collective ? 'Cuti Bersama' : (deleteConfirmHoliday.scope === 'nasional' ? 'Libur Nasional' : 'Libur Perusahaan')}
+                  </span>
+                </div>
+                <p className="text-slate-500 dark:text-slate-400 text-xs">
+                  📅 {fmtDate(deleteConfirmHoliday.date)}
+                  {deleteConfirmHoliday.office_name ? ` · 🏢 ${deleteConfirmHoliday.office_name}` : ' · 🌐 Semua Cabang'}
+                </p>
+                {deleteConfirmHoliday.is_collective && (
+                  <p className="text-amber-600 dark:text-amber-400 text-[11px] font-medium pt-1.5 border-t border-slate-200/60 dark:border-slate-700/60">
+                    ⚠️ Menghapus cuti bersama akan membatalkan seluruh jadwal cuti bersama karyawan dan mengembalikan saldo cuti yang telah terpotong.
+                  </p>
+                )}
+              </div>
+            </div>
+          }
+          confirmText="Ya, Hapus Libur"
+          cancelText="Batal"
+          type="danger"
+          isLoading={deletingHoliday}
+        />
       )}
     </div>
   );

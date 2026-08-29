@@ -88,6 +88,11 @@ export interface NotificationItem {
   subtitle: string;
   time: string;
   read: boolean;
+  targetPage?: string;
+  targetLabel?: string;
+  rawType?: string;
+  entityType?: string;
+  entityId?: number;
 }
 
 export interface AppSettings {

@@ -95,61 +95,63 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
   }
 
   /// Ambil info shift yang relevan berdasarkan tanggal yang dipilih.
-  /// Jika tanggal dipilih punya shift berbeda dari "hari ini", tampilkan info shift tersebut.
-  /// Jika tidak ada data kalender untuk tanggal itu, fallback ke shiftInfo dari mySchedule.
+  /// Fokuskan HANYA ke nama jadwal shift atau jam kantor default (tidak pernah menampilkan nama libur/cuti di header).
   _ShiftDisplayInfo _resolveDisplayInfo(ShiftProvider prov) {
     // Prioritaskan tanggal yang dipilih
     final date = _selectedDate;
     if (date != null) {
       final calDay = prov.getScheduleForDate(date);
       if (calDay != null) {
-        // Hari libur/cuti bersama/cuti mandiri: tampilkan nama libur (bukan nama shift/kantor default).
-        if (calDay.holiday != null ||
-            calDay.shiftName == 'Cuti Bersama' ||
-            calDay.personalLeave ||
-            calDay.shiftName == 'Cuti Mandiri') {
+        if (calDay.source == 'shift') {
+          // Dapatkan nama shift (jika shiftName sama dengan nama libur atau cuti, fallback ke nama shift dari mySchedule)
+          final isHolidayName = calDay.holiday != null && calDay.shiftName == calDay.holiday!.name;
+          final String shiftName = (calDay.shiftName != null &&
+                  calDay.shiftName != 'Cuti Bersama' &&
+                  calDay.shiftName != 'Cuti Mandiri' &&
+                  !isHolidayName)
+              ? calDay.shiftName!
+              : (prov.shiftInfo?.name.isNotEmpty == true
+                  ? prov.shiftInfo!.name
+                  : 'Shift Kerja');
+
+          final String? startDate = calDay.startDate ??
+              _findShiftStartDate(prov, date, calDay.shiftId) ??
+              prov.shiftInfo?.startDate;
+          final String? endDate = calDay.endDate ?? prov.shiftInfo?.endDate;
+
           return _ShiftDisplayInfo(
-            name: calDay.shiftName ?? (calDay.holiday?.name ?? 'Libur'),
-            color: calDay.color ?? '#EF4444',
-            source: (calDay.shiftName == 'Cuti Bersama' || calDay.shiftName == 'Cuti Mandiri')
-                ? 'shift'
-                : 'office',
-            startDate: null,
-          );
-        }
-        if (calDay.source == 'shift' && calDay.shiftName != null) {
-          return _ShiftDisplayInfo(
-            name: calDay.shiftName!,
-            color: calDay.color ?? '#9CA3AF',
+            name: shiftName,
+            color: calDay.color ?? (prov.shiftInfo?.color ?? '#6366F1'),
             source: 'shift',
-            // Cari start_date dari calendarDays (tanggal pertama shift ini muncul berurutan)
-            startDate: _findShiftStartDate(prov, date, calDay.shiftId),
+            startDate: startDate,
+            endDate: endDate,
           );
         } else if (calDay.source == 'office') {
-          return _ShiftDisplayInfo(
-            name: 'Jam Kantor Default',
-            color: '#9CA3AF',
+          return const _ShiftDisplayInfo(
+            name: 'Jam Kantor (Default)',
+            color: '#64748B',
             source: 'office',
             startDate: null,
+            endDate: null,
           );
         }
       }
     }
 
     // Fallback ke shiftInfo dari /my-schedule (shift berlaku hari ini)
-    if (prov.shiftInfo != null) {
+    if (prov.shiftInfo != null && prov.source == 'shift') {
       return _ShiftDisplayInfo(
         name: prov.shiftInfo!.name,
         color: prov.shiftInfo!.color,
-        source: prov.source,
+        source: 'shift',
         startDate: prov.shiftInfo!.startDate,
-        officeName: prov.shiftInfo!.officeName,
+        endDate: prov.shiftInfo!.endDate,
       );
     }
 
     return const _ShiftDisplayInfo(
-      name: 'Jam Kantor Default',
-      color: '#9CA3AF',
+      name: 'Jam Kantor (Default)',
+      color: '#64748B',
       source: 'office',
     );
   }
@@ -246,7 +248,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                               mainAxisSpacing: 4,
                             ),
                             itemCount: 35,
-                            itemBuilder: (_, __) => const SkeletonBox(borderRadius: 8),
+                            itemBuilder: (context, index) => const SkeletonBox(borderRadius: 8),
                           ),
                         ],
                       ),
@@ -280,58 +282,60 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             await prov.fetchScheduleCalendar(_displayedMonth.year, _displayedMonth.month);
           }
 
-          return RefreshIndicator(
-            onRefresh: refresh,
-            child: SingleChildScrollView(
-              physics: const AlwaysScrollableScrollPhysics(),
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                children: [
-                  _buildShiftInfoCard(displayInfo, shiftColor),
-                  const SizedBox(height: 16),
-                  _buildCalendarCard(prov, shiftColor),
-                  const SizedBox(height: 16),
-                  _buildDayDetail(prov, shiftColor),
-                ],
+          return SafeArea(
+            child: RefreshIndicator(
+              onRefresh: refresh,
+              child: SingleChildScrollView(
+                physics: const AlwaysScrollableScrollPhysics(),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 40),
+                child: Column(
+                  children: [
+                    _buildShiftInfoCard(displayInfo, shiftColor),
+                    const SizedBox(height: 16),
+                    _buildCalendarCard(prov, shiftColor),
+                    const SizedBox(height: 16),
+                    _buildDayDetail(prov, shiftColor),
+                  ],
+                ),
               ),
             ),
           );
         },
       ),
     );
-  }
-
-  // ─── Shift info card ────────────────────────────────────────
-  // Menampilkan info shift yang relevan dengan tanggal yang dipilih.
-  // Jika tanggal sebelum perubahan → shift lama; sesudah → shift baru.
+  }  // ─── Shift info card ────────────────────────────────────────
+  // Menampilkan nama jadwal shift atau jam kantor default
   Widget _buildShiftInfoCard(_ShiftDisplayInfo info, Color c) {
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         gradient: LinearGradient(
-          colors: [c, c.withValues(alpha: 0.7)],
+          colors: [c, c.withValues(alpha: 0.75)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(16),
         boxShadow: [
-          BoxShadow(color: c.withValues(alpha: 0.3), blurRadius: 12,
-              offset: const Offset(0, 4)),
+          BoxShadow(
+            color: c.withValues(alpha: 0.25),
+            blurRadius: 12,
+            offset: const Offset(0, 4),
+          ),
         ],
       ),
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.all(8),
+            padding: const EdgeInsets.all(10),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(10),
+              borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
-              info.source == 'shift' ? Icons.schedule : Icons.apartment,
+              info.source == 'shift' ? Icons.schedule_rounded : Icons.apartment_rounded,
               color: Colors.white,
-              size: 22,
+              size: 24,
             ),
           ),
           const SizedBox(width: 12),
@@ -339,19 +343,27 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(info.name,
-                    style: const TextStyle(color: Colors.white, fontSize: 18,
-                        fontWeight: FontWeight.bold)),
-                if (info.officeName != null)
-                  Text(info.officeName!,
-                      style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.85),
-                          fontSize: 13)),
-                if (info.startDate != null)
-                  Text('Berlaku sejak ${_fmtDate(info.startDate!)}',
-                      style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
-                          fontSize: 11)),
+                Text(
+                  info.name,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 17,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                if (info.endDate != null && info.endDate!.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    info.startDate != null && info.startDate!.isNotEmpty
+                        ? '${_fmtDate(info.startDate!)} - ${_fmtDate(info.endDate!)}'
+                        : 's/d ${_fmtDate(info.endDate!)}',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.85),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ],
               ],
             ),
           ),
@@ -449,12 +461,12 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
 
     return List.generate(rows, (row) {
       return Padding(
-        padding: const EdgeInsets.only(bottom: 4),
+        padding: const EdgeInsets.only(bottom: 2),
         child: Row(
           children: List.generate(7, (col) {
             final cellIndex = row * 7 + col;
             if (cellIndex < leadingBlanks || cellIndex >= totalCells) {
-              return const Expanded(child: SizedBox(height: 58));
+              return const Expanded(child: SizedBox(height: 48));
             }
 
             final day = cellIndex - leadingBlanks + 1;
@@ -512,7 +524,6 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             // Cuti bersama yang sudah diikuti (accepted) → shiftName 'Cuti Bersama'
             final isCollectiveLeave = calDay?.shiftName == 'Cuti Bersama';
             // CUTI MANDIRI: cuti pribadi yang di-approve HRD (flag personal_leave dari API).
-            // Warna sama dengan cuti bersama (kuning), hanya label berbeda.
             final bool isPersonalLeave =
                 (calDay?.personalLeave ?? false) || calDay?.shiftName == 'Cuti Mandiri';
             // Hari kerja dari rumah (WFH) — hanya jika bukan libur/OFF/cuti bersama/mandiri
@@ -523,7 +534,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 !isPersonalLeave;
             // Warna aksen sesuai jenis libur: nasional merah, cuti bersama & cuti mandiri kuning, perusahaan/cabang biru
             final holidayAccent = isCollectiveLeave || isPersonalLeave
-                ? const Color(0xFFD97706) // amber 600 — sama dengan cuti bersama
+                ? const Color(0xFFD97706) // amber 600
                 : holiday != null
                     ? (holiday.isNational
                         ? const Color(0xFFEF4444) // merah
@@ -535,95 +546,104 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 onTap: () => setState(() => _selectedDate = date),
                 child: AnimatedContainer(
                   duration: const Duration(milliseconds: 150),
-                  height: 58,
-                  margin: const EdgeInsets.all(1.5),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? cellColor.withValues(alpha: 0.12)
-                          : holidayAccent != null
-                              ? holidayAccent.withValues(alpha: 0.15)
-                              : isOff
-                                  ? Colors.red.shade50.withValues(alpha: 0.5)
-                                  : Colors.transparent,
-                    borderRadius: BorderRadius.circular(10),
+                  height: 48,
+                  margin: const EdgeInsets.symmetric(horizontal: 1.5, vertical: 1.5),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? cellColor.withValues(alpha: 0.14)
+                        : isToday
+                            ? const Color(0xFFEBF5FF)
+                            : isCollectiveLeave || isPersonalLeave
+                                ? const Color(0xFFFFFBEB)
+                                : isHoliday
+                                    ? const Color(0xFFFEF2F2)
+                                    : isOff
+                                        ? const Color(0xFFFFF1F2).withValues(alpha: 0.6)
+                                        : Colors.white,
+                    borderRadius: BorderRadius.circular(8),
                     border: Border.all(
                       color: isSelected
                           ? cellColor
                           : isToday
                               ? const Color(0xFF1E88E5)
-                              : Colors.transparent,
-                      width: isSelected || isToday ? 2 : 0,
+                              : isCollectiveLeave || isPersonalLeave
+                                  ? const Color(0xFFFDE68A)
+                                  : isHoliday
+                                      ? const Color(0xFFFECACA)
+                                      : isOff
+                                          ? const Color(0xFFFFE4E6)
+                                          : const Color(0xFFF1F5F9),
+                      width: isSelected ? 1.8 : (isToday ? 1.4 : 0.8),
                     ),
                   ),
                   child: Column(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      // Lambang kecil "kerja dari rumah" (WFH) di atas angka tanggal.
-                      // Selalu sisakan slot setinggi 10px agar tanggal tetap sejajar
-                      // di semua sel (WFH maupun bukan).
-                      SizedBox(
-                        height: 10,
-                        child: isWfhDay
-                            ? Icon(
-                                Icons.home_rounded,
-                                size: 10,
-                                color: Colors.teal.shade600,
-                              )
-                            : null,
-                      ),
-                      // Tanggal
-                      Container(
-                        width: 26,
-                        height: 26,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: isToday
-                              ? const Color(0xFF1E88E5)
-                              : Colors.transparent,
-                          shape: BoxShape.circle,
-                        ),
-                        child: Text(
-                          '$day',
-                          style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: FontWeight.w600,
-                            color: isToday
-                                ? Colors.white
-                                : holidayAccent ?? (isOff
-                                    ? Colors.red.shade400
-                                    : Colors.grey.shade800),
+                      // Baris tanggal & indikator kecil WFH
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 22,
+                            height: 20,
+                            alignment: Alignment.center,
+                            decoration: BoxDecoration(
+                              color: isToday
+                                  ? const Color(0xFF1E88E5)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$day',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: (isToday || isSelected)
+                                    ? FontWeight.bold
+                                    : FontWeight.w600,
+                                color: isToday
+                                    ? Colors.white
+                                    : holidayAccent ??
+                                        (isOff
+                                            ? Colors.red.shade400
+                                            : const Color(0xFF1F2937)),
+                              ),
+                            ),
                           ),
-                        ),
+                          if (isWfhDay)
+                            Padding(
+                              padding: const EdgeInsets.only(left: 1),
+                              child: Icon(
+                                Icons.home_rounded,
+                                size: 9,
+                                color: Colors.teal.shade600,
+                              ),
+                            ),
+                        ],
                       ),
-                      const SizedBox(height: 2),
+                      const SizedBox(height: 1),
                       // Indikator jam / OFF / nama libur / CUTI
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
+                        mainAxisSize: MainAxisSize.min,
                         children: [
                           if (isCrossDayToday || isCrossDayFromYesterday)
                             Padding(
-                              padding: const EdgeInsets.only(right: 2),
+                              padding: const EdgeInsets.only(right: 1.5),
                               child: Icon(
                                 Icons.nights_stay,
-                                size: 9,
+                                size: 8,
                                 color: Colors.purple.shade600,
                               ),
                             ),
-                          if (isCollectiveLeave)
-                            Text('CUTI',
-                                style: TextStyle(
-                                    fontSize: 8,
-                                    fontWeight: FontWeight.w700,
-                                    color: const Color(0xFFD97706)))
-                          else if (isPersonalLeave)
-                            Flexible(
-                              child: Text('CUTI MANDIRI',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                      fontSize: 7,
-                                      fontWeight: FontWeight.w700,
-                                      color: const Color(0xFFD97706))),
+                          if (isCollectiveLeave || isPersonalLeave)
+                            const Text(
+                              'CUTI',
+                              style: TextStyle(
+                                fontSize: 7.5,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFFD97706),
+                              ),
                             )
                           else if (isHoliday)
                             Flexible(
@@ -632,30 +652,41 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                 maxLines: 1,
                                 overflow: TextOverflow.ellipsis,
                                 style: TextStyle(
-                                    fontSize: 7,
-                                    fontWeight: FontWeight.w700,
-                                    color: holidayAccent ?? Colors.red.shade400),
+                                  fontSize: 7.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: holidayAccent ?? Colors.red.shade500,
+                                ),
                               ),
                             )
                           else if (isOff)
-                            Text('OFF',
-                                style: TextStyle(
-                                    fontSize: 8,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.red.shade400))
+                            Text(
+                              'OFF',
+                              style: TextStyle(
+                                fontSize: 7.5,
+                                fontWeight: FontWeight.w800,
+                                color: Colors.red.shade400,
+                              ),
+                            )
                           else if (schedule != null &&
                               schedule.workStartTime != null)
                             Text(
                               _shortTime(schedule.workStartTime!),
                               style: TextStyle(
-                                  fontSize: 8,
-                                  fontWeight: FontWeight.w600,
-                                  color: isShiftDay ? cellColor : Colors.grey.shade600),
+                                fontSize: 7.5,
+                                fontWeight: FontWeight.w600,
+                                color: isShiftDay
+                                    ? cellColor
+                                    : Colors.grey.shade600,
+                              ),
                             )
                           else
-                            Text('-',
-                                style: TextStyle(
-                                    fontSize: 8, color: Colors.grey.shade400)),
+                            Text(
+                              '-',
+                              style: TextStyle(
+                                fontSize: 7.5,
+                                color: Colors.grey.shade300,
+                              ),
+                            ),
                         ],
                       ),
                     ],
@@ -694,20 +725,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         ? _parseColor(calDay!.color!)
         : shiftColor;
 
-    // Aksen warna sesuai jenis libur (nasional merah / cuti bersama & mandiri kuning / perusahaan biru)
     final holiday = calDay?.holiday;
-    final HolidayInfo? detailHoliday = holiday;
-    final bool isCollectiveLeaveDetail = calDay?.shiftName == 'Cuti Bersama';
-    final bool isPersonalLeaveDetail =
+    // Cuti Bersama: ditandai dengan holiday.isCollective == true ATAU shiftName 'Cuti Bersama'
+    final bool isCollectiveLeave = (holiday != null && holiday.isCollective) ||
+        calDay?.shiftName == 'Cuti Bersama';
+    // Cuti Mandiri: cuti pribadi yang disetujui HRD
+    final bool isPersonalLeave =
         (calDay?.personalLeave ?? false) || calDay?.shiftName == 'Cuti Mandiri';
-    final Color? detailHolidayAccent =
-        isCollectiveLeaveDetail || isPersonalLeaveDetail
-            ? const Color(0xFFD97706)
-            : detailHoliday != null
-                ? (detailHoliday.isNational
-                    ? const Color(0xFFEF4444)
-                    : const Color(0xFF3B82F6))
-                : null;
 
     // Deteksi shift malam lintas hari dari kemarin
     final prevDate = date.subtract(const Duration(days: 1));
@@ -742,116 +766,117 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           if (schedule == null)
             Text('Tidak ada jadwal.',
                 style: TextStyle(color: Colors.grey.shade500))
+          // ── KONDISI 1: Cuti (Cuti Bersama / Cuti Mandiri)
+          else if (isCollectiveLeave || isPersonalLeave) ...[
+            _buildLeaveCard(
+              isCollective: isCollectiveLeave,
+              holiday: holiday,
+              shiftName: calDay?.shiftName,
+            ),
+          ]
+          // ── KONDISI 2: Hari Libur / Tanggal Merah Biasa (Libur Nasional / Perusahaan / Cabang)
+          else if (holiday != null && !holiday.isCollective) ...[
+            _buildHolidayCard(holiday),
+          ]
+          // ── KONDISI 3: Hari Libur Mingguan / OFF Jadwal Shift
+          else if (schedule.isOff) ...[
+            _buildOffDayCard(calDay),
+          ]
+          // ── KONDISI 4: Hari Kerja Aktif (Normal / Shift)
           else ...[
-            // Nama shift pada tanggal ini (jika berbeda dari shift hari ini)
-            if (calDay != null && calDay.source == 'shift' && calDay.shiftName != null) ...[
-              _statusBanner(
-                icon: Icons.badge,
-                label: 'Shift: ${calDay.shiftName}',
-                color: Colors.indigo,
-              ),
-              const SizedBox(height: 10),
-            ] else if (calDay != null && calDay.source == 'office') ...[
-              _statusBanner(
-                icon: Icons.apartment,
-                label: 'Jam Kantor Default',
-                color: Colors.blueGrey,
-              ),
-              const SizedBox(height: 10),
-            ],
             // Banner "Kerja Dari Rumah" / "Kerja Lapangan" (hanya hari kerja aktif)
-            if (!schedule.isOff && calDay != null && calDay.isWfh) ...[
+            if (calDay != null && calDay.isWfh) ...[
               _statusBanner(
                 icon: calDay.isField ? Icons.directions_walk : Icons.home_rounded,
                 label: calDay.isField
-                    ? 'Kerja Lapangan (Field)'
+                    ? 'Kerja Lapangan (Field / Kunjungan Luar)'
                     : 'Kerja Dari Rumah (WFH)',
                 color: calDay.isField ? Colors.deepPurple : Colors.teal,
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
             ],
+
             // Banner info shift malam / lintas hari
             if (schedule.isCrossDay) ...[
-              _statusBanner(
-                icon: Icons.nights_stay,
-                label: 'Shift Malam / Lintas Hari (Pulang Keesokan Harinya)',
-                color: Colors.purple,
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFAF5FF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFE9D5FF)),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF9333EA).withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: const Icon(Icons.nights_stay_rounded,
+                          color: Color(0xFF9333EA), size: 18),
+                    ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Shift Malam (Lintas Hari)',
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF6B21A8),
+                            ),
+                          ),
+                          Text(
+                            'Jam pulang keesokan harinya',
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF9333EA),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              const SizedBox(height: 10),
+              const SizedBox(height: 12),
             ],
+
+            // Info shift malam kemarin yang berakhir hari ini
             if (prevCalDay != null && isCrossDayFromYesterday) ...[
-              _statusBanner(
-                icon: Icons.nights_stay,
-                label: 'Shift Malam Lintas Hari dari Kemarin (Selesai ${_shortTime(prevCalDay.workEndTime ?? '')})',
-                color: Colors.indigo,
-              ),
-              const SizedBox(height: 10),
-            ],
-            if (schedule.isOff) ...[
-              _statusBanner(
-                icon: isCollectiveLeaveDetail || isPersonalLeaveDetail
-                    ? Icons.celebration
-                    : Icons.beach_access,
-                label: isCollectiveLeaveDetail
-                    ? 'Cuti Bersama (Diikuti)'
-                    : isPersonalLeaveDetail
-                        ? 'Cuti Mandiri (Disetujui HRD)'
-                        : 'Hari Libur / Tidak Bekerja',
-                color: isCollectiveLeaveDetail || isPersonalLeaveDetail
-                    ? Colors.amber
-                    : detailHolidayAccent != null && !detailHoliday!.isNational
-                        ? Colors.blue
-                        : Colors.red,
-              ),
-              // Tampilkan nama libur jika ini hari libur nasional/perusahaan/cuti bersama
-              if (calDay?.holiday != null) ...[
-                const SizedBox(height: 8),
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: (detailHolidayAccent ?? Colors.red).withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: (detailHolidayAccent ?? Colors.red).withValues(alpha: 0.35)),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(Icons.flag_rounded, size: 16, color: detailHolidayAccent ?? Colors.red.shade600),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              calDay!.holiday!.name,
-                              style: TextStyle(
-                                fontSize: 13,
-                                fontWeight: FontWeight.bold,
-                                color: detailHolidayAccent ?? Colors.red.shade800,
-                              ),
-                            ),
-                            Text(
-                              calDay.holiday!.isNational
-                                  ? 'Libur Nasional'
-                                  : (calDay.holiday!.isCollective
-                                      ? 'Cuti Bersama'
-                                      : (calDay.holiday!.scope == 'cabang'
-                                          ? 'Libur Cabang'
-                                          : 'Libur Perusahaan')),
-                              style: TextStyle(
-                                fontSize: 11,
-                                color: detailHolidayAccent?.withValues(alpha: 0.85) ?? Colors.red.shade400,
-                              ),
-                            ),
-                          ],
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEEF2FF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: const Color(0xFFC7D2FE)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.nights_stay_outlined,
+                        color: Color(0xFF4F46E5), size: 18),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'Shift malam kemarin berakhir pukul ${_shortTime(prevCalDay.workEndTime ?? '')} hari ini',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF3730A3),
                         ),
                       ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ],
-            ]
-            else ...[
+              ),
+              const SizedBox(height: 12),
+            ],
+
             // Badge jam kustom
             if (schedule.isCustom) ...[
               Container(
@@ -866,72 +891,261 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                   children: [
                     Icon(Icons.tune, size: 13, color: Colors.amber.shade700),
                     const SizedBox(width: 4),
-                    Text('Jam Kustom',
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.amber.shade800)),
+                    Text(
+                      'Jam Kustom',
+                      style: TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.amber.shade800,
+                      ),
+                    ),
                   ],
                 ),
               ),
               const SizedBox(height: 10),
             ],
-            _timeRow(Icons.login, 'Jam Masuk',
-                _fmtTime(schedule.workStartTime), Colors.green),
-            const SizedBox(height: 10),
-            // Jam pulang dengan label +1 hari jika cross-day
-            Row(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(8),
-                  decoration: BoxDecoration(
-                    color: Colors.orange.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: const Icon(Icons.logout, size: 20, color: Colors.orange),
-                ),
-                const SizedBox(width: 12),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('Jam Pulang',
-                        style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
-                    Row(
-                      children: [
-                        Text(_fmtTime(schedule.workEndTime),
-                            style: const TextStyle(
-                                fontSize: 16, fontWeight: FontWeight.bold)),
-                        if (schedule.isCrossDay) ...[
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-                            decoration: BoxDecoration(
-                              color: Colors.indigo.shade50,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: Colors.indigo.shade200),
-                            ),
-                            child: Text('+1 hari',
-                                style: TextStyle(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.bold,
-                                    color: Colors.indigo.shade700)),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
-              ],
+
+            // Jam Masuk
+            _timeRow(
+              Icons.login,
+              'Jam Masuk',
+              _fmtTime(schedule.workStartTime),
+              Colors.green,
             ),
             const SizedBox(height: 10),
+
+            // Jam Pulang (dengan badge +1 hari jika cross-day)
+            _timeRow(
+              Icons.logout,
+              'Jam Pulang',
+              _fmtTime(schedule.workEndTime),
+              Colors.orange,
+              isCrossDay: schedule.isCrossDay,
+            ),
+            const SizedBox(height: 12),
+
+            // Status Hari Kerja
             _statusBanner(
               icon: Icons.check_circle,
-              label: 'Hari Kerja',
+              label: 'Hari Kerja Normal',
               color: Colors.green,
             ),
           ],
         ],
-      ],
+      ),
+    );
+  }
+
+  /// Kartu Tanggal Merah / Libur Nasional / Libur Perusahaan
+  Widget _buildHolidayCard(HolidayInfo holiday) {
+    final bool isNational = holiday.isNational;
+    final Color baseColor =
+        isNational ? const Color(0xFFDC2626) : const Color(0xFF2563EB);
+    final Color bgColor =
+        isNational ? const Color(0xFFFEF2F2) : const Color(0xFFEFF6FF);
+    final Color borderColor =
+        isNational ? const Color(0xFFFECACA) : const Color(0xFFBFDBFE);
+    final Color textColor =
+        isNational ? const Color(0xFF991B1B) : const Color(0xFF1E40AF);
+
+    final String typeTitle = isNational
+        ? 'Libur Nasional: ${holiday.name}'
+        : (holiday.scope == 'cabang'
+            ? 'Libur Cabang: ${holiday.name}'
+            : 'Libur Perusahaan: ${holiday.name}');
+
+    final String typeSubtitle = isNational
+        ? 'Hari Libur Nasional / Tanggal Merah (Tidak Bekerja)'
+        : (holiday.scope == 'cabang'
+            ? 'Hari Libur Khusus Kantor Cabang (Tidak Bekerja)'
+            : 'Hari Libur Khusus Perusahaan (Tidak Bekerja)');
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: baseColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              isNational ? Icons.flag_rounded : Icons.apartment_rounded,
+              color: baseColor,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  typeTitle,
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: textColor,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  typeSubtitle,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: baseColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Kartu Cuti (Cuti Mandiri / Cuti Bersama)
+  Widget _buildLeaveCard({
+    required bool isCollective,
+    HolidayInfo? holiday,
+    String? shiftName,
+  }) {
+    const Color baseColor = Color(0xFFD97706);
+    const Color bgColor = Color(0xFFFFFBEB);
+    const Color borderColor = Color(0xFFFDE68A);
+    const Color textColor = Color(0xFF92400E);
+
+    final String title = isCollective
+        ? (holiday != null && holiday.name.isNotEmpty
+            ? 'Cuti Bersama: ${holiday.name}'
+            : 'Cuti Bersama')
+        : 'Cuti Mandiri';
+
+    final String subtitle = isCollective
+        ? (holiday?.scope == 'cabang'
+            ? 'Hari Libur Cuti Bersama Khusus Cabang (Diikuti)'
+            : 'Hari Libur Cuti Bersama yang Diikuti')
+        : 'Pengajuan Cuti Pribadi (Disetujui HRD)';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: baseColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              isCollective
+                  ? Icons.celebration_rounded
+                  : Icons.person_outline_rounded,
+              color: baseColor,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: textColor,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  subtitle,
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: baseColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Kartu Hari Libur Mingguan / OFF
+  Widget _buildOffDayCard(ShiftCalendarDay? calDay) {
+    const Color baseColor = Color(0xFFE11D48);
+    const Color bgColor = Color(0xFFFFF1F2);
+    const Color borderColor = Color(0xFFFFE4E6);
+    const Color textColor = Color(0xFF9F1239);
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: bgColor,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: borderColor),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: baseColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(
+              Icons.beach_access_rounded,
+              color: baseColor,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Hari Libur (OFF)',
+                  style: TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                    color: textColor,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  calDay?.source == 'shift'
+                      ? 'Jadwal Libur Shift'
+                      : 'Libur Akhir Pekan Kantor',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: baseColor,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -969,7 +1183,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     );
   }
 
-  Widget _timeRow(IconData icon, String label, String value, Color color) {
+  Widget _timeRow(
+    IconData icon,
+    String label,
+    String value,
+    Color color, {
+    bool isCrossDay = false,
+  }) {
     return Row(
       children: [
         Container(
@@ -986,9 +1206,30 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           children: [
             Text(label,
                 style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
-            Text(value,
-                style: const TextStyle(
-                    fontSize: 16, fontWeight: FontWeight.bold)),
+            Row(
+              children: [
+                Text(value,
+                    style: const TextStyle(
+                        fontSize: 16, fontWeight: FontWeight.bold)),
+                if (isCrossDay) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: Colors.indigo.shade50,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: Colors.indigo.shade200),
+                    ),
+                    child: Text('+1 hari (Besok)',
+                        style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.indigo.shade700)),
+                  ),
+                ],
+              ],
+            ),
           ],
         ),
       ],
@@ -1075,13 +1316,13 @@ class _ShiftDisplayInfo {
   final String color;
   final String source;
   final String? startDate;
-  final String? officeName;
+  final String? endDate;
 
   const _ShiftDisplayInfo({
     required this.name,
     required this.color,
     required this.source,
     this.startDate,
-    this.officeName,
+    this.endDate,
   });
 }

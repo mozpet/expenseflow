@@ -188,15 +188,59 @@ function mapNotifType(type: string): NotificationItem['type'] {
   return 'new';
 }
 
+function resolveNotifTarget(type: string, entityType?: string): { targetPage?: string; targetLabel?: string } {
+  const t = (type || '').toLowerCase();
+  const e = (entityType || '').toLowerCase();
+
+  if (t.includes('leave') || t.includes('cuti') || t.includes('izin') || t.includes('sakit') || e === 'leave' || e === 'leave_request') {
+    return { targetPage: 'presensi', targetLabel: 'Presensi & Cuti' };
+  }
+  if (t.includes('overtime') || t.includes('lembur') || e === 'overtime' || e === 'overtime_approval') {
+    return { targetPage: 'overtime', targetLabel: 'Approval Lembur' };
+  }
+  if (t.includes('receipt') || t.includes('struk') || e === 'receipt') {
+    return { targetPage: 'inbox', targetLabel: 'Inbox Struk' };
+  }
+  if (t.includes('invoice') || e === 'invoice') {
+    return { targetPage: 'invoice-inbox', targetLabel: 'Inbox Invoice' };
+  }
+  if (t.includes('device') || t.includes('perangkat') || e === 'device_change_request') {
+    return { targetPage: 'device-changes', targetLabel: 'Pindah Perangkat' };
+  }
+  if (t.includes('job') || t.includes('applicant') || t.includes('rekrutmen') || e === 'job_posting' || e === 'job_application') {
+    return { targetPage: 'rekrutmen', targetLabel: 'Rekrutmen' };
+  }
+  if (t.includes('shift') || e === 'shift' || e === 'user_shift') {
+    return { targetPage: 'shift', targetLabel: 'Shift & Jadwal' };
+  }
+  if (t.includes('setting') || e === 'attendance_setting') {
+    return { targetPage: 'setting', targetLabel: 'Pengaturan' };
+  }
+  if (t.includes('karyawan') || t.includes('user') || e === 'user') {
+    return { targetPage: 'karyawan', targetLabel: 'Manajemen Karyawan' };
+  }
+
+  return {};
+}
+
 export function mapNotification(n: any): NotificationItem {
   const data = typeof n.data === 'string' ? safeParse(n.data) : n.data ?? {};
+  const rawType = n.type ?? '';
+  const entityType = n.entity_type ?? data.entity_type;
+  const target = resolveNotifTarget(rawType, entityType);
+
   return {
     id: String(n.id),
-    type: mapNotifType(n.type ?? ''),
-    title: data.title ?? data.message ?? n.type ?? 'Notifikasi',
+    type: mapNotifType(rawType),
+    title: data.title ?? data.message ?? rawType ?? 'Notifikasi',
     subtitle: data.subtitle ?? data.message ?? '',
     time: formatWaktu(n.created_at),
     read: !!n.read_at,
+    targetPage: target.targetPage,
+    targetLabel: target.targetLabel,
+    rawType,
+    entityType,
+    entityId: n.entity_id ?? data.entity_id,
   };
 }
 

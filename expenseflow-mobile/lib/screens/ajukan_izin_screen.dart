@@ -245,9 +245,10 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
       appBar: AppBar(
         title: const Text('Ajukan Izin / Cuti'),
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 20, 20, 36),
+          child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             // Tipe izin
@@ -655,8 +656,9 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
           ],
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }
 
 class _DateButton extends StatelessWidget {

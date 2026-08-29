@@ -2528,10 +2528,10 @@ class ShiftController extends Controller
                     $days[$dateStr] = [
                         'source'          => 'shift',
                         'shift_id'        => $active->shift_id,
-                        'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama'
-                            : ($isPersonalLeave ? 'Cuti Mandiri'
-                                : ($isHoliday ? ($holidayInfo['name']) : $active->shift->name)),
+                        'shift_name'      => $active->shift->name,
                         'color'           => $dayColor,
+                        'start_date'      => $active->start_date->toDateString(),
+                        'end_date'        => $active->end_date?->toDateString(),
                         'work_start_time' => ($isOff || $forceOff) ? null : $shiftSchedule->work_start_time,
                         'work_end_time'   => ($isOff || $forceOff) ? null : $shiftSchedule->work_end_time,
                         'is_off'          => $forceOff ? true : $isOff,
@@ -2563,9 +2563,7 @@ class ShiftController extends Controller
                 $days[$dateStr] = [
                     'source'          => 'office',
                     'shift_id'        => null,
-                    'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama'
-                        : ($isPersonalLeave ? 'Cuti Mandiri'
-                            : ($isHoliday ? $holidayInfo['name'] : null)),
+                    'shift_name'      => null,
                     'color'           => $forceOff
                         ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
                         : $overrideColor,

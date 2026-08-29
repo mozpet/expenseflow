@@ -264,6 +264,19 @@ class AuthController extends Controller
     {
         $user = $request->user()->load('company');
 
+        // Auto-bind device jika akun mobile belum memiliki device_id
+        if ($request->header('X-Platform') === 'mobile' && config('app.device_binding_enabled', true)) {
+            $reqDeviceId   = $request->header('X-Device-Id') ?? $request->input('device_id');
+            $reqDeviceName = $request->header('X-Device-Name') ?? $request->input('device_name');
+            if (! $user->device_id && $reqDeviceId) {
+                $user->forceFill([
+                    'device_id'       => $reqDeviceId,
+                    'device_name'     => $reqDeviceName,
+                    'device_bound_at' => now(),
+                ])->save();
+            }
+        }
+
         return response()->json([
             'user' => [
                 ...$this->userPayload($user),

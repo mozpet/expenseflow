@@ -3,6 +3,7 @@ import 'dart:typed_data';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
+import 'device_service.dart';
 
 /// Exception standar untuk error dari API (membawa pesan dari backend).
 class ApiException implements Exception {
@@ -40,10 +41,14 @@ class ApiService {
 
   // ─── Header builder ───────────────────────────────────────
   static Future<Map<String, String>> _headers({bool auth = true}) async {
+    final deviceId = await DeviceService.getDeviceId();
+    final deviceName = await DeviceService.getDeviceName();
     final headers = <String, String>{
       'Accept': 'application/json',
       'Content-Type': 'application/json',
       'X-Platform': 'mobile',
+      'X-Device-Id': deviceId,
+      'X-Device-Name': deviceName,
     };
     if (auth) {
       final token = await getToken();
@@ -140,8 +145,16 @@ class ApiService {
   // ─── Auth ─────────────────────────────────────────────────
   static Future<Map<String, dynamic>> login(
       String email, String password) async {
+    final deviceId = await DeviceService.getDeviceId();
+    final deviceName = await DeviceService.getDeviceName();
     return _request('POST', '/login',
-        auth: false, body: {'email': email, 'password': password});
+        auth: false,
+        body: {
+          'email': email,
+          'password': password,
+          'device_id': deviceId,
+          'device_name': deviceName,
+        });
   }
 
   static Future<Map<String, dynamic>> me() async {
@@ -350,6 +363,11 @@ class ApiService {
       '/attendance/collective-leave/$holidayId/respond',
       body: {'response': response},
     );
+  }
+
+  /// Dismiss / tandai notifikasi pembatalan cuti sebagai dibaca.
+  static Future<void> dismissCancellation(String id) async {
+    await _request('POST', '/attendance/dismiss-cancellation/$id');
   }
 
   // ─── Presensi — status & auto-checkout ──────────────────────

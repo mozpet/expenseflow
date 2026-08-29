@@ -228,6 +228,7 @@ const OfficesTab: React.FC<{
     work_end_time: '17:00',
     work_days: [1, 2, 3, 4, 5] as number[],
     late_tolerance_minutes: 15,
+    late_checkin_cutoff_minutes: '' as number | '',
     wfh_checkin_window_minutes: 120,
     overtime_enabled: true,
     min_overtime_minutes: 30,
@@ -279,6 +280,7 @@ const OfficesTab: React.FC<{
     office_longitude: 'Lokasi Kantor (Longitude)',
     radius_meters: 'Radius Presensi',
     late_tolerance_minutes: 'Toleransi Telat',
+    late_checkin_cutoff_minutes: 'Batas Waktu Presensi Telat',
     early_leave_tolerance_minutes: 'Toleransi Pulang Awal',
     overtime_enabled: 'Hitung Lembur Otomatis',
     min_overtime_minutes: 'Ambang Minimal Lembur',
@@ -310,6 +312,7 @@ const OfficesTab: React.FC<{
       work_end_time: (o.work_end_time ?? '17:00').slice(0, 5),
       work_days: o.work_days ?? [1, 2, 3, 4, 5],
       late_tolerance_minutes: o.late_tolerance_minutes ?? 15,
+      late_checkin_cutoff_minutes: o.late_checkin_cutoff_minutes != null ? o.late_checkin_cutoff_minutes : '',
       wfh_checkin_window_minutes: o.wfh_checkin_window_minutes ?? 120,
       overtime_enabled: o.overtime_enabled ?? true,
       min_overtime_minutes: o.min_overtime_minutes ?? 30,
@@ -403,6 +406,19 @@ const OfficesTab: React.FC<{
       return 'Menit auto-checkout harus LEBIH BESAR dari menit reminder checkout, agar karyawan sempat menerima pengingat sebelum sistem menutup presensinya.';
     }
 
+    // Toleransi telat tidak boleh lebih besar dari batas waktu presensi telat (cutoff)
+    if (
+      form.late_checkin_cutoff_minutes !== '' &&
+      form.late_checkin_cutoff_minutes !== null &&
+      form.late_checkin_cutoff_minutes !== undefined
+    ) {
+      const tol = Number(form.late_tolerance_minutes);
+      const cutoff = Number(form.late_checkin_cutoff_minutes);
+      if (tol > cutoff) {
+        return `Toleransi telat (${tol} menit) tidak boleh lebih besar dari batas waktu presensi telat (${cutoff} menit). Batas waktu presensi harus minimal sama dengan atau lebih besar dari toleransi telat.`;
+      }
+    }
+
     // Saldo cuti: kuota wajib angka ≥ 0
     const leaveQuota = Number(form.default_leave_quota);
     if (isNaN(leaveQuota) || leaveQuota < 0) {
@@ -450,6 +466,7 @@ const OfficesTab: React.FC<{
         work_end_time: form.work_end_time,
         work_days: form.work_days,
         late_tolerance_minutes: Number(form.late_tolerance_minutes),
+        late_checkin_cutoff_minutes: form.late_checkin_cutoff_minutes === '' || form.late_checkin_cutoff_minutes === null ? null : Number(form.late_checkin_cutoff_minutes),
         wfh_checkin_window_minutes: form.wfh_checkin_window_minutes === '' ? null : Number(form.wfh_checkin_window_minutes),
         overtime_enabled: !!form.overtime_enabled,
         min_overtime_minutes: Number(form.min_overtime_minutes),
@@ -828,7 +845,7 @@ const OfficesTab: React.FC<{
 
                 {/* Section 3: Toleransi & Aturan Presensi */}
                 <div className="space-y-3 pt-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 block">Toleransi Telat (menit)</label>
                       <input 
@@ -841,6 +858,26 @@ const OfficesTab: React.FC<{
                         }} 
                         className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono" 
                       />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-400 block">
+                        Batas Waktu Presensi Telat (menit)
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1440}
+                        value={form.late_checkin_cutoff_minutes ?? ''}
+                        onChange={(e) => {
+                          const val = parseInt(e.target.value);
+                          setForm({ ...form, late_checkin_cutoff_minutes: isNaN(val) ? '' : Math.max(0, val) });
+                        }}
+                        placeholder="Kosongkan = tidak ada batas"
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                      />
+                      <p className="text-[9px] text-slate-400">
+                        Contoh: 120 menit → presensi ditutup 2 jam setelah jam masuk. Kosongkan = bebas.
+                      </p>
                     </div>
                     <div className="space-y-1">
                       <label className="text-[10px] font-bold text-slate-400 block">

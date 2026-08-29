@@ -35,8 +35,6 @@ document.addEventListener('DOMContentLoaded', () => {
     jobLocation: document.getElementById('job-location'),
     jobSalary: document.getElementById('job-salary'),
     jobSalaryRow: document.getElementById('job-salary-row'),
-    jobQuota: document.getElementById('job-quota'),
-    jobQuotaRow: document.getElementById('job-quota-row'),
     jobDeadline: document.getElementById('job-deadline'),
     jobDescription: document.getElementById('job-description'),
 
@@ -459,15 +457,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
       } else {
         elements.jobSalaryRow.classList.add('hidden');
-      }
-    }
-
-    if (elements.jobQuotaRow) {
-      if (job.max_applicants) {
-        elements.jobQuotaRow.classList.remove('hidden');
-        elements.jobQuota.textContent = `Maksimal ${job.max_applicants} Pelamar (Pendaftaran otomatis ditutup jika kuota terpenuhi)`;
-      } else {
-        elements.jobQuotaRow.classList.add('hidden');
       }
     }
 

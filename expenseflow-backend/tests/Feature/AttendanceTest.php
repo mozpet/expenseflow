@@ -260,4 +260,102 @@ class AttendanceTest extends TestCase
         $this->getJson('/api/v1/dashboard/attendance/users', $this->token($emp))
             ->assertStatus(403);
     }
+
+    // ── Cutoff: Check-in sebelum batas cutoff berhasil (status late) ─
+    public function test_checkin_sebelum_cutoff_berhasil(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-19 09:30:00', 'Asia/Jakarta'));
+        AttendanceSetting::create([
+            'company_id'                  => $this->company->id,
+            'office_name'                 => 'HQ',
+            'office_latitude'             => -6.20,
+            'office_longitude'            => 106.81666700,
+            'radius_meters'               => 100,
+            'work_start_time'             => '08:00:00',
+            'late_tolerance_minutes'      => 15,
+            'late_checkin_cutoff_minutes' => 120, // batas jam 10:00 WIB
+        ]);
+
+        $emp = $this->user('employee', wfh: true, radius: false);
+
+        $this->postJson('/api/v1/attendance/check-in', [
+            'latitude'  => -6.20,
+            'longitude' => 106.81,
+        ], $this->token($emp))
+        ->assertCreated()
+        ->assertJsonPath('attendance.status', 'late');
+    }
+
+    // ── Cutoff: Check-in setelah batas cutoff ditolak 403 ────────────
+    public function test_checkin_setelah_cutoff_ditolak(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-19 10:05:00', 'Asia/Jakarta'));
+        AttendanceSetting::create([
+            'company_id'                  => $this->company->id,
+            'office_name'                 => 'HQ',
+            'office_latitude'             => -6.20,
+            'office_longitude'            => 106.81666700,
+            'radius_meters'               => 100,
+            'work_start_time'             => '08:00:00',
+            'late_tolerance_minutes'      => 15,
+            'late_checkin_cutoff_minutes' => 120, // batas jam 10:00 WIB
+        ]);
+
+        $emp = $this->user('employee', wfh: true, radius: false);
+
+        $this->postJson('/api/v1/attendance/check-in', [
+            'latitude'  => -6.20,
+            'longitude' => 106.81,
+        ], $this->token($emp))
+        ->assertStatus(403)
+        ->assertJsonPath('cutoff_at', '10:00')
+        ->assertJsonPath('cutoff_minutes', 120);
+    }
+
+    // ── Cutoff: Check-in tanpa batas cutoff (null) tetap bisa kapan saja ─
+    public function test_checkin_tanpa_cutoff_tetap_bisa_kapan_saja(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-06-19 14:00:00', 'Asia/Jakarta'));
+        AttendanceSetting::create([
+            'company_id'                  => $this->company->id,
+            'office_name'                 => 'HQ',
+            'office_latitude'             => -6.20,
+            'office_longitude'            => 106.81666700,
+            'radius_meters'               => 100,
+            'work_start_time'             => '08:00:00',
+            'late_tolerance_minutes'      => 15,
+            'late_checkin_cutoff_minutes' => null, // bebas
+        ]);
+
+        $emp = $this->user('employee', wfh: true, radius: false);
+
+        $this->postJson('/api/v1/attendance/check-in', [
+            'latitude'  => -6.20,
+            'longitude' => 106.81,
+        ], $this->token($emp))
+        ->assertCreated()
+        ->assertJsonPath('attendance.status', 'late');
+    }
+
+    // ── Cutoff vs Toleransi: Toleransi telat > cutoff ditolak 422 ────
+    public function test_toleransi_telat_lebih_besar_dari_cutoff_ditolak(): void
+    {
+        $hrd = $this->user('hrd', wfh: true);
+
+        // Store: toleransi 60 menit, cutoff 30 menit → 422
+        $this->postJson('/api/v1/dashboard/attendance/settings', [
+            'office_name'                 => 'Cabang Baru',
+            'office_latitude'             => -6.20,
+            'office_longitude'            => 106.81,
+            'radius_meters'               => 100,
+            'work_start_time'             => '08:00',
+            'work_end_time'               => '17:00',
+            'work_days'                   => [1, 2, 3, 4, 5],
+            'late_tolerance_minutes'      => 60,
+            'late_checkin_cutoff_minutes' => 30, // lebih kecil dari toleransi!
+            'default_leave_quota'         => 12,
+        ], $this->token($hrd))
+        ->assertStatus(422)
+        ->assertJsonPath('message', 'Toleransi telat tidak boleh lebih besar dari batas waktu presensi telat (cutoff). Toleransi telat 60 mnt, batas waktu presensi 30 mnt.');
+    }
 }

@@ -260,7 +260,10 @@ class NotificationService {
   Future<Map<String, dynamic>?> checkAttendanceStatus() async {
     try {
       return await ApiService.attendanceStatus();
-    } catch (_) {
+    } catch (e) {
+      if (e is ApiException && e.statusCode == 403) {
+        return {'wfh_enabled': false, 'checked_in': false, 'checked_out': false};
+      }
       return null;
     }
   }

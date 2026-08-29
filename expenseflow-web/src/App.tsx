@@ -209,6 +209,20 @@ export default function App() {
     }
   }, [isHrd, isFinance, isAdminOrSuperAdmin, activePage]);
 
+  // Otomatis tandai notifikasi modul sebagai 'dibaca' ketika user membuka halamannya
+  useEffect(() => {
+    if (!activePage || activePage === 'notif') return;
+    const unreadForCurrentPage = notifications.filter(n => !n.read && n.targetPage === activePage);
+    if (unreadForCurrentPage.length > 0) {
+      unreadForCurrentPage.forEach(n => {
+        notificationApi.markRead(n.id).catch(() => {});
+      });
+      setNotifications(prev =>
+        prev.map(n => n.targetPage === activePage ? { ...n, read: true } : n)
+      );
+    }
+  }, [activePage, notifications]);
+
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('id-ID', {
       style: 'currency',
@@ -279,6 +293,17 @@ export default function App() {
   const handleMarkAllRead = async () => {
     await notificationApi.markAllRead();
     await loadNotifications();
+  };
+
+  const handleMarkRead = async (id: string) => {
+    try {
+      await notificationApi.markRead(id);
+    } catch (e) {
+      console.error('Failed to mark notification as read:', e);
+    }
+    setNotifications((prev) =>
+      prev.map((n) => (n.id === id ? { ...n, read: true } : n))
+    );
   };
 
   const handleDismissNotification = async (id: string) => {
@@ -419,6 +444,8 @@ export default function App() {
             notifications={notifications} 
             onMarkAllRead={handleMarkAllRead} 
             onDismiss={handleDismissNotification} 
+            onNavigate={navigateTo}
+            onMarkRead={handleMarkRead}
           />
         );
       case 'setting':
@@ -474,6 +501,13 @@ export default function App() {
   };
 
   const unreadNotifCount = notifications.filter(n => !n.read).length;
+  const unreadLeavesCount = notifications.filter(n => !n.read && n.targetPage === 'presensi').length;
+  const unreadOvertimeCount = notifications.filter(n => !n.read && n.targetPage === 'overtime').length;
+  const unreadReceiptCount = notifications.filter(n => !n.read && n.targetPage === 'inbox').length;
+  const unreadInvoiceCount = notifications.filter(n => !n.read && n.targetPage === 'invoice-inbox').length;
+  const unreadDeviceCount = notifications.filter(n => !n.read && n.targetPage === 'device-changes').length;
+  const unreadRecruitmentCount = notifications.filter(n => !n.read && n.targetPage === 'rekrutmen').length;
+
   const pendingReceiptCount = receipts.length;
   const pendingInvoiceCount = invoices.length;
 
@@ -628,10 +662,13 @@ export default function App() {
                 <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
                   <div className="relative">
                     <Inbox className="w-4 h-4 opacity-80" />
-                    {isSidebarCollapsed && pendingReceiptCount > 0 && (
+                    {pendingReceiptCount > 0 && (
                       <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-indigo-500 text-white text-[8px] font-bold items-center justify-center">
                         {pendingReceiptCount}
                       </span>
+                    )}
+                    {unreadReceiptCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
                     )}
                   </div>
                   {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Inbox Struk</span>}
@@ -684,10 +721,13 @@ export default function App() {
                 <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
                   <div className="relative">
                     <FileText className="w-4 h-4 opacity-80" />
-                    {isSidebarCollapsed && pendingInvoiceCount > 0 && (
+                    {pendingInvoiceCount > 0 && (
                       <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-amber-500 text-white text-[8px] font-bold items-center justify-center">
                         {pendingInvoiceCount}
                       </span>
+                    )}
+                    {unreadInvoiceCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
                     )}
                   </div>
                   {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Inbox Invoice</span>}
@@ -789,7 +829,7 @@ export default function App() {
               <button
                 onClick={() => navigateTo('presensi')}
                 className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
-                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
                 } ${
                   activePage === 'presensi'
                     ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
@@ -797,8 +837,23 @@ export default function App() {
                 }`}
                 title={isSidebarCollapsed ? 'Presensi & Cuti' : undefined}
               >
-                <CalendarCheck className="w-4 h-4 opacity-80" />
-                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Presensi & Cuti</span>}
+                <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
+                  <div className="relative">
+                    <CalendarCheck className="w-4 h-4 opacity-80" />
+                    {unreadLeavesCount > 0 && (
+                      <span className="absolute -top-1 -right-1 flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                      </span>
+                    )}
+                  </div>
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Presensi & Cuti</span>}
+                </div>
+                {!isSidebarCollapsed && unreadLeavesCount > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500 text-white font-bold font-mono animate-pulse">
+                    {unreadLeavesCount}
+                  </span>
+                )}
               </button>
 
               <button
@@ -830,10 +885,13 @@ export default function App() {
                 <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
                   <div className="relative">
                     <FileSpreadsheet className="w-4 h-4 opacity-80" />
-                    {isSidebarCollapsed && pendingOvertimeCount > 0 && (
+                    {pendingOvertimeCount > 0 && (
                       <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-orange-500 text-white text-[8px] font-bold items-center justify-center">
                         {pendingOvertimeCount}
                       </span>
+                    )}
+                    {unreadOvertimeCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
                     )}
                   </div>
                   {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Approval Lembur</span>}
@@ -859,10 +917,13 @@ export default function App() {
                 <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
                   <div className="relative">
                     <Smartphone className="w-4 h-4 opacity-80" />
-                    {isSidebarCollapsed && pendingDeviceCount > 0 && (
+                    {pendingDeviceCount > 0 && (
                       <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-orange-500 text-white text-[8px] font-bold items-center justify-center">
                         {pendingDeviceCount}
                       </span>
+                    )}
+                    {unreadDeviceCount > 0 && (
+                      <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
                     )}
                   </div>
                   {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Pindah Perangkat</span>}
@@ -877,7 +938,7 @@ export default function App() {
               <button
                 onClick={() => navigateTo('rekrutmen')}
                 className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
-                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
                 } ${
                   activePage === 'rekrutmen'
                     ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
@@ -885,8 +946,23 @@ export default function App() {
                 }`}
                 title={isSidebarCollapsed ? 'Rekrutmen' : undefined}
               >
-                <Briefcase className="w-4 h-4 opacity-80" />
-                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Rekrutmen</span>}
+                <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
+                  <div className="relative">
+                    <Briefcase className="w-4 h-4 opacity-80" />
+                    {unreadRecruitmentCount > 0 && (
+                      <span className="absolute -top-1 -right-1 flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                      </span>
+                    )}
+                  </div>
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Rekrutmen</span>}
+                </div>
+                {!isSidebarCollapsed && unreadRecruitmentCount > 0 && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-rose-500 text-white font-bold font-mono animate-pulse">
+                    {unreadRecruitmentCount}
+                  </span>
+                )}
               </button>
             </div>
             )}
@@ -945,7 +1021,7 @@ export default function App() {
                 <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
                   <div className="relative">
                     <Bell className="w-4 h-4 opacity-80" />
-                    {isSidebarCollapsed && unreadNotifCount > 0 && (
+                    {unreadNotifCount > 0 && (
                       <span className="hidden lg:flex absolute -top-1.5 -right-2 w-3.5 h-3.5 rounded-full bg-rose-500 text-white text-[8px] font-bold items-center justify-center animate-pulse">
                         {unreadNotifCount}
                       </span>
@@ -1042,7 +1118,22 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center gap-4">
+            <div className="flex items-center gap-3">
+              {/* Desktop Notification Bell with Unread Dot */}
+              <button 
+                onClick={() => navigateTo('notif')}
+                className="relative p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-white transition cursor-pointer"
+                title={`Notifikasi Sistem (${unreadNotifCount} Baru)`}
+              >
+                <Bell className="w-5 h-5" />
+                {unreadNotifCount > 0 && (
+                  <span className="absolute top-1.5 right-1.5 flex h-2.5 w-2.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-rose-500"></span>
+                  </span>
+                )}
+              </button>
+
               {/* Shortcut buttons */}
               <button 
                 onClick={() => alert('Exporting global ledger reports...')}

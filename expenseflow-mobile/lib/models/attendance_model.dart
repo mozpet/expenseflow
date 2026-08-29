@@ -82,3 +82,37 @@ String hitungDurasiKerja(String masuk, String pulang) {
   if (menit == 0) return '${jam}j';
   return '${jam}j ${menit}m';
 }
+
+/// Area kantor dan radius presensi yang ditentukan perusahaan.
+class OfficeArea {
+  final int id;
+  final String name;
+  final double latitude;
+  final double longitude;
+  final double radiusMeters;
+  final bool requireSelfie;
+
+  OfficeArea({
+    required this.id,
+    required this.name,
+    required this.latitude,
+    required this.longitude,
+    required this.radiusMeters,
+    this.requireSelfie = false,
+  });
+
+  factory OfficeArea.fromJson(Map<String, dynamic> json) {
+    return OfficeArea(
+      id: (json['id'] as num?)?.toInt() ?? 0,
+      name: (json['name'] ?? json['office_name'] ?? 'Kantor').toString(),
+      latitude:
+          (json['latitude'] ?? json['office_latitude'] as num?)?.toDouble() ??
+              0.0,
+      longitude:
+          (json['longitude'] ?? json['office_longitude'] as num?)?.toDouble() ??
+              0.0,
+      radiusMeters: (json['radius_meters'] as num?)?.toDouble() ?? 100.0,
+      requireSelfie: json['require_selfie'] == true,
+    );
+  }
+}

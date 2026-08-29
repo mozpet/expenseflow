@@ -71,6 +71,8 @@ class ShiftCalendarDay {
   final int? shiftId;
   final String? shiftName;
   final String? color;
+  final String? startDate;
+  final String? endDate;
   final String? workStartTime;
   final String? workEndTime;
   final bool isOff;
@@ -91,6 +93,8 @@ class ShiftCalendarDay {
     this.shiftId,
     this.shiftName,
     this.color,
+    this.startDate,
+    this.endDate,
     this.workStartTime,
     this.workEndTime,
     required this.isOff,
@@ -109,6 +113,8 @@ class ShiftCalendarDay {
       shiftId: json['shift_id'],
       shiftName: json['shift_name'],
       color: json['color'],
+      startDate: json['start_date'],
+      endDate: json['end_date'],
       workStartTime: json['work_start_time'],
       workEndTime: json['work_end_time'],
       isOff: json['is_off'] ?? false,
@@ -125,12 +131,14 @@ class ShiftInfo {
   final String name;
   final String color;
   final String? startDate;
+  final String? endDate;
   final String? officeName;
 
   ShiftInfo({
     required this.name,
     required this.color,
     this.startDate,
+    this.endDate,
     this.officeName,
   });
 
@@ -139,6 +147,7 @@ class ShiftInfo {
       name: json['name'] ?? '',
       color: json['color'] ?? '#9CA3AF',
       startDate: json['start_date'],
+      endDate: json['end_date'],
       officeName: json['office_name'],
     );
   }

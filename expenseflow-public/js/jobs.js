@@ -143,12 +143,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 ${window.CareerUtils.timeAgo(job.published_at)}
               </span>
             ` : ''}
-            ${job.max_applicants ? `
-              <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-md bg-purple-500/10 border border-purple-500/20 text-purple-300 font-medium">
-                <i data-lucide="users" class="w-3 h-3 text-purple-400"></i>
-                Kuota: ${job.max_applicants} Pelamar
-              </span>
-            ` : ''}
           </div>
 
 

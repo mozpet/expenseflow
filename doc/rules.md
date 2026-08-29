@@ -497,11 +497,12 @@ GET    /api/v1/dashboard/attendance/effective-schedule → effectiveSchedule (pr
 ```
 POST /api/v1/attendance/check-in            → checkIn (WFH only; response: reminder_at & auto_checkout_at)
 POST /api/v1/attendance/check-out           → checkOut (hitung work_minutes & overtime_minutes; buat overtime_approval jika ada lembur)
-GET  /api/v1/attendance/status              → checkStatus (status presensi hari ini + scheduled_auto_checkout_at)
 ```
 
-### Leave & Lembur (auth:sanctum + company, tanpa gerbang attendance_access)
+### Status, Riwayat, Leave & Lembur (auth:sanctum + company, tanpa gerbang attendance_access)
 ```
+GET  /api/v1/attendance/status              → checkStatus (status presensi hari ini, flag wfh_enabled live + scheduled_auto_checkout_at)
+GET  /api/v1/attendance/my                  → myAttendance (riwayat presensi user yang login + flag wfh_enabled)
 GET  /api/v1/attendance/leave-balance       → myLeaveBalance (saldo cuti karyawan)
 POST /api/v1/attendance/leave-request       → requestLeave (total_days = HARI KERJA saja, lewati weekend/libur)
 GET  /api/v1/attendance/leave-preview       → leavePreview (hitungan hari efektif + skipped_dates berlabel utk badge mobile; ?start_date=&end_date=)
@@ -804,8 +805,47 @@ Tabel `holidays` (company_id, date, name). Dipakai untuk:
   → ✅ SELESAI 2026-08-28 (`expenseflow-public` — Static HTML, JS, CSS, Tailwind CDN)
 - buat form untuk hrd untuk kualifikasi calon karyawan 
   → ✅ SELESAI 2026-08-28 (Tab Form Rekrutmen di `expenseflow-web` via `RecruitmentManagement.tsx`)
+- pada syarat dan kualifikasi buatkan pilihan user ingin input list atau teks bebas
+  → ✅ SELESAI 2026-08-29 (Mode List butir interaktif + Mode Teks Bebas dengan reorder up/down, Enter shortcut, auto-split paste & quick recommendation chips di `RecruitmentManagement.tsx`)
+- kuota pelamar (`max_applicants`) jangan ditampilkan ke publik di portal karir (tetap berfungsi sebagai pembatas otomatis di backend/HRD)
+  → ✅ SELESAI 2026-08-29 (Dihapus dari kartu lowongan di `jobs.js` dan halaman rincian `detail.html` / `apply.js`)
 - list / halaman untuk hrd untuk menyeleksi calon karyawan yang masuk sesuai kualifikasi 
   → ✅ SELESAI 2026-08-28 (Tab Pelamar & Detail Seleksi di `expenseflow-web` via `RecruitmentManagement.tsx`)
+- penyempurnaan UI kalender jadwal shift & detail hari pada mobile (`jadwal_shift_screen.dart`): banner atas khusus nama jadwal shift / jam kantor default; detail hari fokus ke jam kerja (badge shift malam/lintas hari), atau 1 kartu tunggal untuk Libur Nasional (dengan nama hari libur), Libur Perusahaan/Cabang, Cuti Bersama, Cuti Mandiri, atau Hari Libur (OFF) tanpa tumpang-tindih banner.
+  → ✅ SELESAI 2026-08-29 (`expenseflow-mobile/lib/screens/jadwal_shift_screen.dart`)
+- pemisahan eksplisit Cuti Bersama (`is_collective = true`) dengan Libur Cabang / Perusahaan biasa pada mobile: Cuti Bersama kini diprioritaskan dan ditampilkan dengan kartu Cuti Bersama (Badge Amber) + nama cuti bersama, bukan Libur Cabang.
+  → ✅ SELESAI 2026-08-29 (`expenseflow-mobile/lib/screens/jadwal_shift_screen.dart`)
+- subtitle rentang tanggal pada banner shift atas (`_buildShiftInfoCard`) hanya ditampilkan jika shift memiliki tanggal berakhir (`end_date != null`, format: `tanggal mulai - tanggal akhir`). Jika shift unlimited / tanpa batas waktu atau jam kantor default, subtitle tanggal disembunyikan.
+  → ✅ SELESAI 2026-08-29 (`expenseflow-backend`, `expenseflow-mobile`)
+- penanganan Cuti Bersama di dashboard HRD (`AttendanceManagement.tsx` & `AttendanceController.php`):
+  - Form input pengecualian murni menampung pengecualian manual yang dipilih HRD (tidak menjejalkan user cuti nonaktif sebelum disimpan).
+  - Saat HRD menekan tombol Simpan pada form Cuti Bersama, sistem memanggil API `POST /dashboard/attendance/holidays/collective-preview` dan memunculkan modal konfirmasi pratinjau payload yang merincikan:
+    - Statistik peserta yang diikutsertakan (`total_eligible`) vs yang tidak ikut (`total_excluded`).
+    - Daftar lengkap nama karyawan yang dikecualikan/tidak ikut beserta **badge alasan jelas**:
+      1. `Cuti Nonaktif`: Kuota cuti tahunan belum diaktifkan oleh HRD (`quota <= 0`).
+      2. `Sisa Kuota Habis`: Karyawan sudah kehabisan kuota cuti tahunan (`remaining <= 0`).
+      3. `Sudah Cuti/Izin/Sakit`: Karyawan sudah memiliki pengajuan cuti mandiri/izin/sakit yang berstatus approved pada tanggal tersebut.
+      4. `Libur Shift (OFF)`: Hari tersebut merupakan hari libur menurut jadwal shift kerja karyawan.
+      5. `Pengecualian Manual`: Karyawan yang sengaja dipilih untuk dikecualikan oleh HRD pada form.
+    - Accordion daftar karyawan yang diikutsertakan beserta sisa kuota cuti masing-masing.
+  - Setelah HRD mengonfirmasi dan Cuti Bersama tersimpan, backend otomatis mengecualikan user-user tersebut secara permanen ke tabel `holiday_exclusions` sehingga mereka tidak akan menerima pesan/banner cuti bersama di mobile dan saldo cutinya tidak terpotong.
+  - **Pemisahan Eksplisit Pengecualian Manual HRD vs Pengecualian Otomatis Sistem (Permanen)**:
+    - Karyawan yang berstatus **Pengecualian Manual HRD** (karyawan yang memenuhi seluruh syarat seperti kuota aktif, hari kerja shift, dan tidak sedang cuti lain namun sengaja dikecualikan oleh HRD): pada form Ubah Libur, HRD dapat mengembalikan karyawan tersebut agar **kembali mengikuti cuti bersama** dengan mengeklik tombol `X` pada chip namanya lalu menyimpan perubahan. Backend akan mendeteksi karyawan yang eligible, melepaskan dari `holiday_exclusions`, dan membuatkan pengajuan `LeaveRequest` cuti bersama baru.
+    - **Pengembalian Saldo Cuti Jika Karyawan Dikecualikan Setelah Terlanjur Ikut (`accepted`)**: Jika sebelumnya karyawan sudah memilih "Ikut" cuti bersama dan saldonya telah terpotong 1 hari, lalu HRD mengubah keputusan dan mengecualikan karyawan tersebut pada form Ubah Libur:
+      - Sistem **otomatis mengembalikan saldo cutinya (+1 hari)** ke akun karyawan (`LeaveBalance.used` dikurangi).
+      - Menghapus `LeaveRequest` cuti bersama karyawan tersebut dan memasukkan karyawan ke daftar pengecualian (`holiday_exclusions`).
+      - Mengirimkan notifikasi ke aplikasi mobile karyawan bahwa jadwal cuti bersama dibatalkan oleh HRD, saldo cuti dikembalikan, dan karyawan dijadwalkan masuk kerja normal.
+    - Karyawan yang berstatus **Pengecualian Otomatis Sistem** (karena cuti nonaktif `quota <= 0`, sisa saldo habis `remaining <= 0`, sudah ada cuti mandiri/izin/sakit approved, atau libur shift): bersifat **permanen terkunci** dan ditampilkan di kolom sederhana berlabel *"Pengecualian Otomatis"* tanpa tombol `X` karena tidak memenuhi syarat untuk mengikuti cuti bersama.
+    - Pada kartu kalender dan detail hari libur, setiap karyawan yang dikecualikan diberi pembeda badge yang jelas: `(Manual)` vs `(Cuti Nonaktif / Auto)`.
+  - Menu dropdown pilihan cakupan **"Semua Kantor (Semua Cabang)"** pada form Cuti Bersama & Libur Perusahaan hanya dapat diakses dan disimpan oleh **Super Admin**. HRD / Admin cabang hanya dapat mengatur libur/cuti bersama untuk cabang kantor spesifik.
+  - **Perubahan Tipe dari Cuti Bersama ke Libur Perusahaan / Nasional**: Ketika HRD mengubah tipe libur dari Cuti Bersama menjadi Libur Perusahaan biasa atau Libur Nasional, seluruh exclusion otomatis Cuti Bersama (seperti karyawan dengan kuota cuti 0 / nonaktif) otomatis dibersihkan dari `holiday_exclusions` dan hanya pengecualian manual HRD yang dipertahankan. Seluruh karyawan (termasuk yang cutinya belum aktif) otomatis diikutsertakan dalam Libur Perusahaan / Nasional tanpa pengurangan saldo.
+  - **Pemberitahuan Pembatalan Cuti Bersama & Cuti Mandiri di Mobile**:
+    - Ketika Cuti Bersama dibatalkan / dihapus oleh HRD (atau ketika karyawan dikecualikan oleh HRD setelah terlanjur ikut `accepted`), serta ketika pengajuan cuti mandiri dibatalkan/dikompensasi karena adanya hari libur baru atau ditolak oleh HRD:
+      - Sistem mengirimkan pemberitahuan ke aplikasi mobile karyawan (`notifications` table).
+      - Pada mobile screen (menu Icon Surat / Pesan & Notifikasi), kartu pemberitahuan pembatalan tampil dengan judul, tanggal, deskripsi *"Cuti bersama [Nama Libur] pada [Tanggal] telah dibatalkan oleh HRD. Saldo cuti Anda telah dikembalikan."* (atau untuk cuti mandiri), dan dilengkapi tombol **"Mengerti"**.
+      - Menekan tombol **"Mengerti"** akan menandai notifikasi sebagai dibaca (`POST /attendance/dismiss-cancellation/{id}`) dan otomatis menghilangkannya dari daftar pesan serta memperbarui badge counter.
+  - Konfirmasi hapus hari libur / cuti bersama menggunakan modal dialog konfirmasi (`ConfirmationDialog`), bukan popup bawaan browser.
+  → ✅ SELESAI 2026-08-29 (`expenseflow-web`, `expenseflow-backend`, `expenseflow-mobile`)
 
 - karyawan bisa di ajust oleh hrd masuk di hari sabtu atau minggu
   → ✅ SELESAI 2026-07-04 (fitur Custom Shift/Scheduling, lihat perubahan.md sesi 2026-07-04)
@@ -1048,6 +1088,8 @@ bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceMa
    ada bug lagi: user yang sudah assigned shift, di dalam shif itu pada tanggal 25 agustus adalah jadwal dia libur shift , tapi dia mengajukan cuti/izin/sakit/wfh dan sistem memperbolehkan dia mengajukan cuti/izin/sakit/wfh, padahal seharusnya user tidak bisa mengajukan cuti/izin/sakit/wfh kalau di jadwal shif dia libur , tolong buatkan validasi bahwa dia libur pada jadwal shif tersebut ✅ SELESAI 2026-08-22
 
   ada bug lagi: user a adalah pegawai kantor cabang B yang di mana hari libur dari kantor cabang B(kantor default) adalah dalam 1 minggu kantor cabang b libur di hari sabtu dan minggu, lalu user a assigned shift yang di mana dalam shift tersebut hari sabtu dan minggu jadwal user a masuk kerja, lalu user a ingin mengajukan cuti pada hari minggu namun tidak bisa karena sistem membaca bahwa dia libur kerja(karena kantor default libur di hari minggu) padahal saat ini karyawan tersebut di assigned shift shift di mana shif itu hari minggu dan sabtu user a masuk ✅ SELESAI 2026-08-22
+
+  ada bug pada device binding, user tetap bisa login walaupun device id nya tidak sesuai dengan device id yang terdaftar
 
 
 # note untuk refaktoring

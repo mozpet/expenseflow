@@ -18,6 +18,10 @@ class PresensiProvider extends ChangeNotifier {
   final List<LeaveBalanceRecord> _leaveBalances = [];
   Map<String, dynamic>? _leaveResetInfo;
   final List<CollectiveLeaveRecord> _collectiveLeaves = [];
+  final List<LeaveCancellationRecord> _leaveCancellations = [];
+  final List<OfficeArea> _offices = [];
+  OfficeArea? _primaryOffice;
+  bool _radiusEnabled = false;
 
   String? _todayMasuk;
   String? _todayPulang;
@@ -36,6 +40,13 @@ class PresensiProvider extends ChangeNotifier {
   Map<String, dynamic>? get leaveResetInfo => _leaveResetInfo;
   List<CollectiveLeaveRecord> get collectiveLeaves =>
       List.unmodifiable(_collectiveLeaves);
+  List<LeaveCancellationRecord> get leaveCancellations =>
+      List.unmodifiable(_leaveCancellations);
+  List<OfficeArea> get offices => List.unmodifiable(_offices);
+  OfficeArea? get primaryOffice => _primaryOffice;
+  bool get radiusEnabled => _radiusEnabled;
+  bool get isRadiusEnforced => _radiusEnabled;
+  bool get isWfhMode => wfhEnabled && !_radiusEnabled;
   CollectiveLeaveRecord? get activeCollectiveLeaveBanner {
     for (final item in _collectiveLeaves) {
       if (item.showBanner && item.collectiveStatus == 'pending') return item;
@@ -46,6 +57,9 @@ class PresensiProvider extends ChangeNotifier {
   List<CollectiveLeaveRecord> get activeCollectiveLeaveBanners {
     return _collectiveLeaves.where((item) => item.showBanner && item.collectiveStatus == 'pending').toList();
   }
+
+  int get unreadNotificationCount =>
+      activeCollectiveLeaveBanners.length + _leaveCancellations.length;
   String? get todayMasuk => _todayMasuk;
   String? get todayPulang => _todayPulang;
   int get todayOvertimeMinutes => _todayOvertimeMinutes;
@@ -138,26 +152,62 @@ class PresensiProvider extends ChangeNotifier {
     }
   }
 
-  // ─── Cek status backend untuk deteksi auto-checkout ────────
-  /// Dipanggil saat app dibuka (resume) atau halaman presensi dibuka.
-  /// Jika backend mencatat auto-checkout, update state lokal & tampilkan notifikasi.
+  // ─── Cek status backend untuk deteksi auto-checkout & status WFH ────────
+  /// Dipanggil saat app dibuka (resume), tab presensi dibuka, atau saat soft reload.
+  /// Memperbarui flag wfh_enabled, status check-in/out hari ini, dan auto-checkout.
   Future<void> syncStatusFromBackend() async {
     final notifSvc = NotificationService();
     final status = await notifSvc.checkAttendanceStatus();
     if (status == null) return;
 
-    // Sinkronkan flag WFH dari backend (menentukan muncul/tidaknya tombol
-    // "Catat Presensi"). Bisa berubah setelah HRD toggle di dashboard web.
-    // Dilakukan SEBELUM cek attendance agar tetap tersinkron walau belum ada
-    // presensi hari ini (kasus utama saat user mau tahu boleh presensi apa tidak).
+    // Sinkronkan flag WFH dan Radius dari backend (menentukan mode presensi).
     final newWfhEnabled = status['wfh_enabled'] == true;
+    final newRadiusEnabled = status['radius_enabled'] == true;
+    bool needNotify = false;
     if (newWfhEnabled != wfhEnabled) {
       wfhEnabled = newWfhEnabled;
+      needNotify = true;
+    }
+    if (newRadiusEnabled != _radiusEnabled) {
+      _radiusEnabled = newRadiusEnabled;
+      needNotify = true;
+    }
+    if (needNotify) {
       notifyListeners();
     }
 
+    // Sinkronkan daftar kantor dan radius
+    if (status['offices'] is List) {
+      _offices
+        ..clear()
+        ..addAll(
+          (status['offices'] as List)
+              .map((e) => OfficeArea.fromJson(e as Map<String, dynamic>))
+              .where((o) => o.latitude != 0.0 && o.longitude != 0.0),
+        );
+    }
+    if (status['office'] is Map) {
+      _primaryOffice =
+          OfficeArea.fromJson(status['office'] as Map<String, dynamic>);
+      if (_offices.isEmpty &&
+          _primaryOffice!.latitude != 0.0 &&
+          _primaryOffice!.longitude != 0.0) {
+        _offices.add(_primaryOffice!);
+      }
+    }
+
     final att = status['attendance'] as Map<String, dynamic>?;
-    if (att == null) return;
+    if (att == null) {
+      // Jika backend tidak memiliki record presensi hari ini, reset status lokal hari ini
+      if (_todayMasuk != null || _todayPulang != null) {
+        _todayMasuk = null;
+        _todayPulang = null;
+        _todayOvertimeMinutes = 0;
+        _todayLateMinutes = 0;
+        notifyListeners();
+      }
+      return;
+    }
 
     final checkedIn = status['checked_in'] == true;
     final checkedOut = status['checked_out'] == true;
@@ -250,68 +300,91 @@ class PresensiProvider extends ChangeNotifier {
     return '${j}j ${m}m';
   }
 
-  // ─── Fetch riwayat presensi ───────────────────────────────
+  // ─── Fetch riwayat presensi (termasuk sinkronisasi status WFH live) ────
   Future<void> fetchMyAttendance() async {
     _loadingHistory = true;
     notifyListeners();
     try {
-      final res = await ApiService.myAttendance();
-      final list = (res['data'] as List?) ?? [];
-      _records
-        ..clear()
-        ..addAll(
-          list.map((e) {
-            final m = e as Map<String, dynamic>;
-            final overtimeApproval =
-                m['overtime_approval'] as Map<String, dynamic>?;
-            return PresensiRecord(
-              id: (m['id'] as num?)?.toInt() ?? 0,
-              date: _formatDate(m['date']),
-              masukTime: _extractTime(m['check_in_time']) ?? '-',
-              pulangTime: _extractTime(m['check_out_time']) ?? '-',
-              checkInType: (m['check_in_type'] ?? '').toString(),
-              overtimeMinutes:
-                  (overtimeApproval?['overtime_minutes'] as num?)?.toInt() ??
-                  (m['overtime_minutes'] as num?)?.toInt() ??
-                  0,
-              isHoliday: m['is_holiday'] == true || m['is_holiday'] == 1,
-              isAutoCheckout:
-                  m['is_auto_checkout'] == true || m['is_auto_checkout'] == 1,
-              lateMinutes: _calculateLateMinutes(
-                m['check_in_time'],
-                m['status'],
-              ),
-              overtimeStatus: overtimeApproval?['status'] as String?,
-            );
-          }),
-        );
-      // Set status hari ini bila ada record tanggal hari ini
-      final todayIso = DateTime.now().toIso8601String().substring(0, 10);
-      for (final e in list) {
-        final m = e as Map<String, dynamic>;
-        if ((m['date'] ?? '').toString().startsWith(todayIso)) {
-          _todayMasuk = _extractTime(m['check_in_time']);
-          _todayPulang = _extractTime(m['check_out_time']);
-          final oa = m['overtime_approval'] as Map<String, dynamic>?;
-          _todayOvertimeMinutes =
-              (oa?['overtime_minutes'] as num?)?.toInt() ??
-              (m['overtime_minutes'] as num?)?.toInt() ??
-              0;
-          _todayLateMinutes = _calculateLateMinutes(
-            m['check_in_time'],
-            m['status'],
-          );
-        }
-      }
-      // overtimeStatus sudah diambil dari overtime_approval di response myAttendance()
-      // — tidak perlu request tambahan ke my-overtime
+      // Jalankan pemuatan riwayat presensi dan sinkronisasi status WFH secara bersamaan
+      await Future.wait([
+        _loadMyAttendanceData(),
+        syncStatusFromBackend(),
+      ]);
     } catch (e, st) {
-      // Tampilkan error di debug console agar mudah dideteksi saat development
       debugPrint('[PresensiProvider] fetchMyAttendance error: $e');
       debugPrint('$st');
+    } finally {
+      _loadingHistory = false;
+      notifyListeners();
     }
-    _loadingHistory = false;
-    notifyListeners();
+  }
+
+  Future<void> _loadMyAttendanceData() async {
+    final res = await ApiService.myAttendance();
+    if (res.containsKey('wfh_enabled')) {
+      final newWfhEnabled = res['wfh_enabled'] == true;
+      if (newWfhEnabled != wfhEnabled) {
+        wfhEnabled = newWfhEnabled;
+      }
+    }
+    if (res.containsKey('radius_enabled')) {
+      _radiusEnabled = res['radius_enabled'] == true;
+    }
+    final list = (res['data'] as List?) ?? [];
+    _records
+      ..clear()
+      ..addAll(
+        list.map((e) {
+          final m = e as Map<String, dynamic>;
+          final overtimeApproval =
+              m['overtime_approval'] as Map<String, dynamic>?;
+          return PresensiRecord(
+            id: (m['id'] as num?)?.toInt() ?? 0,
+            date: _formatDate(m['date']),
+            masukTime: _extractTime(m['check_in_time']) ?? '-',
+            pulangTime: _extractTime(m['check_out_time']) ?? '-',
+            checkInType: (m['check_in_type'] ?? '').toString(),
+            overtimeMinutes:
+                (overtimeApproval?['overtime_minutes'] as num?)?.toInt() ??
+                (m['overtime_minutes'] as num?)?.toInt() ??
+                0,
+            isHoliday: m['is_holiday'] == true || m['is_holiday'] == 1,
+            isAutoCheckout:
+                m['is_auto_checkout'] == true || m['is_auto_checkout'] == 1,
+            lateMinutes: _calculateLateMinutes(
+              m['check_in_time'],
+              m['status'],
+            ),
+            overtimeStatus: overtimeApproval?['status'] as String?,
+          );
+        }),
+      );
+    // Set status hari ini bila ada record tanggal hari ini
+    final todayIso = DateTime.now().toIso8601String().substring(0, 10);
+    bool foundToday = false;
+    for (final e in list) {
+      final m = e as Map<String, dynamic>;
+      if ((m['date'] ?? '').toString().startsWith(todayIso)) {
+        foundToday = true;
+        _todayMasuk = _extractTime(m['check_in_time']);
+        _todayPulang = _extractTime(m['check_out_time']);
+        final oa = m['overtime_approval'] as Map<String, dynamic>?;
+        _todayOvertimeMinutes =
+            (oa?['overtime_minutes'] as num?)?.toInt() ??
+            (m['overtime_minutes'] as num?)?.toInt() ??
+            0;
+        _todayLateMinutes = _calculateLateMinutes(
+          m['check_in_time'],
+          m['status'],
+        );
+      }
+    }
+    if (!foundToday) {
+      _todayMasuk = null;
+      _todayPulang = null;
+      _todayOvertimeMinutes = 0;
+      _todayLateMinutes = 0;
+    }
   }
 
   // ─── Fetch daftar overtime approval (untuk halaman riwayat lembur tersendiri) ──
@@ -438,17 +511,27 @@ class PresensiProvider extends ChangeNotifier {
   }
 
 
-  // ─── Fetch cuti bersama mendatang ───────────────────────────
+  // ─── Fetch cuti bersama mendatang & pesan pembatalan ─────────
   Future<void> fetchCollectiveLeaves() async {
     _loadingCollectiveLeaves = true;
     notifyListeners();
     try {
       final res = await ApiService.collectiveLeaves();
       final list = (res['collective_leaves'] as List?) ?? [];
+      final canList = (res['cancellations'] as List?) ?? [];
+
       _collectiveLeaves
         ..clear()
         ..addAll(
           list.map((e) => CollectiveLeaveRecord.fromJson(
+                (e as Map).cast<String, dynamic>(),
+              )),
+        );
+
+      _leaveCancellations
+        ..clear()
+        ..addAll(
+          canList.map((e) => LeaveCancellationRecord.fromJson(
                 (e as Map).cast<String, dynamic>(),
               )),
         );
@@ -458,6 +541,17 @@ class PresensiProvider extends ChangeNotifier {
     }
     _loadingCollectiveLeaves = false;
     notifyListeners();
+  }
+
+  /// Dismiss / tutup notifikasi pembatalan cuti bersama atau cuti mandiri
+  Future<void> dismissCancellation(String id) async {
+    _leaveCancellations.removeWhere((item) => item.id == id);
+    notifyListeners();
+    try {
+      await ApiService.dismissCancellation(id);
+    } catch (e) {
+      debugPrint('[PresensiProvider] dismissCancellation error: $e');
+    }
   }
 
   /// Response cuti bersama: accepted = ikut, declined = tidak ikut.

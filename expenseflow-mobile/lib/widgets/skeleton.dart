@@ -43,9 +43,11 @@ class _ShimmerLoadingState extends State<ShimmerLoading>
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final base = widget.baseColor ??
+    final base =
+        widget.baseColor ??
         (isDark ? const Color(0xFF1E293B) : const Color(0xFFE2E8F0));
-    final highlight = widget.highlightColor ??
+    final highlight =
+        widget.highlightColor ??
         (isDark ? const Color(0xFF334155) : const Color(0xFFF1F5F9));
 
     return AnimatedBuilder(
@@ -107,11 +109,7 @@ class SkeletonCircle extends StatelessWidget {
   final double size;
   final EdgeInsetsGeometry? margin;
 
-  const SkeletonCircle({
-    super.key,
-    this.size = 40,
-    this.margin,
-  });
+  const SkeletonCircle({super.key, this.size = 40, this.margin});
 
   @override
   Widget build(BuildContext context) {
@@ -145,7 +143,7 @@ class SkeletonListTileItem extends StatelessWidget {
         border: Border.all(color: const Color(0xFFF1F5F9)),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withOpacity(0.02),
+            color: Colors.black.withValues(alpha: 0.02),
             blurRadius: 8,
             offset: const Offset(0, 2),
           ),
@@ -220,13 +218,9 @@ class SkeletonAttendanceItem extends StatelessWidget {
           SizedBox(height: 14),
           Row(
             children: [
-              Expanded(
-                child: SkeletonBox(height: 38, borderRadius: 10),
-              ),
+              Expanded(child: SkeletonBox(height: 38, borderRadius: 10)),
               SizedBox(width: 8),
-              Expanded(
-                child: SkeletonBox(height: 38, borderRadius: 10),
-              ),
+              Expanded(child: SkeletonBox(height: 38, borderRadius: 10)),
             ],
           ),
         ],

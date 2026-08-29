@@ -6,7 +6,7 @@ import {
   ChevronLeft, MoreVertical, RefreshCw, User, Mail, Phone, Home,
   GraduationCap, Check, ArrowRight, List, AlignLeft, CheckSquare,
   Copy, ExternalLink, Sparkles, Video, HelpCircle, ArrowLeft,
-  Printer, FileCheck, CheckCheck
+  Printer, FileCheck, CheckCheck, ArrowUp, ArrowDown
 } from 'lucide-react';
 import { recruitmentApi } from '../services/endpoints';
 import { ApiError, getStoredUser } from '../services/api';
@@ -1202,6 +1202,304 @@ function ApplicationsListView({
   );
 }
 
+// 3.5 RequirementsInput Component (Mode List vs Mode Teks Bebas)
+function RequirementsInput({
+  value,
+  onChange,
+}: {
+  value: string | null | undefined;
+  onChange: (val: string) => void;
+}) {
+  const [mode, setMode] = useState<'list' | 'text'>('list');
+  const [items, setItems] = useState<string[]>(() => {
+    if (!value) return [''];
+    const lines = value
+      .split('\n')
+      .map(l => l.replace(/^[\s•\-\*\d\.\)\-]+/, '').trim())
+      .filter(l => l.length > 0);
+    return lines.length > 0 ? lines : [''];
+  });
+
+  const isInternalUpdate = useRef(false);
+  useEffect(() => {
+    if (isInternalUpdate.current) {
+      isInternalUpdate.current = false;
+      return;
+    }
+    const lines = (value || '')
+      .split('\n')
+      .map(l => l.replace(/^[\s•\-\*\d\.\)\-]+/, '').trim())
+      .filter(l => l.length > 0);
+    setItems(lines.length > 0 ? lines : ['']);
+  }, [value]);
+
+  const updateList = (newItems: string[]) => {
+    isInternalUpdate.current = true;
+    setItems(newItems);
+    const cleaned = newItems.map(i => i.trim()).filter(i => i.length > 0);
+    onChange(cleaned.join('\n'));
+  };
+
+  const handleItemChange = (index: number, val: string) => {
+    // If multiline text is pasted into a single input field
+    if (val.includes('\n')) {
+      const pastedLines = val
+        .split('\n')
+        .map(l => l.replace(/^[\s•\-\*\d\.\)\-]+/, '').trim())
+        .filter(l => l.length > 0);
+      if (pastedLines.length > 0) {
+        const next = [...items];
+        next.splice(index, 1, ...pastedLines);
+        updateList(next);
+        return;
+      }
+    }
+    const next = [...items];
+    next[index] = val;
+    updateList(next);
+  };
+
+  const handleAddItem = (presetText?: string) => {
+    const next = [...items];
+    if (presetText) {
+      if (next.length === 1 && next[0].trim() === '') {
+        next[0] = presetText;
+      } else {
+        next.push(presetText);
+      }
+    } else {
+      next.push('');
+    }
+    updateList(next);
+    if (!presetText) {
+      setTimeout(() => {
+        const el = document.getElementById(`req-item-${next.length - 1}`);
+        if (el) el.focus();
+      }, 50);
+    }
+  };
+
+  const handleRemoveItem = (index: number) => {
+    if (items.length <= 1) {
+      updateList(['']);
+      return;
+    }
+    const next = items.filter((_, i) => i !== index);
+    updateList(next);
+  };
+
+  const handleMoveUp = (index: number) => {
+    if (index === 0) return;
+    const next = [...items];
+    const temp = next[index - 1];
+    next[index - 1] = next[index];
+    next[index] = temp;
+    updateList(next);
+  };
+
+  const handleMoveDown = (index: number) => {
+    if (index >= items.length - 1) return;
+    const next = [...items];
+    const temp = next[index + 1];
+    next[index + 1] = next[index];
+    next[index] = temp;
+    updateList(next);
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLInputElement>, index: number) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const next = [...items];
+      next.splice(index + 1, 0, '');
+      updateList(next);
+      setTimeout(() => {
+        const el = document.getElementById(`req-item-${index + 1}`);
+        if (el) el.focus();
+      }, 50);
+    } else if (e.key === 'Backspace' && items[index] === '' && items.length > 1) {
+      e.preventDefault();
+      handleRemoveItem(index);
+      setTimeout(() => {
+        const el = document.getElementById(`req-item-${Math.max(0, index - 1)}`);
+        if (el) el.focus();
+      }, 50);
+    }
+  };
+
+  const handleSwitchMode = (targetMode: 'list' | 'text') => {
+    if (targetMode === mode) return;
+    if (targetMode === 'list') {
+      const lines = (value || '')
+        .split('\n')
+        .map(l => l.replace(/^[\s•\-\*\d\.\)\-]+/, '').trim())
+        .filter(l => l.length > 0);
+      setItems(lines.length > 0 ? lines : ['']);
+    } else {
+      const cleaned = items.map(i => i.trim()).filter(i => i.length > 0);
+      onChange(cleaned.join('\n'));
+    }
+    setMode(targetMode);
+  };
+
+  const suggestions = [
+    'Pendidikan minimal S1 / D3 jurusan relevan',
+    'Pengalaman kerja minimal 1-2 tahun di bidang terkait',
+    'Menguasai keterampilan teknis & software yang dibutuhkan',
+    'Kemampuan komunikasi dan kerjasama tim yang baik',
+    'Mampu bekerja secara mandiri dan memiliki inisiatif tinggi',
+    'Teliti, jujur, berintegritas, dan berorientasi hasil',
+    'Bersedia bekerja secara Full-time / Onsite / Hybrid',
+  ];
+
+  const validItemCount = mode === 'list'
+    ? items.filter(i => i.trim().length > 0).length
+    : (value || '').split('\n').filter(l => l.trim().length > 0).length;
+
+  return (
+    <div className="space-y-3">
+      {/* Header & Mode Switcher */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300">
+            Persyaratan &amp; Kualifikasi
+          </label>
+          <span className="text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/60 border border-indigo-200/60 dark:border-indigo-800/60 px-2.5 py-0.5 rounded-full">
+            {validItemCount} Butir
+          </span>
+        </div>
+
+        {/* Tab Switcher */}
+        <div className="inline-flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-950 border border-slate-200 dark:border-slate-800">
+          <button
+            type="button"
+            onClick={() => handleSwitchMode('list')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              mode === 'list'
+                ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs font-semibold'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <List size={13} />
+            <span>Mode List (Butir)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleSwitchMode('text')}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer ${
+              mode === 'text'
+                ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-xs font-semibold'
+                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+            }`}
+          >
+            <AlignLeft size={13} />
+            <span>Mode Teks Bebas</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Mode List View */}
+      {mode === 'list' ? (
+        <div className="space-y-3">
+          <div className="space-y-2">
+            {items.map((item, idx) => (
+              <div key={idx} className="flex items-center gap-2 group">
+                <div className="w-6 h-6 rounded-full bg-indigo-50 dark:bg-indigo-950/80 border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 text-[11px] font-bold flex items-center justify-center shrink-0 select-none">
+                  {idx + 1}
+                </div>
+                <input
+                  id={`req-item-${idx}`}
+                  type="text"
+                  value={item}
+                  onChange={e => handleItemChange(idx, e.target.value)}
+                  onKeyDown={e => handleKeyDown(e, idx)}
+                  placeholder={`Kualifikasi #${idx + 1} (Contoh: Minimal S1 Teknik Informatika atau setara...)`}
+                  className="flex-1 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-3.5 py-2 text-slate-900 dark:text-white text-xs sm:text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 transition-all"
+                />
+                <div className="flex items-center gap-0.5 shrink-0 opacity-80 group-hover:opacity-100 transition-opacity">
+                  <button
+                    type="button"
+                    onClick={() => handleMoveUp(idx)}
+                    disabled={idx === 0}
+                    title="Pindahkan ke atas"
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-20 cursor-pointer disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ArrowUp size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleMoveDown(idx)}
+                    disabled={idx === items.length - 1}
+                    title="Pindahkan ke bawah"
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 disabled:opacity-20 cursor-pointer disabled:cursor-not-allowed transition-colors"
+                  >
+                    <ArrowDown size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleRemoveItem(idx)}
+                    title="Hapus butir ini"
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 cursor-pointer transition-colors"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {/* Add Item Button */}
+          <button
+            type="button"
+            onClick={() => handleAddItem()}
+            className="w-full py-2.5 px-4 rounded-xl border border-dashed border-indigo-200 dark:border-indigo-800/80 bg-indigo-50/40 dark:bg-indigo-950/20 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 text-xs font-semibold flex items-center justify-center gap-1.5 transition-all cursor-pointer"
+          >
+            <Plus size={15} />
+            <span>Tambah Butir Kualifikasi</span>
+          </button>
+
+          {/* Quick Presets / Suggestions */}
+          <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80 space-y-2">
+            <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400">
+              <Sparkles size={12} className="text-amber-500" />
+              <span>Rekomendasi Cepat (Klik untuk menambahkan langsung):</span>
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {suggestions.map((sug, sIdx) => (
+                <button
+                  key={sIdx}
+                  type="button"
+                  onClick={() => handleAddItem(sug)}
+                  className="text-[11px] px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-indigo-50 dark:bg-slate-800 dark:hover:bg-indigo-950/60 text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-300 border border-slate-200/80 dark:border-slate-700/80 hover:border-indigo-300 dark:hover:border-indigo-700 transition-all cursor-pointer text-left"
+                >
+                  + {sug}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-[11px] text-slate-400">
+            💡 <strong>Tips Cepat:</strong> Tekan <kbd className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-[10px] font-mono">Enter</kbd> pada keyboard untuk langsung menambah baris baru di bawahnya. Anda juga bisa paste daftar teks sekaligus ke dalam baris input.
+          </p>
+        </div>
+      ) : (
+        /* Mode Textarea */
+        <div className="space-y-2">
+          <textarea
+            value={value ?? ''}
+            onChange={e => onChange(e.target.value)}
+            rows={5}
+            className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white text-xs sm:text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-y"
+            placeholder="Tuliskan tiap kualifikasi/syarat di baris baru...&#10;Contoh:&#10;• Minimal S1 Teknik Informatika&#10;• Pengalaman kerja min. 2 tahun&#10;• Menguasai React / TypeScript"
+          />
+          <p className="text-[11px] text-slate-400">
+            💡 <strong>Info:</strong> Tiap baris baru pada teks ini akan otomatis diformat menjadi butir kualifikasi tersendiri di portal karir pelamar. Anda bisa beralih kembali ke <strong>Mode List</strong> kapan saja.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // 4. PostingFormView
 function PostingFormView({ mode, data, errors, loading, onBack, onChange, onSubmit }: any) {
   return (
@@ -1349,15 +1647,9 @@ function PostingFormView({ mode, data, errors, loading, onBack, onChange, onSubm
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
-              Persyaratan &amp; Kualifikasi
-            </label>
-            <textarea
+            <RequirementsInput
               value={data.requirements ?? ''}
-              onChange={e => onChange('requirements', e.target.value)}
-              rows={4}
-              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl px-4 py-2.5 text-slate-900 dark:text-white text-xs sm:text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 resize-y"
-              placeholder="Tuliskan tiap persyaratan di baris baru (Contoh: Minimal S1 Teknik Informatika, Menguasai React / Flutter)..."
+              onChange={(val: string) => onChange('requirements', val)}
             />
           </div>
         </div>

@@ -3,7 +3,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
-import 'package:permission_handler/permission_handler.dart' show openAppSettings;
+import 'package:permission_handler/permission_handler.dart'
+    show openAppSettings;
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
 import '../services/api_service.dart';
@@ -29,6 +30,14 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   // Flag: true saat sedang menyinkronkan status dari backend
   bool _syncingStatus = true;
 
+  /// Posisi aktif yang digunakan (GPS asli)
+  LatLng get _activeLatLng =>
+      _position != null
+          ? LatLng(_position!.latitude, _position!.longitude)
+          : const LatLng(-6.2088, 106.8456);
+
+  bool get _hasActivePosition => _position != null;
+
   /// Memanggil _mapController.move() hanya jika map sudah siap.
   /// try-catch sebagai safety net untuk kasus edge (hot-reload, dll).
   void _safeMove(LatLng point, double zoom) {
@@ -45,13 +54,14 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _initLocation();
-      // Sync status presensi dari backend agar shift lintas hari terdeteksi
+      // Sync status presensi dari backend agar shift lintas hari & data radius kantor terdeteksi
       _syncBackendStatus();
     });
   }
 
   /// Sinkronkan status dari backend saat halaman dibuka.
-  /// Ini memastikan karyawan shift lintas hari mendapat tombol check-out yang benar.
+  /// Ini memastikan karyawan shift lintas hari mendapat tombol check-out yang benar
+  /// dan radius lingkaran kantor berhasil dimuat.
   Future<void> _syncBackendStatus() async {
     final prov = Provider.of<PresensiProvider>(context, listen: false);
     try {
@@ -87,25 +97,64 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
       return;
     }
 
-    setState(() => _state = _LocationState.loading);
+    if (mounted) setState(() => _state = _LocationState.loading);
 
+    // 1. Coba ambil Last Known Position terlebih dahulu (instan ~10ms)
+    try {
+      final lastPos = await Geolocator.getLastKnownPosition();
+      if (lastPos != null && mounted) {
+        setState(() {
+          _position = lastPos;
+          _state = _LocationState.ready;
+        });
+        _safeMove(LatLng(lastPos.latitude, lastPos.longitude), 16);
+      }
+    } catch (_) {}
+
+    // 2. Ambil Current Position dengan timeout agar tidak loading selamanya
+    try {
+      final currentPos = await Geolocator.getCurrentPosition(
+        locationSettings: const LocationSettings(
+          accuracy: LocationAccuracy.medium,
+          timeLimit: Duration(seconds: 4),
+        ),
+      );
+      if (mounted) {
+        setState(() {
+          _position = currentPos;
+          _state = _LocationState.ready;
+        });
+        _safeMove(LatLng(currentPos.latitude, currentPos.longitude), 16);
+      }
+    } catch (e) {
+      // Timeout atau indoor: jika belum ready, set ready agar user tidak terblokir
+      if (mounted && _state == _LocationState.loading) {
+        setState(() {
+          _state = _LocationState.ready;
+        });
+      }
+    }
+
+    // 3. Pasang stream GPS aktif untuk update posisi secara berkala
+    _positionStream?.cancel();
     _positionStream = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(
         accuracy: LocationAccuracy.high,
-        distanceFilter: 5,
+        distanceFilter: 2,
       ),
     ).listen(
       (pos) {
         if (!mounted) return;
         setState(() {
           _position = pos;
-          _state = _LocationState.ready; // langsung ready begitu dapat koordinat
+          _state = _LocationState.ready;
         });
-        // Panggil hanya jika controller sudah di-attach oleh FlutterMap
         _safeMove(LatLng(pos.latitude, pos.longitude), 16);
       },
       onError: (_) {
-        if (mounted) setState(() => _state = _LocationState.denied);
+        if (mounted && _state == _LocationState.loading) {
+          setState(() => _state = _LocationState.ready);
+        }
       },
     );
   }
@@ -113,14 +162,14 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   bool _submitting = false;
 
   Future<void> _simpanPresensi() async {
-    if (_position == null || _submitting) return;
+    if (!_hasActivePosition || _submitting) return;
     final prov = Provider.of<PresensiProvider>(context, listen: false);
     final wasCheckIn = prov.canCheckIn;
 
     setState(() => _submitting = true);
     try {
       await prov.simpanPresensi(
-          _position!.latitude, _position!.longitude);
+          _activeLatLng.latitude, _activeLatLng.longitude);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -232,6 +281,36 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
     }
   }
 
+  OfficeArea? _getNearestOffice(List<OfficeArea> offices) {
+    if (offices.isEmpty) return null;
+    if (!_hasActivePosition) return offices.first;
+    OfficeArea? nearest;
+    double minDistance = double.infinity;
+    for (final office in offices) {
+      final dist = Geolocator.distanceBetween(
+        _activeLatLng.latitude,
+        _activeLatLng.longitude,
+        office.latitude,
+        office.longitude,
+      );
+      if (dist < minDistance) {
+        minDistance = dist;
+        nearest = office;
+      }
+    }
+    return nearest;
+  }
+
+  double? _getDistanceToOffice(OfficeArea? office) {
+    if (office == null || !_hasActivePosition) return null;
+    return Geolocator.distanceBetween(
+      _activeLatLng.latitude,
+      _activeLatLng.longitude,
+      office.latitude,
+      office.longitude,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final prov = Provider.of<PresensiProvider>(context);
@@ -260,10 +339,14 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
             ? 'Simpan Presensi Pulang'
             : 'Presensi Hari Ini Selesai';
 
-    final hasPosition = _position != null;
-    final center = hasPosition
-        ? LatLng(_position!.latitude, _position!.longitude)
-        : const LatLng(-6.2088, 106.8456); // fallback Jakarta
+    final userOffice = prov.primaryOffice ?? (prov.offices.isNotEmpty ? prov.offices.first : null);
+    final displayedOffices = userOffice != null ? [userOffice] : prov.offices;
+
+    final nearestOffice = _getNearestOffice(displayedOffices);
+    final distanceToNearest = _getDistanceToOffice(nearestOffice);
+    final isWithinRadius = distanceToNearest != null &&
+        nearestOffice != null &&
+        distanceToNearest <= nearestOffice.radiusMeters;
 
     return Scaffold(
       appBar: AppBar(
@@ -283,7 +366,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                 FlutterMap(
                   mapController: _mapController,
                   options: MapOptions(
-                    initialCenter: center,
+                    initialCenter: _activeLatLng,
                     initialZoom: 15,
                     interactionOptions: const InteractionOptions(
                       flags: InteractiveFlag.all,
@@ -292,7 +375,6 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                       // Set flag SETELAH flutter_map menginisialisasi internal
                       // 'late _local' — baru aman memanggil .move()
                       _mapReady = true;
-                      // Jika posisi sudah tersedia sebelum map siap, langsung pindah
                       if (_position != null) {
                         _safeMove(
                           LatLng(_position!.latitude, _position!.longitude),
@@ -307,30 +389,127 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                           'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.expenseflow.cobain',
                     ),
-                    if (hasPosition)
-                      MarkerLayer(
-                        markers: [
-                          Marker(
-                            point: center,
-                            width: 56,
-                            height: 56,
+
+                    // ── Lingkaran Radius Kantor Cabang User ───────────
+                    if (displayedOffices.isNotEmpty)
+                      CircleLayer(
+                        circles: displayedOffices.map((office) {
+                          return CircleMarker(
+                            point: LatLng(office.latitude, office.longitude),
+                            radius: office.radiusMeters,
+                            useRadiusInMeter: true,
+                            color: const Color(0x330088FF),
+                            borderColor: const Color(0xFF0088FF),
+                            borderStrokeWidth: 2.5,
+                          );
+                        }).toList(),
+                      ),
+
+                    // ── Marker Kantor Cabang & Marker User ────────────
+                    MarkerLayer(
+                      markers: [
+                        // Marker untuk kantor cabang karyawan
+                        ...displayedOffices.map((office) {
+                          return Marker(
+                            point: LatLng(office.latitude, office.longitude),
+                            width: 150,
+                            height: 64,
+                            alignment: Alignment.topCenter,
                             child: Column(
-                              children: const [
-                                Icon(Icons.location_on,
-                                    color: Colors.red, size: 40),
-                                SizedBox(height: 4),
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 8, vertical: 3),
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFF0D47A1),
+                                    borderRadius: BorderRadius.circular(10),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.25),
+                                        blurRadius: 4,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      const Icon(Icons.apartment,
+                                          color: Colors.white, size: 12),
+                                      const SizedBox(width: 4),
+                                      Flexible(
+                                        child: Text(
+                                          '${office.name} (${office.radiusMeters.toInt()}m)',
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.bold,
+                                          ),
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                const Icon(Icons.location_on,
+                                    color: Color(0xFF0D47A1), size: 28),
+                              ],
+                            ),
+                          );
+                        }),
+
+                        // Marker lokasi posisi user (GPS Real-Time)
+                        if (_hasActivePosition)
+                          Marker(
+                            point: _activeLatLng,
+                            width: 70,
+                            height: 60,
+                            alignment: Alignment.topCenter,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(
+                                    color: Colors.red.shade700,
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withValues(alpha: 0.25),
+                                        blurRadius: 3,
+                                      ),
+                                    ],
+                                  ),
+                                  child: const Text(
+                                    'Anda',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 9,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                                const Icon(
+                                  Icons.person_pin_circle,
+                                  color: Colors.red,
+                                  size: 38,
+                                ),
                               ],
                             ),
                           ),
-                        ],
-                      ),
+                      ],
+                    ),
                   ],
                 ),
 
                 // Overlay status saat loading / error
-                if (!hasPosition) _buildMapOverlay(),
+                if (!_hasActivePosition) _buildMapOverlay(),
 
-                  if (hasPosition)
+                // Status GPS Real-Time
+                if (_hasActivePosition)
                   Positioned(
                     top: 12,
                     right: 12,
@@ -352,29 +531,52 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                           Icon(Icons.gps_fixed, size: 14, color: Colors.green),
                           SizedBox(width: 5),
                           Text(
-                            'Lokasi terdeteksi',
+                            'GPS Real-Time',
                             style: TextStyle(
-                                fontSize: 12, fontWeight: FontWeight.bold),
+                                fontSize: 11.5, fontWeight: FontWeight.bold),
                           ),
                         ],
                       ),
                     ),
                   ),
 
-                // Tombol re-center (kanan bawah peta)
-                if (hasPosition)
-                  Positioned(
-                    bottom: 12,
-                    right: 12,
-                    child: FloatingActionButton.small(
-                      heroTag: 'recenter',
-                      backgroundColor: Colors.white,
-                      foregroundColor: const Color(0xFF1E88E5),
-                      elevation: 4,
-                      onPressed: () => _safeMove(center, 16),
-                      child: const Icon(Icons.my_location, size: 20),
-                    ),
+                // Tombol kontrol peta (kanan bawah peta)
+                Positioned(
+                  bottom: 12,
+                  right: 12,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (displayedOffices.isNotEmpty) ...[
+                        FloatingActionButton.small(
+                          heroTag: 'office_focus',
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF0D47A1),
+                          elevation: 4,
+                          tooltip: 'Fokus ke Kantor Cabang',
+                          onPressed: () {
+                            final target =
+                                nearestOffice ?? displayedOffices.first;
+                            _safeMove(
+                                LatLng(target.latitude, target.longitude), 16);
+                          },
+                          child: const Icon(Icons.apartment, size: 20),
+                        ),
+                        const SizedBox(height: 8),
+                      ],
+                      if (_hasActivePosition)
+                        FloatingActionButton.small(
+                          heroTag: 'recenter',
+                          backgroundColor: Colors.white,
+                          foregroundColor: const Color(0xFF1E88E5),
+                          elevation: 4,
+                          tooltip: 'Pusatkan ke Titik Aktif',
+                          onPressed: () => _safeMove(_activeLatLng, 16),
+                          child: const Icon(Icons.my_location, size: 20),
+                        ),
+                    ],
                   ),
+                ),
               ],
             ),
           ),
@@ -384,25 +586,32 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
             flex: 4,
             child: Container(
               color: Colors.white,
-              padding: const EdgeInsets.fromLTRB(20, 20, 20, 16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Koordinat
-                  if (hasPosition)
+              child: SafeArea(
+                top: false,
+                bottom: true,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                  // Koordinat Posisi User (GPS Real-Time)
+                  if (_hasActivePosition)
                     Row(
                       children: [
-                        const Icon(Icons.location_on_outlined,
-                            size: 16, color: Color(0xFF1E88E5)),
+                        const Icon(
+                          Icons.location_on_outlined,
+                          size: 16,
+                          color: Color(0xFF1E88E5),
+                        ),
                         const SizedBox(width: 6),
                         Expanded(
                           child: Text(
-                            '${_position!.latitude.toStringAsFixed(6)},  '
-                            '${_position!.longitude.toStringAsFixed(6)}',
+                            '${_activeLatLng.latitude.toStringAsFixed(6)},  ${_activeLatLng.longitude.toStringAsFixed(6)}',
                             style: const TextStyle(
-                                fontSize: 13,
-                                color: Colors.black87,
-                                fontWeight: FontWeight.w500),
+                              fontSize: 13,
+                              color: Colors.black87,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ],
@@ -413,6 +622,90 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                       style:
                           const TextStyle(fontSize: 13, color: Colors.grey),
                     ),
+
+                  // Informasi Jarak & Radius Kantor (Hanya aktif bila radius_enabled ON)
+                  if (prov.radiusEnabled &&
+                      _hasActivePosition &&
+                      nearestOffice != null &&
+                      distanceToNearest != null) ...[
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: isWithinRadius
+                            ? const Color(0xFFE8F5E9)
+                            : const Color(0xFFFFF3E0),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: isWithinRadius
+                              ? const Color(0xFFA5D6A7)
+                              : const Color(0xFFFFB74D),
+                        ),
+                      ),
+                      child: Row(
+                        children: [
+                          Icon(
+                            isWithinRadius
+                                ? Icons.check_circle
+                                : Icons.warning_amber_rounded,
+                            size: 16,
+                            color: isWithinRadius
+                                ? const Color(0xFF2E7D32)
+                                : const Color(0xFFE65100),
+                          ),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              isWithinRadius
+                                  ? 'DALAM RADIUS: ${nearestOffice.name} (${distanceToNearest.round()}m / batas ${nearestOffice.radiusMeters.toInt()}m)'
+                                  : 'DI LUAR RADIUS: ${nearestOffice.name} • Batas ${nearestOffice.radiusMeters.toInt()}m (Jarak: ${distanceToNearest >= 1000 ? '${(distanceToNearest / 1000).toStringAsFixed(1)} km' : '${distanceToNearest.round()} m'})',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.bold,
+                                color: isWithinRadius
+                                    ? const Color(0xFF1B5E20)
+                                    : const Color(0xFFBF360C),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ] else if (!prov.radiusEnabled && _hasActivePosition) ...[
+                    // Mode WFH (Radius OFF): Tampilkan info WFH tanpa peringatan radius
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE3F2FD),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFF90CAF9)),
+                      ),
+                      child: const Row(
+                        children: [
+                          Icon(Icons.home_work_outlined,
+                              size: 16, color: Color(0xFF1565C0)),
+                          SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              'Mode WFH Aktif (Presensi dari Rumah / Tanpa Batas Radius)',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF0D47A1),
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
 
                   const Spacer(),
 
@@ -446,7 +739,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton.icon(
-                      onPressed: (_state == _LocationState.ready &&
+                      onPressed: (_hasActivePosition &&
                               !isCompleted &&
                               !_submitting)
                           ? _simpanPresensi
@@ -483,9 +776,11 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
               ),
             ),
           ),
-        ],
+        ),
       ),
-    );
+    ],
+  ),
+);
   }
 
   Widget _buildMapOverlay() {
@@ -519,7 +814,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                 const Icon(Icons.location_off, color: Colors.red, size: 36),
                 const SizedBox(height: 10),
                 const Text(
-                  'Izin lokasi ditolak.\nAktifkan di pengaturan aplikasi.',
+                  'Izin lokasi ditolak.\nAktifkan izin lokasi di pengaturan aplikasi.',
                   style: TextStyle(fontSize: 13, color: Colors.black54),
                   textAlign: TextAlign.center,
                 ),
@@ -573,13 +868,13 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   String get _stateMessage {
     switch (_state) {
       case _LocationState.requesting:
-        return 'Meminta izin lokasi...';
+        return 'Meminta izin lokasi GPS...';
       case _LocationState.loading:
-        return 'Mendeteksi posisi GPS...';
+        return 'Mendeteksi posisi GPS real-time...';
       case _LocationState.denied:
-        return 'Izin lokasi ditolak.';
+        return 'Izin lokasi ditolak. Silakan aktifkan izin lokasi.';
       case _LocationState.disabled:
-        return 'GPS tidak aktif.';
+        return 'GPS tidak aktif. Silakan nyalakan GPS di HP Anda.';
       default:
         return '';
     }
