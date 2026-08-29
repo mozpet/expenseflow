@@ -39,6 +39,10 @@ return [
         'api_key' => env('GOOGLE_CLOUD_API_KEY'),
     ],
 
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+    ],
+
     'fcm' => [
         // Firebase Cloud Messaging — server key dari Firebase Console
         // (Settings → Cloud Messaging → Server key)

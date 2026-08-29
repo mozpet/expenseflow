@@ -270,7 +270,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
                       color: isSelected
                           ? t.$4.withValues(alpha: 0.12)
                           : Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: isSelected ? t.$4 : Colors.grey.shade200,
                         width: isSelected ? 1.5 : 1,
@@ -408,7 +408,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   color: const Color(0xFFFFF8E1),
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(8),
                   border: Border.all(color: const Color(0xFFFFE082)),
                 ),
                 child: Column(
@@ -475,7 +475,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
               decoration: InputDecoration(
                 hintText: 'Jelaskan alasan pengajuan izin/cuti Anda...',
                 border: OutlineInputBorder(
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(8),
                 ),
                 contentPadding: const EdgeInsets.all(14),
               ),
@@ -507,7 +507,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
                     color: _docBytes != null
                         ? const Color(0xFFE8F5E9)
                         : const Color(0xFFFFF3E0),
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(8),
                     border: Border.all(
                       color: _docBytes != null
                           ? const Color(0xFFA5D6A7)
@@ -616,7 +616,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
                 color: const Color(0xFFFFF9C4),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: const Color(0xFFFFF59D)),
               ),
               child: const Text(
@@ -635,11 +635,11 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
               child: ElevatedButton(
                 onPressed: _isLoading ? null : _submit,
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: Theme.of(context).primaryColor,
+                  backgroundColor: const Color(0xFF0088FF),
                   foregroundColor: Colors.white,
                   padding: const EdgeInsets.symmetric(vertical: 16),
                   shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: BorderRadius.circular(8),
                   ),
                 ),
                 child: _isLoading
@@ -677,7 +677,7 @@ class _DateButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
         decoration: BoxDecoration(
           border: Border.all(color: Colors.grey.shade300),
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(8),
         ),
         child: Row(
           children: [

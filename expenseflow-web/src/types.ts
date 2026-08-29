@@ -1,5 +1,12 @@
 export type ReceiptStatus = 'Review' | 'Pending' | 'Disetujui' | 'Ditolak';
 
+export interface ReceiptItem {
+  name: string;
+  qty: number;
+  price: number;
+  total: number;
+}
+
 export interface Receipt {
   id: string;
   karyawan: string;
@@ -14,6 +21,10 @@ export interface Receipt {
   tanggal: string;
   departemen: string;
   imageUrl?: string; // URL endpoint untuk foto struk
+  items?: ReceiptItem[];
+  subtotal?: number;
+  tax?: number;
+  discount?: number;
 }
 
 export interface StrukApproval {
@@ -33,6 +44,12 @@ export interface StrukApproval {
     role: string;
   };
   approvedAt?: string;
+  items?: ReceiptItem[];
+  subtotal?: number;
+  tax?: number;
+  discount?: number;
+  ocrNominal?: number;
+  kategori?: string;
 }
 
 export type InvoiceStatus = 'Due' | 'Pending' | 'Dibayar' | 'Ditolak';

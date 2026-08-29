@@ -120,11 +120,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   @override
   Widget build(BuildContext context) {
     final bottomPadding = MediaQuery.of(context).padding.bottom;
-    // Adaptif: jika ada navigasi gestur (bottomPadding > 0) gunakan bottomPadding,
-    // jika HP memakai 3 tombol navbar (bottomPadding == 0) beri 10px breathing room.
-    final safeBottomPadding = bottomPadding > 0 ? bottomPadding : 10.0;
-    final navBarHeight = 65.0 + safeBottomPadding;
-    final totalBarHeight = 95.0 + safeBottomPadding;
+    // Adaptif: jika ada navigasi gestur gunakan bottomPadding, jika 3 tombol sistem beri padding aman 8px
+    final safeBottomPadding = bottomPadding > 0 ? bottomPadding : 8.0;
+    final navBarHeight = 62.0 + safeBottomPadding;
+    final totalBarHeight = 84.0 + safeBottomPadding;
 
     return Scaffold(
       extendBody: true,
@@ -159,16 +158,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   bottom: 0,
                   height: navBarHeight,
                   child: Container(
-                    decoration: const BoxDecoration(
+                    decoration: BoxDecoration(
                       color: Colors.white,
-                      borderRadius: BorderRadius.vertical(
+                      borderRadius: const BorderRadius.vertical(
                         top: Radius.circular(20),
                       ),
                       boxShadow: [
                         BoxShadow(
-                          color: Colors.black12,
-                          blurRadius: 10,
-                          offset: Offset(0, -2),
+                          color: Colors.black.withValues(alpha: 0.06),
+                          blurRadius: 16,
+                          offset: const Offset(0, -4),
                         ),
                       ],
                     ),
@@ -181,29 +180,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       mainAxisAlignment: MainAxisAlignment.spaceAround,
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        _buildTabItem(0, Icons.home_outlined, Icons.home, 'Home'),
+                        _buildTabItem(0, Icons.home_outlined, Icons.home_rounded, 'Home'),
                         _buildTabItem(
                           1,
                           Icons.receipt_long_outlined,
-                          Icons.receipt_long,
+                          Icons.receipt_long_rounded,
                           'Struk',
                         ),
                         _buildTabItem(
                           2,
-                          Icons.fingerprint,
-                          Icons.fingerprint,
+                          Icons.fingerprint_rounded,
+                          Icons.fingerprint_rounded,
                           'Presensi',
                         ),
                         _buildTabItem(
                           3,
                           Icons.event_note_outlined,
-                          Icons.event_note,
+                          Icons.event_note_rounded,
                           'Izin/Cuti',
                         ),
                         _buildTabItem(
                           4,
-                          Icons.person_outline,
-                          Icons.person,
+                          Icons.person_outline_rounded,
+                          Icons.person_rounded,
                           'Profil',
                         ),
                       ],
@@ -254,66 +253,56 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         onTap: () => _onTabTapped(index),
         behavior: HitTestBehavior.opaque,
         child: SizedBox(
-          height: 100,
+          height: 84,
           child: Stack(
             alignment: Alignment.bottomCenter,
             clipBehavior: Clip.none,
             children: [
               AnimatedPositioned(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOutBack,
-                bottom: isSelected ? 10 : 14,
-                child: AnimatedOpacity(
-                  duration: const Duration(milliseconds: 300),
-                  opacity: isSelected ? 1.0 : 0.7,
-                  child: Text(
-                    label,
-                    style: TextStyle(
-                      color: isSelected
-                          ? const Color(0xFF1E88E5)
-                          : Colors.grey.shade600,
-                      fontSize: 11,
-                      fontWeight: isSelected
-                          ? FontWeight.bold
-                          : FontWeight.normal,
-                    ),
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeOutCubic,
+                bottom: 8,
+                child: Text(
+                  label,
+                  style: TextStyle(
+                    color: isSelected
+                        ? const Color(0xFF1E88E5)
+                        : Colors.grey.shade500,
+                    fontSize: 10.5,
+                    fontWeight: isSelected
+                        ? FontWeight.w700
+                        : FontWeight.w500,
                   ),
                 ),
               ),
               AnimatedPositioned(
-                duration: const Duration(milliseconds: 300),
-                curve: Curves.easeOutBack,
-                bottom: isSelected ? 38 : 32,
+                duration: const Duration(milliseconds: 250),
+                curve: Curves.easeOutCubic,
+                bottom: isSelected ? 28 : 26,
                 child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOutBack,
-                  width: isSelected ? 56 : 32,
-                  height: isSelected ? 56 : 32,
+                  duration: const Duration(milliseconds: 250),
+                  curve: Curves.easeOutCubic,
+                  width: isSelected ? 44 : 28,
+                  height: isSelected ? 44 : 28,
                   decoration: BoxDecoration(
                     color: isSelected
                         ? const Color(0xFF1E88E5)
                         : Colors.transparent,
                     shape: BoxShape.circle,
                     boxShadow: isSelected
-                        ? const [
+                        ? [
                             BoxShadow(
-                              color: Color(0x661E88E5),
-                              blurRadius: 8,
-                              offset: Offset(0, 4),
+                              color: const Color(0xFF1E88E5).withValues(alpha: 0.35),
+                              blurRadius: 10,
+                              offset: const Offset(0, 4),
                             ),
                           ]
-                        : const [
-                            BoxShadow(
-                              color: Colors.transparent,
-                              blurRadius: 8,
-                              offset: Offset(0, 4),
-                            ),
-                          ],
+                        : const [],
                   ),
                   child: Icon(
                     isSelected ? iconOn : iconOff,
                     color: isSelected ? Colors.white : Colors.grey.shade600,
-                    size: isSelected ? 32 : 26,
+                    size: isSelected ? 24 : 23,
                   ),
                 ),
               ),

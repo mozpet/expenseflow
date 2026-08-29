@@ -356,6 +356,7 @@ class PresensiProvider extends ChangeNotifier {
               m['status'],
             ),
             overtimeStatus: overtimeApproval?['status'] as String?,
+            overtimeReason: overtimeApproval?['overtime_reason'] as String?,
           );
         }),
       );
@@ -599,6 +600,50 @@ class PresensiProvider extends ChangeNotifier {
 
     await fetchLeaveBalance();
     notifyListeners();
+  }
+
+  // ─── Lembur / Overtime Claim & Decline ──────────────────────────────────────
+
+  /// Ajukan lembur untuk record presensi tertentu dengan alasan/penjelasan.
+  Future<bool> claimOvertime(int attendanceId, String reason) async {
+    try {
+      final res = await ApiService.claimOvertime(attendanceId, reason);
+      final approval = res['approval'] as Map<String, dynamic>?;
+
+      // Update record di list lokal
+      final idx = _records.indexWhere((r) => r.id == attendanceId);
+      if (idx != -1) {
+        _records[idx] = _records[idx].copyWith(
+          overtimeStatus: (approval?['status'] as String?) ?? 'pending',
+          overtimeReason: (approval?['overtime_reason'] as String?) ?? reason,
+        );
+      }
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Batalkan / tolak klaim lembur untuk record presensi tertentu.
+  Future<bool> declineOvertime(int attendanceId) async {
+    try {
+      await ApiService.declineOvertime(attendanceId);
+
+      // Update record di list lokal: reset overtime_minutes ke 0
+      final idx = _records.indexWhere((r) => r.id == attendanceId);
+      if (idx != -1) {
+        _records[idx] = _records[idx].copyWith(
+          overtimeMinutes: 0,
+          overtimeStatus: null,
+          overtimeReason: null,
+        );
+      }
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   // ─── Utility Methods ────────────────────────────────────────────────────────

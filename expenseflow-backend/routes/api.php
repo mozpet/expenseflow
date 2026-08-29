@@ -175,6 +175,7 @@ Route::prefix('v1')->group(function () {
             // Saldo / kuota cuti
             Route::get('/leave-balances', [AttendanceController::class, 'listLeaveBalances']);
             Route::post('/leave-balances', [AttendanceController::class, 'setLeaveBalance']);
+            Route::get('/leave-balance-history', [AttendanceController::class, 'listLeaveBalanceHistories']);
 
             // CRUD pengaturan kantor (lokasi & radius presensi)
             Route::get('/settings', [AttendanceController::class, 'listSettings']);
@@ -182,6 +183,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/settings/{attendanceSetting}', [AttendanceController::class, 'showSettings']);
             Route::match(['put', 'patch'], '/settings/{attendanceSetting}', [AttendanceController::class, 'updateSettings']);
             Route::delete('/settings/{attendanceSetting}', [AttendanceController::class, 'destroySettings']);
+            Route::post('/settings/{id}/reset-leave-balances', [AttendanceController::class, 'resetOfficeLeaveBalances']);
 
             // Kalender libur nasional / cuti bersama perusahaan
             Route::get('/holidays', [AttendanceController::class, 'listHolidays']);
@@ -257,6 +259,9 @@ Route::prefix('v1')->group(function () {
 
             // Daftar overtime approval milik karyawan ini
             Route::get('/my-overtime', [AttendanceController::class, 'myOvertimeApprovals']);
+            // Klaim / ajukan lembur dari mobile dengan alasan atau batalkan lembur
+            Route::post('/{id}/claim-overtime', [AttendanceController::class, 'claimOvertime']);
+            Route::post('/{id}/decline-overtime', [AttendanceController::class, 'declineOvertime']);
             // Simpan FCM token device (dipanggil saat login/buka app)
             Route::post('/fcm-token', [AttendanceController::class, 'registerFcmToken']);
             // Notifikasi shift baru (Flutter: banner di beranda)

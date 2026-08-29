@@ -56,8 +56,10 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
         bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white,
-          unselectedLabelColor: Colors.white60,
+          unselectedLabelColor: Colors.white70,
           indicatorColor: Colors.white,
+          indicatorWeight: 3,
+          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
           tabs: const [
             Tab(text: 'Riwayat'),
             Tab(text: 'Saldo Cuti'),
@@ -74,17 +76,15 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
       floatingActionButton: FloatingActionButton.extended(
         heroTag: 'izin_cuti_fab',
         onPressed: () async {
-          // Ambil provider sebelum await agar tidak pakai context lintas async
           final prov =
               Provider.of<PresensiProvider>(context, listen: false);
           await Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const AjukanIzinScreen()),
           );
-          // Refresh riwayat dari backend setelah kembali
           prov.fetchLeaveRequests();
         },
-        backgroundColor: Theme.of(context).primaryColor,
+        backgroundColor: const Color(0xFF0088FF),
         foregroundColor: Colors.white,
         icon: const Icon(Icons.add),
         label: const Text(
@@ -95,7 +95,6 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
     );
   }
 }
-
 
 // ─── Tab Riwayat ─────────────────────────────────────────────
 class _RiwayatIzinTab extends StatelessWidget {
@@ -123,13 +122,14 @@ class _RiwayatIzinTab extends StatelessWidget {
               .fetchLeaveRequests(),
       child: leaves.isEmpty
           ? ListView(
-              // ListView agar tetap bisa ditarik (pull-to-refresh) walau kosong
               physics: const AlwaysScrollableScrollPhysics(),
               children: const [
                 SizedBox(height: 120),
                 Center(
-                  child: Text('Belum ada pengajuan izin/cuti.',
-                      style: TextStyle(color: Colors.grey)),
+                  child: Text(
+                    'Belum ada pengajuan izin/cuti.',
+                    style: TextStyle(color: Colors.grey, fontSize: 14),
+                  ),
                 ),
               ],
             )
@@ -152,13 +152,14 @@ class _LeaveCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final statusStyle = _statusStyle(leave.status);
     final typeLabel = _typeLabel(leave.leaveType);
-    final typeColor = _typeColor(leave.leaveType);
+    final typeStyle = _typeStyle(leave.leaveType);
 
     return Card(
+      color: Colors.white,
       elevation: 0,
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: Colors.grey.shade200),
       ),
       child: Padding(
@@ -174,13 +175,14 @@ class _LeaveCard extends StatelessWidget {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: typeColor.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(20),
+                    color: typeStyle.bg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: typeStyle.border),
                   ),
                   child: Text(
                     typeLabel,
                     style: TextStyle(
-                      color: typeColor,
+                      color: typeStyle.text,
                       fontWeight: FontWeight.bold,
                       fontSize: 12,
                     ),
@@ -191,13 +193,14 @@ class _LeaveCard extends StatelessWidget {
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: statusStyle.$2,
-                    borderRadius: BorderRadius.circular(12),
+                    color: statusStyle.bg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: statusStyle.border),
                   ),
                   child: Text(
-                    statusStyle.$1,
+                    statusStyle.label,
                     style: TextStyle(
-                      color: statusStyle.$3,
+                      color: statusStyle.text,
                       fontSize: 11,
                       fontWeight: FontWeight.bold,
                     ),
@@ -205,35 +208,48 @@ class _LeaveCard extends StatelessWidget {
                 ),
               ],
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             Row(
               children: [
                 const Icon(Icons.calendar_today_outlined,
-                    size: 14, color: Colors.grey),
+                    size: 14, color: Color(0xFF546E7A)),
                 const SizedBox(width: 6),
                 Text(
                   '${leave.startDate} — ${leave.endDate}',
-                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  style: const TextStyle(
+                    color: Color(0xFF455A64),
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                  ),
                 ),
                 const SizedBox(width: 8),
                 Container(
                   padding:
-                      const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                   decoration: BoxDecoration(
-                    color: Colors.grey.shade100,
+                    color: const Color(0xFFE3F2FD),
                     borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: const Color(0xFFBBDEFB)),
                   ),
                   child: Text(
                     '${leave.totalDays} hari',
-                    style: const TextStyle(fontSize: 11, color: Colors.black54),
+                    style: const TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF1565C0),
+                    ),
                   ),
                 ),
               ],
             ),
-            const SizedBox(height: 6),
+            const SizedBox(height: 8),
             Text(
               leave.reason,
-              style: const TextStyle(fontSize: 13, color: Colors.black87),
+              style: const TextStyle(
+                fontSize: 13,
+                color: Colors.black87,
+                height: 1.3,
+              ),
             ),
             if (leave.status == 'rejected' &&
                 leave.rejectionReason != null) ...[
@@ -242,9 +258,9 @@ class _LeaveCard extends StatelessWidget {
                 width: double.infinity,
                 padding: const EdgeInsets.all(10),
                 decoration: BoxDecoration(
-                  color: Colors.red.shade50,
+                  color: const Color(0xFFFFEBEE),
                   borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: Colors.red.shade100),
+                  border: Border.all(color: const Color(0xFFFFCDD2)),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -252,17 +268,19 @@ class _LeaveCard extends StatelessWidget {
                     const Text(
                       'Alasan Penolakan:',
                       style: TextStyle(
-                          color: Colors.red,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 11),
+                        color: Color(0xFFC62828),
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
+                      ),
                     ),
                     const SizedBox(height: 2),
                     Text(
                       leave.rejectionReason!,
-                      style: TextStyle(
-                          color: Colors.red.shade900,
-                          fontSize: 11,
-                          height: 1.4),
+                      style: const TextStyle(
+                        color: Color(0xFFB71C1C),
+                        fontSize: 11,
+                        height: 1.4,
+                      ),
                     ),
                   ],
                 ),
@@ -274,14 +292,29 @@ class _LeaveCard extends StatelessWidget {
     );
   }
 
-  (String, Color, Color) _statusStyle(String status) {
+  ({String label, Color bg, Color border, Color text}) _statusStyle(String status) {
     switch (status) {
       case 'approved':
-        return ('Disetujui', const Color(0xFFE8F5E9), Colors.green);
+        return (
+          label: 'Disetujui',
+          bg: const Color(0xFFE8F5E9),
+          border: const Color(0xFFA5D6A7),
+          text: const Color(0xFF2E7D32),
+        );
       case 'rejected':
-        return ('Ditolak', const Color(0xFFFFEBEE), Colors.red);
+        return (
+          label: 'Ditolak',
+          bg: const Color(0xFFFFEBEE),
+          border: const Color(0xFFFFCDD2),
+          text: const Color(0xFFC62828),
+        );
       default:
-        return ('Menunggu', const Color(0xFFFFF3E0), Colors.orange);
+        return (
+          label: 'Menunggu',
+          bg: const Color(0xFFFFF3E0),
+          border: const Color(0xFFFFE0B2),
+          text: const Color(0xFFE65100),
+        );
     }
   }
 
@@ -300,18 +333,38 @@ class _LeaveCard extends StatelessWidget {
     }
   }
 
-  Color _typeColor(String type) {
+  ({Color bg, Color border, Color text}) _typeStyle(String type) {
     switch (type) {
       case 'wfh':
-        return const Color(0xFF1E88E5);
+        return (
+          bg: const Color(0xFFE3F2FD),
+          border: const Color(0xFF90CAF9),
+          text: const Color(0xFF1565C0),
+        );
       case 'izin':
-        return Colors.purple;
+        return (
+          bg: const Color(0xFFF3E5F5),
+          border: const Color(0xFFCE93D8),
+          text: const Color(0xFF7B1FA2),
+        );
       case 'sakit':
-        return Colors.orange;
+        return (
+          bg: const Color(0xFFFFF3E0),
+          border: const Color(0xFFFFCC80),
+          text: const Color(0xFFE65100),
+        );
       case 'cuti':
-        return Colors.teal;
+        return (
+          bg: const Color(0xFFE0F2F1),
+          border: const Color(0xFF80CBC4),
+          text: const Color(0xFF00695C),
+        );
       default:
-        return Colors.grey;
+        return (
+          bg: const Color(0xFFECEFF1),
+          border: const Color(0xFFCFD8DC),
+          text: const Color(0xFF455A64),
+        );
     }
   }
 }
@@ -334,14 +387,17 @@ class _SaldoCutiTab extends StatelessWidget {
           Text(
             'Saldo Cuti Tahun ${DateTime.now().year}',
             style: const TextStyle(
-                fontSize: 16, fontWeight: FontWeight.bold, color: Colors.black87),
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              color: Colors.black87,
+            ),
           ),
           const SizedBox(height: 4),
           const Text(
             'Kuota cuti & sakit yang tersedia untuk Anda.',
-            style: TextStyle(fontSize: 12, color: Colors.grey),
+            style: TextStyle(fontSize: 12, color: Color(0xFF546E7A)),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
           if (prov.loadingBalance && balances.isEmpty)
             const ShimmerLoading(
               child: Column(
@@ -353,20 +409,20 @@ class _SaldoCutiTab extends StatelessWidget {
             )
           else
             ...balances.map((b) => _BalanceCard(balance: b)),
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
           if (prov.leaveResetInfo != null && prov.leaveResetInfo!['leave_reset_date'] != null)
             Container(
               margin: const EdgeInsets.only(bottom: 12),
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
-                color: Colors.amber.shade50,
+                color: const Color(0xFFFFF8E1),
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.amber.shade200),
+                border: Border.all(color: const Color(0xFFFFE082)),
               ),
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(Icons.update, color: Colors.amber.shade700, size: 18),
+                  const Icon(Icons.update, color: Color(0xFFE65100), size: 18),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Builder(
@@ -378,15 +434,22 @@ class _SaldoCutiTab extends StatelessWidget {
                           final int? month = int.tryParse(parts[0]);
                           final int? day = int.tryParse(parts[1]);
                           if (month != null && day != null && month >= 1 && month <= 12) {
-                            const months = ['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'];
+                            const months = [
+                              'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
+                              'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+                            ];
                             prettyDate = '$day ${months[month - 1]}';
                           }
                         }
                         return Text(
                           'Saldo cuti tahunan akan di-reset menjadi ${prov.leaveResetInfo!['default_leave_quota']} hari pada setiap tanggal $prettyDate.',
-                          style: TextStyle(fontSize: 12, color: Colors.amber.shade900),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFFBF360C),
+                            fontWeight: FontWeight.w500,
+                          ),
                         );
-                      }
+                      },
                     ),
                   ),
                 ],
@@ -398,15 +461,15 @@ class _SaldoCutiTab extends StatelessWidget {
             decoration: BoxDecoration(
               color: const Color(0xFFE3F2FD),
               borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: const Color(0xFFBBDEFB)),
+              border: Border.all(color: const Color(0xFF90CAF9)),
             ),
-            child: Row(
+            child: const Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(Icons.info_outline,
-                    color: Color(0xFF1E88E5), size: 18),
-                const SizedBox(width: 8),
-                const Expanded(
+                Icon(Icons.info_outline,
+                    color: Color(0xFF1565C0), size: 18),
+                SizedBox(width: 8),
+                Expanded(
                   child: Text(
                     'Saldo cuti dipotong otomatis saat pengajuan disetujui HRD. Kuota dapat disesuaikan oleh HRD.',
                     style:
@@ -429,17 +492,18 @@ class _BalanceCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isCuti = balance.leaveType == 'cuti';
-    final color = isCuti ? Colors.teal : Colors.purple;
+    final color = isCuti ? const Color(0xFF00695C) : const Color(0xFF7B1FA2);
     final label = isCuti ? 'Cuti Tahunan' : 'Izin';
     final icon = isCuti
         ? Icons.beach_access_outlined
         : Icons.event_busy_outlined;
 
     return Card(
+      color: Colors.white,
       elevation: 0,
       margin: const EdgeInsets.only(bottom: 12),
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         side: BorderSide(color: Colors.grey.shade200),
       ),
       child: Padding(
@@ -454,7 +518,10 @@ class _BalanceCard extends StatelessWidget {
                 Text(
                   label,
                   style: const TextStyle(
-                      fontWeight: FontWeight.bold, fontSize: 14),
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                    color: Colors.black87,
+                  ),
                 ),
                 const Spacer(),
                 if (isCuti)
@@ -470,10 +537,20 @@ class _BalanceCard extends StatelessWidget {
                               color: color,
                             ),
                           ),
+                          const TextSpan(
+                            text: ' / ',
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey,
+                            ),
+                          ),
                           TextSpan(
-                            text: ' / ${balance.quota} hari',
+                            text: '${balance.quota} hari',
                             style: const TextStyle(
-                                fontSize: 13, color: Colors.grey),
+                              fontSize: 13,
+                              color: Color(0xFF455A64),
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ],
                       ),
@@ -483,16 +560,16 @@ class _BalanceCard extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(
                           horizontal: 10, vertical: 4),
                       decoration: BoxDecoration(
-                        color: Colors.grey.shade100,
+                        color: const Color(0xFFECEFF1),
                         borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.grey.shade300),
+                        border: Border.all(color: const Color(0xFFCFD8DC)),
                       ),
-                      child: Text(
+                      child: const Text(
                         'Tidak Aktif',
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
-                          color: Colors.grey.shade600,
+                          color: Color(0xFF546E7A),
                         ),
                       ),
                     )
@@ -510,7 +587,11 @@ class _BalanceCard extends StatelessWidget {
                         ),
                         const TextSpan(
                           text: ' hari',
-                          style: TextStyle(fontSize: 13, color: Colors.grey),
+                          style: TextStyle(
+                            fontSize: 13,
+                            color: Color(0xFF455A64),
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ],
                     ),
@@ -535,14 +616,19 @@ class _BalanceCard extends StatelessWidget {
                   children: [
                     Text(
                       'Terpakai: ${balance.used} hari',
-                      style: const TextStyle(fontSize: 12, color: Colors.grey),
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFF546E7A),
+                        fontWeight: FontWeight.w500,
+                      ),
                     ),
                     Text(
                       'Sisa: ${balance.remaining} hari',
                       style: TextStyle(
-                          fontSize: 12,
-                          color: color,
-                          fontWeight: FontWeight.bold),
+                        fontSize: 12,
+                        color: color,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
                   ],
                 ),
@@ -556,11 +642,11 @@ class _BalanceCard extends StatelessWidget {
                           : 'Belum diaktifkan oleh HRD',
                       style: const TextStyle(fontSize: 12, color: Colors.grey),
                     ),
-                    Text(
+                    const Text(
                       'Status: Tidak Aktif',
                       style: TextStyle(
                         fontSize: 12,
-                        color: Colors.grey.shade600,
+                        color: Color(0xFF546E7A),
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -568,9 +654,9 @@ class _BalanceCard extends StatelessWidget {
                 ),
               ],
             ] else ...[
-              Text(
+              const Text(
                 'Total hari izin & sakit yang digunakan',
-                style: const TextStyle(fontSize: 12, color: Colors.grey),
+                style: TextStyle(fontSize: 12, color: Color(0xFF546E7A)),
               ),
             ],
           ],

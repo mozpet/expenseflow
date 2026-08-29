@@ -142,7 +142,7 @@ class _SubmitStep1ScreenState extends State<SubmitStep1Screen> {
                       height: 180,
                       decoration: BoxDecoration(
                         color: const Color(0xFFE3F2FD).withValues(alpha: 0.5),
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.blue, width: 2),
                       ),
                       child: RepaintBoundary(
@@ -152,7 +152,7 @@ class _SubmitStep1ScreenState extends State<SubmitStep1Screen> {
                             if (photoProv.bytes != null && !photoProv.isPdf)
                               // Preview gambar
                               ClipRRect(
-                                borderRadius: BorderRadius.circular(14),
+                                borderRadius: BorderRadius.circular(6),
                                 child: Image.memory(
                                   photoProv.bytes!,
                                   fit: BoxFit.cover,
@@ -238,7 +238,7 @@ class _SubmitStep1ScreenState extends State<SubmitStep1Screen> {
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: const Color(0xFFFFF9C4),
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(8),
                       border: Border.all(color: const Color(0xFFFFF59D)),
                     ),
                     child: const Text(

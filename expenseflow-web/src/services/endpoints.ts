@@ -164,9 +164,13 @@ export const attendanceApi = {
   // Saldo / kuota cuti
   leaveBalances: (filters?: { user_id?: number; year?: number }) =>
     apiGet('/dashboard/attendance/leave-balances', filters),
+  leaveBalanceHistories: (filters?: { office_id?: string; year?: number; search?: string }) =>
+    apiGet('/dashboard/attendance/leave-balance-history', filters),
+  resetOfficeLeaveBalances: (officeId: number | string) =>
+    apiPost(`/dashboard/attendance/settings/${officeId}/reset-leave-balances`),
   setLeaveBalance: (payload: {
     user_id: number;
-    leave_type: 'cuti' | 'sakit';
+    leave_type: 'cuti' | 'izin';
     quota: number;
     year?: number;
   }) => apiPost('/dashboard/attendance/leave-balances', payload),

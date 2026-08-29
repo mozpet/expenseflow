@@ -34,6 +34,10 @@ import {
   UserX,
   Loader2,
   ShieldAlert,
+  History,
+  RotateCcw,
+  Archive,
+  Sparkles,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
@@ -583,6 +587,24 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [balanceSearch, setBalanceSearch] = useState('');
   const [balanceOfficeFilter, setBalanceOfficeFilter] = useState('');
   const [togglingUserId, setTogglingUserId] = useState<number | null>(null);
+
+  // Sub-tab & history state untuk Saldo Cuti
+  const [balanceSubTab, setBalanceSubTab] = useState<'active' | 'history'>('active');
+  const [balanceHistories, setBalanceHistories] = useState<any[]>([]);
+  const [balanceHistoryStats, setBalanceHistoryStats] = useState<{
+    total_records: number;
+    total_cuti_used: number;
+    total_cuti_remaining: number;
+    total_izin_sakit_used: number;
+  } | null>(null);
+  const [balanceHistoryOfficeFilter, setBalanceHistoryOfficeFilter] = useState('');
+  const [balanceHistoryYearFilter, setBalanceHistoryYearFilter] = useState('');
+  const [balanceHistorySearch, setBalanceHistorySearch] = useState('');
+  const [balanceHistoryLoading, setBalanceHistoryLoading] = useState(false);
+  const [resetOfficeModal, setResetOfficeModal] = useState<{ id: number; name: string; quota: number; resetDate: string } | null>(null);
+  const [isResettingOffice, setIsResettingOffice] = useState(false);
+
+  const debouncedBalanceHistorySearch = useDebounce(balanceHistorySearch, 500);
   const [report, setReport] = useState<any | null>(null);
   const [reportFilter, setReportFilter] = useState<{ start_date: string; end_date: string; status: string; type: string; search?: string; office_id?: string }>({
     start_date: '',
@@ -695,6 +717,38 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
   }, []);
 
+  const loadBalanceHistories = useCallback(async () => {
+    setBalanceHistoryLoading(true);
+    try {
+      const params: any = {};
+      if (balanceHistoryOfficeFilter) params.office_id = balanceHistoryOfficeFilter;
+      if (balanceHistoryYearFilter) params.year = Number(balanceHistoryYearFilter);
+      if (debouncedBalanceHistorySearch) params.search = debouncedBalanceHistorySearch;
+      const res: any = await attendanceApi.leaveBalanceHistories(params);
+      setBalanceHistories(res?.histories ?? []);
+      setBalanceHistoryStats(res?.stats ?? null);
+    } catch (e) {
+      reportApiError(e, 'Gagal memuat riwayat saldo cuti.');
+    } finally {
+      setBalanceHistoryLoading(false);
+    }
+  }, [balanceHistoryOfficeFilter, balanceHistoryYearFilter, debouncedBalanceHistorySearch]);
+
+  const handleManualResetOffice = async (officeId: number, officeName: string) => {
+    setIsResettingOffice(true);
+    try {
+      const res: any = await attendanceApi.resetOfficeLeaveBalances(officeId);
+      onAddAuditLog('Reset Saldo Cuti', `Manual reset kantor ${officeName}: ${res.reset_count} karyawan`, 'bg-amber-500');
+      onAddNotification('success', 'Reset Saldo Berhasil', res.message || `Saldo cuti kantor ${officeName} berhasil di-reset.`);
+      setResetOfficeModal(null);
+      await Promise.all([loadBalances(), loadBalanceHistories()]);
+    } catch (e) {
+      reportApiError(e, `Gagal me-reset saldo kantor ${officeName}.`);
+    } finally {
+      setIsResettingOffice(false);
+    }
+  };
+
   const loadReport = useCallback(async (page = reportPage) => {
     setLoading(true);
     setError(null);
@@ -740,7 +794,13 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     if (tab === 'today') loadToday();
     else if (tab === 'leaves') loadLeaves();
     else if (tab === 'users') loadUsers();
-    else if (tab === 'balances') loadBalances();
+    else if (tab === 'balances') {
+      if (balanceSubTab === 'active') {
+        loadBalances();
+      } else {
+        loadBalanceHistories();
+      }
+    }
     else if (tab === 'report') loadReport(reportPage);
     else if (tab === 'holidays') {
       loadHolidays();
@@ -749,7 +809,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, reportFilter, reportPage, holidayYear]);
+  }, [tab, balanceSubTab, reportFilter, reportPage, holidayYear, loadBalanceHistories]);
 
   // ─── Aksi ─────────────────────────────────────────────────
   const handleApproveLeave = async (id: number, name: string) => {
@@ -1579,56 +1639,338 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
       {/* ─── TAB: Saldo Cuti ─── */}
       {tab === 'balances' && (
-        loading ? <TabSkeleton tab="balances" /> : (() => {
-          // Group baris flat per nama karyawan → 1 card per orang
-          type BalanceEntry = { cuti?: any; izin?: any; employeeCode?: string };
-          const grouped = balances.reduce<Record<string, BalanceEntry>>((acc, b) => {
-            if (!acc[b.user_name]) {
-              acc[b.user_name] = { employeeCode: b.employee_code || b.nik || b.user?.employee_code || '' };
-            }
-            if (b.leave_type === 'cuti') acc[b.user_name].cuti = b;
-            else acc[b.user_name].izin = b;
-            return acc;
-          }, {});
+        <div className="space-y-5">
+          {/* Sub-tab Navigation (Segmented Switch) */}
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b border-slate-100 dark:border-slate-800">
+            <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
+              <button
+                onClick={() => setBalanceSubTab('active')}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  balanceSubTab === 'active'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                <Users className="w-3.5 h-3.5" />
+                Saldo Berjalan (Periode Aktif)
+              </button>
+              <button
+                onClick={() => {
+                  setBalanceSubTab('history');
+                  loadBalanceHistories();
+                }}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  balanceSubTab === 'history'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                <History className="w-3.5 h-3.5" />
+                Riwayat Saldo Sebelumnya
+                {balanceHistories.length > 0 && (
+                  <span className="ml-1 px-1.5 py-0.2 bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-300 text-[10px] rounded-full font-bold">
+                    {balanceHistories.length}
+                  </span>
+                )}
+              </button>
+            </div>
 
-          const entries = Object.entries(grouped)
-            .filter(([, data]: [string, any]) => {
-              // Filter kantor (office_id dari API; kosong/null = belum di-assign kantor)
-              if (balanceOfficeFilter) {
-                const officeId = String(data.cuti?.office_id ?? data.izin?.office_id ?? '');
-                if (balanceOfficeFilter === 'none') {
-                  if (officeId !== '') return false;
-                } else if (officeId !== balanceOfficeFilter) {
-                  return false;
+            {/* Info ringkas anniversary / reset */}
+            <p className="text-[11px] text-slate-400 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+              <span>Saat tanggal reset tiba (misal: 1 Des), pemakaian cuti &amp; izin/sakit otomatis tereset dan diarsipkan ke riwayat.</span>
+            </p>
+          </div>
+
+          {/* ── SUB-TAB: Saldo Berjalan (Periode Aktif) ── */}
+          {balanceSubTab === 'active' && (
+            loading ? <TabSkeleton tab="balances" /> : (() => {
+              type BalanceEntry = { cuti?: any; izin?: any; employeeCode?: string; department?: string; officeName?: string };
+              const grouped = balances.reduce<Record<string, BalanceEntry>>((acc, b) => {
+                if (!acc[b.user_name]) {
+                  acc[b.user_name] = {
+                    employeeCode: b.employee_code || b.nik || b.user?.employee_code || '',
+                    department: b.user?.department || b.department || '',
+                    officeName: b.office_name || b.office?.office_name || '',
+                  };
                 }
-              }
-              return true;
-            })
-            .filter(([name, data]: [string, any]) => {
-              const q = debouncedBalanceSearch.toLowerCase();
-              return !q || name.toLowerCase().includes(q) || (data.employeeCode && data.employeeCode.toLowerCase().includes(q));
-            });
+                if (b.leave_type === 'cuti') acc[b.user_name].cuti = b;
+                else acc[b.user_name].izin = b;
+                return acc;
+              }, {});
 
-          const progressColor = (remaining: number, quota: number) => {
-            if (quota === 0) return 'bg-slate-300';
-            const pct = remaining / quota;
-            if (pct > 0.5) return 'bg-emerald-500';
-            if (pct > 0.25) return 'bg-amber-400';
-            return 'bg-rose-500';
-          };
+              const entries = Object.entries(grouped)
+                .filter(([, data]: [string, any]) => {
+                  if (balanceOfficeFilter) {
+                    const officeId = String(data.cuti?.office_id ?? data.izin?.office_id ?? '');
+                    if (balanceOfficeFilter === 'none') {
+                      if (officeId !== '') return false;
+                    } else if (officeId !== balanceOfficeFilter) {
+                      return false;
+                    }
+                  }
+                  return true;
+                })
+                .filter(([name, data]: [string, any]) => {
+                  const q = debouncedBalanceSearch.toLowerCase();
+                  return !q || name.toLowerCase().includes(q) || (data.employeeCode && data.employeeCode.toLowerCase().includes(q));
+                });
 
-          const progressWidth = (remaining: number, quota: number) =>
-            quota > 0 ? `${Math.min(100, Math.round((remaining / quota) * 100))}%` : '0%';
+              const progressColor = (remaining: number, quota: number) => {
+                if (quota === 0) return 'bg-slate-300';
+                const pct = remaining / quota;
+                if (pct > 0.5) return 'bg-emerald-500';
+                if (pct > 0.25) return 'bg-amber-400';
+                return 'bg-rose-500';
+              };
 
-          return (
+              const progressWidth = (remaining: number, quota: number) =>
+                quota > 0 ? `${Math.min(100, Math.round((remaining / quota) * 100))}%` : '0%';
+
+              return (
+                <div className="space-y-4">
+                  {/* Filter bar */}
+                  <div className="flex items-center justify-between gap-3 flex-wrap bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5">
+                    <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span className="font-semibold text-slate-700 dark:text-slate-300">Tahun {new Date().getFullYear()}</span>
+                      <span>•</span>
+                      <span>{entries.length} Karyawan ditampilkan</span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={balanceOfficeFilter}
+                        onChange={(e) => setBalanceOfficeFilter(e.target.value)}
+                        className="py-1.5 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 max-w-[180px]"
+                      >
+                        <option value="">Semua Kantor</option>
+                        {offices.map(o => (
+                          <option key={o.id} value={o.id}>{o.office_name}</option>
+                        ))}
+                        <option value="none">Tanpa Kantor</option>
+                      </select>
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                        <input
+                          type="text"
+                          placeholder="Cari nama atau NIK..."
+                          value={balanceSearch}
+                          onChange={(e) => setBalanceSearch(e.target.value)}
+                          className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-48"
+                        />
+                      </div>
+                      <button
+                        onClick={loadBalances}
+                        className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                        title="Segarkan Saldo"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Grid Cards */}
+                  {entries.length === 0 ? (
+                    <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-10 text-center space-y-2">
+                      <Users className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
+                      <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                        {balanceSearch ? `Tidak ada karyawan yang cocok dengan "${balanceSearch}".` : 'Belum ada data saldo.'}
+                      </p>
+                      <p className="text-[11px] text-slate-400">Pastikan karyawan telah di-assign ke kantor dan memiliki akun aktif.</p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {entries.map(([name, data]: [string, BalanceEntry]) => {
+                        const cuti = data.cuti;
+                        const izin = data.izin;
+                        const userId = cuti?.user_id ?? izin?.user_id;
+                        const isActive = (cuti?.quota ?? 0) > 0;
+                        const isToggling = togglingUserId === userId;
+
+                        return (
+                          <div
+                            key={name}
+                            className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-all hover:shadow-sm ${isActive
+                              ? 'border-slate-100 dark:border-slate-800'
+                              : 'border-slate-200 dark:border-slate-700 opacity-75'
+                              }`}
+                          >
+                            {/* Header karyawan + toggle */}
+                            <div className="flex items-center gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+                              <div className="w-8 h-8 rounded-full bg-indigo-50 dark:bg-indigo-950/50 flex items-center justify-center shrink-0 border border-indigo-100/50 dark:border-indigo-900/30">
+                                <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
+                                  {name}
+                                  {data.employeeCode && (
+                                    <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({data.employeeCode})</span>
+                                  )}
+                                </p>
+                                <p className="text-[10px] text-slate-400 truncate">
+                                  {data.department || '—'} {data.officeName ? `• ${data.officeName}` : ''}
+                                </p>
+                              </div>
+
+                              {/* Toggle kuota cuti 12hr/thn */}
+                              <div className="flex items-center gap-2 shrink-0">
+                                <span className={`text-[9px] font-semibold ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
+                                  Cuti 12hr/thn
+                                </span>
+                                <button
+                                  disabled={isToggling || !userId}
+                                  onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0)}
+                                  title={isActive ? 'Nonaktifkan kuota cuti tahunan' : 'Aktifkan kuota cuti 12 hari/tahun'}
+                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
+                                    }`}
+                                >
+                                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-4' : 'translate-x-1'
+                                    }`} />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Dua kolom: Cuti & Izin */}
+                            <div className="grid grid-cols-2 gap-3">
+                              {/* Blok Cuti Tahunan */}
+                              <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cuti Tahunan</p>
+                                  {isActive && (
+                                    <span className="text-[9px] font-bold text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40 px-1.5 py-0.5 rounded">
+                                      Aktif
+                                    </span>
+                                  )}
+                                </div>
+                                {!isActive ? (
+                                  <div className="flex items-center gap-1.5 py-1">
+                                    <span className="text-[10px] text-slate-400 italic">Kuota nonaktif</span>
+                                  </div>
+                                ) : cuti ? (
+                                  <>
+                                    <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                      {cuti.remaining}
+                                      <span className="text-[10px] font-normal text-slate-400 ml-1">/ {cuti.quota} hari sisa</span>
+                                    </p>
+                                    <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full transition-all ${progressColor(cuti.remaining, cuti.quota)}`}
+                                        style={{ width: progressWidth(cuti.remaining, cuti.quota) }}
+                                      />
+                                    </div>
+                                    <p className="text-[10px] text-slate-400">
+                                      Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
+                                    </p>
+                                  </>
+                                ) : (
+                                  <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
+                                )}
+                              </div>
+
+                              {/* Blok Izin / Sakit */}
+                              <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                                <div className="flex items-center justify-between">
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin &amp; Sakit</p>
+                                  <span className="text-[9px] font-semibold text-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 px-1.5 py-0.5 rounded">
+                                    Periode Ini
+                                  </span>
+                                </div>
+                                {izin ? (
+                                  <>
+                                    <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                      {izin.used}
+                                      <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
+                                    </p>
+                                    <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                      <div className="h-full w-0 rounded-full bg-slate-300" />
+                                    </div>
+                                    <p className="text-[10px] text-slate-400">Direset ke 0 saat anniversary</p>
+                                  </>
+                                ) : (
+                                  <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })()
+          )}
+
+          {/* ── SUB-TAB: Riwayat Saldo Sebelumnya (Arsip Periode Lalu) ── */}
+          {balanceSubTab === 'history' && (
             <div className="space-y-4">
-              <div className="flex items-center justify-between gap-3 flex-wrap">
-                <p className="text-[11px] text-slate-400">Saldo cuti karyawan tahun {new Date().getFullYear()}.</p>
-                <div className="flex items-center gap-2">
+              {/* Top KPI Cards */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Catatan</p>
+                    <Archive className="w-3.5 h-3.5 text-indigo-500" />
+                  </div>
+                  <p className="text-lg font-extrabold text-slate-800 dark:text-slate-100">
+                    {balanceHistoryStats?.total_records ?? balanceHistories.length}
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">periode</span>
+                  </p>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Cuti Terpakai Lalu</p>
+                    <CalendarCheck className="w-3.5 h-3.5 text-teal-500" />
+                  </div>
+                  <p className="text-lg font-extrabold text-teal-600 dark:text-teal-400">
+                    {balanceHistoryStats?.total_cuti_used ?? balanceHistories.reduce((s, h) => s + (h.cuti_used || 0), 0)}
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">hari</span>
+                  </p>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sisa Cuti Hangus</p>
+                    <Clock className="w-3.5 h-3.5 text-amber-500" />
+                  </div>
+                  <p className="text-lg font-extrabold text-amber-600 dark:text-amber-400">
+                    {balanceHistoryStats?.total_cuti_remaining ?? balanceHistories.reduce((s, h) => s + (h.cuti_remaining || 0), 0)}
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">hari</span>
+                  </p>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Izin/Sakit Lalu</p>
+                    <ClipboardList className="w-3.5 h-3.5 text-purple-500" />
+                  </div>
+                  <p className="text-lg font-extrabold text-purple-600 dark:text-purple-400">
+                    {balanceHistoryStats?.total_izin_sakit_used ?? balanceHistories.reduce((s, h) => s + (h.izin_sakit_used || 0), 0)}
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">hari</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Filter bar */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Filter Tahun */}
                   <select
-                    value={balanceOfficeFilter}
-                    onChange={(e) => setBalanceOfficeFilter(e.target.value)}
-                    className="py-2 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800/20 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 max-w-[180px]"
+                    value={balanceHistoryYearFilter}
+                    onChange={(e) => setBalanceHistoryYearFilter(e.target.value)}
+                    className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  >
+                    <option value="">Semua Tahun Reset</option>
+                    {[new Date().getFullYear(), new Date().getFullYear() - 1, new Date().getFullYear() - 2].map(y => (
+                      <option key={y} value={y}>{y}</option>
+                    ))}
+                  </select>
+
+                  {/* Filter Kantor */}
+                  <select
+                    value={balanceHistoryOfficeFilter}
+                    onChange={(e) => setBalanceHistoryOfficeFilter(e.target.value)}
+                    className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                   >
                     <option value="">Semua Kantor</option>
                     {offices.map(o => (
@@ -1636,127 +1978,138 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     ))}
                     <option value="none">Tanpa Kantor</option>
                   </select>
-                  <div className="relative">
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1 sm:w-56">
                     <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
                     <input
                       type="text"
-                      placeholder="Cari nama atau NIK..."
-                      value={balanceSearch}
-                      onChange={(e) => setBalanceSearch(e.target.value)}
-                      className="pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-48"
+                      placeholder="Cari nama / NIK..."
+                      value={balanceHistorySearch}
+                      onChange={(e) => setBalanceHistorySearch(e.target.value)}
+                      className="w-full pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                     />
                   </div>
+                  <button
+                    onClick={loadBalanceHistories}
+                    disabled={balanceHistoryLoading}
+                    className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition disabled:opacity-50"
+                    title="Segarkan Riwayat"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${balanceHistoryLoading ? 'animate-spin' : ''}`} />
+                  </button>
                 </div>
               </div>
 
-              {entries.length === 0 ? (
-                <p className="text-center py-10 text-xs text-slate-400">
-                  {balanceSearch ? `Tidak ada karyawan yang cocok dengan "${balanceSearch}".` : 'Belum ada data saldo.'}
-                </p>
-              ) : (
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {entries.map(([name, data]: [string, BalanceEntry]) => {
-                    const cuti = data.cuti;
-                    const izin = data.izin;
-                    const userId = cuti?.user_id ?? izin?.user_id;
-                    const isActive = (cuti?.quota ?? 0) > 0;
-                    const isToggling = togglingUserId === userId;
-
-                    return (
-                      <div
-                        key={name}
-                        className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-opacity ${isActive
-                          ? 'border-slate-100 dark:border-slate-800'
-                          : 'border-slate-200 dark:border-slate-700 opacity-70'
-                          }`}
-                      >
-                        {/* Header karyawan + toggle */}
-                        <div className="flex items-center gap-2 pb-2 border-b border-slate-100 dark:border-slate-800">
-                          <div className="w-7 h-7 rounded-full bg-indigo-100 dark:bg-indigo-950/50 flex items-center justify-center shrink-0">
-                            <Users className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                          </div>
-                          <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate flex-1">
-                            {name}
-                            {data.employeeCode && (
-                              <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({data.employeeCode})</span>
-                            )}
-                          </p>
-
-                          {/* Toggle kuota cuti 12hr/thn */}
-                          <div className="flex items-center gap-2 shrink-0">
-                            <span className={`text-[9px] font-semibold ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
-                              Cuti 12hr/thn
-                            </span>
-                            <button
-                              disabled={isToggling || !userId}
-                              onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0)}
-                              title={isActive ? 'Nonaktifkan kuota cuti tahunan' : 'Aktifkan kuota cuti 12 hari/tahun'}
-                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
-                                }`}
-                            >
-                              <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-4' : 'translate-x-1'
-                                }`} />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Dua kolom: Cuti & Izin */}
-                        <div className="grid grid-cols-2 gap-3">
-                          {/* Blok Cuti Tahunan */}
-                          <div className="space-y-1.5">
-                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cuti Tahunan</p>
-                            {!isActive ? (
-                              <div className="flex items-center gap-1.5 py-1">
-                                <span className="text-[10px] text-slate-400 italic">Kuota nonaktif</span>
+              {/* Table of Leave Balance Histories */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500 bg-slate-50/50 dark:bg-slate-800/30">
+                        <th className="py-3 px-3.5 font-semibold">Karyawan</th>
+                        <th className="py-3 px-3 font-semibold">Kantor Cabang</th>
+                        <th className="py-3 px-3 font-semibold">Periode Siklus</th>
+                        <th className="py-3 px-3 font-semibold text-center">Cuti Tahunan (Awal / Terpakai / Sisa)</th>
+                        <th className="py-3 px-3 font-semibold text-center">Izin &amp; Sakit Terpakai</th>
+                        <th className="py-3 px-3 font-semibold">Tanggal Reset</th>
+                        <th className="py-3 px-3 font-semibold text-right">Status / Keterangan</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                      {balanceHistoryLoading ? (
+                        <tr>
+                          <td colSpan={7} className="text-center py-12 text-slate-400">
+                            <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-500" />
+                            Memuat riwayat saldo cuti...
+                          </td>
+                        </tr>
+                      ) : balanceHistories.length === 0 ? (
+                        <tr>
+                          <td colSpan={7} className="text-center py-12 text-slate-400 space-y-2">
+                            <Archive className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
+                            <p className="font-semibold text-slate-600 dark:text-slate-300">Belum ada riwayat saldo periode sebelumnya.</p>
+                            <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                              Snapshot saldo cuti &amp; izin/sakit akan otomatis tersimpan di sini setiap kali jadwal reset tahunan kantor tiba (misal: 1 Desember) atau saat HRD melakukan reset manual.
+                            </p>
+                          </td>
+                        </tr>
+                      ) : (
+                        balanceHistories.map((h: any) => (
+                          <tr key={h.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3 px-3.5">
+                              <p className="font-semibold text-slate-800 dark:text-slate-100">{h.user_name}</p>
+                              <div className="flex items-center gap-1.5 text-[10px] text-slate-400">
+                                {h.employee_code && <span className="font-mono">{h.employee_code}</span>}
+                                {h.employee_code && h.department && <span>•</span>}
+                                <span>{h.department}</span>
                               </div>
-                            ) : cuti ? (
-                              <>
-                                <p className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                  {cuti.remaining}
-                                  <span className="text-[10px] font-normal text-slate-400 ml-1">/ {cuti.quota} hari</span>
+                            </td>
+                            <td className="py-3 px-3 text-slate-600 dark:text-slate-300">
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-[11px] font-medium">
+                                <Building2 className="w-3 h-3 text-slate-400" />
+                                {h.office_name}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3">
+                              <p className="font-semibold text-slate-700 dark:text-slate-200">{h.period_label}</p>
+                              {h.period_start && h.period_end && (
+                                <p className="text-[10px] text-slate-400">{fmtDate(h.period_start)} – {fmtDate(h.period_end)}</p>
+                              )}
+                            </td>
+                            <td className="py-3 px-3 text-center">
+                              <div className="inline-flex items-center gap-2 bg-slate-50 dark:bg-slate-800/40 px-2.5 py-1 rounded-lg border border-slate-100 dark:border-slate-800 font-mono text-[11px]">
+                                <span className="text-slate-500" title="Kuota Awal">{h.cuti_quota}</span>
+                                <span className="text-slate-300">/</span>
+                                <span className="text-teal-600 dark:text-teal-400 font-bold" title="Cuti Terpakai">{h.cuti_used} terpakai</span>
+                                <span className="text-slate-300">/</span>
+                                <span className="text-amber-600 dark:text-amber-400 font-semibold" title="Sisa Cuti Hangus">{h.cuti_remaining} sisa</span>
+                              </div>
+                            </td>
+                            <td className="py-3 px-3 text-center">
+                              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-300 text-[11px] font-bold">
+                                {h.izin_sakit_used} hari
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 whitespace-nowrap">
+                              <p className="font-semibold text-slate-700 dark:text-slate-300">{h.reset_date_formatted || fmtDate(h.reset_date)}</p>
+                            </td>
+                            <td className="py-3 px-3 text-right">
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400 border border-emerald-100 dark:border-emerald-900/40">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Telah Di-reset
+                              </span>
+                              {h.notes && (
+                                <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[200px] ml-auto" title={h.notes}>
+                                  {h.notes}
                                 </p>
-                                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                                  <div
-                                    className={`h-full rounded-full transition-all ${progressColor(cuti.remaining, cuti.quota)}`}
-                                    style={{ width: progressWidth(cuti.remaining, cuti.quota) }}
-                                  />
-                                </div>
-                                <p className="text-[10px] text-slate-400">
-                                  Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
-                                </p>
-                              </>
-                            ) : (
-                              <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
-                            )}
-                          </div>
-
-                          {/* Blok Izin / Sakit */}
-                          <div className="space-y-1.5">
-                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin / Sakit</p>
-                            {izin ? (
-                              <>
-                                <p className="text-lg font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                  {izin.used}
-                                  <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
-                                </p>
-                                <div className="w-full h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
-                                  <div className="h-full w-0 rounded-full bg-slate-300" />
-                                </div>
-                                <p className="text-[10px] text-slate-400">Tidak terbatas</p>
-                              </>
-                            ) : (
-                              <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
-                            )}
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-              )}
+              </div>
             </div>
-          );
-        })()
+          )}
+        </div>
+      )}
+
+      {/* ─── Modal: Konfirmasi Reset Manual Saldo Kantor ─── */}
+      {resetOfficeModal && (
+        <ConfirmationDialog
+          isOpen={true}
+          title="Konfirmasi Reset Saldo Cuti Kantor"
+          message={`Apakah Anda yakin ingin me-reset saldo cuti dan pemakaian izin/sakit untuk seluruh karyawan di kantor "${resetOfficeModal.name}"? Pemakaian periode berjalan akan diarsipkan ke Riwayat Saldo Sebelumnya dan saldo periode baru akan diatur ulang.`}
+          confirmLabel={isResettingOffice ? 'Memproses Reset...' : 'Ya, Reset & Arsipkan'}
+          cancelLabel="Batal"
+          isDanger={true}
+          onConfirm={() => handleManualResetOffice(resetOfficeModal.id, resetOfficeModal.name)}
+          onCancel={() => setResetOfficeModal(null)}
+        />
       )}
 
       {/* ─── TAB: Laporan ─── */}
@@ -2809,7 +3162,12 @@ const HolidaysTab: React.FC<{
                     return filteredUsers.map(u => (
                       <div
                         key={u.id}
-                        className="w-full flex items-center justify-between px-3 py-2 hover:bg-slate-50 dark:hover:bg-slate-700/50 border-b border-slate-50 dark:border-slate-800/60 last:border-0"
+                        onMouseDown={(e) => {
+                          e.preventDefault(); // Mencegah onBlur pada input
+                          setForm(f => ({ ...f, excluded_users: [...f.excluded_users, u] }));
+                          setExcludeSearch('');
+                        }}
+                        className="w-full flex items-center justify-between px-3 py-2 hover:bg-indigo-50/60 dark:hover:bg-indigo-950/40 border-b border-slate-50 dark:border-slate-800/60 last:border-0 cursor-pointer transition"
                       >
                         <div>
                           <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{u.name}</p>
@@ -2818,17 +3176,11 @@ const HolidaysTab: React.FC<{
                             {u.office?.office_name ?? 'Kantor Pusat'}
                           </p>
                         </div>
-                        <button
-                          type="button"
-                          onMouseDown={(e) => {
-                            e.preventDefault(); // Mencegah onBlur pada input
-                            setForm(f => ({ ...f, excluded_users: [...f.excluded_users, u] }));
-                            setExcludeSearch('');
-                          }}
-                          className="flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded text-[10px] font-bold transition"
+                        <span
+                          className="flex items-center gap-1 px-2 py-1 bg-indigo-50 text-indigo-600 dark:bg-indigo-950/60 dark:text-indigo-400 rounded text-[10px] font-bold shrink-0 pointer-events-none"
                         >
-                          <Plus className="w-3 h-3" /> Add
-                        </button>
+                          <Plus className="w-3 h-3" /> Tambah
+                        </span>
                       </div>
                     ));
                   })()}

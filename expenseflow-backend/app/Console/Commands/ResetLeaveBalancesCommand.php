@@ -86,21 +86,54 @@ class ResetLeaveBalancesCommand extends Command
                 // KEBIJAKAN 2026-08-25: hanya baris saldo AKTIF (quota > 0) yang di-reset.
                 // Karyawan yang belum pernah diaktifkan HRD (quota 0 / belum ada baris)
                 // dibiarkan non-aktif — reset tidak boleh mengaktifkan saldo otomatis.
-                $existing = LeaveBalance::where('user_id', $userId)
+                $existingCuti = LeaveBalance::where('user_id', $userId)
                     ->where('year', $today->year)
                     ->where('leave_type', 'cuti')
                     ->first();
 
-                if (! $existing || (int) $existing->quota <= 0) {
+                if (! $existingCuti || (int) $existingCuti->quota <= 0) {
                     continue;
                 }
 
-                // Buat-ulang saldo TAHUN BERJALAN: kuota baru dari kantor, pemakaian nol.
-                // Baris tahun sebelumnya dibiarkan utk riwayat/audit.
-                $existing->update([
+                $existingIzin = LeaveBalance::where('user_id', $userId)
+                    ->where('year', $today->year)
+                    ->where('leave_type', 'izin')
+                    ->first();
+
+                $cutiQuota     = (int) $existingCuti->quota;
+                $cutiUsed      = (int) $existingCuti->used;
+                $cutiRemaining = max(0, $cutiQuota - $cutiUsed);
+                $izinUsed      = (int) ($existingIzin?->used ?? 0);
+
+                // 1. Simpan Snapshot / Arsip ke tabel leave_balance_histories
+                \App\Models\LeaveBalanceHistory::create([
+                    'user_id'               => $userId,
+                    'company_id'            => $office->company_id,
+                    'attendance_setting_id' => $office->id,
+                    'period_label'          => 'Periode s/d ' . $anniversary->translatedFormat('d M Y'),
+                    'period_start'          => $anniversary->copy()->subYear()->addDay()->toDateString(),
+                    'period_end'            => $anniversary->copy()->subDay()->toDateString(),
+                    'reset_date'            => $anniversary->toDateString(),
+                    'cuti_quota'            => $cutiQuota,
+                    'cuti_used'             => $cutiUsed,
+                    'cuti_remaining'        => $cutiRemaining,
+                    'izin_sakit_used'       => $izinUsed,
+                    'notes'                 => "Reset tahunan jadwal kantor {$office->office_name}",
+                ]);
+
+                // 2. Reset saldo cuti tahunan (kuota baru dari kantor, pemakaian 0)
+                $existingCuti->update([
                     'quota' => $office->default_leave_quota,
                     'used'  => 0,
                 ]);
+
+                // 3. Reset saldo izin & sakit menjadi 0 untuk periode baru
+                if ($existingIzin) {
+                    $existingIzin->update([
+                        'used' => 0,
+                    ]);
+                }
+
                 $resetCount++;
             }
 
@@ -111,7 +144,7 @@ class ResetLeaveBalancesCommand extends Command
             $totalOffices++;
             $totalUsers += $resetCount;
 
-            $this->info("Kantor {$office->office_name}: {$resetCount} karyawan di-reset (anniversary {$anniversary->toDateString()}).");
+            $this->info("Kantor {$office->office_name}: {$resetCount} karyawan di-reset & diarsipkan (anniversary {$anniversary->toDateString()}).");
         }
 
         $this->info("Selesai: {$totalOffices} kantor, {$totalUsers} saldo cuti di-reset.");

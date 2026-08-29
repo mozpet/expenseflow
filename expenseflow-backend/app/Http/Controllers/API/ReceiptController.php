@@ -441,6 +441,10 @@ class ReceiptController extends Controller
                 'submitted_at'      => $receipt->submitted_at,
                 'ocr_status'        => $receipt->ocr_status,
                 'ocr_raw_amount'    => $receipt->ocr_raw_amount,
+                'ocr_raw_subtotal'  => $receipt->ocr_raw_subtotal,
+                'ocr_raw_tax'       => $receipt->ocr_raw_tax,
+                'ocr_raw_discount'  => $receipt->ocr_raw_discount,
+                'ocr_raw_items'     => $receipt->ocr_raw_items,
                 'ocr_raw_merchant'  => $receipt->ocr_raw_merchant,
                 'ocr_raw_date'      => $receipt->ocr_raw_date,
                 'ocr_attempts'       => $receipt->ocr_attempts,
@@ -464,7 +468,8 @@ class ReceiptController extends Controller
         $receipts = Receipt::where('user_id', $request->user()->id)
             ->select([
                 'id', 'receipt_number', 'vendor_name', 'total_amount',
-                'claimed_amount', 'ocr_raw_amount', 'ocr_raw_merchant', 'ocr_raw_date',
+                'claimed_amount', 'ocr_raw_amount', 'ocr_raw_subtotal', 'ocr_raw_tax',
+                'ocr_raw_discount', 'ocr_raw_items', 'ocr_raw_merchant', 'ocr_raw_date',
                 'receipt_date', 'status', 'submitted_at', 'ocr_status',
                 'category', 'notes', 'variance_flag', 'variance_pct', 'created_at',
             ])
@@ -487,7 +492,13 @@ class ReceiptController extends Controller
         $receipts = Receipt::where('company_id', $companyId)
             ->where('status', 'submitted')
             ->with(['user:id,name,email'])
-            ->select(['id', 'user_id', 'receipt_number', 'vendor_name', 'ocr_raw_merchant', 'total_amount', 'claimed_amount', 'ocr_raw_amount', 'receipt_date', 'status', 'ocr_status', 'category', 'variance_flag', 'variance_pct', 'submitted_at', 'created_at'])
+            ->select([
+                'id', 'user_id', 'receipt_number', 'vendor_name', 'ocr_raw_merchant',
+                'total_amount', 'claimed_amount', 'ocr_raw_amount', 'ocr_raw_subtotal',
+                'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items', 'receipt_date',
+                'status', 'ocr_status', 'category', 'variance_flag', 'variance_pct',
+                'submitted_at', 'created_at',
+            ])
             ->latest()
             ->paginate(20);
 
@@ -509,7 +520,13 @@ class ReceiptController extends Controller
 
         $query = Receipt::where('company_id', $companyId)
             ->with(['user:id,name,email', 'approvals.user:id,name,email,role'])
-            ->select(['id', 'user_id', 'receipt_number', 'vendor_name', 'ocr_raw_merchant', 'total_amount', 'claimed_amount', 'ocr_raw_amount', 'receipt_date', 'status', 'ocr_status', 'category', 'variance_flag', 'variance_pct', 'submitted_at', 'created_at']);
+            ->select([
+                'id', 'user_id', 'receipt_number', 'vendor_name', 'ocr_raw_merchant',
+                'total_amount', 'claimed_amount', 'ocr_raw_amount', 'ocr_raw_subtotal',
+                'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items', 'receipt_date',
+                'status', 'ocr_status', 'category', 'variance_flag', 'variance_pct',
+                'submitted_at', 'created_at',
+            ]);
 
         // Filter by status jika parameter diberikan dan valid
         if ($status && in_array($status, $validStatuses)) {

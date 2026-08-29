@@ -40,10 +40,13 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
           context,
           MaterialPageRoute(builder: (_) => const SubmitStep1Screen()),
         ),
-        backgroundColor: Theme.of(context).primaryColor,
+        backgroundColor: const Color(0xFF0088FF),
         foregroundColor: Colors.white,
         icon: const Icon(Icons.photo_camera),
-        label: const Text('Scan Struk'),
+        label: const Text(
+          'Scan Struk',
+          style: TextStyle(fontWeight: FontWeight.bold),
+        ),
       ),
       appBar: AppBar(
         title: const Text('Struk Saya'),
@@ -77,8 +80,9 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                       child: Container(
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
-                          color: const Color(0xFFE8F0FE),
-                          borderRadius: BorderRadius.circular(16),
+                          color: const Color(0xFFE3F2FD),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFF90CAF9)),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -86,8 +90,9 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                             const Text(
                               'Total bulan ini',
                               style: TextStyle(
-                                color: Colors.grey,
+                                color: Color(0xFF1565C0),
                                 fontSize: 12,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                             const SizedBox(height: 4),
@@ -97,6 +102,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                                     width: 20,
                                     child: CircularProgressIndicator(
                                       strokeWidth: 2,
+                                      color: Color(0xFF0D47A1),
                                     ),
                                   )
                                 : Text(
@@ -104,7 +110,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                                     style: const TextStyle(
                                       fontSize: 16,
                                       fontWeight: FontWeight.bold,
-                                      color: Color(0xFF1565C0),
+                                      color: Color(0xFF0D47A1),
                                     ),
                                   ),
                           ],
@@ -118,7 +124,8 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                           color: const Color(0xFFE8F5E9),
-                          borderRadius: BorderRadius.circular(16),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: const Color(0xFFA5D6A7)),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -126,8 +133,9 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                             const Text(
                               'Disetujui',
                               style: TextStyle(
-                                color: Colors.grey,
+                                color: Color(0xFF2E7D32),
                                 fontSize: 12,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                             const SizedBox(height: 4),
@@ -136,7 +144,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                               style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
-                                color: Colors.green,
+                                color: Color(0xFF1B5E20),
                               ),
                             ),
                           ],
@@ -210,14 +218,23 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
   Widget _chip(String label) {
     final selected = _filter == label;
     return ChoiceChip(
-      label: Text(label),
+      label: Text(
+        label,
+        style: TextStyle(
+          color: selected ? Colors.white : Colors.black87,
+          fontWeight: selected ? FontWeight.bold : FontWeight.w500,
+          fontSize: 13,
+        ),
+      ),
       selected: selected,
       onSelected: (v) {
         if (v) setState(() => _filter = label);
       },
-      selectedColor: Theme.of(context).primaryColor,
-      backgroundColor: Colors.grey.shade100,
-      labelStyle: TextStyle(color: selected ? Colors.white : Colors.black87),
+      selectedColor: const Color(0xFF0088FF),
+      backgroundColor: Colors.white,
+      side: BorderSide(
+        color: selected ? const Color(0xFF0088FF) : Colors.grey.shade300,
+      ),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
     );
   }
@@ -233,22 +250,28 @@ class _ReceiptCard extends StatelessWidget {
     final status = receipt.displayStatus;
     Color statusColor;
     Color statusBg;
+    Color statusBorder;
+
     switch (receipt.status) {
       case 'approved':
-        statusColor = Colors.green;
+        statusColor = const Color(0xFF2E7D32);
         statusBg = const Color(0xFFE8F5E9);
+        statusBorder = const Color(0xFFA5D6A7);
         break;
       case 'rejected':
-        statusColor = Colors.red;
+        statusColor = const Color(0xFFC62828);
         statusBg = const Color(0xFFFFEBEE);
+        statusBorder = const Color(0xFFFFCDD2);
         break;
       case 'submitted':
-        statusColor = Colors.orange;
+        statusColor = const Color(0xFFE65100);
         statusBg = const Color(0xFFFFF3E0);
+        statusBorder = const Color(0xFFFFE0B2);
         break;
       default:
-        statusColor = Colors.grey;
-        statusBg = Colors.grey.shade100;
+        statusColor = const Color(0xFF455A64);
+        statusBg = const Color(0xFFECEFF1);
+        statusBorder = const Color(0xFFCFD8DC);
     }
 
     return GestureDetector(
@@ -259,9 +282,10 @@ class _ReceiptCard extends StatelessWidget {
         builder: (_) => DetailPengajuanScreen(receipt: receipt),
       ),
       child: Card(
+        color: Colors.white,
         elevation: 0,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(12),
           side: BorderSide(color: Colors.grey.shade200),
         ),
         margin: const EdgeInsets.only(bottom: 12),
@@ -279,6 +303,7 @@ class _ReceiptCard extends StatelessWidget {
                       style: const TextStyle(
                         fontWeight: FontWeight.bold,
                         fontSize: 15,
+                        color: Colors.black87,
                       ),
                       overflow: TextOverflow.ellipsis,
                     ),
@@ -291,7 +316,8 @@ class _ReceiptCard extends StatelessWidget {
                     ),
                     decoration: BoxDecoration(
                       color: statusBg,
-                      borderRadius: BorderRadius.circular(12),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: statusBorder),
                     ),
                     child: Text(
                       status,
@@ -314,9 +340,10 @@ class _ReceiptCard extends StatelessWidget {
                 Text(
                   'Ketuk untuk lihat aksi',
                   style: TextStyle(
-                    color: Colors.blue.shade400,
-                    fontSize: 10,
+                    color: Colors.blue.shade600,
+                    fontSize: 11,
                     fontStyle: FontStyle.italic,
+                    fontWeight: FontWeight.w500,
                   ),
                 ),
               ],
@@ -340,6 +367,7 @@ class _ReceiptCard extends StatelessWidget {
                     style: const TextStyle(
                       fontWeight: FontWeight.bold,
                       fontSize: 15,
+                      color: Colors.black87,
                     ),
                   ),
                 ],
@@ -351,9 +379,9 @@ class _ReceiptCard extends StatelessWidget {
                   width: double.infinity,
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: Colors.red.shade50,
+                    color: const Color(0xFFFFEBEE),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.red.shade100),
+                    border: Border.all(color: const Color(0xFFFFCDD2)),
                   ),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -361,7 +389,7 @@ class _ReceiptCard extends StatelessWidget {
                       const Text(
                         'Alasan Penolakan:',
                         style: TextStyle(
-                          color: Colors.red,
+                          color: Color(0xFFC62828),
                           fontWeight: FontWeight.bold,
                           fontSize: 11,
                         ),
@@ -369,8 +397,8 @@ class _ReceiptCard extends StatelessWidget {
                       const SizedBox(height: 2),
                       Text(
                         receipt.rejectionReason!,
-                        style: TextStyle(
-                          color: Colors.red.shade900,
+                        style: const TextStyle(
+                          color: Color(0xFFB71C1C),
                           fontSize: 11,
                           height: 1.4,
                         ),

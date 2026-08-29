@@ -10,6 +10,7 @@ class PresensiRecord {
   final int lateMinutes;
   // null = belum ada lembur / belum diproses; 'pending'/'approved'/'rejected'
   final String? overtimeStatus;
+  final String? overtimeReason;
 
   PresensiRecord({
     this.id = 0,
@@ -22,6 +23,7 @@ class PresensiRecord {
     this.isAutoCheckout = false,
     this.lateMinutes = 0,
     this.overtimeStatus,
+    this.overtimeReason,
   });
 
   PresensiRecord copyWith({
@@ -35,6 +37,7 @@ class PresensiRecord {
     bool? isAutoCheckout,
     int? lateMinutes,
     String? overtimeStatus,
+    String? overtimeReason,
   }) {
     return PresensiRecord(
       id: id ?? this.id,
@@ -47,8 +50,18 @@ class PresensiRecord {
       isAutoCheckout: isAutoCheckout ?? this.isAutoCheckout,
       lateMinutes: lateMinutes ?? this.lateMinutes,
       overtimeStatus: overtimeStatus ?? this.overtimeStatus,
+      overtimeReason: overtimeReason ?? this.overtimeReason,
     );
   }
+
+  bool get canClaimOvertime =>
+      overtimeMinutes > 0 &&
+      (overtimeStatus == null || overtimeStatus == 'unsubmitted');
+
+  bool get hasSubmittedOvertime =>
+      overtimeMinutes > 0 &&
+      overtimeStatus != null &&
+      overtimeStatus != 'unsubmitted';
 
   String get totalJamKerja => hitungDurasiKerja(masukTime, pulangTime);
 

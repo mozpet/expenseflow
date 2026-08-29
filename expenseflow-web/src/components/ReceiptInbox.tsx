@@ -17,7 +17,9 @@ import {
   Maximize2,
   SlidersHorizontal,
   Save,
-  RefreshCw
+  RefreshCw,
+  RotateCw,
+  RotateCcw,
 } from 'lucide-react';
 import { useDebounce } from '../hooks/useDebounce';
 import { ConfirmationDialog } from './ConfirmationDialog';
@@ -51,6 +53,7 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   const [imageUrl, setImageUrl] = useState<string | null>(null);
   const [showImagePreview, setShowImagePreview] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
+  const [rotation, setRotation] = useState(0);
   const [localSettings, setLocalSettings] = useState<AppSettings>(currentSettings ?? { varianceLimit: 10, maxClaimLimit: 500000 });
   const [varianceInput, setVarianceInput] = useState(String(currentSettings?.varianceLimit ?? 10));
   const [claimInput, setClaimInput] = useState(String(currentSettings?.maxClaimLimit ?? 500000));
@@ -100,16 +103,19 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   const debouncedSearch = useDebounce(searchQuery, 500);
 
   // Filter receipt list
-  const filteredReceipts = receipts.filter(r => {
-    const matchesSearch = !debouncedSearch ||
-                          r.karyawan.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-                          r.merchant.toLowerCase().includes(debouncedSearch.toLowerCase());
-    
-    if (!matchesSearch) return false;
-    if (filter === 'all') return true;
-    if (filter === 'flag') return r.status === 'Review';
-    if (filter === 'pend') return r.status === 'Pending';
-    return true;
+  const filteredReceipts = receipts.filter((receipt) => {
+    const matchesSearch =
+      receipt.karyawan.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+      receipt.merchant.toLowerCase().includes(debouncedSearch.toLowerCase());
+
+    const isFlagged = receipt.status === 'Review';
+    const isPending = receipt.status === 'Pending';
+
+    let matchesTab = true;
+    if (filter === 'flag') matchesTab = isFlagged;
+    if (filter === 'pend') matchesTab = isPending;
+
+    return matchesSearch && matchesTab;
   });
 
   const handleOpenDetail = (receipt: Receipt) => {
@@ -117,33 +123,31 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
     setRejectionNote('');
     setShowModal(true);
     setImageUrl(null);
-    setLoadingImage(true);
   };
 
-  // Fetch image ketika modal dibuka
+  // Fetch image on demand
   useEffect(() => {
-    if (!showModal || !selectedReceipt) {
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
-      setImageUrl(null);
-      return;
-    }
+    if (!showModal || !selectedReceipt) return;
 
+    let isMounted = true;
     const loadImage = async () => {
+      setLoadingImage(true);
       try {
         const url = await receiptApi.fetchImageAsDataUrl(selectedReceipt.id);
-        setImageUrl(url);
+        if (isMounted) {
+          setImageUrl(url);
+        }
       } catch (err) {
-        console.error('Error loading image:', err);
-        setImageUrl(null);
+        console.error('Failed to load image:', err);
       } finally {
-        setLoadingImage(false);
+        if (isMounted) setLoadingImage(false);
       }
     };
 
     loadImage();
 
     return () => {
-      if (imageUrl) URL.revokeObjectURL(imageUrl);
+      isMounted = false;
     };
   }, [showModal, selectedReceipt?.id]);
 
@@ -160,6 +164,9 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
         setZoomLevel(prev => Math.max(prev - 10, 50));
       } else if (e.key === '0') {
         setZoomLevel(100);
+        setRotation(0);
+      } else if (e.key === 'r' || e.key === 'R') {
+        setRotation(prev => (prev + 90) % 360);
       }
     };
 
@@ -533,139 +540,212 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
       {/* Detail & Rejection Note Modal */}
       {showModal && selectedReceipt && (
         <div className="fixed inset-0 z-50 bg-slate-900/40 dark:bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-md p-6 shadow-2xl relative animate-in fade-in zoom-in duration-200">
-            <button
-              onClick={() => {
-                if (imageUrl) URL.revokeObjectURL(imageUrl);
-                setShowModal(false);
-                setSelectedReceipt(null);
-                setImageUrl(null);
-              }}
-              className="absolute right-4 top-4 hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-full text-slate-400 dark:text-slate-500 transition"
-            >
-              <X className="w-4 h-4" />
-            </button>
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-lg max-h-[88vh] flex flex-col shadow-2xl relative animate-in fade-in zoom-in duration-200 overflow-hidden">
+            
+            {/* Modal Header */}
+            <div className="p-4 sm:p-5 pb-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between shrink-0">
+              <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2">
+                <FileSpreadsheet className="w-4.5 h-4.5 text-indigo-600 shrink-0" />
+                <span>Verifikasi Struk — {selectedReceipt.karyawan}</span>
+              </h3>
+              <button
+                onClick={() => {
+                  if (imageUrl) URL.revokeObjectURL(imageUrl);
+                  setShowModal(false);
+                  setSelectedReceipt(null);
+                  setImageUrl(null);
+                }}
+                className="hover:bg-slate-100 dark:hover:bg-slate-800 p-1.5 rounded-full text-slate-400 dark:text-slate-500 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-            <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100 flex items-center gap-2 mb-4">
-              <FileSpreadsheet className="w-4.5 h-4.5 text-indigo-600" />
-              Verifikasi Struk — {selectedReceipt.karyawan}
-            </h3>
-
-            {/* Receipt Image Preview */}
-            <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl overflow-hidden border border-dashed border-slate-200 dark:border-slate-800 mb-4">
-              {loadingImage ? (
-                <div className="p-8 flex flex-col items-center justify-center">
-                  <div className="w-8 h-8 border-3 border-slate-200 dark:border-slate-700 border-t-indigo-500 rounded-full animate-spin mb-2" />
-                  <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Memuat gambar...</p>
-                </div>
-              ) : imageUrl ? (
-                <div className="flex flex-col items-center justify-center p-4">
-                  <button
-                    onClick={() => {
-                      setShowImagePreview(true);
-                      setZoomLevel(100);
-                    }}
-                    className="group relative max-w-full max-h-80 rounded-lg overflow-hidden hover:ring-2 hover:ring-indigo-500 transition focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                  >
-                    <img
-                      src={imageUrl}
-                      alt={`Struk ${selectedReceipt.id}`}
-                      className="max-w-full max-h-80 object-contain rounded-lg"
-                      loading="lazy"
-                    />
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition flex items-center justify-center rounded-lg">
-                      <div className="bg-black/60 text-white px-3 py-2 rounded-lg opacity-0 group-hover:opacity-100 transition flex items-center gap-2 text-xs font-medium">
-                        <Maximize2 className="w-3.5 h-3.5" />
-                        Klik untuk zoom
+            {/* Modal Scrollable Body */}
+            <div className="p-4 sm:p-5 overflow-y-auto flex-1 space-y-3.5">
+              {/* Compact Receipt Image Preview */}
+              <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl overflow-hidden border border-dashed border-slate-200 dark:border-slate-800">
+                {loadingImage ? (
+                  <div className="p-4 flex items-center justify-center gap-2">
+                    <div className="w-4 h-4 border-2 border-slate-200 dark:border-slate-700 border-t-indigo-500 rounded-full animate-spin" />
+                    <p className="text-xs font-medium text-slate-500 dark:text-slate-400">Memuat gambar...</p>
+                  </div>
+                ) : imageUrl ? (
+                  <div className="p-2.5 flex items-center gap-3">
+                    <button
+                      onClick={() => {
+                        setShowImagePreview(true);
+                        setZoomLevel(100);
+                      }}
+                      className="group relative h-20 w-24 rounded-lg overflow-hidden border border-slate-200 dark:border-slate-700 bg-black/5 shrink-0 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                      title="Klik untuk memperbesar struk"
+                    >
+                      <img
+                        src={imageUrl}
+                        alt={`Struk ${selectedReceipt.id}`}
+                        className="w-full h-full object-cover group-hover:scale-105 transition duration-200"
+                        loading="lazy"
+                      />
+                      <div className="absolute inset-0 bg-black/25 group-hover:bg-black/40 transition flex items-center justify-center">
+                        <Maximize2 className="w-4 h-4 text-white drop-shadow" />
                       </div>
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-800 dark:text-slate-200">
+                        <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                        <span className="truncate">Foto Struk Fisik</span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Captured: {selectedReceipt.tanggal}</p>
+                      <button
+                        onClick={() => {
+                          setShowImagePreview(true);
+                          setZoomLevel(100);
+                        }}
+                        className="mt-1 inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 hover:underline"
+                      >
+                        <Maximize2 className="w-3 h-3" />
+                        Klik untuk Perbesar (Zoom)
+                      </button>
                     </div>
-                  </button>
-                  <p className="text-xs font-medium text-slate-600 dark:text-slate-400 mt-3">
-                    Captured: {selectedReceipt.tanggal}
+                  </div>
+                ) : (
+                  <div className="p-3 flex items-center justify-center gap-2 text-slate-400 text-xs">
+                    <FileSpreadsheet className="w-4 h-4" />
+                    <span>Gambar struk tidak ditemukan</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Flagged Alert Box */}
+              {selectedReceipt.status === 'Review' && (
+                <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/50 rounded-xl p-3 text-xs text-rose-700 dark:text-rose-400">
+                  <div className="flex items-center gap-2 font-bold mb-1">
+                    <AlertTriangle className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                    <span>Sistem mendeteksi selisih ekstrim!</span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-rose-100 dark:border-rose-950 text-center font-mono">
+                    <div>
+                      <label className="text-[10px] text-slate-400 block font-sans">Klaim</label>
+                      <span className="font-semibold text-rose-600 block">{formatCurrency(selectedReceipt.klaim)}</span>
+                    </div>
+                    <div className="flex items-center justify-center text-slate-300">
+                      →
+                    </div>
+                    <div>
+                      <label className="text-[10px] text-slate-400 block font-sans">OCR Struk</label>
+                      <span className="font-semibold text-emerald-600 dark:text-emerald-400 block">{formatCurrency(selectedReceipt.ocrNominal)}</span>
+                    </div>
+                  </div>
+                  <p className="mt-2 text-[10px] opacity-80 leading-relaxed font-sans text-rose-600/90 dark:text-rose-400/90">
+                    Selisih sebesar <strong>+{(((selectedReceipt.klaim - selectedReceipt.ocrNominal) / (selectedReceipt.ocrNominal || 1)) * 100).toFixed(0)}%</strong>. Mohon verifikasi fisik struk sebelum menyetujui.
                   </p>
                 </div>
-              ) : (
-                <div className="p-4 flex flex-col items-center justify-center">
-                  <div className="w-12 h-12 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-slate-400 dark:text-slate-500 mb-1">
-                    <FileSpreadsheet className="w-6 h-6" />
+              )}
+
+              {/* Details Fields */}
+              <div className="grid grid-cols-2 gap-2.5 text-xs bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Karyawan</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.karyawan}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Departemen</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.departemen}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Merchant Toko</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.merchant}</span>
+                </div>
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Kategori</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.kategori}</span>
+                </div>
+              </div>
+
+              {/* Itemized Receipt Items Breakdown */}
+              {selectedReceipt.items && selectedReceipt.items.length > 0 && (
+                <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden text-xs">
+                  <div className="bg-slate-100/80 dark:bg-slate-800/60 px-3 py-2 border-b border-slate-200 dark:border-slate-800 flex justify-between items-center">
+                    <span className="font-bold text-slate-700 dark:text-slate-300 flex items-center gap-1.5 text-[11px]">
+                      <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-500" />
+                      Rincian Belanja ({selectedReceipt.items.length} item)
+                    </span>
+                    <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 rounded">
+                      AI OCR
+                    </span>
                   </div>
-                  <p className="text-xs font-medium text-slate-700 dark:text-slate-300">Gambar tidak ditemukan</p>
-                  <span className="text-[10px] text-slate-400">receipt_image_{selectedReceipt.id.toLowerCase()}.jpg</span>
+                  <div className="divide-y divide-slate-100 dark:divide-slate-800 max-h-48 overflow-y-auto bg-white dark:bg-slate-900/50">
+                    {selectedReceipt.items.map((item, idx) => (
+                      <div key={idx} className="px-3 py-2 flex justify-between items-start gap-2 hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                        <div className="flex-1 min-w-0">
+                          <p className="font-medium text-slate-800 dark:text-slate-200 truncate text-[11px]">{item.name}</p>
+                          <p className="text-[10px] text-slate-400">
+                            {item.qty}x @ {formatCurrency(item.price)}
+                          </p>
+                        </div>
+                        <span className="font-semibold font-mono text-slate-700 dark:text-slate-300 text-[11px] shrink-0">
+                          {formatCurrency(item.total)}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
-            </div>
 
-            {/* Flagged Alert Box */}
-            {selectedReceipt.status === 'Review' && (
-              <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/50 rounded-xl p-3.5 mb-4 text-xs text-rose-700 dark:text-rose-400">
-                <div className="flex items-center gap-2 font-bold mb-1">
-                  <AlertTriangle className="w-4.5 h-4.5 text-rose-600 dark:text-rose-400 shrink-0" />
-                  <span>Sistem mendeteksi selisih ekstrim!</span>
+              {/* Subtotal, Diskon, Pajak Breakdown */}
+              {(selectedReceipt.subtotal !== undefined || selectedReceipt.discount !== undefined || selectedReceipt.tax !== undefined) && (
+                <div className="bg-slate-50/80 dark:bg-slate-800/30 border border-slate-200/80 dark:border-slate-800 rounded-xl p-3 space-y-1.5 text-xs font-mono">
+                  {selectedReceipt.subtotal !== undefined && (
+                    <div className="flex justify-between text-slate-600 dark:text-slate-400 text-[11px]">
+                      <span>Subtotal</span>
+                      <span>{formatCurrency(selectedReceipt.subtotal)}</span>
+                    </div>
+                  )}
+                  {selectedReceipt.discount !== undefined && selectedReceipt.discount > 0 && (
+                    <div className="flex justify-between text-emerald-600 dark:text-emerald-400 text-[11px] font-semibold">
+                      <span>Diskon / Promo</span>
+                      <span>- {formatCurrency(selectedReceipt.discount)}</span>
+                    </div>
+                  )}
+                  {selectedReceipt.tax !== undefined && selectedReceipt.tax > 0 && (
+                    <div className="flex justify-between text-amber-600 dark:text-amber-400 text-[11px] font-semibold">
+                      <span>Pajak (Tax / PPN)</span>
+                      <span>+ {formatCurrency(selectedReceipt.tax)}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between pt-1.5 border-t border-slate-200 dark:border-slate-700 text-slate-900 dark:text-slate-100 font-bold text-xs">
+                    <span className="font-sans">Total OCR</span>
+                    <span>{formatCurrency(selectedReceipt.ocrNominal)}</span>
+                  </div>
                 </div>
-                <div className="grid grid-cols-3 gap-2 mt-2 pt-2 border-t border-rose-100 dark:border-rose-950 text-center font-mono">
-                  <div>
-                    <label className="text-[10px] text-slate-400 block font-sans">Klaim</label>
-                    <span className="font-semibold text-rose-600 block">{formatCurrency(selectedReceipt.klaim)}</span>
-                  </div>
-                  <div className="flex items-center justify-center text-slate-300">
-                    →
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-slate-400 block font-sans">OCR Struk</label>
-                    <span className="font-semibold text-emerald-600 dark:text-emerald-400 block">{formatCurrency(selectedReceipt.ocrNominal)}</span>
-                  </div>
-                </div>
-                <p className="mt-2 text-[10px] opacity-80 leading-relaxed font-sans text-rose-600/90 dark:text-rose-400/90">
-                  Selisih sebesar <strong>+{( ((selectedReceipt.klaim - selectedReceipt.ocrNominal) / selectedReceipt.ocrNominal) * 105).toFixed(0)}%</strong>. Mohon verifikasi fisik struk sebelum menyetujui.
-                </p>
-              </div>
-            )}
+              )}
 
-            {/* Details Fields */}
-            <div className="grid grid-cols-2 gap-3 mb-4 text-xs border-b border-slate-100 dark:border-slate-800 pb-4">
-              <div>
-                <span className="text-slate-400 dark:text-slate-500 block">Karyawan</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.karyawan}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 dark:text-slate-500 block">Depertemen</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.departemen}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 dark:text-slate-500 block">Merchant Toko</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.merchant}</span>
-              </div>
-              <div>
-                <span className="text-slate-400 dark:text-slate-500 block">Kategori</span>
-                <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.kategori}</span>
+              {/* Notes Form */}
+              <div className="space-y-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
+                  Catatan Verifikasi atau Alasan Penolakan (wajib jika ditolak)
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Tulis alasan di sini..."
+                  value={rejectionNote}
+                  onChange={(e) => setRejectionNote(e.target.value)}
+                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition"
+                />
               </div>
             </div>
 
-            {/* Notes Form */}
-            <div className="space-y-2 mb-5">
-              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">
-                Catatan Verifikasi atau Alasan Penolakan (wajib jika ditolak)
-              </label>
-              <textarea
-                rows={2}
-                placeholder="Tulis alasan di sini..."
-                value={rejectionNote}
-                onChange={(e) => setRejectionNote(e.target.value)}
-                className="w-full text-xs p-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition"
-              />
-            </div>
-
-            {/* Action Buttons */}
-            <div className="flex gap-2.5">
+            {/* Modal Sticky Footer */}
+            <div className="p-4 sm:p-5 pt-3 border-t border-slate-100 dark:border-slate-800 flex gap-2.5 bg-slate-50/50 dark:bg-slate-900/50 shrink-0">
               <button
                 onClick={submitReject}
-                className="flex-1 py-2 px-4 bg-rose-600 hover:bg-rose-700 text-white font-medium rounded-xl text-xs transition"
+                className="flex-1 py-2.5 px-4 bg-rose-600 hover:bg-rose-700 text-white font-medium rounded-xl text-xs transition"
               >
                 Tolak Pengajuan
               </button>
               <button
                 onClick={submitApprove}
-                className="flex-1 py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-xl text-xs transition"
+                className="flex-1 py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-medium rounded-xl text-xs transition"
               >
                 Setujui Pengajuan
               </button>
@@ -690,39 +770,67 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
         />
       )}
 
-      {/* Fullscreen Image Preview Modal with Zoom */}
+      {/* Fullscreen Image Preview Modal with Zoom & Rotate */}
       {showImagePreview && imageUrl && (
         <div className="fixed inset-0 z-[60] bg-black/95 flex flex-col items-center justify-center p-4">
           {/* Toolbar */}
           <div className="absolute top-0 left-0 right-0 bg-gradient-to-b from-black/80 to-transparent p-4 flex items-center justify-between">
-            <div className="text-white text-sm font-medium">
-              Zoom: <span className="font-bold font-mono">{zoomLevel}%</span>
+            <div className="text-white text-sm font-medium flex items-center gap-2">
+              <span>Zoom: <strong className="font-mono">{zoomLevel}%</strong></span>
+              {rotation !== 0 && (
+                <span className="text-xs text-indigo-400 bg-indigo-950/60 px-2 py-0.5 rounded-full border border-indigo-800/60">
+                  Rotasi: {rotation}°
+                </span>
+              )}
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1.5 sm:gap-2">
               <button
                 onClick={() => setZoomLevel(prev => Math.max(prev - 10, 50))}
                 className="p-2 hover:bg-white/20 rounded-lg text-white transition"
-                title="Zoom out (-)  atau scroll"
+                title="Zoom out (-)"
               >
                 <ZoomOut className="w-5 h-5" />
               </button>
               <button
-                onClick={() => setZoomLevel(100)}
-                className="px-3 py-2 hover:bg-white/20 rounded-lg text-white text-xs font-medium transition"
-                title="Reset zoom (0)"
+                onClick={() => {
+                  setZoomLevel(100);
+                  setRotation(0);
+                }}
+                className="px-2.5 py-1.5 hover:bg-white/20 rounded-lg text-white text-xs font-medium transition"
+                title="Reset zoom & rotasi (0)"
               >
                 Reset
               </button>
               <button
                 onClick={() => setZoomLevel(prev => Math.min(prev + 10, 300))}
                 className="p-2 hover:bg-white/20 rounded-lg text-white transition"
-                title="Zoom in (+)  atau scroll"
+                title="Zoom in (+)"
               >
                 <ZoomIn className="w-5 h-5" />
               </button>
+
+              <div className="h-5 w-px bg-white/20 mx-1" />
+
+              <button
+                onClick={() => setRotation(prev => (prev - 90 + 360) % 360)}
+                className="p-2 hover:bg-white/20 rounded-lg text-white transition"
+                title="Putar ke Kiri (-90°)"
+              >
+                <RotateCcw className="w-5 h-5" />
+              </button>
+              <button
+                onClick={() => setRotation(prev => (prev + 90) % 360)}
+                className="p-2 hover:bg-white/20 rounded-lg text-white transition"
+                title="Putar ke Kanan (+90° / Shortcut R)"
+              >
+                <RotateCw className="w-5 h-5" />
+              </button>
+
+              <div className="h-5 w-px bg-white/20 mx-1" />
+
               <button
                 onClick={() => setShowImagePreview(false)}
-                className="p-2 hover:bg-white/20 rounded-lg text-white transition ml-2"
+                className="p-2 hover:bg-white/20 rounded-lg text-white transition"
                 title="Tutup (ESC)"
               >
                 <X className="w-5 h-5" />
@@ -748,10 +856,10 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                 alt="Receipt Preview"
                 className="object-contain select-none"
                 style={{
-                  transform: `scale(${zoomLevel / 100})`,
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  transition: 'transform 150ms ease-out',
+                  transform: `scale(${zoomLevel / 100}) rotate(${rotation}deg)`,
+                  maxWidth: rotation % 180 !== 0 ? '75vh' : '90vw',
+                  maxHeight: rotation % 180 !== 0 ? '75vw' : '85vh',
+                  transition: 'transform 200ms cubic-bezier(0.2, 0, 0, 1)',
                 }}
                 loading="lazy"
               />
@@ -760,7 +868,9 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
 
           {/* Footer Info */}
           <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-4 text-center text-white/70 text-xs">
-            <p>Gunakan <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">+</kbd> / <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">-</kbd> atau scroll untuk zoom • <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">ESC</kbd> untuk tutup</p>
+            <p>
+              Gunakan <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">+</kbd> / <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">-</kbd> atau scroll untuk zoom • <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">R</kbd> untuk rotate • <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">0</kbd> untuk reset • <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">ESC</kbd> untuk tutup
+            </p>
           </div>
         </div>
       )}

@@ -32,7 +32,7 @@ class StatusScreen extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: const Color(0xFFE8F5E9),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: const Color(0xFFC8E6C9)),
               ),
               child: const Column(
@@ -63,7 +63,7 @@ class StatusScreen extends StatelessWidget {
             Card(
               elevation: 0,
               shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(8),
                 side: BorderSide(color: Colors.grey.shade200),
               ),
               child: Padding(
@@ -98,7 +98,7 @@ class StatusScreen extends StatelessWidget {
                               horizontal: 10, vertical: 4),
                           decoration: BoxDecoration(
                             color: const Color(0xFFFFF3E0),
-                            borderRadius: BorderRadius.circular(12),
+                            borderRadius: BorderRadius.circular(6),
                           ),
                           child: const Text('Menunggu',
                               style: TextStyle(
@@ -122,7 +122,7 @@ class StatusScreen extends StatelessWidget {
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
                 color: Colors.white,
-                borderRadius: BorderRadius.circular(16),
+                borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: Colors.grey.shade200),
               ),
               child: Column(
@@ -153,11 +153,11 @@ class StatusScreen extends StatelessWidget {
               onPressed: () =>
                   Navigator.of(context).popUntil((r) => r.isFirst),
               style: ElevatedButton.styleFrom(
-                backgroundColor: Theme.of(context).primaryColor,
+                backgroundColor: const Color(0xFF0088FF),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12)),
+                    borderRadius: BorderRadius.circular(8)),
               ),
               child: const Text('Kembali ke Beranda',
                   style: TextStyle(
@@ -172,14 +172,22 @@ class StatusScreen extends StatelessWidget {
   Widget _row(String label, String value, {bool highlight = false}) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label, style: const TextStyle(color: Colors.grey)),
-        Text(value,
+        const SizedBox(width: 12),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.end,
             style: TextStyle(
-                fontWeight: FontWeight.bold,
-                color: highlight
-                    ? Colors.blue.shade800
-                    : Colors.black87)),
+              fontWeight: FontWeight.bold,
+              color: highlight
+                  ? Colors.blue.shade800
+                  : Colors.black87,
+            ),
+          ),
+        ),
       ],
     );
   }

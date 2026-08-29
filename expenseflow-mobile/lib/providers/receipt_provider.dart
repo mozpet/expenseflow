@@ -1,6 +1,46 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+
+class ReceiptItem {
+  final String name;
+  final int qty;
+  final double price;
+  final double total;
+
+  const ReceiptItem({
+    required this.name,
+    this.qty = 1,
+    this.price = 0.0,
+    this.total = 0.0,
+  });
+
+  factory ReceiptItem.fromJson(Map<String, dynamic> json) {
+    double parseNum(dynamic val) {
+      if (val == null) return 0.0;
+      if (val is num) return val.toDouble();
+      return double.tryParse(val.toString()) ?? 0.0;
+    }
+
+    int parseQty(dynamic val) {
+      if (val == null) return 1;
+      if (val is num) return val.toInt();
+      return int.tryParse(val.toString()) ?? 1;
+    }
+
+    final p = parseNum(json['price']);
+    final q = parseQty(json['qty']);
+    final t = json['total'] != null ? parseNum(json['total']) : (p * q);
+
+    return ReceiptItem(
+      name: (json['name'] ?? '').toString(),
+      qty: q,
+      price: p,
+      total: t > 0 ? t : (p * q),
+    );
+  }
+}
 
 class ReceiptRecord {
   final int id;
@@ -8,6 +48,10 @@ class ReceiptRecord {
   final String? ocrRawAmount;
   final String? ocrRawMerchant;
   final String? ocrRawDate;
+  final double? ocrRawSubtotal;
+  final double? ocrRawTax;
+  final double? ocrRawDiscount;
+  final List<ReceiptItem> items;
   final double? claimedAmount;
   final String? vendorName;
   final String? receiptDate;
@@ -24,6 +68,10 @@ class ReceiptRecord {
     this.ocrRawAmount,
     this.ocrRawMerchant,
     this.ocrRawDate,
+    this.ocrRawSubtotal,
+    this.ocrRawTax,
+    this.ocrRawDiscount,
+    this.items = const [],
     this.claimedAmount,
     this.vendorName,
     this.receiptDate,
@@ -55,12 +103,36 @@ class ReceiptRecord {
       }
     }
 
+    // Parse items
+    final List<ReceiptItem> parsedItems = [];
+    if (m['ocr_raw_items'] != null) {
+      dynamic rawItems = m['ocr_raw_items'];
+      if (rawItems is String) {
+        try {
+          rawItems = jsonDecode(rawItems);
+        } catch (_) {}
+      }
+      if (rawItems is List) {
+        for (final it in rawItems) {
+          if (it is Map<String, dynamic>) {
+            parsedItems.add(ReceiptItem.fromJson(it));
+          } else if (it is Map) {
+            parsedItems.add(ReceiptItem.fromJson(Map<String, dynamic>.from(it)));
+          }
+        }
+      }
+    }
+
     return ReceiptRecord(
       id: (m['id'] as num).toInt(),
       receiptNumber: (m['receipt_number'] ?? '').toString(),
       ocrRawAmount: m['ocr_raw_amount']?.toString(),
       ocrRawMerchant: m['ocr_raw_merchant']?.toString(),
       ocrRawDate: m['ocr_raw_date']?.toString(),
+      ocrRawSubtotal: parseAmount(m['ocr_raw_subtotal']),
+      ocrRawTax: parseAmount(m['ocr_raw_tax']),
+      ocrRawDiscount: parseAmount(m['ocr_raw_discount']),
+      items: parsedItems,
       claimedAmount: parseAmount(m['claimed_amount']),
       vendorName: m['vendor_name']?.toString(),
       receiptDate: m['receipt_date']?.toString(),

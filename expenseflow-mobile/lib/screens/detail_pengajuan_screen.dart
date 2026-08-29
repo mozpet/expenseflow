@@ -191,7 +191,7 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 12),
                       decoration: BoxDecoration(
                         color: banner.bg,
-                        borderRadius: BorderRadius.circular(12),
+                        borderRadius: BorderRadius.circular(8),
                       ),
                       alignment: Alignment.center,
                       child: Text(banner.msg,
@@ -231,7 +231,7 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                       height: 80,
                       decoration: BoxDecoration(
                         color: const Color(0xFFECEFF1),
-                        borderRadius: BorderRadius.circular(16),
+                        borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: Colors.blueGrey.shade100),
                       ),
                       child: Center(
@@ -252,22 +252,39 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                     const SizedBox(height: 20),
 
                     // Data OCR
-                    const Text('DATA OCR (TERSIMPAN OTOMATIS)',
-                        style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blueGrey,
-                            letterSpacing: 0.5)),
-                    const SizedBox(height: 8),
-                    _row(
-                      'Nominal OCR',
-                      widget.receipt.ocrRawAmount != null
-                          ? formatCurrency(
-                              double.tryParse(
-                                      widget.receipt.ocrRawAmount!) ??
-                                  0)
-                          : '-',
-                      isBold: true,
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text('DATA OCR (TERSIMPAN OTOMATIS)',
+                            style: TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.blueGrey,
+                                letterSpacing: 0.5)),
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.green.shade50,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: Colors.green.shade200),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.auto_awesome, size: 11, color: Colors.green.shade700),
+                              const SizedBox(width: 3),
+                              Text(
+                                'AI OCR',
+                                style: TextStyle(
+                                  fontSize: 10,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.green.shade800,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 8),
                     _row('Merchant OCR',
@@ -276,6 +293,90 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                             '-'),
                     const SizedBox(height: 8),
                     _row('Tanggal OCR', widget.receipt.displayDate),
+                    const SizedBox(height: 8),
+
+                    // Rincian Item Belanjaan
+                    if (widget.receipt.items.isNotEmpty) ...[
+                      const SizedBox(height: 4),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF8F9FD),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.blue.shade100),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                const Icon(Icons.receipt_outlined, size: 14, color: Color(0xFF1E88E5)),
+                                const SizedBox(width: 6),
+                                Text(
+                                  'Rincian Belanja (${widget.receipt.items.length} item)',
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 11.5,
+                                    color: Color(0xFF1E88E5),
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 8),
+                            ...widget.receipt.items.map((it) => Padding(
+                              padding: const EdgeInsets.symmetric(vertical: 3),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: Text(
+                                      '${it.name} (${it.qty}x)',
+                                      style: const TextStyle(fontSize: 11.5, color: Colors.black87),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    formatCurrency(it.total),
+                                    style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600),
+                                  ),
+                                ],
+                              ),
+                            )),
+                            if (widget.receipt.ocrRawSubtotal != null ||
+                                widget.receipt.ocrRawDiscount != null ||
+                                widget.receipt.ocrRawTax != null) ...[
+                              const Divider(height: 14),
+                              if (widget.receipt.ocrRawSubtotal != null)
+                                _miniBreakdownRow('Subtotal', formatCurrency(widget.receipt.ocrRawSubtotal!)),
+                              if (widget.receipt.ocrRawDiscount != null && widget.receipt.ocrRawDiscount! > 0)
+                                _miniBreakdownRow(
+                                  'Diskon',
+                                  '- ${formatCurrency(widget.receipt.ocrRawDiscount!)}',
+                                  textColor: const Color(0xFF2E7D32),
+                                ),
+                              if (widget.receipt.ocrRawTax != null && widget.receipt.ocrRawTax! > 0)
+                                _miniBreakdownRow(
+                                  'Pajak/PPN',
+                                  '+ ${formatCurrency(widget.receipt.ocrRawTax!)}',
+                                  textColor: const Color(0xFFE65100),
+                                ),
+                            ],
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                    ],
+
+                    _row(
+                      'Total Bayar OCR',
+                      widget.receipt.ocrRawAmount != null
+                          ? formatCurrency(
+                              double.tryParse(
+                                      widget.receipt.ocrRawAmount!) ??
+                                  0)
+                          : '-',
+                      isBold: true,
+                    ),
 
                     const Divider(height: 32, thickness: 0.5),
 
@@ -311,7 +412,7 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                           color: const Color(0xFFFFEBEE),
-                          borderRadius: BorderRadius.circular(16),
+                          borderRadius: BorderRadius.circular(8),
                         ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
@@ -362,14 +463,14 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                                       size: 18),
                               label: const Text('Foto Ulang'),
                               style: OutlinedButton.styleFrom(
-                                foregroundColor: Colors.blue.shade700,
-                                side: BorderSide(
-                                    color: Colors.blue.shade300),
+                                foregroundColor: const Color(0xFF0088FF),
+                                side: const BorderSide(
+                                    color: Color(0xFF0088FF)),
                                 padding: const EdgeInsets.symmetric(
                                     vertical: 12),
                                 shape: RoundedRectangleBorder(
                                     borderRadius:
-                                        BorderRadius.circular(10)),
+                                        BorderRadius.circular(8)),
                               ),
                             ),
                           ),
@@ -389,7 +490,7 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                                     vertical: 12),
                                 shape: RoundedRectangleBorder(
                                     borderRadius:
-                                        BorderRadius.circular(10)),
+                                        BorderRadius.circular(8)),
                               ),
                             ),
                           ),
@@ -422,6 +523,30 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                       isBold ? FontWeight.bold : FontWeight.w600,
                   color: Colors.black87,
                   fontSize: 13)),
+        ),
+      ],
+    );
+  }
+
+  Widget _miniBreakdownRow(String label, String value, {Color? textColor}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11,
+            color: Colors.grey.shade600,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: textColor ?? Colors.black87,
+          ),
         ),
       ],
     );

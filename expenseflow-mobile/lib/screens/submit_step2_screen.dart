@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -239,16 +240,113 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
         );
 
       case _Phase.ocrFailed:
+        final ocrError = (_ocrData?['ocr_error'] ?? '').toString();
+        final isRateLimited = ocrError.contains('429') ||
+            ocrError.contains('Too Many Requests') ||
+            ocrError.contains('RESOURCE_EXHAUSTED') ||
+            ocrError.contains('kuota') ||
+            ocrError.contains('sibuk') ||
+            ocrError.contains('menit');
+
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            _infoBox(
-              color: const Color(0xFFFFEBEE),
-              border: const Color(0xFFFFCDD2),
-              icon: const Icon(Icons.warning_amber_outlined,
-                  color: Colors.red, size: 20),
-              text: 'OCR gagal membaca struk. Isi data manual di bawah.',
-              textColor: Colors.red,
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: isRateLimited
+                    ? const Color(0xFFFFF8E1)
+                    : const Color(0xFFFFEBEE),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: isRateLimited
+                      ? const Color(0xFFFFE082)
+                      : const Color(0xFFFFCDD2),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        isRateLimited
+                            ? Icons.hourglass_top_rounded
+                            : Icons.warning_amber_outlined,
+                        color: isRateLimited
+                            ? const Color(0xFFE65100)
+                            : Colors.red,
+                        size: 22,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              isRateLimited
+                                  ? 'Layanan OCR Sedang Sibuk (Limit Kuota)'
+                                  : 'OCR Gagal Membaca Struk',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13,
+                                color: isRateLimited
+                                    ? const Color(0xFFE65100)
+                                    : Colors.red.shade900,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              isRateLimited
+                                  ? 'Batas scan OCR menit ini telah penuh (15 RPM). Silakan tunggu 1 menit lalu tekan tombol Coba Scan Ulang, atau isi rincian struk secara manual di bawah.'
+                                  : 'Sistem tidak dapat membaca teks pada foto secara otomatis. Silakan isi rincian struk manual di bawah atau coba scan ulang.',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: isRateLimited
+                                    ? const Color(0xFFBF360C)
+                                    : Colors.red.shade800,
+                                height: 1.35,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: () {
+                        setState(() {
+                          _phase = _Phase.uploading;
+                        });
+                        _uploadAndPoll();
+                      },
+                      icon: const Icon(Icons.refresh, size: 16),
+                      label: const Text('Coba Scan Ulang Sekarang',
+                          style: TextStyle(
+                              fontSize: 12, fontWeight: FontWeight.bold)),
+                      style: OutlinedButton.styleFrom(
+                        foregroundColor: isRateLimited
+                            ? const Color(0xFFE65100)
+                            : Colors.red.shade800,
+                        side: BorderSide(
+                          color: isRateLimited
+                              ? const Color(0xFFFFB74D)
+                              : Colors.red.shade300,
+                        ),
+                        backgroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             _buildManualOcrFields(),
@@ -256,12 +354,49 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
         );
 
       case _Phase.error:
-        return _infoBox(
-          color: const Color(0xFFFFEBEE),
-          border: const Color(0xFFFFCDD2),
-          icon: const Icon(Icons.error_outline, color: Colors.red, size: 20),
-          text: _errorMsg ?? 'Gagal mengunggah foto.',
-          textColor: Colors.red,
+        return Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: const Color(0xFFFFEBEE),
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: const Color(0xFFFFCDD2)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.error_outline, color: Colors.red, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _errorMsg ?? 'Gagal mengunggah foto.',
+                      style: const TextStyle(color: Colors.red, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () {
+                    setState(() => _phase = _Phase.uploading);
+                    _uploadAndPoll();
+                  },
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('Coba Lagi',
+                      style: TextStyle(
+                          fontSize: 12, fontWeight: FontWeight.bold)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.red,
+                    side: const BorderSide(color: Colors.red),
+                    backgroundColor: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ),
         );
 
       default:
@@ -271,8 +406,29 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
 
   Widget _buildLockedOcrCard() {
     final amount = _ocrData?['ocr_raw_amount'];
+    final subtotal = _ocrData?['ocr_raw_subtotal'];
+    final tax = _ocrData?['ocr_raw_tax'];
+    final discount = _ocrData?['ocr_raw_discount'];
     final merchant = _ocrData?['ocr_raw_merchant'] ?? '-';
     final date = (_ocrData?['ocr_raw_date'] ?? '-').toString();
+    dynamic rawItems = _ocrData?['ocr_raw_items'];
+
+    if (rawItems is String) {
+      try {
+        rawItems = jsonDecode(rawItems);
+      } catch (_) {}
+    }
+
+    List<ReceiptItem> items = [];
+    if (rawItems is List) {
+      for (final it in rawItems) {
+        if (it is Map<String, dynamic>) {
+          items.add(ReceiptItem.fromJson(it));
+        } else if (it is Map) {
+          items.add(ReceiptItem.fromJson(Map<String, dynamic>.from(it)));
+        }
+      }
+    }
 
     final displayAmount = amount != null
         ? formatCurrency((double.tryParse(amount.toString()) ?? 0))
@@ -282,7 +438,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFFF8F9FD),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: Colors.blue.shade100),
       ),
       child: Column(
@@ -293,14 +449,151 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
             children: [
               const Text('Data dari struk',
                   style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13)),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.green.shade50,
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: Colors.green.shade200),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.auto_awesome, size: 12, color: Colors.green.shade700),
+                    const SizedBox(width: 4),
+                    Text(
+                      'AI OCR',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.green.shade800,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 12),
-          _lockedRow('Nominal OCR', displayAmount),
-          const Divider(height: 20),
           _lockedRow('Merchant OCR', merchant.toString()),
-          const Divider(height: 20),
+          const Divider(height: 18),
           _lockedRow('Tanggal OCR', date.length >= 10 ? date.substring(0, 10) : date),
+          const Divider(height: 18),
+
+          // Rincian Item Belanjaan jika terdeteksi
+          if (items.isNotEmpty) ...[
+            Row(
+              children: [
+                const Icon(Icons.receipt_outlined, size: 15, color: Color(0xFF1E88E5)),
+                const SizedBox(width: 6),
+                Text(
+                  'Rincian Belanja (${items.length} item)',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                    color: Color(0xFF1E88E5),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                itemCount: items.length,
+                separatorBuilder: (context, index) => Divider(height: 1, color: Colors.grey.shade100),
+                itemBuilder: (context, idx) {
+                  final item = items[idx];
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 12,
+                                  color: Colors.black87,
+                                ),
+                              ),
+                              if (item.qty > 1 || item.price > 0)
+                                Text(
+                                  '${item.qty}x @ ${formatCurrency(item.price)}',
+                                  style: TextStyle(
+                                    fontSize: 10.5,
+                                    color: Colors.grey.shade600,
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          formatCurrency(item.total),
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 12,
+                            color: Colors.black87,
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          // Breakdown Subtotal, Diskon, Pajak
+          if (subtotal != null || discount != null || tax != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: Column(
+                children: [
+                  if (subtotal != null) ...[
+                    _summaryMiniRow('Subtotal', formatCurrency(double.tryParse(subtotal.toString()) ?? 0)),
+                  ],
+                  if (discount != null && (double.tryParse(discount.toString()) ?? 0) > 0) ...[
+                    if (subtotal != null) const SizedBox(height: 5),
+                    _summaryMiniRow(
+                      'Diskon / Promo',
+                      '- ${formatCurrency(double.tryParse(discount.toString()) ?? 0)}',
+                      textColor: const Color(0xFF2E7D32),
+                    ),
+                  ],
+                  if (tax != null && (double.tryParse(tax.toString()) ?? 0) > 0) ...[
+                    if (subtotal != null || discount != null) const SizedBox(height: 5),
+                    _summaryMiniRow(
+                      'Pajak / PPN',
+                      '+ ${formatCurrency(double.tryParse(tax.toString()) ?? 0)}',
+                      textColor: const Color(0xFFE65100),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          _lockedRow('Total Bayar OCR', displayAmount),
           const Divider(height: 20),
           const Text('Nominal klaim (bisa diubah)',
               style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
@@ -317,7 +610,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
             decoration: InputDecoration(
               labelText: 'Nominal klaim',
               prefixText: 'Rp ',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
               contentPadding: const EdgeInsets.all(12),
             ),
           ),
@@ -353,12 +646,36 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
     );
   }
 
+  Widget _summaryMiniRow(String label, String value, {Color? textColor}) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            color: Colors.grey.shade600,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        Text(
+          value,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.w600,
+            color: textColor ?? Colors.black87,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildManualOcrFields() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
         color: const Color(0xFFFFF8E1),
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: Colors.orange.shade100),
       ),
       child: Column(
@@ -372,7 +689,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
             keyboardType: TextInputType.number,
             decoration: InputDecoration(
               labelText: 'Nominal (angka, tanpa titik)',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
               contentPadding: const EdgeInsets.all(12),
             ),
           ),
@@ -381,7 +698,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
             controller: _merchantController,
             decoration: InputDecoration(
               labelText: 'Nama merchant / toko',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
               contentPadding: const EdgeInsets.all(12),
             ),
           ),
@@ -391,7 +708,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
             decoration: InputDecoration(
               labelText: 'Tanggal struk (YYYY-MM-DD)',
               hintText: '2026-05-26',
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
               contentPadding: const EdgeInsets.all(12),
             ),
           ),
@@ -413,7 +730,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
               decoration: BoxDecoration(
                   color: Colors.green.shade50,
-                  borderRadius: BorderRadius.circular(8)),
+                  borderRadius: BorderRadius.circular(6)),
               child: const Text('Bisa diisi',
                   style: TextStyle(
                       color: Colors.green,
@@ -429,7 +746,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
         DropdownButtonFormField<String>(
           initialValue: _selectedCategory,
           decoration: InputDecoration(
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             contentPadding: const EdgeInsets.all(16),
           ),
           items: _categories
@@ -448,7 +765,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
           maxLines: 3,
           decoration: InputDecoration(
             hintText: 'Tulis tujuan pengeluaran...',
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
             contentPadding: const EdgeInsets.all(16),
           ),
         ),
@@ -457,7 +774,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
             color: const Color(0xFFFFF9C4),
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(color: const Color(0xFFFFF59D)),
           ),
           child: const Text(
@@ -475,10 +792,10 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
     return ElevatedButton(
       onPressed: isLoading ? null : _submit,
       style: ElevatedButton.styleFrom(
-        backgroundColor: Theme.of(context).primaryColor,
+        backgroundColor: const Color(0xFF0088FF),
         foregroundColor: Colors.white,
         padding: const EdgeInsets.symmetric(vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       ),
       child: isLoading
           ? const SizedBox(
@@ -502,7 +819,7 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: color,
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(8),
         border: Border.all(color: border),
       ),
       child: Row(
@@ -524,17 +841,27 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
   Widget _lockedRow(String label, String value) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label,
             style: const TextStyle(color: Colors.grey, fontSize: 13)),
-        Row(
-          children: [
-            Text(value,
-                style: const TextStyle(
-                    fontWeight: FontWeight.bold, fontSize: 14)),
-            const SizedBox(width: 6),
-            const Icon(Icons.lock, size: 14, color: Colors.blueGrey),
-          ],
+        const SizedBox(width: 12),
+        Flexible(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Flexible(
+                child: Text(
+                  value,
+                  textAlign: TextAlign.end,
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold, fontSize: 14),
+                ),
+              ),
+              const SizedBox(width: 6),
+              const Icon(Icons.lock, size: 14, color: Colors.blueGrey),
+            ],
+          ),
         ),
       ],
     );

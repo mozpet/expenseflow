@@ -2,61 +2,161 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
 /**
- * FcmService — kirim push notification ke Flutter via Firebase Cloud Messaging (FCM v1 API).
+ * FcmService — kirim push notification ke Flutter via Firebase Cloud Messaging (FCM HTTP v1 API).
  *
- * Konfigurasi .env yang dibutuhkan:
- *   FCM_PROJECT_ID=your-firebase-project-id
- *   FCM_SERVER_KEY=your-server-key   (Legacy HTTP API, untuk fallback)
+ * Menggunakan Service Account JSON dari Firebase Console:
+ *   storage/app/expenseflow-e5296-firebase-adminsdk-*.json
  *
- * Jika tidak dikonfigurasi, service ini diam-diam melewati pengiriman
- * (agar sistem tetap berfungsi walau FCM belum disetup).
+ * Menggunakan autentikasi Google OAuth2 (RS256 JWT assertion).
  */
 class FcmService
 {
     /**
-     * Kirim push notification ke satu device via FCM Legacy HTTP API.
-     *
-     * @param  string  $fcmToken  Token FCM device tujuan
-     * @param  string  $title     Judul notifikasi
-     * @param  string  $body      Isi pesan notifikasi
-     * @param  array   $data      Data tambahan (dikirim sebagai payload data)
+     * Cari dan muat kredensial Service Account JSON.
+     */
+    private function getServiceAccountCredentials(): ?array
+    {
+        // 1. Cek konfigurasi spesifik jika ada
+        $configPath = config('services.fcm.credentials_path');
+        if ($configPath && file_exists($configPath)) {
+            $data = json_decode(file_get_contents($configPath), true);
+            if (is_array($data) && ! empty($data['private_key']) && ! empty($data['client_email'])) {
+                return $data;
+            }
+        }
+
+        // 2. Cari otomatis file JSON firebase di storage/app/
+        $files = glob(storage_path('app/*firebase-adminsdk*.json'));
+        if (! empty($files) && file_exists($files[0])) {
+            $data = json_decode(file_get_contents($files[0]), true);
+            if (is_array($data) && ! empty($data['private_key']) && ! empty($data['client_email'])) {
+                return $data;
+            }
+        }
+
+        // 3. Fallback file credentials standar
+        $fallback = storage_path('app/firebase-credentials.json');
+        if (file_exists($fallback)) {
+            $data = json_decode(file_get_contents($fallback), true);
+            if (is_array($data) && ! empty($data['private_key']) && ! empty($data['client_email'])) {
+                return $data;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Dapatkan OAuth2 Access Token untuk Google Firebase Cloud Messaging API.
+     */
+    private function getAccessToken(): ?string
+    {
+        return Cache::remember('fcm_http_v1_access_token', 3300, function () {
+            $credentials = $this->getServiceAccountCredentials();
+            if (! $credentials) {
+                Log::debug('FCM v1: Service account credentials tidak ditemukan di storage/app/');
+                return null;
+            }
+
+            try {
+                $now = time();
+                $header = json_encode(['alg' => 'RS256', 'typ' => 'JWT']);
+                $claims = json_encode([
+                    'iss'   => $credentials['client_email'],
+                    'scope' => 'https://www.googleapis.com/auth/firebase.messaging',
+                    'aud'   => 'https://oauth2.googleapis.com/token',
+                    'iat'   => $now,
+                    'exp'   => $now + 3600,
+                ]);
+
+                $base64UrlHeader = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($header));
+                $base64UrlClaims = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($claims));
+                $signatureInput  = $base64UrlHeader . '.' . $base64UrlClaims;
+
+                $privateKey = $credentials['private_key'];
+                $binarySignature = '';
+                $success = openssl_sign($signatureInput, $binarySignature, $privateKey, OPENSSL_ALGO_SHA256);
+                if (! $success) {
+                    Log::error('FCM v1: Gagal menandatangani JWT dengan private key.');
+                    return null;
+                }
+
+                $base64UrlSignature = str_replace(['+', '/', '='], ['-', '_', ''], base64_encode($binarySignature));
+                $jwt = $signatureInput . '.' . $base64UrlSignature;
+
+                $response = Http::asForm()->post('https://oauth2.googleapis.com/token', [
+                    'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+                    'assertion'  => $jwt,
+                ]);
+
+                if (! $response->successful()) {
+                    Log::error('FCM v1: Gagal mendapatkan OAuth2 access token: ' . $response->body());
+                    return null;
+                }
+
+                return $response->json('access_token');
+            } catch (\Throwable $e) {
+                Log::error('FCM v1: Exception saat mengambil access token: ' . $e->getMessage());
+                return null;
+            }
+        });
+    }
+
+    /**
+     * Kirim push notification ke satu device via FCM HTTP v1 API.
      */
     public function send(string $fcmToken, string $title, string $body, array $data = []): bool
     {
-        $serverKey = config('services.fcm.server_key');
+        $credentials = $this->getServiceAccountCredentials();
+        if (! $credentials) {
+            Log::debug('FCM v1: Service account credentials tidak ditemukan, notifikasi dilewati.');
+            return false;
+        }
 
-        if (! $serverKey) {
-            // FCM belum dikonfigurasi — lewati tanpa error
-            Log::debug('FCM: server_key tidak dikonfigurasi, notifikasi dilewati.', [
-                'title' => $title,
-                'token' => substr($fcmToken, 0, 10) . '...',
-            ]);
+        $projectId   = $credentials['project_id'] ?? 'expenseflow-e5296';
+        $accessToken = $this->getAccessToken();
+        if (! $accessToken) {
             return false;
         }
 
         try {
+            // Format semua data key-value menjadi string (wajib di FCM v1)
+            $stringData = [];
+            foreach ($data as $k => $v) {
+                $stringData[(string) $k] = is_array($v) ? json_encode($v) : (string) $v;
+            }
+            $stringData['click_action'] = 'FLUTTER_NOTIFICATION_CLICK';
+
             $payload = [
-                'to'           => $fcmToken,
-                'notification' => [
-                    'title' => $title,
-                    'body'  => $body,
-                    'sound' => 'default',
+                'message' => [
+                    'token'        => $fcmToken,
+                    'notification' => [
+                        'title' => $title,
+                        'body'  => $body,
+                    ],
+                    'data'         => (object) $stringData,
+                    'android'      => [
+                        'priority'     => 'high',
+                        'notification' => [
+                            'sound'      => 'default',
+                            'channel_id' => 'high_importance_channel',
+                        ],
+                    ],
                 ],
-                'data'         => array_merge($data, ['click_action' => 'FLUTTER_NOTIFICATION_CLICK']),
-                'priority'     => 'high',
             ];
 
             $response = Http::withHeaders([
-                'Authorization' => "key={$serverKey}",
+                'Authorization' => "Bearer {$accessToken}",
                 'Content-Type'  => 'application/json',
-            ])->post('https://fcm.googleapis.com/fcm/send', $payload);
+            ])->post("https://fcm.googleapis.com/v1/projects/{$projectId}/messages:send", $payload);
 
             if (! $response->successful()) {
-                Log::warning('FCM: gagal kirim notifikasi.', [
+                Log::warning('FCM v1: Gagal kirim notifikasi.', [
                     'status' => $response->status(),
                     'body'   => $response->body(),
                     'title'  => $title,
@@ -64,70 +164,25 @@ class FcmService
                 return false;
             }
 
-            $result = $response->json();
-            // success=0 berarti token tidak valid / device tidak terdaftar
-            if (isset($result['success']) && $result['success'] === 0) {
-                Log::warning('FCM: token tidak valid atau device tidak terdaftar.', [
-                    'failure' => $result,
-                    'token'   => substr($fcmToken, 0, 10) . '...',
-                ]);
-                return false;
-            }
-
+            Log::info("FCM v1: Sukses kirim notifikasi '{$title}' ke token " . substr($fcmToken, 0, 15) . '...');
             return true;
         } catch (\Throwable $e) {
-            Log::error('FCM: exception saat kirim notifikasi.', [
-                'error' => $e->getMessage(),
-                'title' => $title,
-            ]);
+            Log::error('FCM v1: Exception saat kirim notifikasi: ' . $e->getMessage());
             return false;
         }
     }
 
     /**
-     * Kirim push notification ke banyak device (multicast).
-     *
-     * @param  array<string>  $tokens  Daftar FCM token tujuan
+     * Kirim push notification ke banyak device.
      */
     public function sendMulticast(array $tokens, string $title, string $body, array $data = []): int
     {
         $sent = 0;
-        foreach (array_chunk($tokens, 500) as $chunk) {
-            if ($this->sendToGroup($chunk, $title, $body, $data)) {
-                $sent += count($chunk);
+        foreach ($tokens as $token) {
+            if ($this->send($token, $title, $body, $data)) {
+                $sent++;
             }
         }
         return $sent;
-    }
-
-    private function sendToGroup(array $tokens, string $title, string $body, array $data): bool
-    {
-        $serverKey = config('services.fcm.server_key');
-        if (! $serverKey || empty($tokens)) {
-            return false;
-        }
-
-        try {
-            $payload = [
-                'registration_ids' => $tokens,
-                'notification'     => [
-                    'title' => $title,
-                    'body'  => $body,
-                    'sound' => 'default',
-                ],
-                'data'             => array_merge($data, ['click_action' => 'FLUTTER_NOTIFICATION_CLICK']),
-                'priority'         => 'high',
-            ];
-
-            $response = Http::withHeaders([
-                'Authorization' => "key={$serverKey}",
-                'Content-Type'  => 'application/json',
-            ])->post('https://fcm.googleapis.com/fcm/send', $payload);
-
-            return $response->successful();
-        } catch (\Throwable $e) {
-            Log::error('FCM multicast exception: ' . $e->getMessage());
-            return false;
-        }
     }
 }

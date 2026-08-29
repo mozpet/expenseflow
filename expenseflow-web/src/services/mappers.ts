@@ -75,11 +75,35 @@ function mapReceiptStatus(status: string, varianceFlag?: boolean): ReceiptStatus
   }
 }
 
+function parseReceiptItems(raw: any) {
+  if (!raw) return [];
+  let list = raw;
+  if (typeof raw === 'string') {
+    try {
+      list = JSON.parse(raw);
+    } catch {
+      return [];
+    }
+  }
+  if (!Array.isArray(list)) return [];
+  return list.map((it: any) => ({
+    name: String(it.name || ''),
+    qty: num(it.qty) || 1,
+    price: num(it.price) || 0,
+    total: num(it.total) || (num(it.qty || 1) * num(it.price || 0)),
+  }));
+}
+
 export function mapReceipt(r: any): Receipt {
   const karyawan = r.user?.name ?? r.vendor_name ?? 'Tanpa Nama';
   const av = avatarFor(karyawan);
   const ocr = num(r.ocr_raw_amount ?? r.total_amount);
   const klaim = num(r.claimed_amount ?? r.total_amount ?? r.ocr_raw_amount);
+  const items = parseReceiptItems(r.ocr_raw_items);
+  const subtotal = r.ocr_raw_subtotal !== null && r.ocr_raw_subtotal !== undefined ? num(r.ocr_raw_subtotal) : undefined;
+  const tax = r.ocr_raw_tax !== null && r.ocr_raw_tax !== undefined ? num(r.ocr_raw_tax) : undefined;
+  const discount = r.ocr_raw_discount !== null && r.ocr_raw_discount !== undefined ? num(r.ocr_raw_discount) : undefined;
+
   return {
     id: String(r.id),
     karyawan,
@@ -94,6 +118,10 @@ export function mapReceipt(r: any): Receipt {
     tanggal: formatTanggal(r.receipt_date ?? r.submitted_at ?? r.created_at),
     departemen: r.user?.department ?? '—',
     imageUrl: undefined, // Will be loaded asynchronously in component
+    items: items.length > 0 ? items : undefined,
+    subtotal,
+    tax,
+    discount,
   };
 }
 
@@ -104,6 +132,11 @@ export function mapReceiptToApproval(r: any): StrukApproval {
 
   // Extract tanggal YYYY-MM-DD dari timestamp untuk filtering
   const dateStr = (r.submitted_at ?? r.created_at ?? '').substring(0, 10);
+  const items = parseReceiptItems(r.ocr_raw_items);
+  const subtotal = r.ocr_raw_subtotal !== null && r.ocr_raw_subtotal !== undefined ? num(r.ocr_raw_subtotal) : undefined;
+  const tax = r.ocr_raw_tax !== null && r.ocr_raw_tax !== undefined ? num(r.ocr_raw_tax) : undefined;
+  const discount = r.ocr_raw_discount !== null && r.ocr_raw_discount !== undefined ? num(r.ocr_raw_discount) : undefined;
+  const ocrNominal = r.ocr_raw_amount !== null && r.ocr_raw_amount !== undefined ? num(r.ocr_raw_amount) : undefined;
 
   return {
     id: String(r.id),
@@ -123,6 +156,12 @@ export function mapReceiptToApproval(r: any): StrukApproval {
       role: r.approved_by.role,
     },
     approvedAt: r.approved_at,
+    items: items.length > 0 ? items : undefined,
+    subtotal,
+    tax,
+    discount,
+    ocrNominal,
+    kategori: r.category ?? '—',
   };
 }
 

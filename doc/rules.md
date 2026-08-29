@@ -1091,6 +1091,15 @@ bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceMa
 
   ada bug pada device binding, user tetap bisa login walaupun device id nya tidak sesuai dengan device id yang terdaftar
 
+5. Fitur Reset Saldo Cuti & Riwayat Periode Lampau (2026-08-30) ✅ SELESAI
+   - Tabel `leave_balance_histories`: menyimpan arsip snapshot saldo cuti (kuota awal, terpakai, sisa) dan pemakaian izin/sakit per siklus/periode reset.
+   - Command `attendance:reset-leave-balances` & endpoint manual reset kantor:
+     - Mengarsipkan data pemakaian periode yang berakhir ke `leave_balance_histories`.
+     - Me-reset saldo cuti ke kuota baru (`used = 0`).
+     - Me-reset pemakaian izin/sakit menjadi 0 (`used = 0`) untuk periode baru.
+   - Frontend Tab Saldo Cuti (`AttendanceManagement.tsx`):
+     - Sub-tab "Saldo Berjalan (Periode Aktif)": kartu saldo aktif cuti dan izin/sakit tahun berjalan.
+     - Sub-tab "Riwayat Saldo Sebelumnya": ringkasan KPI dan tabel arsip riwayat pemakaian cuti & izin/sakit periode lalu lengkap dengan filter tahun, kantor cabang, dan pencarian.
 
 # note untuk refaktoring
-perbaiki dulu error di atas , 
+perbaiki dulu error di atas ,

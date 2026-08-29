@@ -2,20 +2,16 @@
 
 namespace App\Services;
 
+use App\Services\Ocr\GeminiVisionDriver;
 use App\Services\Ocr\GoogleVisionDriver;
 use App\Services\Ocr\OcrDriverInterface;
-use App\Services\Ocr\TesseractDriver;
 use Illuminate\Support\Facades\Log;
 
 /**
- * OCR Service — memilih driver berdasarkan config OCR_DRIVER di .env.
+ * OCR Service — memproses OCR struk pengeluaran via Gemini Vision atau Google Cloud Vision.
  *
  * Cara pakai di ProcessOcrJob:
  *   $result = app(OcrService::class)->analyze($imagePath);
- *
- * Driver yang tersedia:
- *   - tesseract     → TesseractDriver (gratis, development)
- *   - google_vision → GoogleVisionDriver (production)
  */
 class OcrService
 {
@@ -33,7 +29,7 @@ class OcrService
      */
     public function analyze(string $imagePath): array
     {
-        Log::info('OCR: menggunakan driver', [
+        Log::info('OCR: menggunakan driver ' . get_class($this->driver), [
             'driver' => get_class($this->driver),
             'image'  => $imagePath,
         ]);
@@ -42,18 +38,16 @@ class OcrService
     }
 
     /**
-     * Resolve driver berdasarkan config OCR_DRIVER.
+     * Resolve driver OCR.
      */
     private function resolveDriver(): OcrDriverInterface
     {
-        $driver = config('ocr.driver', 'tesseract');
+        $driver = config('ocr.driver', 'gemini');
 
         return match ($driver) {
             'google_vision' => app(GoogleVisionDriver::class),
-            'tesseract'     => app(TesseractDriver::class),
-            default => throw new \RuntimeException(
-                "OCR_DRIVER '{$driver}' tidak dikenal. Gunakan: tesseract atau google_vision."
-            ),
+            'gemini', 'gemini_vision' => app(GeminiVisionDriver::class),
+            default => app(GeminiVisionDriver::class),
         };
     }
 }

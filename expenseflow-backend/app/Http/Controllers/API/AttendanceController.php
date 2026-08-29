@@ -40,7 +40,7 @@ class AttendanceController extends Controller
         ]);
     }
 
-    // ─── Helper: kirim notifikasi ke user ─────────────────────
+    // ─── Helper: kirim notifikasi ke user (DB + FCM) ─────────
     private function notifyUser(int $userId, string $type, array $data, ?string $entityType = null, ?int $entityId = null): void
     {
         DB::table('notifications')->insert([
@@ -55,6 +55,44 @@ class AttendanceController extends Controller
             'created_at'      => now(),
             'updated_at'      => now(),
         ]);
+
+        // Push FCM bila user memiliki token perangkat
+        try {
+            $user = User::find($userId);
+            if ($user && $user->fcm_token) {
+                $title = $this->resolveNotificationTitle($type, $data);
+                $body  = $data['message'] ?? 'Ada pemberitahuan baru.';
+                app(FcmService::class)->send($user->fcm_token, $title, $body, [
+                    'type'        => $type,
+                    'entity_type' => (string) ($entityType ?? ''),
+                    'entity_id'   => (string) ($entityId ?? ''),
+                    'holiday_id'  => (string) ($data['holiday_id'] ?? ''),
+                    'date'        => (string) ($data['date'] ?? ''),
+                ]);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Gagal kirim FCM notif ke user #{$userId}: {$e->getMessage()}");
+        }
+    }
+
+    private function resolveNotificationTitle(string $type, array $data): string
+    {
+        if (! empty($data['title'])) {
+            return $data['title'];
+        }
+
+        return match ($type) {
+            'collective_leave_announced' => '🏖️ Pengumuman Cuti Bersama',
+            'collective_leave_cancelled' => '❌ Cuti Bersama Dibatalkan',
+            'overtime_pending'           => '⏰ Pengajuan Lembur Masuk',
+            'overtime_approved'          => '✅ Lembur Disetujui',
+            'overtime_rejected'          => '❌ Lembur Ditolak',
+            'leave_approved'             => '✅ Pengajuan Cuti Disetujui',
+            'leave_rejected'             => '❌ Pengajuan Cuti Ditolak',
+            'device_change_approved'     => '📱 Pindah Perangkat Disetujui',
+            'device_change_rejected'     => '❌ Pindah Perangkat Ditolak',
+            default                      => '🔔 Pemberitahuan',
+        };
     }
 
     // ─── Helper: tanggal hari ini dalam zona waktu WIB (Asia/Jakarta) ────
@@ -1232,6 +1270,170 @@ class AttendanceController extends Controller
                 'used'       => $balance->used,
                 'remaining'  => $balance->quota - $balance->used,
             ],
+        ]);
+    }
+
+    // 4f. listLeaveBalanceHistories() — riwayat saldo cuti & izin/sakit setelah reset (HRD)
+    //     GET /api/v1/dashboard/attendance/leave-balance-history
+    public function listLeaveBalanceHistories(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+
+        $validated = $request->validate([
+            'office_id' => 'nullable|string',
+            'year'      => 'nullable|integer',
+            'search'    => 'nullable|string',
+        ]);
+
+        $query = \App\Models\LeaveBalanceHistory::with(['user:id,name,employee_code,department,attendance_setting_id', 'office:id,office_name'])
+            ->when(
+                $actor->role !== 'super_admin',
+                fn ($q) => $q->where('company_id', $actor->company_id)
+            )
+            ->when($validated['office_id'] ?? null, function ($q, $off) {
+                if ($off === 'none') {
+                    $q->whereNull('attendance_setting_id');
+                } else {
+                    $q->where('attendance_setting_id', $off);
+                }
+            })
+            ->when($validated['year'] ?? null, fn ($q, $y) => $q->whereYear('reset_date', $y))
+            ->when($validated['search'] ?? null, function ($q, $search) {
+                $q->whereHas('user', function ($uq) use ($search) {
+                    $uq->where('name', 'like', "%{$search}%")
+                       ->orWhere('employee_code', 'like', "%{$search}%");
+                });
+            })
+            ->orderByDesc('reset_date')
+            ->orderByDesc('id');
+
+        $histories = $query->get()->map(function ($h) {
+            return [
+                'id'                    => $h->id,
+                'user_id'               => $h->user_id,
+                'user_name'             => $h->user?->name ?? '—',
+                'employee_code'         => $h->user?->employee_code ?? '',
+                'department'            => $h->user?->department ?? '—',
+                'attendance_setting_id' => $h->attendance_setting_id,
+                'office_name'           => $h->office?->office_name ?? ($h->attendance_setting_id ? 'Kantor' : 'Semua Kantor / Tanpa Kantor'),
+                'period_label'          => $h->period_label,
+                'period_start'          => $h->period_start?->toDateString(),
+                'period_end'            => $h->period_end?->toDateString(),
+                'reset_date'            => $h->reset_date->toDateString(),
+                'reset_date_formatted'  => $h->reset_date->translatedFormat('d M Y'),
+                'cuti_quota'            => (int) $h->cuti_quota,
+                'cuti_used'             => (int) $h->cuti_used,
+                'cuti_remaining'        => (int) $h->cuti_remaining,
+                'izin_sakit_used'       => (int) $h->izin_sakit_used,
+                'notes'                 => $h->notes,
+                'created_at'            => $h->created_at?->toDateTimeString(),
+            ];
+        });
+
+        // Summary stats
+        $stats = [
+            'total_records'          => $histories->count(),
+            'total_cuti_used'        => $histories->sum('cuti_used'),
+            'total_cuti_remaining'   => $histories->sum('cuti_remaining'),
+            'total_izin_sakit_used'  => $histories->sum('izin_sakit_used'),
+        ];
+
+        return response()->json([
+            'histories' => $histories->values(),
+            'stats'     => $stats,
+        ]);
+    }
+
+    // 4g. resetOfficeLeaveBalances() — reset saldo cuti & izin/sakit kantor manual (HRD)
+    //     POST /api/v1/dashboard/attendance/settings/{id}/reset-leave-balances
+    public function resetOfficeLeaveBalances(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $office = AttendanceSetting::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->findOrFail($id);
+
+        $today = Carbon::today('Asia/Jakarta');
+        $year  = $today->year;
+
+        $userIds = User::where('company_id', $office->company_id)
+            ->where('attendance_setting_id', $office->id)
+            ->where('is_active', true)
+            ->pluck('id');
+
+        if ($userIds->isEmpty()) {
+            return response()->json(['message' => 'Tidak ada karyawan aktif yang terdaftar di kantor ini.'], 422);
+        }
+
+        $resetCount = 0;
+        foreach ($userIds as $userId) {
+            $existingCuti = LeaveBalance::where('user_id', $userId)
+                ->where('year', $year)
+                ->where('leave_type', 'cuti')
+                ->first();
+
+            if (! $existingCuti || (int) $existingCuti->quota <= 0) {
+                continue;
+            }
+
+            $existingIzin = LeaveBalance::where('user_id', $userId)
+                ->where('year', $year)
+                ->where('leave_type', 'izin')
+                ->first();
+
+            $cutiQuota     = (int) $existingCuti->quota;
+            $cutiUsed      = (int) $existingCuti->used;
+            $cutiRemaining = max(0, $cutiQuota - $cutiUsed);
+            $izinUsed      = (int) ($existingIzin?->used ?? 0);
+
+            // 1. Simpan Snapshot / Arsip ke tabel leave_balance_histories
+            \App\Models\LeaveBalanceHistory::create([
+                'user_id'               => $userId,
+                'company_id'            => $office->company_id,
+                'attendance_setting_id' => $office->id,
+                'period_label'          => 'Periode s/d ' . $today->translatedFormat('d M Y'),
+                'period_start'          => $today->copy()->subYear()->addDay()->toDateString(),
+                'period_end'            => $today->toDateString(),
+                'reset_date'            => $today->toDateString(),
+                'cuti_quota'            => $cutiQuota,
+                'cuti_used'             => $cutiUsed,
+                'cuti_remaining'        => $cutiRemaining,
+                'izin_sakit_used'       => $izinUsed,
+                'notes'                 => "Reset manual oleh {$actor->name}",
+            ]);
+
+            // 2. Reset saldo cuti tahunan
+            $existingCuti->update([
+                'quota' => $office->default_leave_quota,
+                'used'  => 0,
+            ]);
+
+            // 3. Reset saldo izin & sakit
+            if ($existingIzin) {
+                $existingIzin->update([
+                    'used' => 0,
+                ]);
+            }
+
+            $resetCount++;
+        }
+
+        $office->update(['last_leave_reset_on' => $today->toDateString()]);
+
+        $this->logActivity(
+            $actor->id,
+            $office->company_id,
+            'leave_balances_reset',
+            "Reset saldo cuti & izin/sakit kantor {$office->office_name} ({$resetCount} karyawan)",
+            'attendance_setting',
+            $office->id
+        );
+
+        return response()->json([
+            'message'     => "Berhasil me-reset dan mengarsipkan saldo {$resetCount} karyawan kantor {$office->office_name}.",
+            'reset_count' => $resetCount,
         ]);
     }
 
@@ -2428,15 +2630,16 @@ class AttendanceController extends Controller
             'is_collective'         => $isCollective,
         ]);
 
-        if (isset($validated['excluded_user_ids'])) {
-            $holiday->excludedUsers()->attach($validated['excluded_user_ids']);
+        $manualExcludedIds = ! empty($validated['excluded_user_ids']) ? array_map('intval', $validated['excluded_user_ids']) : [];
+        if (! empty($manualExcludedIds)) {
+            $holiday->excludedUsers()->sync($manualExcludedIds);
         }
 
         // Jika cuti bersama: buat leave_request pending untuk karyawan aktif di cabang/perusahaan ini.
         // Karyawan yang sudah punya leave approved overlap akan otomatis dikecualikan (dikembalikan sebagai warning).
         $autoExcluded = [];
         if ($isCollective && ! $isNational) {
-            $autoExcluded = $this->createCollectiveLeaveRequests($holiday, $companyId);
+            $autoExcluded = $this->createCollectiveLeaveRequests($holiday, $companyId, $manualExcludedIds);
         }
 
         // Jika libur nasional / libur cabang (non-collective): kembalikan saldo cuti karyawan
@@ -2610,7 +2813,7 @@ class AttendanceController extends Controller
             $this->cancelAllCollectiveRequests($holiday);
             if ($isCollective && ! $isNational) {
                 $holiday->excludedUsers()->sync($manualExcludedIds);
-                $this->createCollectiveLeaveRequests($holiday, $user->company_id);
+                $this->createCollectiveLeaveRequests($holiday, $user->company_id, $manualExcludedIds);
             } else {
                 // Berubah menjadi libur biasa (non-collective / nasional): sync exclusion murni dari input manual HRD
                 $holiday->excludedUsers()->sync($manualExcludedIds);
@@ -3455,17 +3658,11 @@ class AttendanceController extends Controller
     // untuk SEMUA karyawan → tidak ada leave_request dibuat, padahal karyawan shift
     // weekend justru dijadwalkan masuk. Kini hanya karyawan yang dijadwalkan KERJA pada
     // tanggal tsb yang mendapat leave_request + notifikasi (konsisten dengan banner mobile).
-    private function createCollectiveLeaveRequests(Holiday $holiday, int $companyId): array
+    private function createCollectiveLeaveRequests(Holiday $holiday, int $companyId, array $manualExcludedIds = []): array
     {
         $date = $holiday->date->toDateString();
 
         // Karyawan aktif SEMUA ROLE (employee/finance/hrd/admin/super_admin).
-        // FIX (2026-08-25): filter `attendance_enabled=true` DIHAPUS — sebelumnya HRD/finance/
-        // admin dengan attendance_enabled=0 ter-skip dari cuti bersama padahal jadwal shift-nya
-        // kerja di tanggal tsb (kasus: dewi@majubersama.co.id & super@majubersama.co.id tidak
-        // muncul di rekap #86). Yang menentukan ikut/tidaknya cuti bersama adalah JADWAL
-        // (shift-aware di bawah), bukan flag gerbang presensi mobile.
-        // Jika holiday memiliki cabang spesifik ($holiday->attendance_setting_id) → filter hanya karyawan di cabang itu!
         $query = \App\Models\User::where('company_id', $companyId)
             ->where('is_active', true);
 
@@ -3473,8 +3670,17 @@ class AttendanceController extends Controller
             $query->where('attendance_setting_id', $holiday->attendance_setting_id);
         }
 
-        // Ambil daftar user yang DIKECUALIKAN dari libur ini (exclusion manual oleh HR)
-        $excludedUserIds = $holiday->excludedUsers()->pluck('users.id')->toArray();
+        // Ambil daftar user yang DIKECUALIKAN dari libur ini (exclusion manual oleh HR + pivot DB)
+        $dbExcludedIds = DB::table('holiday_exclusions')
+            ->where('holiday_id', $holiday->id)
+            ->pluck('user_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+
+        $excludedUserIds = array_unique(array_merge(
+            array_map('intval', $manualExcludedIds),
+            $dbExcludedIds
+        ));
 
         $candidates = $query->get(['id', 'name']);
 
@@ -3502,7 +3708,7 @@ class AttendanceController extends Controller
         // Kandidat setelah exclusion manual + auto-exclude (cuti nonaktif / cuti overlap)
         $users = $candidates->reject(function ($u) use ($excludedUserIds, $existingApproved, $leaveBalances, &$autoExcluded, $typeLabels, $date) {
             // Dikecualikan manual oleh HR
-            if (in_array($u->id, $excludedUserIds)) {
+            if (in_array((int) $u->id, $excludedUserIds, true)) {
                 return true;
             }
             // Auto-exclude karena kuota cuti nonaktif (belum diaktifkan HRD atau quota <= 0)
@@ -3533,14 +3739,13 @@ class AttendanceController extends Controller
             return false;
         });
 
-        // Persistenkan auto-exclude ke holiday_exclusions (PENGECUALIAN PERMANEN):
-        // tanpa ini, pengecualian hanya berlaku saat pembuatan — karyawan masih bisa
-        // memilih "ikut" lewat respondCollectiveLeave (jalur auto-create) sehingga
-        // saldo cutinya terpotong DOBEL (cuti pribadi + cuti bersama di hari yang sama).
-        // Dengan masuk daftar exclusion: respondCollectiveLeave → 403, banner mobile
-        // tidak muncul, dan pengecualian terlihat di daftar HRD (bisa dilepas manual).
+        // Persistenkan auto-exclude ke holiday_exclusions (PENGECUALIAN PERMANEN)
         if (! empty($autoExcluded)) {
-            $alreadyAttached = $holiday->excludedUsers()->pluck('users.id')->all();
+            $alreadyAttached = DB::table('holiday_exclusions')
+                ->where('holiday_id', $holiday->id)
+                ->pluck('user_id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
             $toAttach = array_diff(array_column($autoExcluded, 'user_id'), $alreadyAttached);
             if (! empty($toAttach)) {
                 $holiday->excludedUsers()->attach($toAttach);
@@ -3548,11 +3753,7 @@ class AttendanceController extends Controller
         }
 
         // Hitung total_days PER KARYAWAN — hanya yang dijadwalkan KERJA pada tanggal
-        // cuti bersama yang mendapat leave_request & notifikasi. Karyawan yang hari itu
-        // libur dari jadwal shift-nya (is_off) dilewati: mereka sudah libur, tidak perlu
-        // ikut cuti bersama dan saldo tidak boleh terpotong.
-        // IDEMPOTEN: karyawan yang SUDAH punya leave_request untuk holiday ini di-skip
-        // agar re-generate (mis. lewat updateHolidays scope change) tidak membuat duplikat.
+        // cuti bersama yang mendapat leave_request & notifikasi.
         $existingUserIds = \App\Models\LeaveRequest::where('holiday_id', $holiday->id)
             ->pluck('user_id')
             ->flip();
@@ -3560,10 +3761,6 @@ class AttendanceController extends Controller
         $now = now();
         $rows = [];
 
-        // ANTI N+1 (2026-08-25): prefetch model User penuh SEKALI untuk seluruh loop.
-        // Sebelumnya countWorkingDays() memanggil User::find() per karyawan + query libur
-        // identik per karyawan. Kini: 1x prefetch users + cache workingDates per request
-        // → query libur & off-map hanya jalan untuk kombinasi unik, bukan per karyawan.
         $fullUsers = User::whereIn('id', $users->pluck('id'))->get()->keyBy('id');
 
         foreach ($users as $u) {
@@ -3604,8 +3801,20 @@ class AttendanceController extends Controller
         if (! empty($rows)) {
             \App\Models\LeaveRequest::insert($rows);
 
-            // Notifikasi HANYA ke karyawan yang terdampak (dijadwalkan kerja hari itu)
+            // Ambil seluruh ID yang dikecualikan (manual + auto) untuk memastikan TIDAK ADA YANG BOCOR
+            $allExcludedIds = DB::table('holiday_exclusions')
+                ->where('holiday_id', $holiday->id)
+                ->pluck('user_id')
+                ->map(fn ($id) => (int) $id)
+                ->all();
+            $allExcludedIds = array_unique(array_merge($excludedUserIds, $allExcludedIds));
+
+            // Notifikasi HANYA ke karyawan yang terdampak (dan PASTI tidak ada di daftar pengecualian)
             foreach ($rows as $row) {
+                if (in_array((int) $row['user_id'], $allExcludedIds, true)) {
+                    continue;
+                }
+
                 $this->notifyUser($row['user_id'], 'collective_leave_announced', [
                     'message'    => "Cuti bersama \"{$holiday->name}\" pada {$date} telah dijadwalkan. Silakan pilih ikut atau tidak di aplikasi.",
                     'holiday_id' => $holiday->id,
@@ -3798,6 +4007,23 @@ class AttendanceController extends Controller
                 'message'       => "Cuti bersama \"{$holiday->name}\" pada {$dateFormatted} telah dibatalkan oleh HRD. Saldo cuti Anda telah dikembalikan.",
                 'refunded_days' => (int) $leave->total_days,
                 'holiday_id'    => $holiday->id,
+            ], 'holiday', $holiday->id);
+        }
+
+        // Notifikasi ke karyawan yang masih pending (belum merespons)
+        $pending = \App\Models\LeaveRequest::where('holiday_id', $holiday->id)
+            ->where('collective_status', 'pending')
+            ->get();
+
+        foreach ($pending as $leave) {
+            $dateFormatted = Carbon::parse($holiday->date)->translatedFormat('d M Y');
+            $this->notifyUser($leave->user_id, 'collective_leave_cancelled', [
+                'title'      => 'Cuti Bersama Dibatalkan',
+                'name'       => $holiday->name,
+                'date'       => $holiday->date->toDateString(),
+                'date_label' => $dateFormatted,
+                'message'    => "Cuti bersama \"{$holiday->name}\" pada {$dateFormatted} telah dibatalkan oleh HRD.",
+                'holiday_id' => $holiday->id,
             ], 'holiday', $holiday->id);
         }
 
@@ -4396,11 +4622,6 @@ class AttendanceController extends Controller
 
         $this->logActivity($user->id, $user->company_id, 'attendance_check_out', 'Check-out', 'attendance', $attendance->id);
 
-        // Jika ada lembur, buat record overtime_approval untuk persetujuan HRD
-        if ($attendance->overtime_minutes > 0) {
-            $this->createOvertimeApproval($attendance, false);
-        }
-
         return response()->json([
             'message'    => 'Check-out berhasil.',
             'attendance' => $attendance->only([
@@ -4605,7 +4826,15 @@ class AttendanceController extends Controller
     public function registerFcmToken(Request $request): JsonResponse
     {
         $request->validate(['fcm_token' => 'required|string|max:512']);
-        $request->user()->update(['fcm_token' => $request->fcm_token]);
+        $token = $request->fcm_token;
+        $currentUser = $request->user();
+
+        // Lepaskan token ini dari semua akun lain yang sebelumnya login di HP ini
+        User::where('id', '!=', $currentUser->id)
+            ->where('fcm_token', $token)
+            ->update(['fcm_token' => null]);
+
+        $currentUser->update(['fcm_token' => $token]);
 
         return response()->json(['message' => 'FCM token berhasil disimpan.']);
     }
@@ -5196,6 +5425,131 @@ class AttendanceController extends Controller
         });
 
         return response()->json($approvals);
+    }
+
+    // ─── claimOvertime() — Karyawan mengajukan lembur dengan deskripsi ───────
+    public function claimOvertime(Request $request, int $id): JsonResponse
+    {
+        $validated = $request->validate([
+            'reason' => 'required|string|max:1000',
+        ], [
+            'reason.required' => 'Deskripsi atau penjelasan lembur wajib diisi.',
+        ]);
+
+        $user = $request->user();
+        $attendance = Attendance::where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (! $attendance) {
+            return response()->json(['message' => 'Data presensi tidak ditemukan.'], 404);
+        }
+
+        if ($attendance->overtime_minutes <= 0) {
+            return response()->json(['message' => 'Presensi pada hari ini tidak memiliki jam lembur.'], 422);
+        }
+
+        // Cek apakah sudah ada OvertimeApproval
+        $approval = OvertimeApproval::where('attendance_id', $attendance->id)->first();
+        if ($approval && $approval->status === 'approved') {
+            return response()->json(['message' => 'Lembur ini sudah disetujui sebelumnya.'], 422);
+        }
+
+        if ($approval) {
+            $approval->update([
+                'overtime_minutes' => $attendance->overtime_minutes,
+                'status'           => 'pending',
+                'overtime_reason'  => $validated['reason'],
+                'notes'            => null,
+                'reviewed_by'      => null,
+                'reviewed_at'      => null,
+            ]);
+        } else {
+            $approval = OvertimeApproval::create([
+                'attendance_id'    => $attendance->id,
+                'user_id'          => $attendance->user_id,
+                'company_id'       => $attendance->company_id,
+                'overtime_minutes' => $attendance->overtime_minutes,
+                'status'           => 'pending',
+                'is_auto_checkout' => (bool) $attendance->is_auto_checkout,
+                'overtime_reason'  => $validated['reason'],
+            ]);
+        }
+
+        $this->logActivity(
+            $user->id,
+            $user->company_id,
+            'overtime_claimed',
+            "Karyawan {$user->name} mengajukan lembur {$this->formatMinutes($attendance->overtime_minutes)}: {$validated['reason']}",
+            'overtime_approval',
+            $approval->id
+        );
+
+        // Notifikasi ke semua HRD/admin
+        $overtimeFormatted = $this->formatMinutes($attendance->overtime_minutes);
+        $tanggal = Carbon::parse($attendance->date)->format('d/m/Y');
+
+        $approvers = DB::table('users')
+            ->where('company_id', $attendance->company_id)
+            ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+            ->where('is_active', true)
+            ->pluck('id');
+
+        foreach ($approvers as $approverId) {
+            $this->notifyUser($approverId, 'overtime_pending', [
+                'message'          => "{$user->name} mengajukan lembur {$overtimeFormatted} ({$tanggal}).",
+                'overtime_id'      => $approval->id,
+                'attendance_id'    => $attendance->id,
+                'user_id'          => $attendance->user_id,
+                'user_name'        => $user->name,
+                'overtime_minutes' => $attendance->overtime_minutes,
+                'is_auto_checkout' => (bool) $attendance->is_auto_checkout,
+                'overtime_reason'  => $validated['reason'],
+                'date'             => $tanggal,
+            ], 'overtime_approval', $approval->id);
+        }
+
+        return response()->json([
+            'message'  => 'Pengajuan lembur berhasil dikirim ke HRD.',
+            'approval' => [
+                'id'               => $approval->id,
+                'status'           => $approval->status,
+                'overtime_minutes' => $approval->overtime_minutes,
+                'overtime_reason'  => $approval->overtime_reason,
+            ],
+        ]);
+    }
+
+    // ─── declineOvertime() — Karyawan menolak/membatalkan lembur ──────────────
+    public function declineOvertime(Request $request, int $id): JsonResponse
+    {
+        $user = $request->user();
+        $attendance = Attendance::where('id', $id)
+            ->where('user_id', $user->id)
+            ->first();
+
+        if (! $attendance) {
+            return response()->json(['message' => 'Data presensi tidak ditemukan.'], 404);
+        }
+
+        // Reset lembur di attendances
+        $attendance->update(['overtime_minutes' => 0]);
+
+        // Hapus approval jika ada
+        OvertimeApproval::where('attendance_id', $attendance->id)->delete();
+
+        $this->logActivity(
+            $user->id,
+            $user->company_id,
+            'overtime_declined',
+            "Karyawan {$user->name} membatalkan lembur pada tanggal {$attendance->date}",
+            'attendance',
+            $attendance->id
+        );
+
+        return response()->json([
+            'message' => 'Lembur pada hari tersebut telah dibatalkan.',
+        ]);
     }
 
     // 8b. myLeaveBalance() — saldo cuti milik karyawan yang login

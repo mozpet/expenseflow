@@ -287,57 +287,11 @@ class AutoCheckoutCommand extends Command
             'updated_at'  => now(),
         ]);
 
-        // Buat overtime_approval jika ada lembur
-        if ($overtimeMinutes > 0 && ! OvertimeApproval::where('attendance_id', $attendance->id)->exists()) {
-            $approval = OvertimeApproval::create([
-                'attendance_id'    => $attendance->id,
-                'user_id'          => $attendance->user_id,
-                'company_id'       => $attendance->company_id,
-                'overtime_minutes' => $overtimeMinutes,
-                'status'           => 'pending',
-                'is_auto_checkout' => true,
-                'overtime_reason'  => 'Lupa checkout (auto-checkout oleh sistem)',
-            ]);
-
-            // Notifikasi ke HRD
-            $overtimeFmt = $this->formatMinutes($overtimeMinutes);
-            $tanggal     = Carbon::parse($attDate)->format('d/m/Y');
-
-            $approvers = DB::table('users')
-                ->where('company_id', $attendance->company_id)
-                ->whereIn('role', ['hrd', 'admin', 'super_admin'])
-                ->where('is_active', true)
-                ->pluck('id');
-
-            foreach ($approvers as $approverId) {
-                DB::table('notifications')->insert([
-                    'id'              => Str::uuid()->toString(),
-                    'type'            => 'overtime_pending',
-                    'notifiable_type' => 'App\\Models\\User',
-                    'notifiable_id'   => $approverId,
-                    'user_id'         => $approverId,
-                    'data'            => json_encode([
-                        'message'          => ($user ? $user->name : 'Karyawan') . " lembur {$overtimeFmt} ({$tanggal}) [Auto-Checkout]. Perlu persetujuan.",
-                        'overtime_id'      => $approval->id,
-                        'attendance_id'    => $attendance->id,
-                        'user_id'          => $attendance->user_id,
-                        'user_name'        => $user ? $user->name : null,
-                        'overtime_minutes' => $overtimeMinutes,
-                        'is_auto_checkout' => true,
-                        'overtime_reason'  => 'Lupa checkout (auto-checkout oleh sistem)',
-                        'date'             => $tanggal,
-                    ]),
-                    'entity_type' => 'overtime_approval',
-                    'entity_id'   => $approval->id,
-                    'created_at'  => now(),
-                    'updated_at'  => now(),
-                ]);
-            }
-        }
-
         // Notifikasi ke karyawan bahwa ia sudah di-auto-checkout
         $jamOut  = $checkOutTime->copy()->setTimezone('Asia/Jakarta')->format('H:i');
-        $msgUser = "Anda telah di-checkout otomatis pukul {$jamOut} WIB. Lembur Anda menunggu persetujuan HRD.";
+        $msgUser = $overtimeMinutes > 0
+            ? "Anda telah di-checkout otomatis pukul {$jamOut} WIB. Lembur {$this->formatMinutes($overtimeMinutes)} terdeteksi — silakan ajukan via aplikasi jika ingin diklaim."
+            : "Anda telah di-checkout otomatis pukul {$jamOut} WIB.";
         if ($user && $user->fcm_token) {
             $this->fcm->send($user->fcm_token, '🔔 Auto-Checkout', $msgUser, [
                 'type'          => 'auto_checkout',

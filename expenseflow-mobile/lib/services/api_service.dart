@@ -394,4 +394,16 @@ class ApiService {
     return _request('GET', '/attendance/my-overtime',
         query: {'page': page.toString()});
   }
+
+  /// Klaim / ajukan lembur dengan deskripsi pekerjaan.
+  static Future<Map<String, dynamic>> claimOvertime(
+      int attendanceId, String reason) async {
+    return _request('POST', '/attendance/$attendanceId/claim-overtime',
+        body: {'reason': reason});
+  }
+
+  /// Batalkan / tolak klaim lembur untuk hari tertentu.
+  static Future<Map<String, dynamic>> declineOvertime(int attendanceId) async {
+    return _request('POST', '/attendance/$attendanceId/decline-overtime');
+  }
 }

@@ -21,15 +21,19 @@ class Receipt extends Model
     protected function casts(): array
     {
         return [
-            'receipt_date'     => 'date',
-            'submitted_at'     => 'datetime',
-            'total_amount'     => 'decimal:2',
-            'claimed_amount'   => 'decimal:2',
-            'ocr_raw_amount'   => 'decimal:2',
-            'ocr_raw_date'     => 'date',
-            'variance_flag'    => 'boolean',
-            'variance_pct'     => 'decimal:2',
-            'ocr_attempts'     => 'integer',
+            'receipt_date'      => 'date',
+            'submitted_at'      => 'datetime',
+            'total_amount'      => 'decimal:2',
+            'claimed_amount'    => 'decimal:2',
+            'ocr_raw_amount'    => 'decimal:2',
+            'ocr_raw_subtotal'  => 'decimal:2',
+            'ocr_raw_tax'       => 'decimal:2',
+            'ocr_raw_discount'  => 'decimal:2',
+            'ocr_raw_items'     => 'array',
+            'ocr_raw_date'      => 'date',
+            'variance_flag'     => 'boolean',
+            'variance_pct'      => 'decimal:2',
+            'ocr_attempts'      => 'integer',
         ];
     }
 

@@ -82,14 +82,26 @@ class ProcessOcrJob implements ShouldQueue
         $updates = [];
         $now     = now()->toDateTimeString();
 
-        if ($receipt->ocr_raw_amount === null && $ocrResult['amount'] !== null) {
+        if ($receipt->ocr_raw_amount === null && ($ocrResult['amount'] ?? null) !== null) {
             $updates['ocr_raw_amount'] = $ocrResult['amount'];
         }
-        if ($receipt->ocr_raw_merchant === null && $ocrResult['merchant'] !== null) {
+        if ($receipt->ocr_raw_merchant === null && ($ocrResult['merchant'] ?? null) !== null) {
             $updates['ocr_raw_merchant'] = $ocrResult['merchant'];
         }
-        if ($receipt->ocr_raw_date === null && $ocrResult['date'] !== null) {
+        if ($receipt->ocr_raw_date === null && ($ocrResult['date'] ?? null) !== null) {
             $updates['ocr_raw_date'] = $ocrResult['date'];
+        }
+        if ($receipt->ocr_raw_subtotal === null && ($ocrResult['subtotal'] ?? null) !== null) {
+            $updates['ocr_raw_subtotal'] = $ocrResult['subtotal'];
+        }
+        if ($receipt->ocr_raw_tax === null && ($ocrResult['tax'] ?? null) !== null) {
+            $updates['ocr_raw_tax'] = $ocrResult['tax'];
+        }
+        if ($receipt->ocr_raw_discount === null && ($ocrResult['discount'] ?? null) !== null) {
+            $updates['ocr_raw_discount'] = $ocrResult['discount'];
+        }
+        if ($receipt->ocr_raw_items === null && ! empty($ocrResult['items'])) {
+            $updates['ocr_raw_items'] = json_encode($ocrResult['items']);
         }
 
         $updates['ocr_status']   = 'done';
