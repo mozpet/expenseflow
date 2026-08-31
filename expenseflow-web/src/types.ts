@@ -1,4 +1,4 @@
-export type ReceiptStatus = 'Review' | 'Pending' | 'Disetujui' | 'Ditolak';
+export type ReceiptStatus = 'Review' | 'Pending' | 'Disetujui' | 'Dibayar' | 'Ditolak';
 
 export interface ReceiptItem {
   name: string;
@@ -16,6 +16,7 @@ export interface Receipt {
   merchant: string;
   ocrNominal: number;
   klaim: number;
+  approvedAmount?: number;
   kategori: string;
   status: ReceiptStatus;
   tanggal: string;
@@ -25,6 +26,17 @@ export interface Receipt {
   subtotal?: number;
   tax?: number;
   discount?: number;
+  isPotentialDuplicate?: boolean;
+  duplicateReceiptNumber?: string;
+  duplicateTotalAmount?: number;
+  notes?: string;
+  paidAt?: string;
+  paidBy?: string;
+  paymentMethod?: string;
+  paymentRefNo?: string;
+  bankName?: string;
+  bankAccountNo?: string;
+  bankAccountHolder?: string;
 }
 
 export interface StrukApproval {
@@ -32,7 +44,8 @@ export interface StrukApproval {
   karyawan: string;
   merchant: string;
   nominal: number;
-  keputusan: 'Disetujui' | 'Ditolak';
+  approvedAmount?: number;
+  keputusan: 'Disetujui' | 'Dibayar' | 'Ditolak';
   diprosesOleh: string;
   waktu: string;
   catatan: string;
@@ -50,6 +63,15 @@ export interface StrukApproval {
   discount?: number;
   ocrNominal?: number;
   kategori?: string;
+  isPotentialDuplicate?: boolean;
+  duplicateReceiptNumber?: string;
+  paidAt?: string;
+  paidBy?: string;
+  paymentMethod?: string;
+  paymentRefNo?: string;
+  bankName?: string;
+  bankAccountNo?: string;
+  bankAccountHolder?: string;
 }
 
 export type InvoiceStatus = 'Due' | 'Pending' | 'Dibayar' | 'Ditolak';

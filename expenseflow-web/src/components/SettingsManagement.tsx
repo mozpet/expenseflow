@@ -234,6 +234,7 @@ const OfficesTab: React.FC<{
     min_overtime_minutes: 30,
     early_leave_enabled: true,
     early_leave_tolerance_minutes: 30,
+    min_checkout_interval_minutes: 10,
     enforce_weekly_hours: false,
     max_weekly_hours: 40,
     shift_notice_days: 0,
@@ -282,6 +283,7 @@ const OfficesTab: React.FC<{
     late_tolerance_minutes: 'Toleransi Telat',
     late_checkin_cutoff_minutes: 'Batas Waktu Presensi Telat',
     early_leave_tolerance_minutes: 'Toleransi Pulang Awal',
+    min_checkout_interval_minutes: 'Jeda Minimal Check-out (Cooldown Buffer)',
     overtime_enabled: 'Hitung Lembur Otomatis',
     min_overtime_minutes: 'Ambang Minimal Lembur',
     checkout_reminder_minutes: 'Reminder Checkout',
@@ -318,6 +320,7 @@ const OfficesTab: React.FC<{
       min_overtime_minutes: o.min_overtime_minutes ?? 30,
       early_leave_enabled: isEarlyLeaveEnabled,
       early_leave_tolerance_minutes: isEarlyLeaveEnabled ? o.early_leave_tolerance_minutes : 30,
+      min_checkout_interval_minutes: o.min_checkout_interval_minutes !== null && o.min_checkout_interval_minutes !== undefined ? o.min_checkout_interval_minutes : 10,
       enforce_weekly_hours: o.enforce_weekly_hours ?? false,
       max_weekly_hours: o.max_weekly_hours ?? 40,
       shift_notice_days: o.shift_notice_days ?? 0,
@@ -473,6 +476,7 @@ const OfficesTab: React.FC<{
         early_leave_tolerance_minutes: form.early_leave_enabled
           ? (form.early_leave_tolerance_minutes === '' || form.early_leave_tolerance_minutes === null ? 30 : Number(form.early_leave_tolerance_minutes))
           : null,
+        min_checkout_interval_minutes: form.min_checkout_interval_minutes === '' || form.min_checkout_interval_minutes === null ? 0 : Number(form.min_checkout_interval_minutes),
         enforce_weekly_hours: !!form.enforce_weekly_hours,
         max_weekly_hours: form.enforce_weekly_hours ? Number(form.max_weekly_hours) : null,
         shift_notice_days: Number(form.shift_notice_days ?? 0),
@@ -580,6 +584,9 @@ const OfficesTab: React.FC<{
                     ? <span className="text-violet-600 dark:text-violet-400 font-semibold">Aktif ({o.early_leave_tolerance_minutes} mnt sebelum jam pulang)</span>
                     : <span className="italic">Nonaktif</span>
                   }
+                  {o.min_checkout_interval_minutes != null && (
+                    <span className="text-slate-400">· Jeda checkout: <strong className="text-slate-700 dark:text-slate-300 font-semibold">{o.min_checkout_interval_minutes} mnt</strong></span>
+                  )}
                 </span>
                 <span className="col-span-2 flex items-center gap-1">
                   <Clock className="w-3 h-3 text-indigo-500" />
@@ -1022,6 +1029,33 @@ const OfficesTab: React.FC<{
                         />
                         <p className="text-[9px] text-slate-400">
                           0 = bebas. Peringatan jika ubah shift &lt; N hari sebelum berlaku.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Jeda Minimal Check-out (Cooldown Buffer) */}
+                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2 col-span-1 md:col-span-2">
+                      <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                        <Clock className="w-3.5 h-3.5 text-amber-500" /> Jeda Minimal Check-out (Anti Salah Pencet)
+                      </span>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 block">
+                          Durasi jeda minimal setelah check-in (menit)
+                        </label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="number"
+                            min={0}
+                            max={480}
+                            value={form.min_checkout_interval_minutes}
+                            onChange={(e) => setForm({ ...form, min_checkout_interval_minutes: e.target.value })}
+                            className="w-40 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                            placeholder="10"
+                          />
+                          <span className="text-xs text-slate-500">menit</span>
+                        </div>
+                        <p className="text-[10px] text-slate-400">
+                          Mencegah karyawan langsung check-out detik berikutnya setelah check-in (default: 10 menit). Isi 0 untuk menonaktifkan.
                         </p>
                       </div>
                     </div>

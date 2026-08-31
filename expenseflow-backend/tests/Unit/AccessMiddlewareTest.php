@@ -25,7 +25,7 @@ class AccessMiddlewareTest extends TestCase
 
     public function test_receipt_middleware_izinkan_employee(): void
     {
-        $user = new User(['role' => 'employee']);
+        $user = new User(['role' => 'employee', 'is_active' => true]);
 
         $response = (new ReceiptAccessMiddleware())
             ->handle($this->requestAs($user), $this->pass());
@@ -33,15 +33,15 @@ class AccessMiddlewareTest extends TestCase
         $this->assertSame(200, $response->getStatusCode());
     }
 
-    public function test_receipt_middleware_blokir_non_employee(): void
+    public function test_receipt_middleware_blokir_user_nonaktif(): void
     {
-        $user = new User(['role' => 'finance']);
+        $user = new User(['role' => 'finance', 'is_active' => false]);
 
         $response = (new ReceiptAccessMiddleware())
             ->handle($this->requestAs($user), $this->pass());
 
         $this->assertSame(403, $response->getStatusCode());
-        $this->assertStringContainsString('hanya untuk karyawan', $response->getContent());
+        $this->assertStringContainsString('tidak memiliki akses', $response->getContent());
     }
 
     public function test_attendance_middleware_izinkan_jika_enabled(): void

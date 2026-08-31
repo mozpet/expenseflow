@@ -127,7 +127,7 @@ export default function App() {
     const res = await receiptApi.all();
     const list = rows(res.receipts ?? res);
     setReceiptHistory(
-      list.filter((r: any) => r.status === 'approved' || r.status === 'rejected').map(mapReceiptToApproval),
+      list.filter((r: any) => r.status === 'approved' || r.status === 'paid' || r.status === 'rejected').map(mapReceiptToApproval),
     );
   }, []);
 
@@ -231,14 +231,29 @@ export default function App() {
     }).format(val);
   };
 
-  // 1. Receipt approve/reject → panggil API lalu refresh.
-  const handleApproveReceipt = async (id: string, note: string) => {
-    await receiptApi.approve(id, note);
+  // 1. Receipt approve/reject/bulk-approve/pay/bulk-pay → panggil API lalu refresh.
+  const handleApproveReceipt = async (id: string, note: string, approvedAmount?: number) => {
+    await receiptApi.approve(id, note, approvedAmount);
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+  };
+
+  const handleBulkApproveReceipts = async (ids: string[], note?: string) => {
+    await receiptApi.bulkApprove(ids.map(Number), note);
     await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
   };
 
   const handleRejectReceipt = async (id: string, note: string) => {
     await receiptApi.reject(id, note || 'Ditolak oleh Finance');
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+  };
+
+  const handlePayReceipt = async (id: string, payload: { payment_method: string; payment_ref_no?: string }) => {
+    await receiptApi.pay(id, payload);
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+  };
+
+  const handleBulkPayReceipts = async (ids: string[], payload: { payment_method: string; payment_ref_no?: string }) => {
+    await receiptApi.bulkPay(ids.map(Number), payload);
     await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
   };
 
@@ -368,7 +383,7 @@ export default function App() {
   };
 
   const pageTitles: { [key: string]: string } = {
-    'inbox': 'Inbox Struk Karyawan',
+    'inbox': 'Struk Reimbursement & Klaim',
     'riwayat-struk': 'Riwayat Approval Struk',
     'invoice-inbox': 'Inbox Invoice Vendor',
     'input-invoice': 'Input Invoice Manual',
@@ -394,20 +409,40 @@ export default function App() {
         return (
           <ReceiptInbox
             receipts={receipts}
+            receiptHistory={receiptHistory}
             onApprove={handleApproveReceipt}
+            onBulkApprove={handleBulkApproveReceipts}
             onReject={handleRejectReceipt}
+            onPay={handlePayReceipt}
+            onBulkPay={handleBulkPayReceipts}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
-            onRefresh={refreshReceipts}
+            onRefresh={() => {
+              refreshReceipts();
+              refreshReceiptHistory();
+            }}
             refreshing={refreshing}
+            initialTab="inbox"
           />
         );
       case 'riwayat-struk':
         return (
-          <ReceiptHistory
-            approvals={receiptHistory}
-            onRefresh={refreshReceiptHistory}
+          <ReceiptInbox
+            receipts={receipts}
+            receiptHistory={receiptHistory}
+            onApprove={handleApproveReceipt}
+            onBulkApprove={handleBulkApproveReceipts}
+            onReject={handleRejectReceipt}
+            onPay={handlePayReceipt}
+            onBulkPay={handleBulkPayReceipts}
+            currentSettings={settings}
+            onSaveSettings={handleSaveSettings}
+            onRefresh={() => {
+              refreshReceipts();
+              refreshReceiptHistory();
+            }}
             refreshing={refreshing}
+            initialTab="history"
           />
         );
       case 'invoice-inbox':
@@ -490,6 +525,7 @@ export default function App() {
           <ReceiptInbox
             receipts={receipts}
             onApprove={handleApproveReceipt}
+            onBulkApprove={handleBulkApproveReceipts}
             onReject={handleRejectReceipt}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
@@ -637,12 +673,12 @@ export default function App() {
           {/* Sidebar Groups Links scrollbar list */}
           <div className={`flex-1 overflow-y-auto ${isSidebarCollapsed ? 'lg:px-2 px-4' : 'px-4'} py-5 space-y-6`}>
             
-            {/* Group 1: Employee Receipts — disembunyikan untuk HRD (struk khusus finance) */}
+            {/* Group: Finance (Struk Reimbursement & Invoice Vendor) — disembunyikan untuk HRD */}
             {!isHrd && (
             <div className="space-y-1.5">
               {!isSidebarCollapsed ? (
                 <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
-                  Struk Karyawan
+                  Finance
                 </span>
               ) : (
                 <div className="hidden lg:block my-2 border-t border-slate-800/60" />
@@ -653,11 +689,11 @@ export default function App() {
                 className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
                   isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'justify-between py-2 px-3'
                 } ${
-                  activePage === 'inbox' 
+                  activePage === 'inbox' || activePage === 'riwayat-struk'
                     ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
                     : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                 }`}
-                title={isSidebarCollapsed ? 'Inbox Struk' : undefined}
+                title={isSidebarCollapsed ? 'Struk Reimbursement' : undefined}
               >
                 <div className={`flex items-center ${isSidebarCollapsed ? 'lg:justify-center' : 'gap-2.5'}`}>
                   <div className="relative">
@@ -671,7 +707,7 @@ export default function App() {
                       <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
                     )}
                   </div>
-                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Inbox Struk</span>}
+                  {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Struk Reimbursement</span>}
                 </div>
                 {!isSidebarCollapsed && pendingReceiptCount > 0 && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-indigo-500 text-white font-bold font-mono">
@@ -680,33 +716,6 @@ export default function App() {
                 )}
               </button>
 
-              <button
-                onClick={() => navigateTo('riwayat-struk')}
-                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
-                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
-                } ${
-                  activePage === 'riwayat-struk' 
-                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500' 
-                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-                }`}
-                title={isSidebarCollapsed ? 'Riwayat Approval' : undefined}
-              >
-                <CheckCheck className="w-4 h-4 opacity-80" />
-                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Riwayat Approval</span>}
-              </button>
-            </div>
-            )}
-
-            {/* Group 2: Vendor Invoices */}
-            <div className="space-y-1.5">
-              {!isSidebarCollapsed ? (
-                <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
-                  Invoice Vendor
-                </span>
-              ) : (
-                <div className="hidden lg:block my-2 border-t border-slate-800/60" />
-              )}
-              
               <button
                 onClick={() => navigateTo('invoice-inbox')}
                 className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
@@ -799,6 +808,7 @@ export default function App() {
                 {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Master Vendor</span>}
               </button>
             </div>
+            )}
 
             {/* Group 2.5: Manajemen — disembunyikan untuk finance (ranah HRD/admin) */}
             {!isFinance && (

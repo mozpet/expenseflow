@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Invoice } from '../types';
 import { 
   FileText, 
@@ -108,6 +108,14 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
 
   const debouncedSearch = useDebounce(searchQuery, 500);
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, filter]);
+
   // Filter invoice list
   const filteredInvoices = invoices.filter(inv => {
     const matchesSearch = !debouncedSearch ||
@@ -120,6 +128,9 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
     if (filter === 'review') return inv.status === 'Pending';
     return true;
   });
+
+  const totalPages = Math.max(1, Math.ceil(filteredInvoices.length / pageSize));
+  const paginatedInvoices = filteredInvoices.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   const handleOpenDetail = (inv: Invoice) => {
     setSelectedInvoice(inv);
@@ -314,7 +325,7 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
                   </td>
                 </tr>
               ) : (
-                filteredInvoices.map((inv) => {
+                paginatedInvoices.map((inv) => {
                   const isDue = inv.status === 'Due';
                   return (
                     <tr 
@@ -375,7 +386,7 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
                         <div className="flex gap-1.5 justify-end">
                           <button
                             onClick={() => handleOpenDetail(inv)}
-                            className="p-1 px-2.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-500 dark:text-slate-400 text-[11px] font-medium transition flex items-center gap-1"
+                            className="p-1 px-2.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-500 dark:text-slate-400 text-[11px] font-medium transition flex items-center gap-1 cursor-pointer"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             Detail
@@ -383,7 +394,7 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
                           {isDue ? (
                             <button
                               onClick={() => handleActionClick(inv, 'pay')}
-                              className="p-1 px-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-[11px] font-semibold tracking-wide transition flex items-center gap-1"
+                              className="p-1 px-2.5 bg-rose-600 hover:bg-rose-700 text-white rounded-md text-[11px] font-semibold tracking-wide transition flex items-center gap-1 cursor-pointer"
                             >
                               <CreditCard className="w-3.5 h-3.5" />
                               Bayar
@@ -391,7 +402,7 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
                           ) : canApprove(inv) ? (
                             <button
                               onClick={() => handleActionClick(inv, 'approve')}
-                              className="p-1 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[11px] font-medium transition flex items-center gap-1"
+                              className="p-1 px-2.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-md text-[11px] font-medium transition flex items-center gap-1 cursor-pointer"
                             >
                               <Check className="w-3.5 h-3.5" />
                               Setuju
@@ -412,6 +423,77 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
             </tbody>
           </table>
         </div>
+
+        {/* Pagination footer */}
+        {filteredInvoices.length >= 25 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 mt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+              <span>
+                Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                  {Math.min((currentPage - 1) * pageSize + 1, filteredInvoices.length)} - {Math.min(currentPage * pageSize, filteredInvoices.length)}
+                </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{filteredInvoices.length}</strong> invoice
+              </span>
+              <span className="hidden sm:inline">•</span>
+              <div className="flex items-center gap-1.5">
+                <span className="hidden sm:inline">Per hal:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Pertama"
+              >
+                «
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Sebelumnya"
+              >
+                ‹
+              </button>
+              <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{currentPage}</span> / <span className="font-mono">{totalPages}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Berikutnya"
+              >
+                ›
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Terakhir"
+              >
+                »
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Invoice Detail Modal */}

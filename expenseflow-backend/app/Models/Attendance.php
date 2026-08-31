@@ -42,6 +42,7 @@ class Attendance extends Model
         'snap_overtime_enabled',
         'snap_min_overtime_minutes',
         'snap_early_leave_tolerance_minutes',
+        'snap_min_checkout_interval_minutes',
         'snap_reminder_minutes',
         'snap_grace_minutes',
     ];
@@ -70,6 +71,7 @@ class Attendance extends Model
             'snap_overtime_enabled'    => 'boolean',
             'snap_min_overtime_minutes'          => 'integer',
             'snap_early_leave_tolerance_minutes' => 'integer',
+            'snap_min_checkout_interval_minutes' => 'integer',
             'snap_reminder_minutes'    => 'integer',
             'snap_grace_minutes'       => 'integer',
         ];
@@ -128,6 +130,7 @@ class Attendance extends Model
             'snap_overtime_enabled'              => $office?->overtime_enabled,
             'snap_min_overtime_minutes'          => $office?->min_overtime_minutes,
             'snap_early_leave_tolerance_minutes' => $office?->early_leave_tolerance_minutes,
+            'snap_min_checkout_interval_minutes' => $office?->min_checkout_interval_minutes ?? 10,
             'snap_reminder_minutes'              => $office?->checkout_reminder_minutes,
             'snap_grace_minutes'                 => $office?->auto_checkout_grace_minutes,
         ];
@@ -206,6 +209,9 @@ class Attendance extends Model
         }
         if ($this->snap_early_leave_tolerance_minutes !== null) {
             $office->early_leave_tolerance_minutes = $this->snap_early_leave_tolerance_minutes;
+        }
+        if ($this->snap_min_checkout_interval_minutes !== null) {
+            $office->min_checkout_interval_minutes = $this->snap_min_checkout_interval_minutes;
         }
         if ($this->snap_reminder_minutes !== null) {
             $office->checkout_reminder_minutes = $this->snap_reminder_minutes;

@@ -11,6 +11,10 @@ class AppUser {
   final String? department;
   final bool wfhEnabled;
   final bool attendanceEnabled;
+  final String? bankName;
+  final String? bankAccountNo;
+  final String? bankAccountHolder;
+  final double? monthlyClaimLimit;
 
   AppUser({
     required this.id,
@@ -20,9 +24,19 @@ class AppUser {
     this.department,
     required this.wfhEnabled,
     required this.attendanceEnabled,
+    this.bankName,
+    this.bankAccountNo,
+    this.bankAccountHolder,
+    this.monthlyClaimLimit,
   });
 
   factory AppUser.fromJson(Map<String, dynamic> json) {
+    double? parseLimit(dynamic v) {
+      if (v == null) return null;
+      if (v is num) return v.toDouble();
+      return double.tryParse(v.toString());
+    }
+
     return AppUser(
       id: json['id'] ?? 0,
       name: json['name'] ?? '-',
@@ -31,6 +45,10 @@ class AppUser {
       department: json['department'] as String?,
       wfhEnabled: json['wfh_enabled'] == true,
       attendanceEnabled: json['attendance_enabled'] == true,
+      bankName: json['bank_name'] as String?,
+      bankAccountNo: json['bank_account_no'] as String?,
+      bankAccountHolder: json['bank_account_holder'] as String?,
+      monthlyClaimLimit: parseLimit(json['monthly_claim_limit']),
     );
   }
 }

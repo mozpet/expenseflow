@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { NotificationItem } from '../types';
 import { 
   Bell, 
@@ -26,6 +26,10 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   onNavigate,
   onMarkRead,
 }) => {
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
   const [confirmState, setConfirmState] = useState<{
     isOpen: boolean;
     title: string;
@@ -58,6 +62,8 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
   };
 
   const unreadCount = notifications.filter(n => !n.read).length;
+  const totalPages = Math.max(1, Math.ceil(notifications.length / pageSize));
+  const paginatedNotifications = notifications.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   return (
     <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 shadow-sm space-y-4">
@@ -100,7 +106,7 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
             Kamu berada di inbox kosong! Tidak ada notifikasi baru.
           </div>
         ) : (
-          notifications.map((notif) => {
+          paginatedNotifications.map((notif) => {
             // Pick corresponding icon
             let IconComponent = Info;
             let iconBg = 'bg-indigo-100 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-400';
@@ -186,6 +192,77 @@ export const NotificationsView: React.FC<NotificationsViewProps> = ({
           })
         )}
       </div>
+
+      {/* Pagination footer */}
+      {notifications.length >= 25 && (
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-100 dark:border-slate-800 text-xs">
+          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+            <span>
+              Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                {Math.min((currentPage - 1) * pageSize + 1, notifications.length)} - {Math.min(currentPage * pageSize, notifications.length)}
+              </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{notifications.length}</strong> notifikasi
+            </span>
+            <span className="hidden sm:inline">•</span>
+            <div className="flex items-center gap-1.5">
+              <span className="hidden sm:inline">Per hal:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setCurrentPage(1);
+                }}
+                className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+              >
+                <option value={25}>25</option>
+                <option value={50}>50</option>
+                <option value={100}>100</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setCurrentPage(1)}
+              disabled={currentPage === 1}
+              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+              title="Halaman Pertama"
+            >
+              «
+            </button>
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              disabled={currentPage === 1}
+              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+              title="Halaman Sebelumnya"
+            >
+              ‹
+            </button>
+            <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+              Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{currentPage}</span> / <span className="font-mono">{totalPages}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              disabled={currentPage === totalPages}
+              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+              title="Halaman Berikutnya"
+            >
+              ›
+            </button>
+            <button
+              type="button"
+              onClick={() => setCurrentPage(totalPages)}
+              disabled={currentPage === totalPages}
+              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+              title="Halaman Terakhir"
+            >
+              »
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Reusable Confirmation Dialog */}
       {confirmState && (

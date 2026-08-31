@@ -44,15 +44,18 @@ class UserController extends Controller
             }
         }
 
+        $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
+
         $users = $query->with('office:id,office_name')
             ->select([
                 'id', 'company_id', 'employee_code', 'name', 'email', 'phone',
                 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit',
                 'is_active', 'employment_type', 'joined_date', 'identity_number',
-                'contract_start_date', 'contract_end_date', 'created_at', 'updated_at',
+                'contract_start_date', 'contract_end_date', 'bank_name',
+                'bank_account_no', 'bank_account_holder', 'created_at', 'updated_at',
             ])
             ->latest()
-            ->paginate(20);
+            ->paginate($limit);
 
         return response()->json($users);
     }
@@ -85,6 +88,10 @@ class UserController extends Controller
             'joined_date'           => 'nullable|date',
             'contract_start_date'   => 'nullable|date',
             'contract_end_date'     => 'nullable|date|after_or_equal:contract_start_date',
+            // Data Rekening Bank
+            'bank_name'             => 'nullable|string|max:50',
+            'bank_account_no'       => 'nullable|string|max:50',
+            'bank_account_holder'   => 'nullable|string|max:150',
         ]);
 
         $user = User::create([
@@ -104,6 +111,9 @@ class UserController extends Controller
             'joined_date'           => $validated['joined_date'] ?? null,
             'contract_start_date'   => $validated['contract_start_date'] ?? null,
             'contract_end_date'     => $validated['contract_end_date'] ?? null,
+            'bank_name'             => $validated['bank_name'] ?? null,
+            'bank_account_no'       => $validated['bank_account_no'] ?? null,
+            'bank_account_holder'   => $validated['bank_account_holder'] ?? null,
         ]);
 
         return response()->json([
@@ -112,7 +122,7 @@ class UserController extends Controller
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
-                'identity_number'
+                'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder'
             ]),
         ], 201);
     }
@@ -150,6 +160,10 @@ class UserController extends Controller
             'joined_date'           => 'sometimes|nullable|date',
             'contract_start_date'   => 'sometimes|nullable|date',
             'contract_end_date'     => 'sometimes|nullable|date|after_or_equal:contract_start_date',
+            // Data Rekening Bank
+            'bank_name'             => 'sometimes|nullable|string|max:50',
+            'bank_account_no'       => 'sometimes|nullable|string|max:50',
+            'bank_account_holder'   => 'sometimes|nullable|string|max:150',
         ]);
 
         // Hanya super_admin yang boleh menetapkan role super_admin (cegah escalation).
@@ -167,7 +181,7 @@ class UserController extends Controller
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
-                'identity_number'
+                'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder'
             ]),
         ]);
     }

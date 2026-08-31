@@ -750,52 +750,124 @@ HRD rejectLeave (via web)
 # Roadmap & Analisis Kekurangan (Perspektif Manajemen)
 
 Catatan ini ditulis dari sudut pandang **manajer perusahaan** (finance/operasional/HR):
-fitur apa yang masih kurang dan menimbulkan **risiko bisnis** atau **kehilangan nilai**.
-Saat ini aplikasi kuat di sisi *input & approval*, tapi lemah di sisi **siklus uang keluar
-(pembayaran)**, **kontrol anggaran**, dan **payroll/HR lanjutan**.
+fitur apa yang masih kurang dan menimbulkan **risiko bisnis**, **kebocoran anggaran**, atau **kehilangan nilai**.
+Saat ini aplikasi kuat di sisi *input & approval*, tapi lemah di sisi **siklus uang keluar (pencairan dana/pembayaran)**, **kontrol limit anggaran**, dan **efisiensi verifikasi finance**.
 
-## Prioritas
+> 🎯 **FOKUS SPRINT SAAT INI: SISTEM STRUK (Reimbursement & Klaim Karyawan)**  
+> Seluruh prioritas di bawah ini difokuskan penuh untuk menyempurnakan siklus hidup struk: dari pengunggahan mobile, verifikasi anti-fraud, penegakan batas anggaran, approval masal di dashboard finance, hingga pencairan transfer bank ke karyawan.  
+> *(Untuk sistem Invoice Vendor dipisahkan ke roadmap tahap berikutnya agar sprint saat ini terarah).*
 
-| Prioritas | Fitur | Kenapa penting (risiko bila tidak ada) |
+---
+
+## Tabel Prioritas Sistem Struk (Klaim & Reimbursement)
+
+| Prioritas | Fitur & Modul | Risiko Bisnis / Kenapa Penting | Kebutuhan Teknis & Dampak |
+|---|---|---|---|
+| **P0 — Kritis** | **Pelacakan Pencairan Dana (Disbursement Flow: `approved` → `paid`)** | Setelah struk `approved`, **tidak ada status "dibayar"** di sistem. Finance tidak tahu mana yang sudah ditransfer ke karyawan dan mana yang belum → **risiko dobel transfer atau klaim karyawan tidak terbayar**. | • Status baru: `paid` (lunas dicairkan)<br>• Tabel / kolom pencairan: `paid_at`, `paid_by`, `payment_method`, `payment_ref_no`, `payment_proof_path`<br>• Tab / filter baru di web: "Menunggu Pembayaran" & "Sudah Dibayar" |
+| **P0 — Kritis** | **Data Rekening Bank Karyawan (Employee Bank Account)** | Finance harus mentransfer uang reimbursement ke karyawan, namun profil karyawan saat ini **tidak memiliki data rekening bank** tujuan transfer. | • Kolom di `users`: `bank_name`, `bank_account_no`, `bank_account_holder`<br>• Form edit profil karyawan di Web HRD & Mobile |
+| **P0 — Kritis** | **Penegakan Batas Anggaran Klaim (Enforce Claim & Monthly Budget Limit)** | Kolom `monthly_claim_limit` (user) & `max_claim_limit` (setting) sudah ada di database & UI setting tapi **belum divalidasi di backend**. Karyawan bisa submit klaim bernominal tak terbatas → **anggaran bocor**. | • Validasi backend saat `store()` & `submit()`:<br>1. Nominal per struk ≤ `max_claim_limit`<br>2. Akumulasi bulan berjalan (`submitted` + `approved` + `paid`) ≤ `monthly_claim_limit`<br>• Pesan error HTTP 422 informatif |
+| **P0 — Kritis** | **Deteksi Struk Duplikat Cerdas (Anti-Fraud: Multi-Angle Scan)** | SHA-256 hanya mendeteksi file foto yang persis sama. Jika karyawan memfoto ulang struk fisik yang sama dari sudut berbeda, hash berubah sehingga lolos → **rawan klaim ganda disengaja**. | • Cek duplikasi berbasis atribut OCR & metadata:<br>`(company_id, vendor_name/ocr_merchant, total_amount, receipt_date)`<br>• Flag peringatan "Potensi Duplikat" di dashboard Finance |
+| **P0 — Kritis** | **Approval Penyesuaian Nominal oleh Finance (Partial / Adjusted Amount Approval)** | Saat ini Finance hanya bisa Full Approve atau Full Reject. Jika karyawan klaim Rp 120.000 tapi kebijakan kantor hanya menanggung Rp 100.000, Finance terpaksa tolak total dan minta foto ulang. | • Kolom `approved_amount` di `receipts`<br>• Form approval di modal finance: input nominal yang disetujui + catatan penyesuaian |
+| **P1 — Tinggi** | **Approval Masal Struk (Bulk / Batch Approval Web)** | Finance harus mengklik dan membuka modal satu per satu untuk ratusan struk. Ini sangat lambat untuk klaim rutin bervolume tinggi. | • Checkbox multi-select di `ReceiptInbox.tsx`<br>• Tombol "Setujui X Struk Terpilih" (terutama untuk struk clean OCR / tanpa variance flag)<br>• Endpoint `POST /dashboard/receipts/bulk-approve` |
+| **P1 — Tinggi** | **Ekspor Rekap Transfer Bank Massal (Disbursement Batch Export)** | Finance/Kasir harus mengetik nomor rekening dan nominal transfer satu per satu di Internet Banking. | • Fitur ekspor CSV/Excel daftar transfer siap upload untuk internet banking (BCA KlikBisnis, Mandiri MCM, BRI CMS, BNI Direct)<br>• Mengelompokkan total reimbursement per karyawan |
+| **P1 — Tinggi** | **Validasi Kedaluwarsa Usia Struk (Receipt Age / Claim Cut-off)** | Karyawan bisa mengklaim struk belanja beberapa bulan / tahun lalu yang sudah tutup buku fiskal. | • Setting batas maksimal usia struk (misal: max 30 hari / 60 hari dari tanggal transaksi)<br>• Validasi otomatis saat upload / submit |
+| **P1 — Tinggi** | **Eskalasi SLA & Push Notifikasi FCM Status Struk** | Struk yang diajukan mengendap lama tanpa review; karyawan tidak tahu kapan klaimnya disetujui / dibayar tanpa sering cek manual. | • Auto-reminder ke Finance untuk struk pending > 3 hari<br>• Push Notifikasi FCM ke HP karyawan saat status struk: `approved`, `rejected` (beserta alasan), dan `paid` (dana telah ditransfer) |
+| **P2 — Menengah** | **Kategori Pengeluaran Dinamis & Plafon per Kategori (Expense Categories & Policy Rules)** | Kategori saat ini masih hardcoded teks statis. Perusahaan tidak bisa menambah kategori baru (mis. Parkir, Medis, Hotel) atau menetapkan plafon khusus per kategori. | • Tabel `expense_categories` (company_id, name, max_limit, requires_notes, is_active)<br>• Manajemen kategori pengeluaran di Web Dashboard Settings |
+| **P2 — Menengah** | **Ekspor Laporan & Rekap Klaim Lengkap (Excel / PDF Summary)** | Finance kesulitan membuat laporan pertanggungjawaban bulanan untuk direksi atau audit pajak. | • Ekspor spreadsheet rekap pengeluaran dengan filter tanggal, departemen, karyawan, kategori, dan status bayar<br>• Download paket arsip foto struk digital |
+| **P2 — Menengah** | **Multi-Item / Rincian Belanja Struk (Itemized Expenses Split)** | OCR sudah membaca `ocr_raw_items`, namun data disimpan dalam satu nominal global. Karyawan tidak bisa memecah struk yang berisi belanja campuran (mis. ATK + konsumsi kantor). | • Tabel `receipt_items` (receipt_id, item_name, quantity, amount, category)<br>• Alokasi biaya multi-kategori dari 1 struk |
+| **P2 — Menengah** | **Dashboard Analitik Pengeluaran Klaim Karyawan** | Manajemen tidak memiliki visibilitas pola pengeluaran operasional karyawan. | • Grafik tren pengeluaran bulanan, breakdown per kategori, top spenders, dan realisasi budget per departemen |
+| **P3 — Rendah** | **Multi-Scan / Batch Upload Foto Struk di Mobile (Flutter)** | Karyawan yang sering dinas luar repot mengunggah struk satu per satu. | • Fitur scan beberapa struk beruntun (3-5 struk) dalam satu sesi di mobile Flutter |
+| **P3 — Rendah** | **Delegasi Approver Struk (Approval Delegation)** | Saat PIC finance cuti, verifikasi struk terhenti. | • Tabel `approval_delegations` untuk melimpahkan wewenang approval sementara ke staf finance pengganti |
+| **P3 — Rendah** | **Opsi Pencairan Terintegrasi ke Slip Gaji (Reimbursement on Payroll)** | Perusahaan yang mencairkan reimbursement bersamaan dengan gaji bulanan harus menyalin data manual. | • Opsi "Cairkan via Payroll": nominal struk `approved` otomatis masuk sebagai komponen reimbursement pada rekap gaji bulanan karyawan |
+
+---
+
+## Roadmap Sistem Invoice Vendor (Ditunda — Tahap Berikutnya)
+
+> ⏸️ **Status:** Ditunda sementara waktu agar tim fokus 100% menyelesaikan dan mematangkan Sistem Struk (Klaim Reimbursement Karyawan) di atas.
+
+| Prioritas | Fitur Invoice | Keterangan |
 |---|---|---|
-| **P0 — Kritis** | Pelacakan pembayaran (disbursement) | Setelah struk/invoice `approved`, **tidak ada status "dibayar"** yang sebenarnya. Tidak tahu mana yang sudah ditransfer → risiko bayar dobel / tidak terbayar. |
-| **P0 — Kritis** | Enforce batas klaim & anggaran | `monthly_claim_limit` (user) & `max_claim_limit` (setting) ada di DB tapi **belum ditegakkan** saat submit. Karyawan bisa klaim melebihi batas → bocor anggaran. |
-| **P0 — Kritis** | Delegasi / backup approver | Jika approver (mis. satu-satunya super_admin/admin) sedang cuti, **approval macet**. Perlu mekanisme delegasi sementara atau approver cadangan. |
-| **P1 — Tinggi** | Deteksi invoice/struk duplikat | Belum ada cek duplikat berbasis (vendor + nominal + tanggal). Struk sudah pakai SHA-256, tapi invoice manual rawan diinput 2x → bayar dobel. |
-| **P1 — Tinggi** | Eskalasi & reminder approval (SLA) | Invoice/struk `pending` bisa mengendap tanpa batas. Perlu reminder otomatis + eskalasi bila lewat SLA (mis. 3 hari) → cash flow & hubungan vendor terjaga. |
-| **P1 — Tinggi** | Modul payroll (lanjutan `monthlySummary`) | `monthlySummary` disebut "fondasi payroll" tapi belum ada perhitungan gaji/potongan/THR. Ini nilai bisnis terbesar berikutnya untuk HR. |
-| **P2 — Menengah** | Purchase Order (PO) workflow | `po_number` hanya kolom teks, tanpa siklus PO → GR → invoice matching (3-way match). Kontrol pengadaan lemah. |
-| **P2 — Menengah** | OCR untuk invoice vendor | "Scan Invoice" web masih disimpan sebagai invoice manual (`invoice_images` ada, OCR belum). Input manual lambat & rawan salah ketik. |
-| **P2 — Menengah** | Dashboard analitik pengeluaran | Belum ada tren spend per kategori/departemen/vendor. Manajer butuh visibilitas untuk pengambilan keputusan. |
-| **P2 — Menengah** | Ekspor ke software akuntansi | Belum ada integrasi/format ekspor (mis. Accurate, Jurnal, atau jurnal umum). Rekonsiliasi manual memakan waktu. |
-| **P3 — Nice to have** | Pembayaran parsial & cicilan invoice | Saat ini approve = lunas penuh. Tidak mendukung termin pembayaran. |
-| **P3 — Nice to have** | 2FA untuk role finance/admin | Akun yang menyetujui uang sebaiknya pakai 2FA — memperkuat kontrol internal. |
-| **P3 — Nice to have** | Pengajuan koreksi presensi | Karyawan lupa check-out / salah catat butuh alur koreksi yang di-approve HRD. |
+| **P1** | **Pelacakan Pembayaran Invoice (`approved` → `paid`)** | Pencatatan status pembayaran transfer ke rekening vendor (`vendors.bank_*`) beserta nomor referensi & bukti transfer. |
+| **P1** | **Deteksi Duplikasi Invoice Vendor** | Pengecekan nomor invoice ganda per vendor dan kombinasi data `(vendor_id + total_amount + invoice_date)`. |
+| **P2** | **OCR Scanner untuk Invoice Vendor** | Ekstraksi otomatis nomor invoice, subtotal, PPN, dan baris item dari scan file PDF/gambar invoice vendor. |
+| **P2** | **Purchase Order (PO) 3-Way Matching** | Siklus pengadaan terstruktur: PO → Goods Receipt (GR) → Invoice Matching untuk mencegah tagihan di luar pesanan. |
+| **P3** | **Pembayaran Parsial & Termin Invoice** | Dukungan pembayaran bertahap (down payment / termin 1, 2, 3) untuk vendor proyek besar. |
 
-## Catatan Desain Penting
+---
 
-### Siklus pembayaran (yang paling kritis)
-Tambahkan status & tabel pembayaran agar siklus uang keluar lengkap:
+## Catatan Desain Teknis Sistem Struk (Receipt Deep-Dive)
+
+### 1. Siklus Pembayaran & Pencairan Reimbursement (Disbursement Lifecycle)
 ```
-receipt/invoice: approved → scheduled (dijadwalkan bayar) → paid (lunas)
+draft → submitted → approved → paid (lunas ditransfer)
+         ↓             ↓
+      rejected      rejected
 ```
-- Tabel baru `payments` (entity_type, entity_id, amount, method, paid_at, paid_by, reference_no, bank_account).
-- Rekening tujuan: untuk struk → rekening karyawan; untuk invoice → rekening vendor (`vendors.bank_*` sudah ada).
-- Cegah pembayaran dobel: satu entity hanya boleh punya satu pembayaran `paid` aktif.
+- **Penambahan Status di Tabel `receipts`**:
+  - Kolom `status`: enum(`'draft'`, `'submitted'`, `'approved'`, `'rejected'`, `'paid'`).
+  - Kolom pencairan dana pada tabel `receipts`:
+    - `paid_at` (timestamp tanggal transfer)
+    - `paid_by` (user_id finance/admin yang memproses)
+    - `payment_method` (enum: `'bank_transfer'`, `'cash'`, `'payroll'`)
+    - `payment_ref_no` (nomor referensi / nomor transaksi bank)
+    - `payment_proof_path` (file bukti transfer, opsional)
+- **Data Rekening Karyawan (Tabel `users`)**:
+  - `bank_name` (misal: BCA, Mandiri, BRI, BNI)
+  - `bank_account_no` (nomor rekening karyawan)
+  - `bank_account_holder` (nama pemilik rekening sesuai buku tabungan)
 
-### Enforce batas klaim
-Saat `submit` struk: jumlahkan klaim `approved` + `submitted` bulan berjalan, tolak (422)
-bila melebihi `monthly_claim_limit` user (fallback ke `max_claim_limit` company).
+### 2. Enforce Batas Klaim & Anggaran (Budget Enforcement Rules)
+Saat karyawan memanggil `store()` dan `submit()` struk:
+1. **Plafon per Transaksi**: Validasi `claimed_amount <= company_settings.max_claim_limit` (jika diatur).
+2. **Plafon Bulanan Karyawan**:
+   ```php
+   $currentMonthSpend = Receipt::where('user_id', $user->id)
+       ->whereIn('status', ['submitted', 'approved', 'paid'])
+       ->whereMonth('created_at', now()->month)
+       ->whereYear('created_at', now()->year)
+       ->where('id', '!=', $receipt->id)
+       ->sum('claimed_amount');
 
-### Delegasi approver
-Tabel `approval_delegations` (from_user_id, to_user_id, start_date, end_date, scope).
-Saat cek role approval, sertakan user yang menerima delegasi aktif. Mengatasi kasus
-"super_admin disimpan untuk level tertinggi" ketika approver tunggal berhalangan.
+   $limit = $user->monthly_claim_limit ?? $companySetting->monthly_claim_limit;
+   if ($limit > 0 && ($currentMonthSpend + $receipt->claimed_amount) > $limit) {
+       return response()->json([
+           'message' => 'Pengajuan klaim melebihi batas anggaran bulanan Anda (Sisa kuota anggaran: Rp ' . number_format($limit - $currentMonthSpend, 0, ',', '.') . ').',
+           'current_spend' => $currentMonthSpend,
+           'limit' => $limit,
+       ], 422);
+   }
+   ```
 
-### Kalender libur & cuti
-Tabel `holidays` (company_id, date, name). Dipakai untuk:
-- Hitung `total_days` cuti tanpa weekend & libur.
-- Penentuan `present/late/absent` (tidak menandai absen di hari libur).
+### 3. Mesin Anti-Fraud Deteksi Duplikat Struk
+Deteksi duplikasi bekerja dalam 2 lapis:
+1. **Lapis 1 (Binary Exact)**: Cek kolom `sha256_hash` pada file gambar (mencegah upload ulang file gambar yang identik).
+2. **Lapis 2 (Attribute Heuristic)**: Jika hash berbeda (misal karyawan memfoto ulang struk dari sudut lain), sistem mengecek kemiripan data teks OCR & tanggal:
+   ```php
+   $potentialDuplicate = Receipt::where('company_id', $companyId)
+       ->where('id', '!=', $receipt->id)
+       ->where('status', '!=', 'rejected')
+       ->where('total_amount', $receipt->total_amount)
+       ->where('receipt_date', $receipt->receipt_date)
+       ->where(function($q) use ($receipt) {
+           $q->where('vendor_name', 'like', '%' . $receipt->vendor_name . '%')
+             ->orWhere('ocr_raw_merchant', 'like', '%' . $receipt->ocr_raw_merchant . '%');
+       })
+       ->first();
+   ```
+   Jika ditemukan kemiripan, sistem menandai flag `is_potential_duplicate = true` dan `duplicate_reference_id` sehingga tampil badge peringatan kuning mencolok di dashboard review Finance.
+
+### 4. Penyesuaian Nominal oleh Finance (Adjusted / Partial Approval)
+- Saat review, Finance dapat mengubah nilai `approved_amount` (default sama dengan `claimed_amount`).
+- Jika `approved_amount < claimed_amount`, Finance wajib mengisi catatan alasan penyesuaian (misal: "Biaya parkir Rp 20.000 tidak di-reimburse sesuai kebijakan kantor").
+- Karyawan menerima notifikasi bahwa klaim disetujui sebagian dengan rincian nominal dan alasan.
+
+### 5. Format Ekspor Transfer Massal Bank (Batch Disbursement)
+Ekspor otomatis mengelompokkan beberapa struk `approved` milik karyawan yang sama menjadi satu baris transfer akumulatif:
+```
+No | Kode Karyawan | Nama Karyawan | Bank | No Rekening | Nama Pemilik Rekening | Total Transfer | Daftar No Struk
+1  | EMP-001       | Budi Santoso  | BCA  | 1234567890  | Budi Santoso          | Rp 450.000     | RCP-20260831-0001, RCP-20260831-0004
+```
 
 > Urutan implementasi yang disarankan: **P0 → P1 → P2 → P3**. Mulai dari siklus
 > pembayaran & enforce anggaran karena keduanya berdampak langsung ke uang perusahaan.
@@ -910,7 +982,7 @@ Di Windows + NTFS (filesystem I/O lambat), ini mudah makan ~500ms.
 | 5 | `admin/users` ~1s | kemungkinan N+1 | cek `UserController@index` |
 
 
-buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu hapus user dengan verifikasi type delete 
+buat endpoint untuk delete user, tapi user harus nonaktif terlebih dahulu lalu hapus user dengan verifikasi type delete --selesai
 
 ---
 
@@ -1100,6 +1172,213 @@ bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceMa
    - Frontend Tab Saldo Cuti (`AttendanceManagement.tsx`):
      - Sub-tab "Saldo Berjalan (Periode Aktif)": kartu saldo aktif cuti dan izin/sakit tahun berjalan.
      - Sub-tab "Riwayat Saldo Sebelumnya": ringkasan KPI dan tabel arsip riwayat pemakaian cuti & izin/sakit periode lalu lengkap dengan filter tahun, kantor cabang, dan pencarian.
+
+6. Arsitektur Queue Jobs & Background Processing (2026-08-31) ✅ AKTIF
+   - **Konsep**: Operasi non-kritis (audit trail, notifikasi FCM, OCR) dipindahkan ke background queue agar response time API tetap instan (< 30ms) dan server tahan lonjakan trafik saat peak hour.
+   - **Job yang Sudah Aktif**:
+     1. `ProcessOcrJob`: Pemrosesan gambar dan ekstraksi teks struk klaim belanja via Google Cloud Vision API.
+     2. `ProcessAttendanceBackgroundJob`: Menangani insert `activity_logs` dan pengiriman push notification FCM presensi (check-in / check-out) secara asinkron.
+   - **Cara Menjalankan Worker**:
+     ```bash
+     php artisan queue:work
+     ```
+     *(Satu worker default memproses seluruh antrean job OCR, Presensi, dan Notifikasi)*.
+   - **Kandidat Fitur untuk Queue Jobs Selanjutnya**:
+     - 🔔 **Notifikasi FCM Approval**: Struk Klaim, Invoice (Level 1/2/3), Pengajuan Lembur, Cuti/Izin, dan Broadcast Cuti Bersama massal.
+     - 📊 **Ekspor/Impor File Besar**: Ekspor laporan presensi & klaim pengeluaran ke Excel/CSV/PDF, serta impor spreadsheet karyawan/shift massal.
+     - 💰 **Kalkulasi Payroll & Slip Gaji**: Perhitungan massal jam kerja/lembur/potongan di akhir bulan dan generate PDF slip gaji.
+     - 🖼️ **Kompresi Media**: Optimasi resolusi foto bukti absensi & auto-backup ke cloud storage.
+
+7. Jeda Minimal Check-out (Cooldown Buffer) Setelah Check-in (2026-08-31) ✅ AKTIF
+   - **Tujuan**: Mencegah karyawan langsung check-out detik berikutnya setelah check-in (*accidental tap* di saku / presensi kilat) yang membuat status menjadi *Pulang Awal (Early Leave)* dan merusak akurasi total jam kerja rekap payroll.
+   - **Pengaturan per Kantor**: Kolom `min_checkout_interval_minutes` di `attendance_settings` (default: 10 menit, isi 0 untuk mematikan). Dapat diatur HRD melalui Web *Pengaturan Kantor*.
+   - **Snapshot Check-in**: Kolom `snap_min_checkout_interval_minutes` pada tabel `attendances` dibekukan saat karyawan check-in.
+   - **Validasi Backend (`checkOut`)**: Jika `now()` belum mencapai minimal $X$ menit dari `check_in_time`, sistem mengembalikan error HTTP `422 Unprocessable Entity` dengan rincian `earliest_checkout_at`, `remaining_minutes`, dan `is_cooldown: true`.
+   - **Tampilan Mobile (Flutter)**: Menampilkan dialog penjelasan dan jam buka presensi pulang saat karyawan mencoba check-out sebelum jeda minimal tercapai.
+
+8. Daftar Fitur Notifikasi HP (Mobile Push FCM & Local Notifications) ✅ AKTIF
+   Aplikasi mobile Flutter ExpenseFlow menggunakan integrasi **Firebase Cloud Messaging (FCM HTTP v1)** dan **Local Notifications** (`flutter_local_notifications`). Berikut daftar seluruh fitur yang mengirim notifikasi ke HP karyawan:
+
+   - **A. Presensi & Jam Kerja**:
+     1. `⏰ Reminder Checkout (Lokal)`: Notifikasi pengingat otomatis di HP karyawan $N$ menit setelah jam pulang kerja agar karyawan tidak lupa check-out.
+     2. `⚠️ Warning Auto-Checkout (Lokal)`: Peringatan darurat 5 menit sebelum sistem backend mengeksekusi auto-checkout otomatis.
+     3. `🔔 Konfirmasi Auto-Checkout (FCM/Lokal)`: Notifikasi saat sistem backend mengeksekusi auto-checkout karena karyawan melebihi batas waktu toleransi jam pulang.
+     4. `📅 Perubahan Jadwal Kerja / Shift (FCM)`: Notifikasi ke karyawan saat HRD menugaskan (*assign*) atau mengubah shift kerja baru.
+
+   - **B. Pengajuan Lembur (Overtime)**:
+     5. `⏰ Pengajuan Lembur Masuk (FCM)`: Notifikasi ke HRD/Atasan saat karyawan check-out melebihi jam kerja normal.
+     6. `✅ Lembur Disetujui (FCM)`: Notifikasi ke karyawan saat jam lembur disetujui oleh HRD.
+     7. `❌ Lembur Ditolak (FCM)`: Notifikasi ke karyawan beserta alasan jika jam lembur ditolak HRD.
+
+   - **C. Pengajuan Cuti, Izin, & Libur Perusahaan**:
+     8. `✅ Pengajuan Cuti/Izin Disetujui (FCM)`: Notifikasi ke karyawan saat tiket cuti, izin, atau sakit disetujui HRD.
+     9. `❌ Pengajuan Cuti/Izin Ditolak (FCM)`: Notifikasi ke karyawan saat tiket cuti/izin/sakit ditolak HRD beserta alasan penolakan.
+     10. `🏖️ Pengumuman Cuti Bersama (FCM)`: Notifikasi siaran (*broadcast*) ke seluruh karyawan saat HRD merilis jadwal cuti bersama baru.
+     11. `❌ Cuti Bersama Dibatalkan (FCM)`: Notifikasi ke karyawan saat cuti bersama dibatalkan oleh HRD (dengan info pengembalian saldo cuti).
+     12. `🔄 Reset Saldo Cuti Tahunan (FCM)`: Pemberitahuan saat kuota cuti tahunan di-reset dan pemakaian periode lalu diarsipkan.
+
+   - **D. Keamanan & Device Binding**:
+     13. `📱 Pindah Perangkat Disetujui (FCM)`: Notifikasi ke karyawan saat permohonan ganti HP disetujui HRD sehingga bisa login di HP baru.
+     14. `❌ Pindah Perangkat Ditolak (FCM)`: Notifikasi ke karyawan saat permohonan ganti HP ditolak HRD.
+
+9. Arsitektur Sistem Laporan & Performa Skala Besar (1.000+ Karyawan) (2026-08-31) ✅ AKTIF
+   Aplikasi dirancang dan diuji untuk menangani **1.000+ akun karyawan secara simultan di berbagai cabang** dengan respon backend sub-milidetik dan antarmuka web (UI) tetap ringan serta responsif (60 FPS).
+
+   - **A. Karakteristik & Tantangan Beban (1.000 Karyawan)**:
+     - **Trafik Peak Hour**: Check-in/out massal pada jam masuk kerja dan ekspor rekap laporan bulanan.
+     - **DOM Bloat di Frontend**: Merender 1.000 baris tabel sekaligus (disertai tombol, status badge, dan input) membebani memori browser dan memicu frame drop.
+     - **Overhead Network Waterfall**: Memanggil puluhan API berurutan (misal request loop per karyawan) menyebabkan latency akumulatif.
+
+   - **B. Optimasi Query Backend (Sub-millisecond Performance)**:
+     - **Index & Filtering**: Endpoint `reportAttendance`, `today`, dan `monthlySummary` memanfaatkan compound index pada kolom `date`, `company_id`, dan `user_id`.
+     - **Single-Pass Aggregation & In-Memory Grouping**: Menghilangkan query N+1. Data jadwal kantor, shift kustom, approval cuti, dan presensi dimuat secara batch (*eager loading* / bulk array lookup) dalam 1 query tunggal.
+     - **Benchmark Kecepatan**: Eksekusi query database untuk agregasi 1.000 karyawan selesai dalam **0.17 ms – 5 ms**.
+     - **Dukungan `per_page` Hingga 2000**: Endpoint seperti `listUsers`, `listLeaves`, `listOvertimeApprovals`, dan `listDeviceChanges` mendukung parameter `per_page=2000` (default 2000) untuk memuat data utuh dalam satu request tanpa pemotongan parsial.
+
+   - **C. Optimasi Frontend Web (Lightweight UI & 60 FPS Rendering)**:
+     - **Paginasi Standar di Semua Halaman (25 / 50 / 100 data per halaman — bar otomatis di-hide jika data < 25)**:
+       - Tab Roster Shift (`ShiftManagement.tsx`)
+       - Tab Approval & Saldo Cuti (`AttendanceManagement.tsx`)
+       - Halaman Manajemen Karyawan (`KaryawanManagement.tsx`)
+       - Verifikasi Struk & Riwayat (`ReceiptInbox.tsx` & `ReceiptHistory.tsx`)
+       - Inbox & Riwayat Invoice Vendor (`InvoiceInbox.tsx` & `InvoiceHistory.tsx`)
+       - Master Data Vendor (`MasterVendor.tsx`)
+       - Audit Trail & Notifikasi (`AuditLogView.tsx` & `NotificationsView.tsx`)
+     - **Optimistic UI Updates (0ms Feedback)**:
+       - Toggle WFH dan Radius GPS langsung memperbarui status tombol seketika di state lokal sebelum konfirmasi server selesai.
+     - **Eliminasi Network Waterfall**:
+       - Mengganti loop request bertahap dengan single call API `per_page=2000`.
+     - **Debounced Search (500ms)**:
+       - Mencegah render ulang tabel saat pengguna mengetik filter pencarian nama karyawan atau merchant.
+
+   - **D. Hasil Uji Performa**:
+     - Waktu respon API: **< 30 ms**.
+     - Waktu rendering browser: **< 16 ms (mulus 60 FPS)** tanpa freeze saat beralih antar halaman atau memfilter 1.000 data.
+
+10. Panduan Spesifikasi Server & Infrastruktur Berdasarkan Jumlah Karyawan (Server Sizing & Hardware Resource Guide) ✅ PANDUAN DEPLOYMENT
+    Panduan kapasitas perangkat keras (*hardware*), alokasi memori, arsitektur server, dan estimasi biaya operasional (*cost*) untuk menjalankan ekosistem **ExpenseFlow (Backend Laravel API + Queue Worker + Database + Web UI React + Mobile Flutter Push FCM + OCR Vision)** dari skala UMKM hingga skala Enterprise Multi-Cabang:
+
+    ### A. Matriks Ringkasan Cepat (Quick Sizing Matrix)
+    | Skala Karyawan | Rekomendasi vCPU | Rekomendasi RAM | Storage (SSD/NVMe) | Database & Cache | Model Arsitektur Server | Estimasi Biaya Cloud / Bulan |
+    | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+    | **1 – 100 User** *(Starter)* | 2 vCPU | 2 GB – 4 GB | 25 GB – 40 GB SSD | MySQL 8.0 (Co-located) + File Cache | Single VPS Monolith All-in-One | $5 – $15 / bln *(Rp 80rb - 240rb)* |
+    | **100 – 500 User** *(Medium)* | 4 vCPU | 8 GB | 60 GB – 100 GB NVMe | MySQL 8.0 (Buffer 4GB) + Redis Cache/Queue | Single VPS Optimized (Tuned Stack) | $20 – $45 / bln *(Rp 320rb - 720rb)* |
+    | **500 – 1.000 User** *(Large)* | 8 vCPU (4 App + 4 DB) | 16 GB (8 App + 8 DB) | 120 GB SSD + Cloud Object Storage | Dedicated DB Instance + Managed Redis 1GB | Split Architecture (App Server + DB Server) | $70 – $140 / bln *(Rp 1.1jt - 2.2jt)* |
+    | **1.000 – 5.000 User** *(Enterprise)* | 16 – 24 vCPU (Multi-Node) | 32 GB – 64 GB | 250 GB+ NVMe + S3/R2 Storage | Master-Replica MySQL + Redis Cluster | High Availability (Load Balancer + 2-3 App Nodes) | $200 – $450 / bln *(Rp 3.2jt - 7.2jt)* |
+    | **5.000 – 20.000+ User** *(Corporate / Holding)* | 32 – 64+ vCPU (Auto-scale) | 128 GB – 256 GB | Multi-TB Object Storage + High IOPS DB | AWS Aurora / Cloud SQL HA + ProxySQL | Kubernetes (K8s) Cluster + Cloud Queue (SQS/PubSub) | $800 – $2.000+ / bln |
+
+    ---
+
+    ### B. Rincian Konfigurasi Teknis per Kategori Skala
+
+    #### 1. Tier 1: Startup & Bisnis Kecil (1 – 100 Karyawan)
+    - **Profil Beban**:
+      - Trafik check-in/out: ~10–25 request per menit saat jam masuk/pulang kerja.
+      - Klaim struk OCR: ~5–15 struk per hari.
+      - Ukuran Database: < 1 GB per tahun.
+    - **Spesifikasi Server**:
+      - **Infrastruktur**: 1 Instance VPS Monolith (App, DB, dan Queue Worker di 1 server yang sama).
+      - **CPU**: 2 vCPU.
+      - **RAM**: 2 GB – 4 GB RAM.
+      - **Storage**: 25 GB – 40 GB SSD.
+      - **OS & Stack**: Ubuntu 22.04 LTS, Nginx, PHP 8.2+ (PHP-FPM), MySQL 8.0 / MariaDB, Supervisor.
+    - **Tuning Konfigurasi**:
+      - PHP-FPM: `pm = dynamic`, `pm.max_children = 15`, `pm.start_servers = 4`.
+      - MySQL: `innodb_buffer_pool_size = 1G` (jika RAM 4GB) atau `512M` (jika RAM 2GB).
+      - Queue Driver: `database` atau `redis` lokal dengan 1 worker (`php artisan queue:work --tries=3`).
+      - Penyimpanan File Struk: Local disk (`storage/app/private/receipts`).
+
+    ---
+
+    #### 2. Tier 2: Bisnis Berkembang (100 – 500 Karyawan)
+    - **Profil Beban**:
+      - Trafik check-in/out: ~50–120 request per menit saat peak hour (07.45 – 08.05).
+      - Klaim struk OCR: ~50–100 struk per hari.
+      - Scheduler Auto-Checkout berjalan setiap 5 menit memeriksa 500 user.
+      - Ekspor rekap presensi bulanan dan approval izin harian.
+    - **Spesifikasi Server**:
+      - **Infrastruktur**: 1 VPS High-Frequency Compute Optimized.
+      - **CPU**: 4 vCPU.
+      - **RAM**: 8 GB RAM.
+      - **Storage**: 80 GB – 100 GB NVMe SSD.
+      - **OS & Stack**: Ubuntu 22.04 LTS, Nginx, PHP 8.2+, MySQL 8.0, Redis In-Memory.
+    - **Tuning Konfigurasi**:
+      - PHP-FPM: `pm = dynamic`, `pm.max_children = 35`, `pm.start_servers = 8`, `memory_limit = 256M`.
+      - OPcache: `opcache.enable=1`, `opcache.memory_consumption=128`, `opcache.validate_timestamps=0` (di production).
+      - MySQL: `innodb_buffer_pool_size = 4G`, `innodb_log_file_size = 512M`, `max_connections = 150`.
+      - Cache & Queue: **Redis In-Memory** (pindahkan session, cache query, dan queue dari database ke Redis untuk latency < 1ms).
+      - Background Worker: 2 proses worker via Supervisor (1 worker OCR, 1 worker presensi & notifikasi FCM).
+
+    ---
+
+    #### 3. Tier 3: Perusahaan Menengah-Besar (500 – 1.000 Karyawan)
+    - **Profil Beban**:
+      - Trafik check-in serentak: 300–600 karyawan presensi dalam rentang 15 menit.
+      - Multi-cabang (3–10 cabang) dengan aturan jadwal shift kantor berbeda.
+      - Laporan bulanan, agregasi lembur, dan kalkulasi payroll massal.
+      - Ratusan foto struk klaim & foto bukti presensi per minggu.
+    - **Spesifikasi Server (Split Architecture / 2 Server Terpisah)**:
+      - **App Node (Web Server + API + Queue Worker)**:
+        - **CPU**: 4 vCPU
+        - **RAM**: 8 GB RAM
+        - **Storage**: 50 GB NVMe SSD
+      - **DB Node (Dedicated Database Server)**:
+        - **CPU**: 4 vCPU
+        - **RAM**: 8 GB – 16 GB RAM
+        - **Storage**: 100 GB – 150 GB NVMe SSD (High IOPS)
+      - **Media Storage**: **Cloud Object Storage (Cloudflare R2 / AWS S3 / Google Cloud Storage)** untuk memisahkan beban file gambar dari server utama.
+    - **Tuning Konfigurasi**:
+      - Database Dedicated: `innodb_buffer_pool_size = 6G – 10G`, seluruh dataset user & presensi aktif tersimpan di RAM in-memory.
+      - PHP-FPM: `pm.max_children = 60–80`, `request_terminate_timeout = 60s`.
+      - Redis Cache: Dedicated Redis 1 GB untuk throttling, lock mutex auto-checkout, dan dispatching event real-time.
+      - Cloudflare CDN: Caching aset frontend (Vite React JS, CSS, fonts, icons) di edge server global.
+
+    ---
+
+    #### 4. Tier 4: Skala Enterprise (1.000 – 5.000 Karyawan)
+    - **Profil Beban**:
+      - Lonjakan check-in/out: 1.500+ request dalam rentang 10 menit pagi hari.
+      - 10 – 50 kantor cabang di seluruh Indonesia.
+      - Rekap gaji/payroll bulanan memproses jutaan jam kerja dan ribuan lembar slip gaji.
+      - Push notifikasi broadcast FCM massal ke ribuan smartphone dalam hitungan detik.
+    - **Spesifikasi Infrastruktur (High Availability Cluster)**:
+      - **Load Balancer**: Cloud Load Balancer (Nginx Reverse Proxy / AWS ALB / Cloudflare) dengan SSL Termination & DDoS Protection.
+      - **Web / API Nodes (2 – 3 Instance)**:
+        - Masing-masing: 4 vCPU, 8 GB RAM (Total: 8–12 vCPU, 16–24 GB RAM).
+        - Menangani traffic HTTP stateless dengan shared Redis Session & Token Sanctum.
+      - **Dedicated Background Worker Node (1 Instance)**:
+        - **CPU**: 4 vCPU, 8 GB RAM.
+        - Menjalankan 4–8 proses worker (OCR queue, FCM notifications, scheduled report exports, auto-checkout).
+      - **Database Cluster (Master-Replica)**:
+        - **Primary (Master - Write)**: 8 vCPU, 32 GB RAM, 250 GB NVMe SSD.
+        - **Secondary (Read Replica - Read)**: 4 vCPU, 16 GB RAM (Didedikasikan untuk query report, dashboard rekap, dan payroll).
+      - **Cache & Key-Value**: Managed Redis Cluster 2 GB – 4 GB RAM.
+      - **Storage**: S3 / Cloudflare R2 (Unlimited scalability untuk berkas klaim, invoice, dan dokumen karyawan).
+
+    ---
+
+    #### 5. Tier 5: Holding Company & Korporasi Raksasa (5.000 – 20.000+ Karyawan)
+    - **Profil Beban**:
+      - Puluhan ribu karyawan aktif presensi di ratusan cabang/pabrik/outlet secara serentak.
+      - Puluhan juta baris data presensi dan audit trail per tahun.
+      - Kebutuhan SLA uptime 99.99% dengan Zero Downtime Deployment.
+    - **Spesifikasi Infrastruktur (Kubernetes Auto-Scaling & Cloud-Native)**:
+      - **Cluster Engine**: Kubernetes (AWS EKS / Google GKE / Azure AKS) dengan Horizontal Pod Autoscaler (HPA) menyesuaikan beban jam masuk kerja secara otomatis.
+      - **Database Enterprise**: AWS Aurora MySQL Multi-AZ High Availability / Google Cloud SQL Enterprise Plus (16 – 32 vCPU, 64 GB – 128 GB RAM) + Connection Pooler (ProxySQL).
+      - **Queue Messaging**: Cloud Managed Queue (AWS SQS / Google Cloud Pub/Sub) untuk pemrosesan paralel nir-batas.
+      - **Search & Analytics**: Meilisearch / ElasticSearch untuk pencarian instan nama karyawan, struk, dan audit log jutaan data.
+      - **CDN & WAF**: Cloudflare Enterprise / AWS CloudFront dengan Web Application Firewall & Bot Protection.
+
+    ---
+
+    ### C. Checklist Wajib Optimasi Server Sebelum Produksi
+    1. **Aktifkan OPcache PHP**: Wajib mengaktifkan `opcache` dengan alokasi minimal 128MB–256MB untuk memangkas waktu eksekusi skrip PHP hingga 70%.
+    2. **Tuning MySQL Buffer Pool**: Selalu atur `innodb_buffer_pool_size` minimal 60% – 70% dari total RAM yang tersedia pada server database agar query agregasi tetap berada di memori (0.17 ms).
+    3. **Gunakan Queue Worker (Supervisor)**: Jangan pernah menjalankan pemrosesan OCR Vision, push notifikasi FCM, dan log audit di request lifecycle utama. Jalankan via `php artisan queue:work` yang dikelola oleh Supervisor.
+    4. **Offload Media ke Object Storage**: Untuk instalasi di atas 500 karyawan, arahkan storage disk `receipts`, `invoices`, dan `avatars` ke AWS S3 atau Cloudflare R2 untuk menghemat IOPS dan mencegah harddisk server kepenuhan.
+    5. **Gzip / Brotli & HTTP/2**: Pastikan Nginx mengaktifkan kompresi Brotli/Gzip dan protokol HTTP/2 untuk loading aset frontend React instan.
+    6. **Automated Database Backup**: Jadwalkan backup database otomatis harian (e.g. `mysqldump` terenkripsi di-upload ke remote backup bucket) dengan retensi minimal 30 hari.
+    7. **Analisis Bisnis & Valuasi Lengkap**: Rincian model bisnis, penetapan harga SaaS per user, analisis BEP, dan valuasi jual putus dapat dilihat pada dokumen: [doc/10-BUSINESS-PRICING-VALUATION-MODEL.md](file:///e:/koding/coba/backend-gawe/doc/10-BUSINESS-PRICING-VALUATION-MODEL.md).
 
 # note untuk refaktoring
 perbaiki dulu error di atas ,

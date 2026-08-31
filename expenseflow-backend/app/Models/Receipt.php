@@ -15,25 +15,31 @@ class Receipt extends Model
     protected $fillable = [
         'company_id', 'user_id', 'receipt_number', 'sha256_hash',
         'image_path', 'vendor_name', 'total_amount', 'claimed_amount',
-        'receipt_date', 'currency', 'status', 'ocr_status', 'notes', 'category',
+        'approved_amount', 'receipt_date', 'currency', 'status', 'ocr_status',
+        'notes', 'category', 'paid_at', 'paid_by', 'payment_method',
+        'payment_ref_no', 'payment_proof_path', 'is_potential_duplicate',
+        'duplicate_reference_id',
     ];
 
     protected function casts(): array
     {
         return [
-            'receipt_date'      => 'date',
-            'submitted_at'      => 'datetime',
-            'total_amount'      => 'decimal:2',
-            'claimed_amount'    => 'decimal:2',
-            'ocr_raw_amount'    => 'decimal:2',
-            'ocr_raw_subtotal'  => 'decimal:2',
-            'ocr_raw_tax'       => 'decimal:2',
-            'ocr_raw_discount'  => 'decimal:2',
-            'ocr_raw_items'     => 'array',
-            'ocr_raw_date'      => 'date',
-            'variance_flag'     => 'boolean',
-            'variance_pct'      => 'decimal:2',
-            'ocr_attempts'      => 'integer',
+            'receipt_date'           => 'date',
+            'submitted_at'           => 'datetime',
+            'paid_at'                => 'datetime',
+            'total_amount'           => 'decimal:2',
+            'claimed_amount'         => 'decimal:2',
+            'approved_amount'        => 'decimal:2',
+            'ocr_raw_amount'         => 'decimal:2',
+            'ocr_raw_subtotal'       => 'decimal:2',
+            'ocr_raw_tax'            => 'decimal:2',
+            'ocr_raw_discount'       => 'decimal:2',
+            'ocr_raw_items'          => 'array',
+            'ocr_raw_date'           => 'date',
+            'variance_flag'          => 'boolean',
+            'variance_pct'           => 'decimal:2',
+            'is_potential_duplicate' => 'boolean',
+            'ocr_attempts'           => 'integer',
         ];
     }
 
@@ -86,6 +92,16 @@ class Receipt extends Model
     public function approvals(): HasMany
     {
         return $this->hasMany(ReceiptApproval::class);
+    }
+
+    public function paidBy(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'paid_by');
+    }
+
+    public function duplicateReference(): BelongsTo
+    {
+        return $this->belongsTo(Receipt::class, 'duplicate_reference_id');
     }
 
     // ─── Auto-calculate variance flag & percentage ──────────

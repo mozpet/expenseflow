@@ -2121,6 +2121,132 @@ class ShiftController extends Controller
     //   is_cross_day    : bool
     //   office          : AttendanceSetting|null (untuk late_tolerance, overtime settings)
     // ═══════════════════════════════════════════════════════════
+    // Static helper: resolveSchedulesBulk(Collection|array $users, string $date)
+    // BULK RESOLVER untuk ratusan/ribuan user sekaligus (Hanya 3 query total).
+    // Menghindari N+1 query yang terjadi jika memanggil resolveSchedule() berulang.
+    // ═══════════════════════════════════════════════════════════
+    public static function resolveSchedulesBulk($users, string $date): array
+    {
+        $usersCollection = collect($users);
+        if ($usersCollection->isEmpty()) {
+            return [];
+        }
+
+        $userIds = $usersCollection->pluck('id')->filter()->unique()->values();
+        $dayOfWeek = Carbon::parse($date)->dayOfWeek;
+
+        // 1. Preload semua UserShift aktif pada tanggal $date (1 query)
+        $activeAssignments = UserShift::with('shift:id,name,color,is_active')
+            ->whereIn('user_id', $userIds)
+            ->where('start_date', '<=', $date)
+            ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date))
+            ->orderByDesc('start_date')
+            ->get()
+            ->groupBy('user_id');
+
+        // 2. Kumpulkan shift_id unik yang aktif
+        $relevantShiftIds = $activeAssignments->flatten()
+            ->filter(fn ($a) => $a->shift_id && optional($a->shift)->is_active)
+            ->pluck('shift_id')
+            ->unique()
+            ->values();
+
+        // 3. Preload jadwal shift untuk day_of_week pada tanggal $date (1 query)
+        $schedulesByShift = collect();
+        if ($relevantShiftIds->isNotEmpty()) {
+            $schedulesByShift = ShiftSchedule::whereIn('shift_id', $relevantShiftIds)
+                ->where('day_of_week', $dayOfWeek)
+                ->orderByDesc('effective_date')
+                ->get()
+                ->groupBy('shift_id')
+                ->map(function ($schedules) use ($date) {
+                    $match = $schedules->first(fn ($s) => $s->effective_date->toDateString() <= $date);
+                    return $match ?? $schedules->first();
+                });
+        }
+
+        // 4. Preload semua kantor (AttendanceSetting) yang relevan (1 query)
+        $companyIds = $usersCollection->pluck('company_id')->filter()->unique()->values();
+        $allOffices = AttendanceSetting::whereIn('company_id', $companyIds)->get()->keyBy('id');
+        $fallbackOffices = $allOffices->groupBy('company_id')->map(fn ($g) => $g->first());
+
+        // 5. Bangun jadwal in-memory untuk setiap user
+        $results = [];
+        foreach ($usersCollection as $user) {
+            $userShift = $activeAssignments->get($user->id)?->first();
+
+            $office = ($user->attendance_setting_id && $allOffices->has($user->attendance_setting_id))
+                ? $allOffices->get($user->attendance_setting_id)
+                : ($fallbackOffices->get($user->company_id) ?? (isset($user->office) ? $user->office : null));
+
+            // Jika ada shift aktif & template aktif
+            if ($userShift && $userShift->shift_id && optional($userShift->shift)->is_active) {
+                $shiftSchedule = $schedulesByShift->get($userShift->shift_id);
+                if ($shiftSchedule) {
+                    $results[$user->id] = [
+                        'source'          => 'shift',
+                        'shift_id'        => $userShift->shift_id,
+                        'shift_name'      => optional($userShift->shift)->name,
+                        'work_start_time' => $shiftSchedule->work_start_time,
+                        'work_end_time'   => $shiftSchedule->work_end_time,
+                        'is_off'          => (bool) $shiftSchedule->is_off,
+                        'is_wfh'          => (bool) $shiftSchedule->is_wfh,
+                        'is_field'        => (bool) $shiftSchedule->is_field,
+                        'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
+                        'office'          => $office,
+                    ];
+                    continue;
+                }
+            }
+
+            // Fallback kantor
+            if ($office) {
+                $workDays = $office->work_days ?? [1, 2, 3, 4, 5];
+                $isOff = ! in_array($dayOfWeek, array_map('intval', (array) $workDays));
+
+                $customStart = null;
+                $customEnd = null;
+                if (! $isOff && ! empty($office->custom_schedules[$dayOfWeek])) {
+                    $customStart = $office->custom_schedules[$dayOfWeek]['start'] ?? null;
+                    $customEnd = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
+                }
+
+                $results[$user->id] = [
+                    'source'          => 'office',
+                    'shift_id'        => null,
+                    'shift_name'      => null,
+                    'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
+                    'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
+                    'is_off'          => (bool) $isOff,
+                    'is_wfh'          => false,
+                    'is_field'        => false,
+                    'is_cross_day'    => false,
+                    'office'          => $office,
+                ];
+                continue;
+            }
+
+            // Tidak ada setting
+            $results[$user->id] = [
+                'source'          => 'none',
+                'shift_id'        => null,
+                'shift_name'      => null,
+                'work_start_time' => null,
+                'work_end_time'   => null,
+                'is_off'          => false,
+                'is_wfh'          => false,
+                'is_field'        => false,
+                'is_cross_day'    => false,
+                'office'          => null,
+            ];
+        }
+
+        return $results;
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // Static helper: resolveSchedule(User, date)
+    // ═══════════════════════════════════════════════════════════
     public static function resolveSchedule(User $user, string $date): array
     {
         $dayOfWeek = Carbon::parse($date)->dayOfWeek; // 0=Minggu … 6=Sabtu

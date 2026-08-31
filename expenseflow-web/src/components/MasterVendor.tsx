@@ -99,6 +99,14 @@ export const MasterVendor: React.FC<{
 
   const debouncedSearch = useDebounce(searchQuery, 500);
 
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, statusFilter]);
+
   // Filter and search
   const filteredVendors = useMemo(() => {
     return vendors.filter(v => {
@@ -110,6 +118,9 @@ export const MasterVendor: React.FC<{
       return matchSearch && matchStatus;
     });
   }, [vendors, debouncedSearch, statusFilter]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredVendors.length / pageSize));
+  const paginatedVendors = filteredVendors.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   const [submitting, setSubmitting] = useState(false);
 
@@ -329,7 +340,7 @@ export const MasterVendor: React.FC<{
           ) : filteredVendors.length === 0 ? (
             <p className="text-center py-10 text-xs text-slate-450 dark:text-slate-500">Tidak ada vendor terdaftar yang cocok.</p>
           ) : (
-            filteredVendors.map((vendor) => (
+            paginatedVendors.map((vendor) => (
               <div 
                 key={vendor.id}
                 className="border border-slate-100 dark:border-slate-800/80 bg-slate-50/30 dark:bg-slate-950/20 hover:bg-slate-50/50 dark:hover:bg-slate-950/40 rounded-2xl p-5 transition relative duration-150 group"
@@ -396,6 +407,76 @@ export const MasterVendor: React.FC<{
           )}
         </div>
 
+        {/* Pagination footer */}
+        {filteredVendors.length >= 25 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-slate-100 dark:border-slate-800 text-xs">
+            <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+              <span>
+                Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                  {Math.min((currentPage - 1) * pageSize + 1, filteredVendors.length)} - {Math.min(currentPage * pageSize, filteredVendors.length)}
+                </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{filteredVendors.length}</strong> vendor
+              </span>
+              <span className="hidden sm:inline">•</span>
+              <div className="flex items-center gap-1.5">
+                <span className="hidden sm:inline">Per hal:</span>
+                <select
+                  value={pageSize}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value));
+                    setCurrentPage(1);
+                  }}
+                  className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                >
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Pertama"
+              >
+                «
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Sebelumnya"
+              >
+                ‹
+              </button>
+              <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{currentPage}</span> / <span className="font-mono">{totalPages}</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Berikutnya"
+              >
+                ›
+              </button>
+              <button
+                type="button"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                title="Halaman Terakhir"
+              >
+                »
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* MODAL TAMBAH VENDOR */}

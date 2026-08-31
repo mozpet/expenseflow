@@ -259,6 +259,62 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
             ),
           );
         }
+      } else if (e.statusCode == 422 && (e.message.contains('Minimal durasi kehadiran') || e.message.contains('Check-out belum dapat dilakukan'))) {
+        await showDialog(
+          context: context,
+          barrierDismissible: true,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Row(
+              children: [
+                Icon(Icons.hourglass_top_rounded, color: Colors.amber.shade700, size: 24),
+                const SizedBox(width: 10),
+                const Expanded(
+                  child: Text('Jeda Waktu Check-Out',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.amber.shade200),
+                  ),
+                  child: Text(
+                    e.message,
+                    style: TextStyle(color: Colors.amber.shade900, fontSize: 13, height: 1.4),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Sistem memberikan jeda minimal agar Anda tidak sengaja check-out sesaat setelah check-in.',
+                  style: TextStyle(color: Colors.grey.shade600, fontSize: 12, height: 1.4),
+                ),
+              ],
+            ),
+            actions: [
+              SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.amber.shade700,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                  ),
+                  onPressed: () => Navigator.of(ctx).pop(),
+                  child: const Text('Mengerti', style: TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+            ],
+          ),
+        );
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

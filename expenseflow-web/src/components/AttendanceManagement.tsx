@@ -632,6 +632,36 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const debouncedBalanceSearch = useDebounce(balanceSearch, 500);
   const debouncedReportSearch = useDebounce(reportSearch, 500);
 
+  // Paginasi Client-side untuk Performa UI 60 FPS saat memproses ribuan data
+  const [leavePage, setLeavePage] = useState<number>(1);
+  const [leavePageSize, setLeavePageSize] = useState<number>(25);
+
+  const [userPage, setUserPage] = useState<number>(1);
+  const [userPageSize, setUserPageSize] = useState<number>(25);
+
+  const [balancePage, setBalancePage] = useState<number>(1);
+  const [balancePageSize, setBalancePageSize] = useState<number>(24);
+
+  // Limit tampilan awal item per kolom di tab 'Hari Ini' agar DOM ringan (< 40 item)
+  const [todayColumnLimit, setTodayColumnLimit] = useState<{ [key: string]: number }>({
+    checkedIn: 40,
+    notCheckedIn: 40,
+    offToday: 40,
+    onLeave: 40,
+  });
+
+  useEffect(() => {
+    setLeavePage(1);
+  }, [debouncedLeaveSearch, leaveStatus, leaveTypeFilter, leaveSourceFilter, leaveOfficeFilter, showUpcoming]);
+
+  useEffect(() => {
+    setUserPage(1);
+  }, [debouncedUserSearch, userOfficeFilter]);
+
+  useEffect(() => {
+    setBalancePage(1);
+  }, [debouncedBalanceSearch, balanceOfficeFilter]);
+
   useEffect(() => {
     attendanceApi.settings.list().then(res => setOffices((res as any)?.settings ?? [])).catch(() => { });
   }, []);
@@ -672,18 +702,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setLoading(true);
     setError(null);
     try {
-      // Fetch SEMUA leaves (semua halaman pagination API) tanpa filter status —
-      // filter diterapkan lokal. Tanpa ini, riwayat lama "hilang" karena hanya
-      // 20 baris pertama yang termuat.
-      let allRows: any[] = [];
-      for (let page = 1; page <= 50; page++) {
-        const res: any = await attendanceApi.leaves({ page });
-        const batch = rows(res);
-        allRows = allRows.concat(batch);
-        const lastPage = Number(res?.last_page ?? res?.meta?.last_page ?? 1);
-        if (batch.length === 0 || page >= lastPage) break;
-      }
-      setLeaves(allRows);
+      const res: any = await attendanceApi.leaves({ per_page: 2000 });
+      setLeaves(rows(res));
     } catch (e) {
       reportApiError(e, 'Gagal memuat pengajuan izin/cuti.');
     } finally {
@@ -695,7 +715,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setLoading(true);
     setError(null);
     try {
-      const res: any = await attendanceApi.users();
+      const res: any = await attendanceApi.users({ per_page: 2000 });
       setUsers(rows(res));
     } catch (e) {
       reportApiError(e, 'Gagal memuat daftar karyawan.');
@@ -866,7 +886,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       const res: any = await attendanceApi.toggleWfh(id);
       const on = res?.user?.wfh_enabled;
       onAddAuditLog('Mode WFH Diubah', `WFH ${name} ${on ? 'diaktifkan' : 'dinonaktifkan'}`, on ? 'bg-emerald-600' : 'bg-slate-600');
-      await loadUsers();
+      setUsers(prev => prev.map(u => u.id === id ? {
+        ...u,
+        wfh_enabled: res?.user?.wfh_enabled ?? !u.wfh_enabled,
+        attendance_enabled: res?.user?.attendance_enabled ?? u.attendance_enabled,
+      } : u));
     } catch (e) {
       reportApiError(e, 'Gagal mengubah mode WFH.');
     }
@@ -877,7 +901,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       const res: any = await attendanceApi.toggleRadius(id);
       const on = res?.user?.radius_enabled;
       onAddAuditLog('Radius Lapangan Diubah', `Radius ${name} ${on ? 'diaktifkan (lapangan)' : 'dinonaktifkan (WFH bebas)'}`, on ? 'bg-amber-600' : 'bg-slate-600');
-      await loadUsers();
+      setUsers(prev => prev.map(u => u.id === id ? {
+        ...u,
+        radius_enabled: res?.user?.radius_enabled ?? !u.radius_enabled,
+      } : u));
     } catch (e) {
       reportApiError(e, 'Gagal mengubah radius lapangan.');
     }
@@ -1072,35 +1099,46 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         {checkedIn.length === 0 ? (
                           <p className="text-[11px] text-slate-400 py-3 text-center">{searchCheckedIn || todayOfficeFilter ? 'Tidak ditemukan.' : 'Belum ada.'}</p>
                         ) : (
-                          checkedIn.map((p: any) => (
-                            <div key={p.user_id} className={`flex items-center justify-between border-b pb-2 ${p.is_cross_day ? 'border-indigo-100 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-lg px-1.5' : 'border-slate-50 dark:border-slate-800/60'}`}>
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex items-center gap-1">
-                                  {p.name}
-                                  {p.is_cross_day && (
-                                    <span title="Shift lintas tengah malam">
-                                      <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
-                                    </span>
-                                  )}
-                                </p>
-                                <p className="text-[10px] text-slate-400">
-                                  {p.employee_code && <span className="font-mono mr-1">{p.employee_code} ·</span>}
-                                  {p.department ?? '—'} ·{' '}
-                                  {p.is_cross_day
-                                    ? fmtDateRange(p.shift_date, p.checkout_date)
-                                    : fmtTime(p.check_in_time)
-                                  }
-                                  {!p.is_cross_day && p.check_out_time ? ` – ${fmtTime(p.check_out_time)}` : ''}
-                                  {p.is_cross_day && <span className="ml-1 text-indigo-400 font-medium">· shift malam</span>}
-                                </p>
+                          <>
+                            {checkedIn.slice(0, todayColumnLimit.checkedIn || 40).map((p: any) => (
+                              <div key={p.user_id} className={`flex items-center justify-between border-b pb-2 ${p.is_cross_day ? 'border-indigo-100 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20 rounded-lg px-1.5' : 'border-slate-50 dark:border-slate-800/60'}`}>
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex items-center gap-1">
+                                    {p.name}
+                                    {p.is_cross_day && (
+                                      <span title="Shift lintas tengah malam">
+                                        <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
+                                      </span>
+                                    )}
+                                  </p>
+                                  <p className="text-[10px] text-slate-400">
+                                    {p.employee_code && <span className="font-mono mr-1">{p.employee_code} ·</span>}
+                                    {p.department ?? '—'} ·{' '}
+                                    {p.is_cross_day
+                                      ? fmtDateRange(p.shift_date, p.checkout_date)
+                                      : fmtTime(p.check_in_time)
+                                    }
+                                    {!p.is_cross_day && p.check_out_time ? ` – ${fmtTime(p.check_out_time)}` : ''}
+                                    {p.is_cross_day && <span className="ml-1 text-indigo-400 font-medium">· shift malam</span>}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-1.5 shrink-0">
+                                  {p.check_in_type === 'wfh' && <Home className="w-3 h-3 text-indigo-500" />}
+                                  {p.check_in_type === 'field' && <MapPin className="w-3 h-3 text-amber-500" />}
+                                  <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
+                                </div>
                               </div>
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                {p.check_in_type === 'wfh' && <Home className="w-3 h-3 text-indigo-500" />}
-                                {p.check_in_type === 'field' && <MapPin className="w-3 h-3 text-amber-500" />}
-                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
-                              </div>
-                            </div>
-                          ))
+                            ))}
+                            {checkedIn.length > (todayColumnLimit.checkedIn || 40) && (
+                              <button
+                                type="button"
+                                onClick={() => setTodayColumnLimit(prev => ({ ...prev, checkedIn: (prev.checkedIn || 40) + 50 }))}
+                                className="w-full py-1 text-[10px] font-semibold text-indigo-600 dark:text-indigo-400 bg-indigo-50/70 dark:bg-indigo-950/40 hover:bg-indigo-100 rounded-lg transition cursor-pointer"
+                              >
+                                + Tampilkan lebih banyak ({checkedIn.length - (todayColumnLimit.checkedIn || 40)} lainnya)
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
@@ -1115,17 +1153,28 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         {notCheckedIn.length === 0 ? (
                           <p className="text-[11px] text-slate-400 py-3 text-center">{searchNotCheckedIn || todayOfficeFilter ? 'Tidak ditemukan.' : 'Semua sudah hadir.'}</p>
                         ) : (
-                          notCheckedIn.map((p: any) => (
-                            <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                                <p className="text-[10px] text-slate-400">
-                                  {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
-                                  {p.department ?? '—'}
-                                </p>
+                          <>
+                            {notCheckedIn.slice(0, todayColumnLimit.notCheckedIn || 40).map((p: any) => (
+                              <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                  <p className="text-[10px] text-slate-400">
+                                    {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
+                                    {p.department ?? '—'}
+                                  </p>
+                                </div>
                               </div>
-                            </div>
-                          ))
+                            ))}
+                            {notCheckedIn.length > (todayColumnLimit.notCheckedIn || 40) && (
+                              <button
+                                type="button"
+                                onClick={() => setTodayColumnLimit(prev => ({ ...prev, notCheckedIn: (prev.notCheckedIn || 40) + 50 }))}
+                                className="w-full py-1 text-[10px] font-semibold text-rose-600 dark:text-rose-400 bg-rose-50/70 dark:bg-rose-950/40 hover:bg-rose-100 rounded-lg transition cursor-pointer"
+                              >
+                                + Tampilkan lebih banyak ({notCheckedIn.length - (todayColumnLimit.notCheckedIn || 40)} lainnya)
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
@@ -1140,18 +1189,29 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         {offToday.length === 0 ? (
                           <p className="text-[11px] text-slate-400 py-3 text-center">{searchOffToday || todayOfficeFilter ? 'Tidak ditemukan.' : 'Tidak ada.'}</p>
                         ) : (
-                          offToday.map((p: any) => (
-                            <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                                <p className="text-[10px] text-slate-400">
-                                  {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
-                                  {p.department ?? '—'}
-                                </p>
+                          <>
+                            {offToday.slice(0, todayColumnLimit.offToday || 40).map((p: any) => (
+                              <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                  <p className="text-[10px] text-slate-400">
+                                    {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
+                                    {p.department ?? '—'}
+                                  </p>
+                                </div>
+                                <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0 border border-slate-200 dark:border-slate-700">Libur</span>
                               </div>
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400 shrink-0 border border-slate-200 dark:border-slate-700">Libur</span>
-                            </div>
-                          ))
+                            ))}
+                            {offToday.length > (todayColumnLimit.offToday || 40) && (
+                              <button
+                                type="button"
+                                onClick={() => setTodayColumnLimit(prev => ({ ...prev, offToday: (prev.offToday || 40) + 50 }))}
+                                className="w-full py-1 text-[10px] font-semibold text-slate-600 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 rounded-lg transition cursor-pointer"
+                              >
+                                + Tampilkan lebih banyak ({offToday.length - (todayColumnLimit.offToday || 40)} lainnya)
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
@@ -1166,18 +1226,29 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         {onLeave.length === 0 ? (
                           <p className="text-[11px] text-slate-400 py-3 text-center">{searchOnLeave || todayOfficeFilter ? 'Tidak ditemukan.' : 'Tidak ada.'}</p>
                         ) : (
-                          onLeave.map((p: any) => (
-                            <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                              <div className="min-w-0">
-                                <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                                <p className="text-[10px] text-slate-400">
-                                  {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
-                                  {p.department ?? '—'}
-                                </p>
+                          <>
+                            {onLeave.slice(0, todayColumnLimit.onLeave || 40).map((p: any) => (
+                              <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                                <div className="min-w-0">
+                                  <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                  <p className="text-[10px] text-slate-400">
+                                    {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
+                                    {p.department ?? '—'}
+                                  </p>
+                                </div>
+                                <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 capitalize shrink-0">{p.leave_type}</span>
                               </div>
-                              <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 text-amber-700 capitalize shrink-0">{p.leave_type}</span>
-                            </div>
-                          ))
+                            ))}
+                            {onLeave.length > (todayColumnLimit.onLeave || 40) && (
+                              <button
+                                type="button"
+                                onClick={() => setTodayColumnLimit(prev => ({ ...prev, onLeave: (prev.onLeave || 40) + 50 }))}
+                                className="w-full py-1 text-[10px] font-semibold text-amber-700 dark:text-amber-400 bg-amber-50/70 dark:bg-amber-950/40 hover:bg-amber-100 rounded-lg transition cursor-pointer"
+                              >
+                                + Tampilkan lebih banyak ({onLeave.length - (todayColumnLimit.onLeave || 40)} lainnya)
+                              </button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
@@ -1224,40 +1295,36 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             return result;
           })();
 
+          const totalLeavePages = Math.max(1, Math.ceil(displayedLeaves.length / leavePageSize));
+          const paginatedLeaves = displayedLeaves.slice((leavePage - 1) * leavePageSize, leavePage * leavePageSize);
+
           // ── Deteksi bentrok: hanya untuk baris pending ────────
-          // Cek apakah leave pending ini tumpang tindih tanggal dengan leave approved
-          // dari karyawan lain (range overlap sederhana).
+          // Pre-filter approved leave non-kolektif untuk kecepatan O(1) loop
+          const relevantApprovedLeaves = leaves.filter((other: any) =>
+            other.status === 'approved' &&
+            other.holiday_id == null &&
+            other.attendance_setting_id != null
+          );
+
           const dateOverlaps = (s1: string, e1: string, s2: string, e2: string) =>
             s1.slice(0, 10) <= e2.slice(0, 10) && e1.slice(0, 10) >= s2.slice(0, 10);
 
           const getApprovedConflicts = (pendingLeave: any): string[] => {
             if (pendingLeave.status !== 'pending') return [];
-            // Cuti bersama tidak perlu dicek bentrok — karyawan boleh punya cuti bersama
-            // di tanggal yang sama dengan karyawan lain (wajar, itu memang satu event).
             if (pendingLeave.holiday_id != null) return [];
+            if (pendingLeave.attendance_setting_id == null) return [];
             const found: string[] = [];
-            leaves.forEach((other: any) => {
-              if (other.id === pendingLeave.id) return;
-              if (other.user_name === pendingLeave.user_name) return;
-              if (other.status !== 'approved') return;
-              // Cuti bersama yang approved TIDAK dihitung sebagai bentrok terhadap
-              // cuti mandiri lainnya — cuti bersama adalah event kolektif, bukan cuti individual.
-              if (other.holiday_id != null) return;
-              // Hanya munculkan peringatan jika karyawan berada di cabang yang SAMA.
-              // Jika salah satu belum punya cabang (null), lewati — tidak bisa
-              // dipastikan cabangnya sama sehingga tidak perlu memunculkan peringatan.
-              if (
-                pendingLeave.attendance_setting_id == null ||
-                other.attendance_setting_id == null ||
-                pendingLeave.attendance_setting_id !== other.attendance_setting_id
-              ) return;
+            for (const other of relevantApprovedLeaves) {
+              if (other.id === pendingLeave.id) continue;
+              if (other.user_name === pendingLeave.user_name) continue;
+              if (pendingLeave.attendance_setting_id !== other.attendance_setting_id) continue;
               if (dateOverlaps(
                 pendingLeave.start_date, pendingLeave.end_date,
                 other.start_date, other.end_date
               )) {
                 if (!found.includes(other.user_name)) found.push(other.user_name);
               }
-            });
+            }
             return found;
           };
 
@@ -1392,7 +1459,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         </td>
                       </tr>
                     ) : (
-                      displayedLeaves.map((l: any) => {
+                      paginatedLeaves.map((l: any) => {
                         // Alert hanya muncul pada baris PENDING yang bentrok dengan approved lain
                         const conflicts = getApprovedConflicts(l);
                         const hasConflict = conflicts.length > 0;
@@ -1431,7 +1498,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 <button
                                   onClick={() => openLeaveDocument(l.id, l.user_name)}
                                   disabled={docLoadingId === l.id}
-                                  className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:text-sky-800 hover:underline disabled:opacity-50"
+                                  className="mt-1.5 flex items-center gap-1 text-[10px] font-semibold text-sky-600 dark:text-sky-400 hover:text-sky-800 hover:underline disabled:opacity-50 cursor-pointer"
                                   title="Lihat surat dokter"
                                 >
                                   {docLoadingId === l.id ? (
@@ -1492,14 +1559,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 <div className="flex justify-end gap-1.5">
                                   <button
                                     onClick={() => handleApproveLeave(l.id, l.user_name)}
-                                    className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100"
+                                    className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer"
                                     title="Setujui"
                                   >
                                     <Check className="w-3.5 h-3.5" />
                                   </button>
                                   <button
                                     onClick={() => handleRejectLeave(l.id, l.user_name)}
-                                    className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100"
+                                    className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
                                     title="Tolak"
                                   >
                                     <X className="w-3.5 h-3.5" />
@@ -1526,6 +1593,77 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </tbody>
                 </table>
               </div>
+
+              {/* Pagination Bar */}
+              {displayedLeaves.length >= 25 && (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 mt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+                  <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                    <span>
+                      Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                        {Math.min((leavePage - 1) * leavePageSize + 1, displayedLeaves.length)} - {Math.min(leavePage * leavePageSize, displayedLeaves.length)}
+                      </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{displayedLeaves.length}</strong> pengajuan
+                    </span>
+                    <span className="hidden sm:inline">•</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="hidden sm:inline">Per hal:</span>
+                      <select
+                        value={leavePageSize}
+                        onChange={(e) => {
+                          setLeavePageSize(Number(e.target.value));
+                          setLeavePage(1);
+                        }}
+                        className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                      >
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setLeavePage(1)}
+                      disabled={leavePage === 1}
+                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Pertama"
+                    >
+                      «
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLeavePage(p => Math.max(1, p - 1))}
+                      disabled={leavePage === 1}
+                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Sebelumnya"
+                    >
+                      ‹
+                    </button>
+                    <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                      Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{leavePage}</span> / <span className="font-mono">{totalLeavePages}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setLeavePage(p => Math.min(totalLeavePages, p + 1))}
+                      disabled={leavePage === totalLeavePages}
+                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Berikutnya"
+                    >
+                      ›
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setLeavePage(totalLeavePages)}
+                      disabled={leavePage === totalLeavePages}
+                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Terakhir"
+                    >
+                      »
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()
@@ -1576,60 +1714,136 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       : String(u.attendance_setting_id) === String(userOfficeFilter));
                   return matchSearch && matchOffice;
                 });
+                const totalUserPages = Math.max(1, Math.ceil(filtered.length / userPageSize));
+                const paginatedUsers = filtered.slice((userPage - 1) * userPageSize, userPage * userPageSize);
+
                 return (
-                  <table className="w-full text-xs text-left">
-                    <thead>
-                      <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
-                        <th className="py-2 px-2 font-semibold">Nama</th>
-                        <th className="py-2 px-2 font-semibold">Departemen</th>
-                        <th className="py-2 px-2 font-semibold">Kantor</th>
-                        <th className="py-2 px-2 font-semibold">Role</th>
-                        <th className="py-2 px-2 font-semibold text-center">Mode WFH</th>
-                        <th className="py-2 px-2 font-semibold text-center">Radius Lapangan</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-                      {filtered.length === 0 ? (
-                        <tr><td colSpan={6} className="text-center py-8 text-slate-400">{userSearch || userOfficeFilter ? 'Tidak ada karyawan yang cocok dengan filter.' : 'Tidak ada karyawan.'}</td></tr>
-                      ) : (
-                        filtered.map((u) => (
-                          <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                            <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">
-                              {u.name}
-                              {(u.employee_code || u.nik) && (
-                                <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({u.employee_code || u.nik})</span>
-                              )}
-                            </td>
-                            <td className="py-2.5 px-2 text-slate-500">{u.department ?? '—'}</td>
-                            <td className="py-2.5 px-2 text-slate-500">{u.office?.office_name ?? u.office_name ?? '—'}</td>
-                            <td className="py-2.5 px-2 text-slate-500 capitalize">{u.role}</td>
-                            <td className="py-2.5 px-2 text-center">
-                              <button
-                                onClick={() => handleToggleWfh(u.id, u.name)}
-                                className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.wfh_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
-                                title={u.wfh_enabled ? 'WFH aktif — klik untuk nonaktifkan' : 'WFH nonaktif — klik untuk aktifkan'}
-                              >
-                                <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.wfh_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-                              </button>
-                            </td>
-                            <td className="py-2.5 px-2 text-center">
-                              {u.wfh_enabled ? (
+                  <>
+                    <table className="w-full text-xs text-left">
+                      <thead>
+                        <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                          <th className="py-2 px-2 font-semibold">Nama</th>
+                          <th className="py-2 px-2 font-semibold">Departemen</th>
+                          <th className="py-2 px-2 font-semibold">Kantor</th>
+                          <th className="py-2 px-2 font-semibold">Role</th>
+                          <th className="py-2 px-2 font-semibold text-center">Mode WFH</th>
+                          <th className="py-2 px-2 font-semibold text-center">Radius Lapangan</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                        {filtered.length === 0 ? (
+                          <tr><td colSpan={6} className="text-center py-8 text-slate-400">{userSearch || userOfficeFilter ? 'Tidak ada karyawan yang cocok dengan filter.' : 'Tidak ada karyawan.'}</td></tr>
+                        ) : (
+                          paginatedUsers.map((u) => (
+                            <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                              <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">
+                                {u.name}
+                                {(u.employee_code || u.nik) && (
+                                  <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({u.employee_code || u.nik})</span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-2 text-slate-500">{u.department ?? '—'}</td>
+                              <td className="py-2.5 px-2 text-slate-500">{u.office?.office_name ?? u.office_name ?? '—'}</td>
+                              <td className="py-2.5 px-2 text-slate-500 capitalize">{u.role}</td>
+                              <td className="py-2.5 px-2 text-center">
                                 <button
-                                  onClick={() => handleToggleRadius(u.id, u.name)}
-                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.radius_enabled ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'}`}
-                                  title={u.radius_enabled ? 'Radius aktif (lapangan) — klik untuk nonaktifkan' : 'Radius nonaktif (WFH bebas) — klik untuk aktifkan'}
+                                  onClick={() => handleToggleWfh(u.id, u.name)}
+                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.wfh_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                  title={u.wfh_enabled ? 'WFH aktif — klik untuk nonaktifkan' : 'WFH nonaktif — klik untuk aktifkan'}
                                 >
-                                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.radius_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.wfh_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
                                 </button>
-                              ) : (
-                                <span className="text-[10px] text-slate-300 dark:text-slate-700">—</span>
-                              )}
-                            </td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
+                              </td>
+                              <td className="py-2.5 px-2 text-center">
+                                {u.wfh_enabled ? (
+                                  <button
+                                    onClick={() => handleToggleRadius(u.id, u.name)}
+                                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.radius_enabled ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                    title={u.radius_enabled ? 'Radius aktif (lapangan) — klik untuk nonaktifkan' : 'Radius nonaktif (WFH bebas) — klik untuk aktifkan'}
+                                  >
+                                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.radius_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                                  </button>
+                                ) : (
+                                  <span className="text-[10px] text-slate-300 dark:text-slate-700">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+
+                    {/* Pagination Bar */}
+                    {filtered.length >= 25 && (
+                      <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 mt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+                        <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                          <span>
+                            Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                              {Math.min((userPage - 1) * userPageSize + 1, filtered.length)} - {Math.min(userPage * userPageSize, filtered.length)}
+                            </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{filtered.length}</strong> karyawan
+                          </span>
+                          <span className="hidden sm:inline">•</span>
+                          <div className="flex items-center gap-1.5">
+                            <span className="hidden sm:inline">Per hal:</span>
+                            <select
+                              value={userPageSize}
+                              onChange={(e) => {
+                                setUserPageSize(Number(e.target.value));
+                                setUserPage(1);
+                              }}
+                              className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                            >
+                              <option value={25}>25</option>
+                              <option value={50}>50</option>
+                              <option value={100}>100</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setUserPage(1)}
+                            disabled={userPage === 1}
+                            className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                            title="Halaman Pertama"
+                          >
+                            «
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setUserPage(p => Math.max(1, p - 1))}
+                            disabled={userPage === 1}
+                            className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                            title="Halaman Sebelumnya"
+                          >
+                            ‹
+                          </button>
+                          <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                            Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{userPage}</span> / <span className="font-mono">{totalUserPages}</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => setUserPage(p => Math.min(totalUserPages, p + 1))}
+                            disabled={userPage === totalUserPages}
+                            className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                            title="Halaman Berikutnya"
+                          >
+                            ›
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setUserPage(totalUserPages)}
+                            disabled={userPage === totalUserPages}
+                            className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                            title="Halaman Terakhir"
+                          >
+                            »
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 );
               })()}
             </div>
@@ -1727,6 +1941,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               const progressWidth = (remaining: number, quota: number) =>
                 quota > 0 ? `${Math.min(100, Math.round((remaining / quota) * 100))}%` : '0%';
 
+              const totalBalancePages = Math.max(1, Math.ceil(entries.length / balancePageSize));
+              const paginatedEntries = entries.slice((balancePage - 1) * balancePageSize, balancePage * balancePageSize);
+
               return (
                 <div className="space-y-4">
                   {/* Filter bar */}
@@ -1734,7 +1951,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
                       <span className="font-semibold text-slate-700 dark:text-slate-300">Tahun {new Date().getFullYear()}</span>
                       <span>•</span>
-                      <span>{entries.length} Karyawan ditampilkan</span>
+                      <span>{entries.length} Karyawan</span>
                     </div>
 
                     <div className="flex items-center gap-2">
@@ -1761,7 +1978,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       </div>
                       <button
                         onClick={loadBalances}
-                        className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                        className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
                         title="Segarkan Saldo"
                       >
                         <RefreshCw className="w-3.5 h-3.5" />
@@ -1779,122 +1996,195 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       <p className="text-[11px] text-slate-400">Pastikan karyawan telah di-assign ke kantor dan memiliki akun aktif.</p>
                     </div>
                   ) : (
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {entries.map(([name, data]: [string, BalanceEntry]) => {
-                        const cuti = data.cuti;
-                        const izin = data.izin;
-                        const userId = cuti?.user_id ?? izin?.user_id;
-                        const isActive = (cuti?.quota ?? 0) > 0;
-                        const isToggling = togglingUserId === userId;
+                    <>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {paginatedEntries.map(([name, data]: [string, BalanceEntry]) => {
+                          const cuti = data.cuti;
+                          const izin = data.izin;
+                          const userId = cuti?.user_id ?? izin?.user_id;
+                          const isActive = (cuti?.quota ?? 0) > 0;
+                          const isToggling = togglingUserId === userId;
 
-                        return (
-                          <div
-                            key={name}
-                            className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-all hover:shadow-sm ${isActive
-                              ? 'border-slate-100 dark:border-slate-800'
-                              : 'border-slate-200 dark:border-slate-700 opacity-75'
-                              }`}
-                          >
-                            {/* Header karyawan + toggle */}
-                            <div className="flex items-center gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
-                              <div className="w-8 h-8 rounded-full bg-indigo-50 dark:bg-indigo-950/50 flex items-center justify-center shrink-0 border border-indigo-100/50 dark:border-indigo-900/30">
-                                <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                          return (
+                            <div
+                              key={name}
+                              className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-all hover:shadow-sm ${isActive
+                                ? 'border-slate-100 dark:border-slate-800'
+                                : 'border-slate-200 dark:border-slate-700 opacity-75'
+                                }`}
+                            >
+                              {/* Header karyawan + toggle */}
+                              <div className="flex items-center gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+                                <div className="w-8 h-8 rounded-full bg-indigo-50 dark:bg-indigo-950/50 flex items-center justify-center shrink-0 border border-indigo-100/50 dark:border-indigo-900/30">
+                                  <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
+                                    {name}
+                                    {data.employeeCode && (
+                                      <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({data.employeeCode})</span>
+                                    )}
+                                  </p>
+                                  <p className="text-[10px] text-slate-400 truncate">
+                                    {data.department || '—'} {data.officeName ? `• ${data.officeName}` : ''}
+                                  </p>
+                                </div>
+
+                                {/* Toggle kuota cuti 12hr/thn */}
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <span className={`text-[9px] font-semibold ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
+                                    Cuti 12hr/thn
+                                  </span>
+                                  <button
+                                    disabled={isToggling || !userId}
+                                    onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0)}
+                                    title={isActive ? 'Nonaktifkan kuota cuti tahunan' : 'Aktifkan kuota cuti 12 hari/tahun'}
+                                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
+                                      }`}
+                                  >
+                                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-4' : 'translate-x-1'
+                                      }`} />
+                                  </button>
+                                </div>
                               </div>
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
-                                  {name}
-                                  {data.employeeCode && (
-                                    <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({data.employeeCode})</span>
+
+                              {/* Dua kolom: Cuti & Izin */}
+                              <div className="grid grid-cols-2 gap-3">
+                                {/* Blok Cuti Tahunan */}
+                                <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                                  <div className="flex items-center justify-between">
+                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cuti Tahunan</p>
+                                    {isActive && (
+                                      <span className="text-[9px] font-bold text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40 px-1.5 py-0.5 rounded">
+                                        Aktif
+                                      </span>
+                                    )}
+                                  </div>
+                                  {!isActive ? (
+                                    <div className="flex items-center gap-1.5 py-1">
+                                      <span className="text-[10px] text-slate-400 italic">Kuota nonaktif</span>
+                                    </div>
+                                  ) : cuti ? (
+                                    <>
+                                      <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                        {cuti.remaining}
+                                        <span className="text-[10px] font-normal text-slate-400 ml-1">/ {cuti.quota} hari sisa</span>
+                                      </p>
+                                      <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                        <div
+                                          className={`h-full rounded-full transition-all ${progressColor(cuti.remaining, cuti.quota)}`}
+                                          style={{ width: progressWidth(cuti.remaining, cuti.quota) }}
+                                        />
+                                      </div>
+                                      <p className="text-[10px] text-slate-400">
+                                        Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
+                                      </p>
+                                    </>
+                                  ) : (
+                                    <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
                                   )}
-                                </p>
-                                <p className="text-[10px] text-slate-400 truncate">
-                                  {data.department || '—'} {data.officeName ? `• ${data.officeName}` : ''}
-                                </p>
-                              </div>
+                                </div>
 
-                              {/* Toggle kuota cuti 12hr/thn */}
-                              <div className="flex items-center gap-2 shrink-0">
-                                <span className={`text-[9px] font-semibold ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
-                                  Cuti 12hr/thn
-                                </span>
-                                <button
-                                  disabled={isToggling || !userId}
-                                  onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0)}
-                                  title={isActive ? 'Nonaktifkan kuota cuti tahunan' : 'Aktifkan kuota cuti 12 hari/tahun'}
-                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
-                                    }`}
-                                >
-                                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-4' : 'translate-x-1'
-                                    }`} />
-                                </button>
+                                {/* Blok Izin / Sakit */}
+                                <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                                  <div className="flex items-center justify-between">
+                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin &amp; Sakit</p>
+                                    <span className="text-[9px] font-semibold text-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 px-1.5 py-0.5 rounded">
+                                      Periode Ini
+                                    </span>
+                                  </div>
+                                  {izin ? (
+                                    <>
+                                      <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                        {izin.used}
+                                        <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
+                                      </p>
+                                      <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                        <div className="h-full w-0 rounded-full bg-slate-300" />
+                                      </div>
+                                      <p className="text-[10px] text-slate-400">Direset ke 0 saat anniversary</p>
+                                    </>
+                                  ) : (
+                                    <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
+                                  )}
+                                </div>
                               </div>
                             </div>
+                          );
+                        })}
+                      </div>
 
-                            {/* Dua kolom: Cuti & Izin */}
-                            <div className="grid grid-cols-2 gap-3">
-                              {/* Blok Cuti Tahunan */}
-                              <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
-                                <div className="flex items-center justify-between">
-                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Cuti Tahunan</p>
-                                  {isActive && (
-                                    <span className="text-[9px] font-bold text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40 px-1.5 py-0.5 rounded">
-                                      Aktif
-                                    </span>
-                                  )}
-                                </div>
-                                {!isActive ? (
-                                  <div className="flex items-center gap-1.5 py-1">
-                                    <span className="text-[10px] text-slate-400 italic">Kuota nonaktif</span>
-                                  </div>
-                                ) : cuti ? (
-                                  <>
-                                    <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                      {cuti.remaining}
-                                      <span className="text-[10px] font-normal text-slate-400 ml-1">/ {cuti.quota} hari sisa</span>
-                                    </p>
-                                    <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                                      <div
-                                        className={`h-full rounded-full transition-all ${progressColor(cuti.remaining, cuti.quota)}`}
-                                        style={{ width: progressWidth(cuti.remaining, cuti.quota) }}
-                                      />
-                                    </div>
-                                    <p className="text-[10px] text-slate-400">
-                                      Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
-                                    </p>
-                                  </>
-                                ) : (
-                                  <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
-                                )}
-                              </div>
-
-                              {/* Blok Izin / Sakit */}
-                              <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
-                                <div className="flex items-center justify-between">
-                                  <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin &amp; Sakit</p>
-                                  <span className="text-[9px] font-semibold text-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 px-1.5 py-0.5 rounded">
-                                    Periode Ini
-                                  </span>
-                                </div>
-                                {izin ? (
-                                  <>
-                                    <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                      {izin.used}
-                                      <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
-                                    </p>
-                                    <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                                      <div className="h-full w-0 rounded-full bg-slate-300" />
-                                    </div>
-                                    <p className="text-[10px] text-slate-400">Direset ke 0 saat anniversary</p>
-                                  </>
-                                ) : (
-                                  <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
-                                )}
-                              </div>
+                      {/* Pagination Bar */}
+                      {entries.length >= 25 && (
+                        <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+                          <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                            <span>
+                              Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                                {Math.min((balancePage - 1) * balancePageSize + 1, entries.length)} - {Math.min(balancePage * balancePageSize, entries.length)}
+                              </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{entries.length}</strong> karyawan
+                            </span>
+                            <span className="hidden sm:inline">•</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className="hidden sm:inline">Per hal:</span>
+                              <select
+                                value={balancePageSize}
+                                onChange={(e) => {
+                                  setBalancePageSize(Number(e.target.value));
+                                  setBalancePage(1);
+                                }}
+                                className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                              >
+                                <option value={12}>12</option>
+                                <option value={24}>24</option>
+                                <option value={48}>48</option>
+                              </select>
                             </div>
                           </div>
-                        );
-                      })}
-                    </div>
+
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => setBalancePage(1)}
+                              disabled={balancePage === 1}
+                              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                              title="Halaman Pertama"
+                            >
+                              «
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBalancePage(p => Math.max(1, p - 1))}
+                              disabled={balancePage === 1}
+                              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                              title="Halaman Sebelumnya"
+                            >
+                              ‹
+                            </button>
+                            <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                              Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{balancePage}</span> / <span className="font-mono">{totalBalancePages}</span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setBalancePage(p => Math.min(totalBalancePages, p + 1))}
+                              disabled={balancePage === totalBalancePages}
+                              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                              title="Halaman Berikutnya"
+                            >
+                              ›
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBalancePage(totalBalancePages)}
+                              disabled={balancePage === totalBalancePages}
+                              className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                              title="Halaman Terakhir"
+                            >
+                              »
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               );

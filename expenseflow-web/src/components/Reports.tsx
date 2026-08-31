@@ -31,8 +31,8 @@ export const Reports: React.FC<ReportsProps> = ({
 
   // 1. Dynamic Metric Calculations
   const approvedStrukTotal = receiptHistory
-    .filter(r => r.keputusan === 'Disetujui')
-    .reduce((sum, r) => sum + r.nominal, 0);
+    .filter(r => r.keputusan === 'Disetujui' || r.keputusan === 'Dibayar')
+    .reduce((sum, r) => sum + (r.approvedAmount ?? r.nominal), 0);
 
   const paidInvoiceTotal = invoiceHistory
     .filter(i => i.status === 'Dibayar')
@@ -45,7 +45,7 @@ export const Reports: React.FC<ReportsProps> = ({
   const invoicePercent = totalExpenditure > 0 ? (paidInvoiceTotal / totalExpenditure) * 100 : 0;
 
   // Approval Rate Calculation
-  const totalApproved = receiptHistory.filter(r => r.keputusan === 'Disetujui').length + 
+  const totalApproved = receiptHistory.filter(r => r.keputusan === 'Disetujui' || r.keputusan === 'Dibayar').length + 
                         invoiceHistory.filter(i => i.status === 'Dibayar').length;
   const totalDecisionCount = receiptHistory.length + invoiceHistory.length;
   const approvalRate = totalDecisionCount > 0 ? (totalApproved / totalDecisionCount) * 100 : 88.2;
@@ -62,16 +62,17 @@ export const Reports: React.FC<ReportsProps> = ({
 
   // Populate Categories map from Receipt history
   receiptHistory.forEach(r => {
-    if (r.keputusan !== 'Disetujui') return;
+    if (r.keputusan !== 'Disetujui' && r.keputusan !== 'Dibayar') return;
+    const nominal = r.approvedAmount ?? r.nominal;
     const desc = r.merchant.toLowerCase();
     if (desc.includes('food') || desc.includes('padang') || desc.includes('resto') || desc.includes('dinas') || desc.includes('grab')) {
-      categoriesMap['Makan & transport'].value += r.nominal;
+      categoriesMap['Makan & transport'].value += nominal;
     } else if (desc.includes(' parkir') || desc.includes('senayan')) {
-      categoriesMap['Makan & transport'].value += r.nominal;
+      categoriesMap['Makan & transport'].value += nominal;
     } else if (desc.includes('indomaret') || desc.includes('atk')) {
-      categoriesMap['Lainnya'].value += r.nominal;
+      categoriesMap['Lainnya'].value += nominal;
     } else {
-      categoriesMap['Lainnya'].value += r.nominal;
+      categoriesMap['Lainnya'].value += nominal;
     }
   });
 

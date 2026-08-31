@@ -101,10 +101,14 @@ Route::prefix('v1')->group(function () {
             Route::middleware('role:finance,admin,super_admin')->group(function () {
                 Route::get('/receipts', [ReceiptController::class, 'inbox']);
                 Route::get('/receipts/all', [ReceiptController::class, 'dashboardReceipts']);
+                Route::post('/receipts/bulk-approve', [ReceiptController::class, 'bulkApprove']);
+                Route::post('/receipts/bulk-pay', [ReceiptController::class, 'bulkDisburse']);
+                Route::get('/receipts/export-disbursement', [ReceiptController::class, 'exportDisbursement']);
                 Route::get('/receipts/{receipt}', [ReceiptController::class, 'show']);
                 Route::get('/receipts/{receipt}/image', [ReceiptController::class, 'image']);
                 Route::post('/receipts/{receipt}/approve', [ReceiptController::class, 'approve']);
                 Route::post('/receipts/{receipt}/reject', [ReceiptController::class, 'reject']);
+                Route::post('/receipts/{receipt}/pay', [ReceiptController::class, 'disburse']);
             });
 
             // Vendor management

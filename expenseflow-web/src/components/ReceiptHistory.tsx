@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { StrukApproval } from '../types';
 import {
   FileSpreadsheet,
@@ -19,60 +19,32 @@ import {
   Maximize2,
   AlertCircle,
   RefreshCw,
+  ChevronLeft,
+  ChevronRight,
+  Landmark,
+  Clock,
+  Building2,
+  CreditCard,
 } from 'lucide-react';
 import { receiptApi } from '../services/endpoints';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
 
 interface ReceiptHistoryProps {
-
   approvals: StrukApproval[];
+  onPay?: (id: string, payload: { payment_method: string; payment_ref_no?: string }) => Promise<void> | void;
+  onBulkPay?: (ids: string[], payload: { payment_method: string; payment_ref_no?: string }) => Promise<void> | void;
   onRefresh?: () => void;
   refreshing?: boolean;
 }
 
-// Tombol thumbnail per baris — hanya fetch saat diklik, tidak auto-load.
-const ReceiptImageCell: React.FC<{
-  receiptId: string;
-  onOpen: (url: string) => void;
-}> = ({ receiptId, onOpen }) => {
-  const [loading, setLoading] = useState(false);
-  const [failed, setFailed] = useState(false);
-  const [cachedUrl, setCachedUrl] = useState<string | null>(null);
-
-  const handleClick = useCallback(async () => {
-    if (cachedUrl) { onOpen(cachedUrl); return; }
-    setLoading(true);
-    const url = await receiptApi.fetchImageAsDataUrl(receiptId);
-    setLoading(false);
-    if (url) { setCachedUrl(url); onOpen(url); }
-    else setFailed(true);
-  }, [receiptId, cachedUrl, onOpen]);
-
-  if (loading) return (
-    <div className="flex justify-center">
-      <Loader2 className="w-4 h-4 text-indigo-400 animate-spin" />
-    </div>
-  );
-
-  if (failed) return (
-    <div className="flex justify-center" title="Gagal memuat gambar">
-      <AlertCircle className="w-4 h-4 text-rose-400" />
-    </div>
-  );
-
-  return (
-    <button
-      onClick={handleClick}
-      className="flex items-center justify-center w-8 h-8 mx-auto rounded-lg bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-indigo-50 dark:hover:bg-indigo-950/30 hover:border-indigo-300 dark:hover:border-indigo-700 transition group"
-      title="Lihat foto struk"
-    >
-      <Image className="w-3.5 h-3.5 text-slate-400 group-hover:text-indigo-500 transition" />
-    </button>
-  );
-};
-
-export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRefresh, refreshing }) => {
+export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
+  approvals,
+  onPay,
+  onBulkPay,
+  onRefresh,
+  refreshing,
+}) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('semua');
   const [startDate, setStartDate] = useState('');
@@ -84,6 +56,17 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
   const [loadingDetailImage, setLoadingDetailImage] = useState(false);
   const [detailImageUrl, setDetailImageUrl] = useState<string | null>(null);
   const debouncedSearch = useDebounce(searchQuery, 500);
+
+  // Disbursement (Pencairan) modal state
+  const [disburseTarget, setDisburseTarget] = useState<StrukApproval | null>(null);
+  const [paymentMethod, setPaymentMethod] = useState<'bank_transfer' | 'cash' | 'payroll'>('bank_transfer');
+  const [paymentRefNo, setPaymentRefNo] = useState('');
+  const [disbursing, setDisbursing] = useState(false);
+
+  // Bulk disbursement state
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [showBulkDisburseModal, setShowBulkDisburseModal] = useState(false);
+  const [bulkDisbursing, setBulkDisbursing] = useState(false);
 
   const openLightbox = (url: string) => {
     setLightboxUrl(url);
@@ -123,21 +106,67 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
     setDetailImageUrl(url);
   };
 
-  const filteredApprovals = approvals.filter(a => {
-    const matchesSearch = !debouncedSearch ||
-           a.karyawan.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-           a.merchant.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
-           a.catatan.toLowerCase().includes(debouncedSearch.toLowerCase());
+  const handleOpenDisburse = (item: StrukApproval) => {
+    setDisburseTarget(item);
+    setPaymentMethod('bank_transfer');
+    setPaymentRefNo('');
+  };
 
-    const matchesStatus = statusFilter === 'semua' ||
-           (statusFilter === 'disetujui' && a.keputusan === 'Disetujui') ||
-           (statusFilter === 'ditolak' && a.keputusan === 'Ditolak');
+  const handleConfirmDisburse = async () => {
+    if (!disburseTarget) return;
+    setDisbursing(true);
+    try {
+      if (onPay) {
+        await onPay(disburseTarget.id, {
+          payment_method: paymentMethod,
+          payment_ref_no: paymentRefNo || undefined,
+        });
+      } else {
+        await receiptApi.pay(disburseTarget.id, {
+          payment_method: paymentMethod,
+          payment_ref_no: paymentRefNo || undefined,
+        });
+        if (onRefresh) onRefresh();
+      }
+      setDisburseTarget(null);
+    } catch (err: any) {
+      alert(err?.message || 'Gagal mencatat pencairan.');
+    } finally {
+      setDisbursing(false);
+    }
+  };
 
-    const matchesDateRange = (!startDate || a.tanggal >= startDate) &&
-           (!endDate || a.tanggal <= endDate);
+  const handleConfirmBulkDisburse = async () => {
+    if (selectedIds.length === 0) return;
+    setBulkDisbursing(true);
+    try {
+      if (onBulkPay) {
+        await onBulkPay(selectedIds, {
+          payment_method: paymentMethod,
+          payment_ref_no: paymentRefNo || undefined,
+        });
+      } else {
+        await receiptApi.bulkPay(selectedIds.map(Number), {
+          payment_method: paymentMethod,
+          payment_ref_no: paymentRefNo || undefined,
+        });
+        if (onRefresh) onRefresh();
+      }
+      setSelectedIds([]);
+      setShowBulkDisburseModal(false);
+    } catch (err: any) {
+      alert(err?.message || 'Gagal mencatat pencairan masal.');
+    } finally {
+      setBulkDisbursing(false);
+    }
+  };
 
-    return matchesSearch && matchesStatus && matchesDateRange;
-  });
+  const handleExportBankTransfer = () => {
+    receiptApi.exportDisbursement('approved');
+  };
+
+  const [currentPage, setCurrentPage] = useState(1);
+  const [perPage, setPerPage] = useState(10);
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('id-ID', {
@@ -145,6 +174,47 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
       currency: 'IDR',
       maximumFractionDigits: 0
     }).format(val);
+  };
+
+  const filteredApprovals = approvals.filter(a => {
+    const matchesSearch = !debouncedSearch ||
+           a.karyawan.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+           a.merchant.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+           a.catatan.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
+           (a.bankName && a.bankName.toLowerCase().includes(debouncedSearch.toLowerCase()));
+
+    const matchesStatus = statusFilter === 'semua' ||
+           (statusFilter === 'disetujui' && a.keputusan === 'Disetujui') ||
+           (statusFilter === 'dibayar' && a.keputusan === 'Dibayar') ||
+           (statusFilter === 'ditolak' && a.keputusan === 'Ditolak');
+
+    const matchesDateRange = (!startDate || (a.tanggal && a.tanggal >= startDate)) &&
+           (!endDate || (a.tanggal && a.tanggal <= endDate));
+
+    return matchesSearch && matchesStatus && matchesDateRange;
+  });
+
+  // Reset pagination when filter changes
+  useEffect(() => {
+    setCurrentPage(1);
+    setSelectedIds([]);
+  }, [debouncedSearch, statusFilter, startDate, endDate, perPage]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredApprovals.length / perPage));
+  const paginatedApprovals = filteredApprovals.slice((currentPage - 1) * perPage, currentPage * perPage);
+
+  const approvedOnlyInPage = paginatedApprovals.filter(a => a.keputusan === 'Disetujui');
+
+  const handleToggleSelectAllApproved = () => {
+    if (selectedIds.length === approvedOnlyInPage.length && approvedOnlyInPage.length > 0) {
+      setSelectedIds([]);
+    } else {
+      setSelectedIds(approvedOnlyInPage.map(a => a.id));
+    }
+  };
+
+  const handleToggleSelectRow = (id: string) => {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]);
   };
 
   return (
@@ -155,10 +225,10 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
           <div>
             <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
               <FileSpreadsheet className="w-4 h-4 text-indigo-600" />
-              Riwayat Approval Struk Karyawan
+              Riwayat Approval & Pencairan Struk
             </h3>
             <p className="text-xs text-slate-400 dark:text-slate-500 mt-0.5">
-              Semua keputusan klaim struk yang telah diproses oleh tim finance
+              Semua keputusan klaim struk dan status transfer reimbursement karyawan
             </p>
           </div>
 
@@ -167,7 +237,7 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
               <Search className="absolute left-3 top-2 w-3.5 h-3.5 text-slate-400" />
               <input
                 type="text"
-                placeholder="Cari riwayat..."
+                placeholder="Cari riwayat atau bank..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="w-full pl-9 pr-3 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-none"
@@ -194,16 +264,19 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
               </div>
             </div>
 
-
-            <button className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-xs font-medium text-slate-600 dark:text-slate-300 transition">
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden xs:inline">Export Excel</span>
+            <button
+              onClick={handleExportBankTransfer}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 hover:bg-emerald-100 dark:hover:bg-emerald-900/50 rounded-lg text-xs font-bold text-emerald-700 dark:text-emerald-300 transition cursor-pointer"
+              title="Download format CSV siap upload internet banking (BCA, Mandiri, BRI, BNI)"
+            >
+              <Download className="w-3.5 h-3.5 text-emerald-600" />
+              <span>Ekspor Rekap Bank</span>
             </button>
 
             <button
               onClick={onRefresh}
               disabled={refreshing}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition shrink-0 disabled:opacity-50"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition shrink-0 disabled:opacity-50 cursor-pointer"
               title="Refresh Data"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} />
@@ -216,7 +289,8 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
         <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800 mb-4">
           {[
             { key: 'semua', label: 'Semua Riwayat', count: approvals.length },
-            { key: 'disetujui', label: 'Disetujui', count: approvals.filter(a => a.keputusan === 'Disetujui').length },
+            { key: 'disetujui', label: 'Menunggu Cair / Transfer', count: approvals.filter(a => a.keputusan === 'Disetujui').length },
+            { key: 'dibayar', label: 'Sudah Dibayar', count: approvals.filter(a => a.keputusan === 'Dibayar').length },
             { key: 'ditolak', label: 'Ditolak', count: approvals.filter(a => a.keputusan === 'Ditolak').length },
           ].map((t) => (
             <button
@@ -235,61 +309,132 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
           ))}
         </div>
 
+        {/* Bulk Disburse Toolbar */}
+        {selectedIds.length > 0 && (
+          <div className="flex items-center justify-between p-3 px-4 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 rounded-xl mb-4 text-xs">
+            <div className="flex items-center gap-2 text-emerald-900 dark:text-emerald-200 font-medium">
+              <Check className="w-4 h-4 text-emerald-600" />
+              <span>
+                <strong>{selectedIds.length} struk disetujui</strong> dipilih untuk dicairkan
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setSelectedIds([])}
+                className="px-3 py-1.5 text-slate-600 dark:text-slate-300 hover:bg-white dark:hover:bg-slate-800 rounded-lg text-xs font-medium transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                onClick={() => {
+                  setPaymentMethod('bank_transfer');
+                  setPaymentRefNo('');
+                  setShowBulkDisburseModal(true);
+                }}
+                className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+              >
+                <Landmark className="w-3.5 h-3.5" />
+                <span>Cairkan Terpilih ({selectedIds.length})</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* History table */}
         <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[850px]">
+          <table className="w-full text-left border-collapse min-w-[900px]">
             <thead>
               <tr className="border-b border-slate-100 dark:border-slate-800/80">
-                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Karyawan</th>
+                {statusFilter === 'disetujui' && (
+                  <th className="py-3 px-3 w-10 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.length === approvedOnlyInPage.length && approvedOnlyInPage.length > 0}
+                      onChange={handleToggleSelectAllApproved}
+                      className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                  </th>
+                )}
+                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Karyawan & Rekening</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Merchant / Toko</th>
-                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Nominal</th>
-                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Status</th>
+                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Nominal Disetujui</th>
+                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Status Pencairan</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Diproses Oleh</th>
-                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Waktu Keputusan</th>
+                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Waktu</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Catatan</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider text-right">Aksi</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/65">
-              {filteredApprovals.length === 0 ? (
+              {paginatedApprovals.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="py-12 text-center text-slate-400 dark:text-slate-500 text-xs">
+                  <td colSpan={statusFilter === 'disetujui' ? 9 : 8} className="py-12 text-center text-slate-400 dark:text-slate-500 text-xs">
                     Tidak ditemukan riwayat yang cocok
                   </td>
                 </tr>
               ) : (
-                filteredApprovals.map((item) => {
+                paginatedApprovals.map((item) => {
                   const approved = item.keputusan === 'Disetujui';
-                  const hasAlertNotes = item.catatan.includes('manipulasi') || item.catatan.includes('variance') || item.catatan.includes('Selisih');
+                  const paid = item.keputusan === 'Dibayar';
+                  const isSelected = selectedIds.includes(item.id);
+                  const hasAlertNotes = item.catatan.includes('manipulasi') || item.catatan.includes('variance') || item.catatan.includes('Selisih') || item.catatan.includes('penyesuaian');
+                  const finalAmount = item.approvedAmount ?? item.nominal;
 
                   return (
                     <tr
                       key={item.id}
                       className={`hover:bg-slate-50/50 dark:hover:bg-slate-800/10 transition-colors ${
-                        hasAlertNotes ? 'bg-amber-50/10' : ''
+                        isSelected ? 'bg-indigo-50/30 dark:bg-indigo-950/20' : hasAlertNotes ? 'bg-amber-50/10' : ''
                       }`}
                     >
+                      {statusFilter === 'disetujui' && (
+                        <td className="py-3 px-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectRow(item.id)}
+                            className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                          />
+                        </td>
+                      )}
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2">
                           <div className="w-6.5 h-6.5 rounded-full bg-slate-100 dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 font-semibold text-[10px]">
                             {item.karyawan.split(' ').map(n => n[0]).join('')}
                           </div>
-                          <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">{item.karyawan}</span>
+                          <div>
+                            <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">{item.karyawan}</span>
+                            {item.bankName && item.bankAccountNo && (
+                              <span className="text-[10px] text-slate-400 font-mono">
+                                {item.bankName} - {item.bankAccountNo}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </td>
                       <td className="py-3 px-4 text-xs font-medium text-slate-700 dark:text-slate-300">
                         {item.merchant}
                       </td>
                       <td className={`py-3 px-4 text-xs font-mono font-semibold ${
-                        approved ? 'text-slate-800 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400 line-through'
+                        approved || paid ? 'text-slate-800 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400 line-through'
                       }`}>
-                        {formatCurrency(item.nominal)}
+                        <span>{formatCurrency(finalAmount)}</span>
+                        {item.approvedAmount !== undefined && item.approvedAmount < item.nominal && (
+                          <span className="block text-[9px] font-sans text-amber-600 dark:text-amber-400 font-medium">
+                            Klaim: {formatCurrency(item.nominal)}
+                          </span>
+                        )}
                       </td>
                       <td className="py-3 px-4">
-                        {approved ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-400">
+                        {paid ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 dark:bg-blue-900/40 dark:text-blue-400">
                             <Check className="w-3 h-3 shrink-0" />
-                            Disetujui
+                            Dibayar / Cair
+                          </span>
+                        ) : approved ? (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-400">
+                            <Clock className="w-3 h-3 shrink-0" />
+                            Menunggu Transfer
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-400">
@@ -312,24 +457,33 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
                           <span className="text-slate-300 dark:text-slate-600 text-xs">—</span>
                         ) : (
                           <div className={`flex items-center gap-1.5 text-xs ${
-                            hasAlertNotes ? 'text-rose-600 dark:text-rose-400 font-semibold' : 'text-slate-600 dark:text-slate-400'
+                            hasAlertNotes ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-slate-600 dark:text-slate-400'
                           }`}>
                             <MessageSquare className="w-3.5 h-3.5 opacity-70 shrink-0" />
-                            <span className="truncate max-w-[180px]" title={item.catatan}>{item.catatan}</span>
+                            <span className="truncate max-w-[160px]" title={item.catatan}>{item.catatan}</span>
                           </div>
                         )}
                       </td>
                       <td className="py-3 px-4 text-right">
                         <div className="flex items-center justify-end gap-1.5">
+                          {approved && (
+                            <button
+                              onClick={() => handleOpenDisburse(item)}
+                              className="p-1 px-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md text-[11px] font-medium transition flex items-center gap-1 cursor-pointer"
+                              title="Tandai telah ditransfer ke rekening karyawan"
+                            >
+                              <Landmark className="w-3 h-3" />
+                              <span>Cairkan</span>
+                            </button>
+                          )}
                           <button
                             onClick={() => handleOpenDetail(item)}
-                            className="p-1 px-2.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-600 dark:text-slate-300 text-[11px] font-medium transition flex items-center gap-1"
+                            className="p-1 px-2.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-md text-slate-600 dark:text-slate-300 text-[11px] font-medium transition flex items-center gap-1 cursor-pointer"
                             title="Lihat detail rincian"
                           >
                             <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-500" />
                             Detail
                           </button>
-                          <ReceiptImageCell receiptId={item.id} onOpen={openLightbox} />
                         </div>
                       </td>
                     </tr>
@@ -339,6 +493,74 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
             </tbody>
           </table>
         </div>
+
+        {/* Pagination Footer */}
+        {filteredApprovals.length >= 25 && (
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-3 mt-4 pt-4 border-t border-slate-100 dark:border-slate-800/80">
+            <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
+              <p>
+                Menampilkan <span className="font-semibold text-slate-700 dark:text-slate-200">{((currentPage - 1) * perPage) + 1}</span>–<span className="font-semibold text-slate-700 dark:text-slate-200">{Math.min(currentPage * perPage, filteredApprovals.length)}</span> dari <span className="font-semibold text-slate-700 dark:text-slate-200">{filteredApprovals.length}</span> riwayat
+              </p>
+              <span className="text-slate-300 dark:text-slate-700">•</span>
+              <div className="flex items-center gap-1.5">
+                <span>Tampilkan:</span>
+                <select
+                  value={perPage}
+                  onChange={(e) => setPerPage(Number(e.target.value))}
+                  className="px-2 py-1 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none"
+                >
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1.5">
+                <button
+                  disabled={currentPage <= 1}
+                  onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  Prev
+                </button>
+
+                {Array.from({ length: Math.min(5, totalPages) }, (_, i) => {
+                  let start = Math.max(1, currentPage - 2);
+                  const end = Math.min(totalPages, start + 4);
+                  start = Math.max(1, end - 4);
+                  const pg = start + i;
+                  if (pg > totalPages) return null;
+                  return (
+                    <button
+                      key={pg}
+                      onClick={() => setCurrentPage(pg)}
+                      className={`w-7 h-7 text-xs font-semibold rounded-lg transition ${
+                        pg === currentPage
+                          ? 'bg-indigo-600 text-white shadow-sm'
+                          : 'border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {pg}
+                    </button>
+                  );
+                })}
+
+                <button
+                  disabled={currentPage >= totalPages}
+                  onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                  className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition"
+                >
+                  Next
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Detail Modal Riwayat */}
@@ -428,7 +650,10 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
                 </div>
                 <div>
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Status Keputusan</span>
-                  <span className={`font-semibold text-xs ${selectedApproval.keputusan === 'Disetujui' ? 'text-emerald-600' : 'text-rose-600'}`}>
+                  <span className={`font-semibold text-xs ${
+                    selectedApproval.keputusan === 'Dibayar' ? 'text-blue-600' :
+                    selectedApproval.keputusan === 'Disetujui' ? 'text-emerald-600' : 'text-rose-600'
+                  }`}>
                     {selectedApproval.keputusan}
                   </span>
                 </div>
@@ -437,6 +662,58 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.diprosesOleh}</span>
                 </div>
               </div>
+
+              {/* Employee Bank Account Info Card */}
+              {selectedApproval.bankName && selectedApproval.bankAccountNo && (
+                <div className="p-3 bg-indigo-50/50 dark:bg-indigo-950/20 rounded-xl border border-indigo-100 dark:border-indigo-900/40 text-xs">
+                  <div className="flex items-center gap-1.5 font-bold text-indigo-900 dark:text-indigo-200 mb-1.5 text-[11px]">
+                    <Building2 className="w-3.5 h-3.5 text-indigo-600" />
+                    <span>Rekening Transfer Reimbursement Karyawan</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Bank Tujuan</span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.bankName}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 dark:text-slate-500 text-[10px] block">No. Rekening</span>
+                      <span className="font-mono font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.bankAccountNo}</span>
+                    </div>
+                    {selectedApproval.bankAccountHolder && (
+                      <div className="col-span-2">
+                        <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Atas Nama Pemilik</span>
+                        <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.bankAccountHolder}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Payment Details (If already paid) */}
+              {selectedApproval.keputusan === 'Dibayar' && (
+                <div className="p-3 bg-blue-50/60 dark:bg-blue-950/20 rounded-xl border border-blue-100 dark:border-blue-900/40 text-xs">
+                  <div className="flex items-center gap-1.5 font-bold text-blue-900 dark:text-blue-200 mb-1.5 text-[11px]">
+                    <Landmark className="w-3.5 h-3.5 text-blue-600" />
+                    <span>Informasi Pembayaran / Pencairan</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                    <div>
+                      <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Metode</span>
+                      <span className="font-semibold text-slate-800 dark:text-slate-200 uppercase">{selectedApproval.paymentMethod || 'Transfer Bank'}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 dark:text-slate-500 text-[10px] block">No. Referensi / Bukti</span>
+                      <span className="font-mono text-slate-800 dark:text-slate-200">{selectedApproval.paymentRefNo || '—'}</span>
+                    </div>
+                    {selectedApproval.paidAt && (
+                      <div className="col-span-2">
+                        <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Waktu Pencairan</span>
+                        <span className="font-mono text-slate-800 dark:text-slate-200">{selectedApproval.paidAt}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
 
               {/* Itemized Receipt Items Breakdown */}
               {selectedApproval.items && selectedApproval.items.length > 0 && (
@@ -506,12 +783,225 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({ approvals, onRef
             </div>
 
             {/* Modal Sticky Footer */}
-            <div className="p-4 sm:p-5 pt-3 border-t border-slate-100 dark:border-slate-800 flex justify-end bg-slate-50/50 dark:bg-slate-900/50 shrink-0">
+            <div className="p-4 sm:p-5 pt-3 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center bg-slate-50/50 dark:bg-slate-900/50 shrink-0">
+              {selectedApproval.keputusan === 'Disetujui' ? (
+                <button
+                  onClick={() => {
+                    const target = selectedApproval;
+                    setSelectedApproval(null);
+                    handleOpenDisburse(target);
+                  }}
+                  className="py-2 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+                >
+                  <Landmark className="w-3.5 h-3.5" />
+                  <span>Tandai Cair / Ditransfer</span>
+                </button>
+              ) : <div />}
               <button
                 onClick={() => setSelectedApproval(null)}
-                className="py-2.5 px-6 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium rounded-xl text-xs transition"
+                className="py-2 px-5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 font-medium rounded-xl text-xs transition cursor-pointer"
               >
                 Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Single Disbursement / Pencairan Struk */}
+      {disburseTarget && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 dark:bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-emerald-50 dark:bg-emerald-950/50 rounded-xl text-emerald-600">
+                  <Landmark className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Konfirmasi Pencairan / Transfer</h3>
+                  <p className="text-[11px] text-slate-400">Reimbursement Struk #{disburseTarget.id}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setDisburseTarget(null)}
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              {/* Summary Box */}
+              <div className="p-3 bg-slate-50 dark:bg-slate-800/50 rounded-xl border border-slate-100 dark:border-slate-800 space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Karyawan:</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200">{disburseTarget.karyawan}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Nominal Transfer:</span>
+                  <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">
+                    {formatCurrency(disburseTarget.approvedAmount ?? disburseTarget.nominal)}
+                  </span>
+                </div>
+                {disburseTarget.bankName && disburseTarget.bankAccountNo && (
+                  <div className="pt-2 border-t border-slate-200 dark:border-slate-700 flex justify-between items-center">
+                    <span className="text-slate-400">Rekening Tujuan:</span>
+                    <span className="font-mono font-semibold text-indigo-600 dark:text-indigo-400">
+                      {disburseTarget.bankName} - {disburseTarget.bankAccountNo} ({disburseTarget.bankAccountHolder || disburseTarget.karyawan})
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Payment Method */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Metode Pembayaran
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { key: 'bank_transfer', label: 'Transfer Bank' },
+                    { key: 'cash', label: 'Tunai (Kasbon)' },
+                    { key: 'payroll', label: 'Slip Gaji' },
+                  ].map(m => (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setPaymentMethod(m.key as any)}
+                      className={`p-2 rounded-xl text-xs font-semibold border transition text-center cursor-pointer ${
+                        paymentMethod === m.key
+                          ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Ref Number */}
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Nomor Referensi Transfer / Bukti (Opsional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Contoh: TRF-BCA-892182 atau No. Mutasi"
+                  value={paymentRefNo}
+                  onChange={(e) => setPaymentRefNo(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2 bg-slate-50/50 dark:bg-slate-900/50">
+              <button
+                type="button"
+                onClick={() => setDisburseTarget(null)}
+                disabled={disbursing}
+                className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmDisburse}
+                disabled={disbursing}
+                className="px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {disbursing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                <span>Konfirmasi Pencairan</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Bulk Disbursement */}
+      {showBulkDisburseModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 dark:bg-slate-950/70 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-md shadow-2xl overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <div className="p-2 bg-emerald-50 dark:bg-emerald-950/50 rounded-xl text-emerald-600">
+                  <Landmark className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">Pencairan Masal ({selectedIds.length} Struk)</h3>
+                  <p className="text-[11px] text-slate-400">Tandai semua struk terpilih telah ditransfer</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowBulkDisburseModal(false)}
+                className="p-1 rounded-full text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 text-xs">
+              <p className="text-slate-600 dark:text-slate-400 leading-relaxed">
+                Anda akan menandai <strong>{selectedIds.length} struk yang telah disetujui</strong> sebagai sudah dicairkan / ditransfer.
+              </p>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1.5">
+                  Metode Pembayaran Masal
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { key: 'bank_transfer', label: 'Transfer Bank' },
+                    { key: 'cash', label: 'Tunai (Kasbon)' },
+                    { key: 'payroll', label: 'Slip Gaji' },
+                  ].map(m => (
+                    <button
+                      key={m.key}
+                      type="button"
+                      onClick={() => setPaymentMethod(m.key as any)}
+                      className={`p-2 rounded-xl text-xs font-semibold border transition text-center cursor-pointer ${
+                        paymentMethod === m.key
+                          ? 'border-emerald-500 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+                          : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-800'
+                      }`}
+                    >
+                      {m.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold text-slate-700 dark:text-slate-300 mb-1">
+                  Nomor Batch / Referensi Transfer (Opsional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="Contoh: BATCH-PAY-20260831"
+                  value={paymentRefNo}
+                  onChange={(e) => setPaymentRefNo(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                />
+              </div>
+            </div>
+
+            <div className="p-4 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-2 bg-slate-50/50 dark:bg-slate-900/50">
+              <button
+                type="button"
+                onClick={() => setShowBulkDisburseModal(false)}
+                disabled={bulkDisbursing}
+                className="px-4 py-2 text-xs font-medium text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleConfirmBulkDisburse}
+                disabled={bulkDisbursing}
+                className="px-5 py-2 text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              >
+                {bulkDisbursing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                <span>Cairkan {selectedIds.length} Struk</span>
               </button>
             </div>
           </div>

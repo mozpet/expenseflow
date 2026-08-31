@@ -53,6 +53,13 @@ class ReceiptRecord {
   final double? ocrRawDiscount;
   final List<ReceiptItem> items;
   final double? claimedAmount;
+  final double? approvedAmount;
+  final bool isPotentialDuplicate;
+  final int? duplicateReferenceId;
+  final String? paidAt;
+  final String? paidBy;
+  final String? paymentMethod;
+  final String? paymentRefNo;
   final String? vendorName;
   final String? receiptDate;
   final String status;
@@ -73,6 +80,13 @@ class ReceiptRecord {
     this.ocrRawDiscount,
     this.items = const [],
     this.claimedAmount,
+    this.approvedAmount,
+    this.isPotentialDuplicate = false,
+    this.duplicateReferenceId,
+    this.paidAt,
+    this.paidBy,
+    this.paymentMethod,
+    this.paymentRefNo,
     this.vendorName,
     this.receiptDate,
     required this.status,
@@ -134,6 +148,13 @@ class ReceiptRecord {
       ocrRawDiscount: parseAmount(m['ocr_raw_discount']),
       items: parsedItems,
       claimedAmount: parseAmount(m['claimed_amount']),
+      approvedAmount: parseAmount(m['approved_amount']),
+      isPotentialDuplicate: m['is_potential_duplicate'] == true || m['is_potential_duplicate'] == 1,
+      duplicateReferenceId: (m['duplicate_reference_id'] as num?)?.toInt(),
+      paidAt: m['paid_at']?.toString(),
+      paidBy: m['paid_by']?.toString(),
+      paymentMethod: m['payment_method']?.toString(),
+      paymentRefNo: m['payment_ref_no']?.toString(),
       vendorName: m['vendor_name']?.toString(),
       receiptDate: m['receipt_date']?.toString(),
       status: (m['status'] ?? 'draft').toString(),
@@ -148,6 +169,9 @@ class ReceiptRecord {
   String get displayMerchant => vendorName ?? ocrRawMerchant ?? '-';
 
   double get displayAmount {
+    if (approvedAmount != null && approvedAmount! > 0 && (status == 'approved' || status == 'paid')) {
+      return approvedAmount!;
+    }
     if (claimedAmount != null && claimedAmount! > 0) return claimedAmount!;
     if (ocrRawAmount != null) return double.tryParse(ocrRawAmount!) ?? 0;
     return 0;
@@ -161,10 +185,26 @@ class ReceiptRecord {
 
   String get displayStatus {
     switch (status) {
-      case 'approved': return 'Disetujui';
+      case 'paid': return 'Dibayar';
+      case 'approved': return 'Pending';
       case 'rejected': return 'Ditolak';
       case 'submitted': return 'Menunggu';
       default: return 'Draf';
+    }
+  }
+
+  bool get isPaid => status == 'paid';
+  bool get isApproved => status == 'approved';
+  bool get isRejected => status == 'rejected';
+  bool get isSubmitted => status == 'submitted';
+  bool get isDraft => status == 'draft';
+
+  String get displayPaymentMethod {
+    switch (paymentMethod) {
+      case 'bank_transfer': return 'Transfer Bank';
+      case 'cash': return 'Kasbon / Tunai';
+      case 'payroll': return 'Slip Gaji / Payroll';
+      default: return paymentMethod ?? 'Transfer Bank';
     }
   }
 }

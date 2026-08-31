@@ -505,6 +505,20 @@ export const KaryawanManagement: React.FC<{
     });
   }, [employees, debouncedSearch, statusFilter, selectedDept, selectedOffice, selectedEmploymentType]);
 
+  // 3b. Client-side Pagination (Fast 60 FPS rendering untuk 1,000+ data)
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [debouncedSearch, statusFilter, selectedDept, selectedOffice, selectedEmploymentType]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredEmployees.length / pageSize));
+  const paginatedEmployees = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return filteredEmployees.slice(start, start + pageSize);
+  }, [filteredEmployees, currentPage, pageSize]);
+
   // Currency utility formatting helper
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('id-ID', {
@@ -585,6 +599,9 @@ export const KaryawanManagement: React.FC<{
             joined_date: addForm.joinedDate || null,
             contract_start_date: addForm.employmentType === 'PKWT' ? (addForm.contractStartDate || null) : null,
             contract_end_date: addForm.employmentType === 'PKWT' ? (addForm.contractEndDate || null) : null,
+            bank_name: addForm.bankName || undefined,
+            bank_account_no: addForm.bankAccountNo || undefined,
+            bank_account_holder: addForm.bankAccountHolder || undefined,
           });
           await loadEmployees();
           onAddAuditLog('Karyawan Baru Terdaftar', `Menambahkan karyawan baru: ${addForm.nama} - Role: ${addForm.role}`, 'bg-indigo-600');
@@ -659,9 +676,9 @@ export const KaryawanManagement: React.FC<{
       limit: emp.limit,
 
       // Data Payroll Default / Existing
-      bankName: 'BCA',
-      bankAccountNo: '',
-      bankAccountHolder: emp.nama,
+      bankName: emp.bankName || 'BCA',
+      bankAccountNo: emp.bankAccountNo || '',
+      bankAccountHolder: emp.bankAccountHolder || emp.nama,
       salaryType: emp.employmentType === 'Internship' ? 'daily' : 'monthly',
       basicSalary: '',
       npwp: '',
@@ -706,6 +723,9 @@ export const KaryawanManagement: React.FC<{
             contract_end_date: (editForm.employmentType === 'PKWT' || editForm.employmentType === 'Probation' || editForm.employmentType === 'Internship')
               ? (editForm.contractEndDate || null)
               : null,
+            bank_name: editForm.bankName || undefined,
+            bank_account_no: editForm.bankAccountNo || undefined,
+            bank_account_holder: editForm.bankAccountHolder || undefined,
           });
           await loadEmployees();
           onAddAuditLog('Update Profil Karyawan', `Profil ${editForm.nama} (${editEmployee.id}) diperbarui`, 'bg-indigo-600');
@@ -1106,7 +1126,7 @@ export const KaryawanManagement: React.FC<{
                       </td>
                     </tr>
                   ) : (
-                    filteredEmployees.map((emp) => {
+                    paginatedEmployees.map((emp) => {
                       const cStat = contractStatus(emp.contractEndDate);
                       const badgeInfo = emp.employmentType ? EMPLOYMENT_BADGE[emp.employmentType] : null;
 
@@ -1289,6 +1309,77 @@ export const KaryawanManagement: React.FC<{
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination Controls */}
+            {filteredEmployees.length >= 25 && (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+                <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                  <span>
+                    Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                      {Math.min((currentPage - 1) * pageSize + 1, filteredEmployees.length)} - {Math.min(currentPage * pageSize, filteredEmployees.length)}
+                    </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{filteredEmployees.length}</strong> karyawan
+                  </span>
+                  <span className="hidden sm:inline">•</span>
+                  <div className="flex items-center gap-1.5">
+                    <span className="hidden sm:inline">Per halaman:</span>
+                    <select
+                      value={pageSize}
+                      onChange={(e) => {
+                        setPageSize(Number(e.target.value));
+                        setCurrentPage(1);
+                      }}
+                      className="py-1 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                    >
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(1)}
+                    disabled={currentPage === 1}
+                    className="p-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Pertama"
+                  >
+                    «
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                    disabled={currentPage === 1}
+                    className="p-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Sebelumnya"
+                  >
+                    ‹
+                  </button>
+                  <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                    Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{currentPage}</span> / <span className="font-mono">{totalPages}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Berikutnya"
+                  >
+                    ›
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentPage(totalPages)}
+                    disabled={currentPage === totalPages}
+                    className="p-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Terakhir"
+                  >
+                    »
+                  </button>
+                </div>
+              </div>
+            )}
 
           </div>
         </>

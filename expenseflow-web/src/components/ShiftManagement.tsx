@@ -1626,6 +1626,14 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
+  // Paginasi Roster untuk rendering ringan pada 1.000 karyawan
+  const [rosterPage, setRosterPage] = useState<number>(1);
+  const [rosterPageSize, setRosterPageSize] = useState<number>(25);
+
+  useEffect(() => {
+    setRosterPage(1);
+  }, [rosterSearch, rosterBranch, rosterShiftName, rosterDate]);
+
   // ── Template state ──
   const [loadingShifts, setLoadingShifts] = useState(false);
   const [templateBranch, setTemplateBranch] = useState<string>(''); // '' = semua cabang
@@ -2007,102 +2015,181 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         </div>
                       </td>
                     </tr>
-                  ) : filteredRoster.map((r) => {
-                    const av = avatarFor(r.name);
-                    const isSel = selected.has(r.user_id);
-                    return (
-                      <tr key={r.user_id} className={`transition-colors ${isSel ? 'bg-indigo-50/40' : 'hover:bg-slate-50/60'}`}>
-                        <td className="py-3 px-3">
-                          <input
-                            type="checkbox"
-                            checked={isSel}
-                            onChange={() => toggleSelect(r.user_id)}
-                            className="w-3.5 h-3.5 rounded accent-indigo-600 align-middle"
-                          />
-                        </td>
-                        <td className="py-3 px-3">
-                          <div className="flex items-center gap-2.5">
-                            <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${av.bg} ${av.text}`}>
-                              {initialsOf(r.name)}
+                  ) : (() => {
+                    const totalRosterPages = Math.max(1, Math.ceil(filteredRoster.length / rosterPageSize));
+                    const paginatedRoster = filteredRoster.slice((rosterPage - 1) * rosterPageSize, rosterPage * rosterPageSize);
+
+                    return paginatedRoster.map((r) => {
+                      const av = avatarFor(r.name);
+                      const isSel = selected.has(r.user_id);
+                      return (
+                        <tr key={r.user_id} className={`transition-colors ${isSel ? 'bg-indigo-50/40' : 'hover:bg-slate-50/60'}`}>
+                          <td className="py-3 px-3">
+                            <input
+                              type="checkbox"
+                              checked={isSel}
+                              onChange={() => toggleSelect(r.user_id)}
+                              className="w-3.5 h-3.5 rounded accent-indigo-600 align-middle"
+                            />
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="flex items-center gap-2.5">
+                              <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${av.bg} ${av.text}`}>
+                                {initialsOf(r.name)}
+                              </div>
+                              <div>
+                                <p className="font-semibold text-slate-800">{r.name}</p>
+                                {r.department && <p className="text-[10px] text-slate-400">{r.department}</p>}
+                              </div>
                             </div>
-                            <div>
-                              <p className="font-semibold text-slate-800">{r.name}</p>
-                              {r.department && <p className="text-[10px] text-slate-400">{r.department}</p>}
-                            </div>
-                          </div>
-                        </td>
-                        <td className="py-3 px-3 text-slate-600">{r.branch ?? <span className="text-slate-300">—</span>}</td>
-                        <td className="py-3 px-3 text-slate-700">
-                          {r.shift_name ?? (
-                            r.upcoming_shift
-                              ? null // ada shift coming soon → jangan tampilkan strip
-                              : r.source === 'office' ? (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
-                                    <Building2 className="w-3 h-3" /> Jam Kantor
+                          </td>
+                          <td className="py-3 px-3 text-slate-600">{r.branch ?? <span className="text-slate-300">—</span>}</td>
+                          <td className="py-3 px-3 text-slate-700">
+                            {r.shift_name ?? (
+                              r.upcoming_shift
+                                ? null // ada shift coming soon → jangan tampilkan strip
+                                : r.source === 'office' ? (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                                      <Building2 className="w-3 h-3" /> Jam Kantor
+                                    </span>
+                                  ) : (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
+                                      <AlertCircle className="w-3 h-3" /> Belum Diatur
+                                    </span>
+                                  )
+                            )}
+                            {/* Shift yang sudah di-assign tapi belum aktif (coming soon) */}
+                            {r.upcoming_shift && (
+                              <div className="mt-1 space-y-0.5">
+                                <span
+                                  className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
+                                  title={`Shift '${r.upcoming_shift.shift_name}' aktif mulai ${fmtDate(r.upcoming_shift.start_date)}`}
+                                >
+                                  <Clock className="w-2.5 h-2.5 shrink-0" />
+                                  Coming Soon
+                                </span>
+                                <p className="text-[10px] font-semibold text-amber-700 leading-tight">
+                                  {r.upcoming_shift.shift_name}
+                                  <span className="text-slate-400 font-normal"> · Aktif {fmtDate(r.upcoming_shift.start_date)}</span>
+                                </p>
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-center font-mono text-slate-700">
+                            {r.is_off ? (
+                              <span className="text-slate-300">—</span>
+                            ) : r.work_start_time ? (
+                              <span className="inline-flex items-center gap-1 justify-center">
+                                {hhmm(r.work_start_time)}–{hhmm(r.work_end_time)}
+                                {r.is_wfh && !r.is_field && (
+                                  <span className="inline-flex items-center text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-cyan-100 text-cyan-800 border border-cyan-200" title="Hari WFH terjadwal">
+                                    WFH
                                   </span>
-                                ) : (
-                                  <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">
-                                    <AlertCircle className="w-3 h-3" /> Belum Diatur
+                                )}
+                                {r.is_wfh && r.is_field && (
+                                  <span className="inline-flex items-center text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200" title="Hari Lapangan terjadwal (WFH + Radius GPS)">
+                                    Lapangan
                                   </span>
-                                )
-                          )}
-                          {/* Shift yang sudah di-assign tapi belum aktif (coming soon) */}
-                          {r.upcoming_shift && (
-                            <div className="mt-1 space-y-0.5">
-                              <span
-                                className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200"
-                                title={`Shift '${r.upcoming_shift.shift_name}' aktif mulai ${fmtDate(r.upcoming_shift.start_date)}`}
-                              >
-                                <Clock className="w-2.5 h-2.5 shrink-0" />
-                                Coming Soon
+                                )}
+                                {r.is_cross_day && (
+                                  <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700" title="Shift berakhir keesokan harinya">
+                                    <Moon className="w-2.5 h-2.5" /> +1
+                                  </span>
+                                )}
                               </span>
-                              <p className="text-[10px] font-semibold text-amber-700 leading-tight">
-                                {r.upcoming_shift.shift_name}
-                                <span className="text-slate-400 font-normal"> · Aktif {fmtDate(r.upcoming_shift.start_date)}</span>
-                              </p>
-                            </div>
-                          )}
-                        </td>
-                        <td className="py-3 px-3 text-center font-mono text-slate-700">
-                          {r.is_off ? (
-                            <span className="text-slate-300">—</span>
-                          ) : r.work_start_time ? (
-                            <span className="inline-flex items-center gap-1 justify-center">
-                              {hhmm(r.work_start_time)}–{hhmm(r.work_end_time)}
-                              {r.is_wfh && !r.is_field && (
-                                <span className="inline-flex items-center text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-cyan-100 text-cyan-800 border border-cyan-200" title="Hari WFH terjadwal">
-                                  WFH
-                                </span>
-                              )}
-                              {r.is_wfh && r.is_field && (
-                                <span className="inline-flex items-center text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-800 border border-emerald-200" title="Hari Lapangan terjadwal (WFH + Radius GPS)">
-                                  Lapangan
-                                </span>
-                              )}
-                              {r.is_cross_day && (
-                                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 text-violet-700" title="Shift berakhir keesokan harinya">
-                                  <Moon className="w-2.5 h-2.5" /> +1
-                                </span>
-                              )}
-                            </span>
-                          ) : (
-                            <span className="text-slate-300">—</span>
-                          )}
-                        </td>
-                        <td className="py-3 px-3 text-center">
-                          <button
-                            onClick={() => setAssignUser(r)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-indigo-600 border border-indigo-200 hover:bg-indigo-50 rounded-lg transition"
-                          >
-                            <UserCog className="w-3 h-3" /> Kelola
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                            ) : (
+                              <span className="text-slate-300">—</span>
+                            )}
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            <button
+                              onClick={() => setAssignUser(r)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-indigo-600 border border-indigo-200 hover:bg-indigo-50 rounded-lg transition cursor-pointer"
+                            >
+                              <UserCog className="w-3 h-3" /> Kelola
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
             </div>
+
+            {/* Pagination footer */}
+            {filteredRoster.length >= 25 && (() => {
+              const totalRosterPages = Math.max(1, Math.ceil(filteredRoster.length / rosterPageSize));
+              return (
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 text-xs">
+                  <div className="flex items-center gap-2 text-slate-500">
+                    <span>
+                      Menampilkan <strong className="text-slate-800 font-bold font-mono">
+                        {Math.min((rosterPage - 1) * rosterPageSize + 1, filteredRoster.length)} - {Math.min(rosterPage * rosterPageSize, filteredRoster.length)}
+                      </strong> dari <strong className="text-slate-800 font-bold font-mono">{filteredRoster.length}</strong> karyawan
+                    </span>
+                    <span className="hidden sm:inline">•</span>
+                    <div className="flex items-center gap-1.5">
+                      <span className="hidden sm:inline">Per hal:</span>
+                      <select
+                        value={rosterPageSize}
+                        onChange={(e) => {
+                          setRosterPageSize(Number(e.target.value));
+                          setRosterPage(1);
+                        }}
+                        className="py-0.5 px-2 text-xs font-semibold border border-slate-200 rounded-lg bg-slate-50 text-slate-700 focus:outline-none cursor-pointer"
+                      >
+                        <option value={25}>25</option>
+                        <option value={50}>50</option>
+                        <option value={100}>100</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setRosterPage(1)}
+                      disabled={rosterPage === 1}
+                      className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Pertama"
+                    >
+                      «
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRosterPage(p => Math.max(1, p - 1))}
+                      disabled={rosterPage === 1}
+                      className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Sebelumnya"
+                    >
+                      ‹
+                    </button>
+                    <span className="px-2 font-semibold text-slate-700">
+                      Hal <span className="font-mono font-bold text-indigo-600">{rosterPage}</span> / <span className="font-mono">{totalRosterPages}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setRosterPage(p => Math.min(totalRosterPages, p + 1))}
+                      disabled={rosterPage === totalRosterPages}
+                      className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Berikutnya"
+                    >
+                      ›
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setRosterPage(totalRosterPages)}
+                      disabled={rosterPage === totalRosterPages}
+                      className="p-1 px-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Terakhir"
+                    >
+                      »
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         </div>
       )}

@@ -25,6 +25,7 @@ class AttendanceSetting extends Model
         'overtime_enabled',
         'min_overtime_minutes',
         'early_leave_tolerance_minutes',
+        'min_checkout_interval_minutes',
         // ditambahkan: ada di DB (migrasi 2026_07_02) tapi belum di fillable
         'checkout_reminder_minutes',
         'auto_checkout_grace_minutes',
@@ -52,6 +53,7 @@ class AttendanceSetting extends Model
             'overtime_enabled'              => 'boolean',
             'min_overtime_minutes'          => 'integer',
             'early_leave_tolerance_minutes' => 'integer',
+            'min_checkout_interval_minutes' => 'integer',
             'work_days'                     => 'array',
             'custom_schedules'              => 'array',
             'checkout_reminder_minutes'     => 'integer',

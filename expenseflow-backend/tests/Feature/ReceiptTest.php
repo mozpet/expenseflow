@@ -25,12 +25,12 @@ class ReceiptTest extends TestCase
         Storage::fake('local');
     }
 
-    private function user(string $role): User
+    private function user(string $role, bool $active = true): User
     {
         return User::factory()->create([
             'company_id' => $this->company->id,
             'role'       => $role,
-            'is_active'  => true,
+            'is_active'  => $active,
         ]);
     }
 
@@ -189,31 +189,26 @@ class ReceiptTest extends TestCase
         )->assertStatus(403);
     }
 
-    // ── 6. Finance tidak bisa akses endpoint struk karyawan ──────────
-    public function test_finance_tidak_bisa_akses_endpoint_employee_receipts(): void
+    // ── 6. User non-aktif tidak bisa akses endpoint struk ──────────
+    public function test_user_nonaktif_tidak_bisa_akses_endpoint_receipts(): void
     {
-        $finance = $this->user('finance');
+        $inactiveUser = $this->user('employee', false);
 
-        // receipt_access middleware memblokir role selain employee
-        // role:employee middleware fires first sebelum receipt_access
-        $this->getJson('/api/v1/employee/receipts', $this->token($finance))
-            ->assertStatus(403)
-            ->assertJsonPath('message', 'Akses ditolak. Role yang diizinkan: employee.');
+        $this->getJson('/api/v1/employee/receipts', $this->token($inactiveUser))
+            ->assertStatus(403);
     }
 
-    // ── 6b. Finance tidak bisa upload struk ───────────────────────────
-    public function test_finance_tidak_bisa_upload_struk(): void
+    // ── 6b. User non-aktif tidak bisa upload struk ────────────────────
+    public function test_user_nonaktif_tidak_bisa_upload_struk(): void
     {
         Queue::fake();
-        $finance = $this->user('finance');
+        $inactiveUser = $this->user('employee', false);
 
-        // role:employee middleware fires first (403) sebelum upload diproses
         $this->postJson('/api/v1/employee/receipts', [
             'image'    => UploadedFile::fake()->image('struk.jpg'),
             'category' => 'Makan',
-        ], $this->token($finance))
-        ->assertStatus(403)
-        ->assertJsonPath('message', 'Akses ditolak. Role yang diizinkan: employee.');
+        ], $this->token($inactiveUser))
+        ->assertStatus(403);
 
         Queue::assertNothingPushed();
     }

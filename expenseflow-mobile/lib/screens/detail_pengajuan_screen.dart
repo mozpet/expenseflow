@@ -18,11 +18,17 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
   // ── Banner berdasarkan status ──────────────────────────────
   ({Color bg, Color text, String msg}) get _banner {
     switch (widget.receipt.status) {
+      case 'paid':
+        return (
+          bg: const Color(0xFFE0F2F1),
+          text: const Color(0xFF004D40),
+          msg: 'Dana Reimbursement Sudah Cair (Ditransfer)',
+        );
       case 'approved':
         return (
-          bg: const Color(0xFFE8F5E9),
-          text: const Color(0xFF1B5E20),
-          msg: 'Pengajuan disetujui oleh Finance',
+          bg: const Color(0xFFE3F2FD),
+          text: const Color(0xFF0D47A1),
+          msg: 'Pengajuan Disetujui (Pending Pembayaran / Transfer)',
         );
       case 'rejected':
         return (
@@ -389,10 +395,12 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                             letterSpacing: 0.5)),
                     const SizedBox(height: 8),
                     _row(
-                      'Nominal klaim',
-                      widget.receipt.displayAmount > 0
-                          ? formatCurrency(widget.receipt.displayAmount)
-                          : '-',
+                      'Nominal klaim awal',
+                      widget.receipt.claimedAmount != null
+                          ? formatCurrency(widget.receipt.claimedAmount!)
+                          : (widget.receipt.displayAmount > 0
+                              ? formatCurrency(widget.receipt.displayAmount)
+                              : '-'),
                       isBold: true,
                     ),
                     const SizedBox(height: 8),
@@ -401,6 +409,150 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                     _row('Catatan', widget.receipt.notes ?? '-'),
                     const SizedBox(height: 8),
                     _row('Status', widget.receipt.displayStatus),
+
+                    // Anti-fraud indicator jika duplikat
+                    if (widget.receipt.isPotentialDuplicate) ...[
+                      const SizedBox(height: 12),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFF3E5F5),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFCE93D8)),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(Icons.shield_outlined,
+                                color: Color(0xFF7B1FA2), size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Peringatan Sistem: Terindikasi Duplikat',
+                                    style: TextStyle(
+                                      color: Color(0xFF6A1B9A),
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  const Text(
+                                    'Struk ini memiliki tanggal, merchant, dan nominal serupa dengan pengajuan lain.',
+                                    style: TextStyle(
+                                      color: Color(0xFF4A148C),
+                                      fontSize: 11,
+                                      height: 1.3,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+
+                    // Box Info Persetujuan & Pencairan
+                    if (widget.receipt.isApproved || widget.receipt.isPaid) ...[
+                      const SizedBox(height: 16),
+                      Container(
+                        width: double.infinity,
+                        padding: const EdgeInsets.all(14),
+                        decoration: BoxDecoration(
+                          color: widget.receipt.isPaid
+                              ? const Color(0xFFE0F2F1)
+                              : const Color(0xFFE3F2FD),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(
+                            color: widget.receipt.isPaid
+                                ? const Color(0xFF80CBC4)
+                                : const Color(0xFF90CAF9),
+                          ),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Icon(
+                                  widget.receipt.isPaid
+                                      ? Icons.check_circle
+                                      : Icons.verified,
+                                  color: widget.receipt.isPaid
+                                      ? const Color(0xFF00796B)
+                                      : const Color(0xFF1565C0),
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  widget.receipt.isPaid
+                                      ? 'RINCIAN PENCAIRAN REIMBURSEMENT'
+                                      : 'RINCIAN PERSETUJUAN FINANCE',
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.bold,
+                                    color: widget.receipt.isPaid
+                                        ? const Color(0xFF004D40)
+                                        : const Color(0xFF0D47A1),
+                                    letterSpacing: 0.5,
+                                  ),
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 10),
+                            _row(
+                              'Nominal disetujui',
+                              formatCurrency(widget.receipt.approvedAmount ??
+                                  widget.receipt.claimedAmount ??
+                                  0),
+                              isBold: true,
+                            ),
+                            if (widget.receipt.approvedAmount != null &&
+                                widget.receipt.claimedAmount != null &&
+                                widget.receipt.approvedAmount! <
+                                    widget.receipt.claimedAmount!) ...[
+                              const SizedBox(height: 4),
+                              Text(
+                                '* Nominal disesuaikan dari klaim awal (${formatCurrency(widget.receipt.claimedAmount!)})',
+                                style: const TextStyle(
+                                  fontSize: 10.5,
+                                  color: Color(0xFFC62828),
+                                  fontStyle: FontStyle.italic,
+                                ),
+                              ),
+                            ],
+                            if (widget.receipt.isPaid) ...[
+                              const SizedBox(height: 6),
+                              _row(
+                                'Metode pembayaran',
+                                widget.receipt.displayPaymentMethod,
+                              ),
+                              if (widget.receipt.paymentRefNo != null &&
+                                  widget.receipt.paymentRefNo!.isNotEmpty) ...[
+                                const SizedBox(height: 6),
+                                _row(
+                                  'No. Referensi / Mutasi',
+                                  widget.receipt.paymentRefNo!,
+                                ),
+                              ],
+                              if (widget.receipt.paidAt != null) ...[
+                                const SizedBox(height: 6),
+                                _row(
+                                  'Waktu pencairan',
+                                  widget.receipt.paidAt!.length >= 10
+                                      ? widget.receipt.paidAt!.substring(0, 10)
+                                      : widget.receipt.paidAt!,
+                                ),
+                              ],
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
 
                     const SizedBox(height: 20),
 

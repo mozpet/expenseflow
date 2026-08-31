@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Jobs\ProcessAttendanceBackgroundJob;
 use App\Models\Attendance;
 use App\Models\AttendanceSetting;
 use App\Models\DeviceChangeRequest;
@@ -604,8 +605,9 @@ class AttendanceController extends Controller
     // 2. listUsers() — daftar user + status attendance_enabled
     public function listUsers(Request $request): JsonResponse
     {
-        $actor  = $request->user();
-        $filter = $request->query('filter'); // enabled | disabled
+        $actor   = $request->user();
+        $filter  = $request->query('filter'); // enabled | disabled
+        $perPage = $request->query('per_page');
 
         $query = User::query()
             ->with('office:id,office_name')
@@ -621,7 +623,12 @@ class AttendanceController extends Controller
             $query->where('attendance_enabled', false);
         }
 
-        return response()->json($query->orderBy('name')->paginate(20));
+        if ($perPage === 'all' || $request->boolean('all')) {
+            return response()->json(['data' => $query->orderBy('name')->get()]);
+        }
+
+        $limit = $perPage ? (int) $perPage : 2000;
+        return response()->json($query->orderBy('name')->paginate($limit));
     }
 
     // listAllUsers() — daftar SEMUA karyawan aktif (tanpa pagination)
@@ -895,7 +902,10 @@ class AttendanceController extends Controller
             'status'     => 'nullable|in:pending,approved,rejected',
             'leave_type' => 'nullable|in:wfh,izin,sakit,cuti',
             'user_id'    => 'nullable|integer',
+            'per_page'   => 'nullable|integer|min:1|max:2000',
         ]);
+
+        $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         $leaves = LeaveRequest::query()
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
@@ -919,7 +929,7 @@ class AttendanceController extends Controller
                 'leave_requests.collective_status',
             ])
             ->orderByDesc('leave_requests.created_at')
-            ->paginate(20);
+            ->paginate($limit);
 
         // Sertakan flag has_document agar web tahu kapan menampilkan tombol surat dokter
         $leaves->getCollection()->transform(function ($l) {
@@ -1033,6 +1043,9 @@ class AttendanceController extends Controller
                 ->toArray();
         }
 
+        // PRELOAD BULK: Selesaikan jadwal semua karyawan sekaligus dalam 3 query (Anti N+1)
+        $schedulesByUser = \App\Http\Controllers\API\ShiftController::resolveSchedulesBulk($employees, $today);
+
         foreach ($employees as $emp) {
             $att = $attendances[$emp->id] ?? null;
 
@@ -1063,34 +1076,29 @@ class AttendanceController extends Controller
                     'leave_type'            => $onLeave[$emp->id]->leave_type,
                 ];
             } else {
-                // Cek apakah hari ini hari libur sesuai jadwal karyawan
-                $empModel = $emp instanceof \App\Models\User
-                    ? $emp
-                    : \App\Models\User::find($emp->id);
+                // Cek apakah hari ini hari libur sesuai jadwal karyawan (in-memory lookup)
+                $empId = $emp->id;
 
-                $isOff = false;
-                if ($empModel) {
-                    // Libur reguler (non-collective) yang berlaku untuk karyawan ini:
-                    // 1. Berlaku untuk semua cabang (attendance_setting_id null) ATAU cabang karyawan cocok
-                    // 2. Karyawan TIDAK dikecualikan dari libur ini (holiday_exclusions)
-                    $regularHolidayForEmp = $holidaysToday->first(function ($h) use ($empModel) {
-                        if ($h->is_collective) return false;
-                        if ($h->attendance_setting_id && $h->attendance_setting_id !== $empModel->attendance_setting_id) {
-                            return false;
-                        }
-                        if ($h->excludedUsers->contains('id', $empModel->id)) {
-                            return false;
-                        }
-                        return true;
-                    }) !== null;
-
-                    $isHolidayForUser = $regularHolidayForEmp || in_array($empModel->id, $acceptedCollectiveLeaveUserIds);
-                    if ($isHolidayForUser) {
-                        $isOff = true;
-                    } else {
-                        $schedule = \App\Http\Controllers\API\ShiftController::resolveSchedule($empModel, $today);
-                        $isOff    = (bool) ($schedule['is_off'] ?? false);
+                // Libur reguler (non-collective) yang berlaku untuk karyawan ini:
+                // 1. Berlaku untuk semua cabang (attendance_setting_id null) ATAU cabang karyawan cocok
+                // 2. Karyawan TIDAK dikecualikan dari libur ini (holiday_exclusions)
+                $regularHolidayForEmp = $holidaysToday->first(function ($h) use ($emp) {
+                    if ($h->is_collective) return false;
+                    if ($h->attendance_setting_id && $h->attendance_setting_id !== $emp->attendance_setting_id) {
+                        return false;
                     }
+                    if ($h->excludedUsers->contains('id', $emp->id)) {
+                        return false;
+                    }
+                    return true;
+                }) !== null;
+
+                $isHolidayForUser = $regularHolidayForEmp || in_array($empId, $acceptedCollectiveLeaveUserIds);
+                if ($isHolidayForUser) {
+                    $isOff = true;
+                } else {
+                    $schedule = $schedulesByUser[$empId] ?? null;
+                    $isOff    = (bool) ($schedule['is_off'] ?? false);
                 }
 
                 $notCheckedIn[] = [
@@ -1637,26 +1645,45 @@ class AttendanceController extends Controller
         ?int $companyId,
         string $startDate,
         string $endDate,
-        ?string $department,
-        ?int $officeId = null
+        ?string $department = null,
+        ?int $officeId = null,
+        array $filters = [],
+        ?int $page = null,
+        ?int $perPage = null
     ): array {
-        // 1. Semua karyawan aktif (filtered by company & department & office)
-        $users = User::where('is_active', true)
-            ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
-            ->when($department, fn ($q, $d) => $q->where('department', $d))
-            ->when($officeId, fn ($q, $o) => $q->where('attendance_setting_id', $o))
-            ->select('id', 'name', 'department', 'attendance_setting_id', 'employee_code')
-            ->get();
+        // 1. Ambil daftar karyawan
+        $users = User::where(function ($q) use ($companyId) {
+                if ($companyId) $q->where('company_id', $companyId);
+            })
+            ->when($department, fn ($q) => $q->where('department', $department))
+            ->when($officeId, fn ($q) => $q->where('attendance_setting_id', $officeId))
+            ->where('role', '!=', 'super_admin')
+            ->orderBy('name')
+            ->get(['id', 'name', 'department', 'employee_code', 'company_id', 'attendance_setting_id']);
 
         if ($users->isEmpty()) {
-            return [];
+            return ($page !== null) ? [
+                'summary'   => ['present' => 0, 'late' => 0, 'absent' => 0, 'early_leave' => 0, 'cuti' => 0, 'izin' => 0, 'sakit' => 0, 'total_working_minutes' => 0, 'total_overtime_minutes' => 0],
+                'by_type'   => ['onsite' => 0, 'wfh' => 0, 'field' => 0],
+                'data'      => [],
+                'total'     => 0,
+                'last_page' => 1,
+            ] : [];
         }
 
-        // 2. Semua attendance dalam range, index by "userId_date"
-        $attendances = Attendance::query()
-            ->join('users', 'attendances.user_id', '=', 'users.id')
-            ->when($companyId, fn ($q) => $q->where('attendances.company_id', $companyId))
-            ->when($department, fn ($q, $d) => $q->where('users.department', $d))
+        // Cache lowercase nama & kode karyawan untuk pencarian cepat O(1)
+        foreach ($users as $u) {
+            $u->search_name = strtolower($u->name ?? '');
+            $u->search_code = strtolower($u->employee_code ?? '');
+        }
+
+        // 2. Query semua record presensi nyata dalam range
+        $attendances = Attendance::join('users', 'attendances.user_id', '=', 'users.id')
+            ->where(function ($q) use ($companyId) {
+                if ($companyId) $q->where('users.company_id', $companyId);
+            })
+            ->when($department, fn ($q) => $q->where('users.department', $department))
+            ->when($officeId, fn ($q) => $q->where('users.attendance_setting_id', $officeId))
             ->whereBetween('attendances.date', [$startDate, $endDate])
             ->select([
                 'attendances.id', 'attendances.user_id',
@@ -1667,8 +1694,13 @@ class AttendanceController extends Controller
                 'attendances.check_in_lat', 'attendances.check_in_lng',
                 'attendances.work_minutes as working_minutes',
             ])
-            ->get()
-            ->keyBy(fn ($a) => $a->user_id . '_' . Carbon::parse($a->date)->format('Y-m-d'));
+            ->get();
+
+        $attendancesByUserAndDate = [];
+        foreach ($attendances as $a) {
+            $dStr = is_string($a->date) ? substr($a->date, 0, 10) : Carbon::parse($a->date)->format('Y-m-d');
+            $attendancesByUserAndDate[$a->user_id][$dStr] = $a;
+        }
 
         // 3. Approved leave dalam range → lookup [user_id][date] = leave_type
         $leaves = LeaveRequest::when($companyId, fn ($q) => $q->where('company_id', $companyId))
@@ -1696,7 +1728,7 @@ class AttendanceController extends Controller
 
         $regularHolidaySet = $holidays->where('is_collective', false)
             ->pluck('date')
-            ->map(fn ($d) => Carbon::parse($d)->format('Y-m-d'))
+            ->map(fn ($d) => is_string($d) ? substr($d, 0, 10) : Carbon::parse($d)->format('Y-m-d'))
             ->flip()
             ->all();
 
@@ -1710,21 +1742,12 @@ class AttendanceController extends Controller
                 ->get();
             
             foreach ($acceptedLeaves as $leave) {
-                $dateStr = Carbon::parse($leave->date)->format('Y-m-d');
+                $dateStr = is_string($leave->date) ? substr($leave->date, 0, 10) : Carbon::parse($leave->date)->format('Y-m-d');
                 $acceptedCollectiveLeaves[$leave->user_id][$dateStr] = true;
             }
         }
 
-        // 5. Iterate setiap hari × setiap karyawan → hasilkan baris lengkap
-        //    Menggunakan resolveSchedule() per-karyawan agar jadwal shift
-        //    (termasuk shift weekend, shift malam/lintas-hari) diperhitungkan
-        //    dengan benar — bukan hanya berdasarkan isWeekend() global.
-        $rows  = [];
-        $today = now()->toDateString();
-        $cur   = Carbon::parse($startDate);
-        $last  = Carbon::parse($endDate);
-
-        // Pre-load UserShift untuk semua user dalam satu query agar tidak N+1
+        // 5. Pre-load UserShift untuk semua user dalam satu query
         $userIds   = $users->pluck('id')->all();
         $userShifts = \App\Models\UserShift::with('shift')
             ->whereIn('user_id', $userIds)
@@ -1733,121 +1756,220 @@ class AttendanceController extends Controller
             ->get()
             ->groupBy('user_id');
 
-        // Pre-load AttendanceSetting (office) tiap karyawan
-        $userModels = User::with('office')
-            ->whereIn('id', $userIds)
+        // Pre-load AttendanceSetting (offices) untuk semua company yang relevan (1 query)
+        $companyIds = $users->pluck('company_id')->filter()->unique()->values();
+        $allOffices = AttendanceSetting::where(function ($q) use ($companyIds, $companyId) {
+                if ($companyId) $q->where('company_id', $companyId);
+                elseif ($companyIds->isNotEmpty()) $q->whereIn('company_id', $companyIds);
+            })
             ->get()
             ->keyBy('id');
+        $fallbackOffice = $allOffices->first();
+        $fallbackOffId = $fallbackOffice ? $fallbackOffice->id : 0;
 
-        // Pre-load semua ShiftSchedule yang relevan (indexed by shift_id_day)
+        // Precompute jadwal office per hari (0..6) agar O(1) array lookup tanpa array_map berulang
+        $officeScheduleByDow = [];
+        foreach ($allOffices as $offId => $off) {
+            $wDays = array_map('intval', (array) ($off->work_days ?? [1, 2, 3, 4, 5]));
+            for ($d = 0; $d <= 6; $d++) {
+                $isOff = !in_array($d, $wDays, true);
+                $custStart = (!$isOff && !empty($off->custom_schedules[$d]['start'])) ? $off->custom_schedules[$d]['start'] : null;
+                $officeScheduleByDow[$offId][$d] = [
+                    'is_off' => $isOff,
+                    'start'  => $isOff ? null : ($custStart ?? $off->work_start_time),
+                ];
+            }
+        }
+        $fallbackOffId = $fallbackOffice ? $fallbackOffice->id : 0;
+
         $shiftIds = $userShifts->flatten()->pluck('shift_id')->filter()->unique()->values()->all();
-        // Cache semua versi jadwal, diurutkan efektif terbaru dulu.
-        // Saat dipakai per tanggal, filter versi dengan effective_date <= tanggal.
-        $shiftScheduleCache = \App\Models\ShiftSchedule::whereIn('shift_id', $shiftIds)
-            ->orderByDesc('effective_date')
-            ->get()
-            ->groupBy(fn ($s) => $s->shift_id . '_' . $s->day_of_week);
+        $shiftScheduleCache = [];
+        if (!empty($shiftIds)) {
+            $rawSchedules = \App\Models\ShiftSchedule::whereIn('shift_id', $shiftIds)
+                ->orderByDesc('effective_date')
+                ->get();
+            foreach ($rawSchedules as $s) {
+                $k = $s->shift_id . '_' . $s->day_of_week;
+                $s->effective_date_str = is_string($s->effective_date)
+                    ? substr($s->effective_date, 0, 10)
+                    : $s->effective_date->toDateString();
+                $shiftScheduleCache[$k][] = $s;
+            }
+        }
 
-        while ($cur->lte($last)) {
-            $dateStr   = $cur->format('Y-m-d');
-            $isRegularHoliday = isset($regularHolidaySet[$dateStr]);
-            $isFuture  = $dateStr > $today;
-            $cur->addDay();
+        $userShiftsArray = [];
+        foreach ($userShifts as $uId => $assignments) {
+            foreach ($assignments as $a) {
+                $userShiftsArray[$uId][] = (object) [
+                    'shift_id'   => $a->shift_id,
+                    'is_active'  => (bool) optional($a->shift)->is_active,
+                    'start_date' => is_string($a->start_date) ? substr($a->start_date, 0, 10) : $a->start_date->toDateString(),
+                    'end_date'   => $a->end_date ? (is_string($a->end_date) ? substr($a->end_date, 0, 10) : $a->end_date->toDateString()) : null,
+                ];
+            }
+        }
+
+        $dates = [];
+        $curDate = Carbon::parse($endDate);
+        $firstDate = Carbon::parse($startDate);
+        $today = now()->toDateString();
+        while ($curDate->gte($firstDate)) {
+            $dStr = $curDate->format('Y-m-d');
+            $dates[] = [
+                'date'             => $dStr,
+                'dow'              => $curDate->dayOfWeek,
+                'is_holiday'       => isset($regularHolidaySet[$dStr]),
+                'is_future'        => $dStr > $today,
+            ];
+            $curDate->subDay();
+        }
+
+        $filterStatus = $filters['status'] ?? null;
+        $filterType   = $filters['type'] ?? null;
+        $filterSearch = !empty($filters['search']) ? strtolower($filters['search']) : null;
+
+        $isPaginated   = ($page !== null && $perPage !== null);
+        $offsetStart   = $isPaginated ? ($page - 1) * $perPage : 0;
+        $offsetEnd     = $isPaginated ? $offsetStart + $perPage : PHP_INT_MAX;
+
+        $totalFiltered        = 0;
+        $pageItems            = [];
+        $statusCounts         = [];
+        $typeCounts           = [];
+        $totalWorkingMinutes  = 0;
+        $totalOvertimeMinutes = 0;
+
+        foreach ($dates as $dInfo) {
+            $dateStr          = $dInfo['date'];
+            $dayOfWeek        = $dInfo['dow'];
+            $isRegularHoliday = $dInfo['is_holiday'];
+            $isFuture         = $dInfo['is_future'];
 
             foreach ($users as $user) {
-                $key      = $user->id . '_' . $dateStr;
-                $fullUser = $userModels->get($user->id);
+                $key = $user->id . '_' . $dateStr;
 
-                if (isset($attendances[$key])) {
-                    // Ada record presensi nyata — selalu tampilkan
-                    $att          = $attendances[$key];
-                    $checkoutDate = $att->check_out_time
-                        ? Carbon::parse($att->check_out_time)->timezone('Asia/Jakarta')->format('Y-m-d')
-                        : null;
-                    $isCrossDay = $checkoutDate && $checkoutDate > $dateStr;
-                    $lateMinutes = null;
-                    if ($att->status === 'late' && $att->check_in_time) {
-                        $schedule = $this->getWorkSchedule($fullUser, $dateStr);
-                        if ($schedule['work_start_time']) {
-                            $startSchedule = Carbon::parse($dateStr . ' ' . $schedule['work_start_time'], 'Asia/Jakarta');
-                            $checkInWib = Carbon::parse($att->check_in_time)->timezone('Asia/Jakarta');
-                            if ($checkInWib->greaterThan($startSchedule)) {
-                                $lateMinutes = (int) $startSchedule->diffInMinutes($checkInWib);
+                $shiftAssignment = null;
+                if (isset($userShiftsArray[$user->id])) {
+                    foreach ($userShiftsArray[$user->id] as $us) {
+                        if ($us->start_date <= $dateStr && ($us->end_date === null || $us->end_date >= $dateStr)) {
+                            $shiftAssignment = $us;
+                            break;
+                        }
+                    }
+                }
+
+                $workStartTime = null;
+                $isOff = false;
+
+                if ($shiftAssignment && $shiftAssignment->shift_id && $shiftAssignment->is_active) {
+                    $cacheKey = $shiftAssignment->shift_id . '_' . $dayOfWeek;
+                    if (isset($shiftScheduleCache[$cacheKey])) {
+                        $candidates = $shiftScheduleCache[$cacheKey];
+                        $shiftSched = null;
+                        foreach ($candidates as $s) {
+                            if ($s->effective_date_str <= $dateStr) {
+                                $shiftSched = $s;
+                                break;
                             }
                         }
+                        $shiftSched = $shiftSched ?? ($candidates[0] ?? null);
+                        if ($shiftSched) {
+                            $workStartTime = $shiftSched->work_start_time;
+                            $isOff = (bool) $shiftSched->is_off;
+                        }
                     }
-
-                    $rows[] = [
-                        'id'               => $att->id,
-                        'user_id'          => $att->user_id,
-                        'user_name'        => $att->user_name,
-                        'employee_code'    => $att->employee_code,
-                        'department'       => $att->department,
-                        'date'             => $dateStr,
-                        'checkout_date'    => $checkoutDate,
-                        'is_cross_day'     => $isCrossDay,
-                        'check_in_time'    => $att->check_in_time,
-                        'check_out_time'   => $att->check_out_time,
-                        'check_in_type'    => $att->check_in_type,
-                        'check_in_lat'     => $att->check_in_lat,
-                        'check_in_lng'     => $att->check_in_lng,
-                        'status'           => $att->status,
-                        'late_minutes'     => $lateMinutes,
-                        'overtime_minutes' => (int) ($att->overtime_minutes ?? 0),
-                        'is_holiday'       => (bool) $att->is_holiday,
-                        'working_minutes'  => $att->working_minutes,
-                    ];
-                } elseif (! $isFuture) {
-                    // Tidak ada presensi → tentukan apakah hari ini hari kerja
-                    // menggunakan resolveSchedule() per-karyawan (shift-aware)
-                    $schedule  = null;
-                    $dayOfWeek = Carbon::parse($dateStr)->dayOfWeek;
-
-                    // Cari shift aktif karyawan pada tanggal ini
-                    $shiftAssignment = ($userShifts->get($user->id) ?? collect())
-                        ->first(function ($us) use ($dateStr) {
-                            $endOk = $us->end_date === null
-                                || (is_string($us->end_date)
-                                    ? $us->end_date >= $dateStr
-                                    : $us->end_date->toDateString() >= $dateStr);
-                            return $us->start_date <= $dateStr && $endOk;
-                        });
-
-                    $isOff = false;
-                    if ($shiftAssignment && $shiftAssignment->shift_id && optional($shiftAssignment->shift)->is_active) {
-                        // Karyawan punya jadwal shift → gunakan versi shift schedule
-                        // yang berlaku pada tanggal ini (effective_date <= tanggal).
-                        $cacheKey   = $shiftAssignment->shift_id . '_' . $dayOfWeek;
-                        $candidates = $shiftScheduleCache->get($cacheKey) ?? collect();
-                        // Urutan sudah DESC effective_date → ambil versi pertama yang <= tanggal
-                        $shiftSched = $candidates->first(
-                            fn ($s) => $s->effective_date->toDateString() <= $dateStr
-                        ) ?? $candidates->first(); // fallback ke versi terbaru
-                        $isOff = $shiftSched ? (bool) $shiftSched->is_off : false;
+                } else {
+                    $offId = $user->attendance_setting_id ?? $fallbackOffId;
+                    if (isset($officeScheduleByDow[$offId][$dayOfWeek])) {
+                        $isOff         = $officeScheduleByDow[$offId][$dayOfWeek]['is_off'];
+                        $workStartTime = $officeScheduleByDow[$offId][$dayOfWeek]['start'];
                     } else {
-                        // Fallback ke jam kerja kantor
-                        $office = $fullUser ? ($fullUser->office
-                            ?? \App\Models\AttendanceSetting::where('company_id', $user->company_id ?? $fullUser->company_id)
-                                ->orderBy('id')->first()) : null;
+                        $isOff = ! in_array($dayOfWeek, [1, 2, 3, 4, 5], true);
+                    }
+                }
 
-                        if ($office) {
-                            $workDays = $office->work_days ?? [1, 2, 3, 4, 5];
-                            $isOff    = ! in_array($dayOfWeek, array_map('intval', (array) $workDays));
-                        } else {
-                            // Tidak ada setting → gunakan Senin-Jumat sebagai default
-                            $isOff = ! in_array($dayOfWeek, [1, 2, 3, 4, 5]);
+                $att = $attendancesByUserAndDate[$user->id][$dateStr] ?? null;
+                if ($att) {
+                    $status = $att->status;
+                    $type   = $att->check_in_type;
+
+                    if ($filterStatus && $status !== $filterStatus) continue;
+                    if ($filterType && $type !== $filterType) continue;
+                    if ($filterSearch) {
+                        if (!str_contains($user->search_name, $filterSearch) && !str_contains($user->search_code, $filterSearch)) {
+                            continue;
                         }
                     }
 
-                    // Libur nasional/perusahaan juga dianggap libur
+                    $totalFiltered++;
+                    $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+                    if ($type) {
+                        $typeCounts[$type] = ($typeCounts[$type] ?? 0) + 1;
+                    }
+                    if ($att->working_minutes) {
+                        $totalWorkingMinutes += (int) $att->working_minutes;
+                    }
+                    if ($att->overtime_minutes) {
+                        $totalOvertimeMinutes += (int) $att->overtime_minutes;
+                    }
+
+                    if (!$isPaginated || ($totalFiltered > $offsetStart && $totalFiltered <= $offsetEnd)) {
+                        $checkoutDate = $att->check_out_time ? substr($att->check_out_time, 0, 10) : null;
+                        $isCrossDay = $checkoutDate && $checkoutDate > $dateStr;
+                        $lateMinutes = null;
+                        if ($status === 'late' && $att->check_in_time && $workStartTime) {
+                            $inTimeStr = strlen($att->check_in_time) >= 16 ? substr($att->check_in_time, 11, 5) : null;
+                            if ($inTimeStr) {
+                                $schedMins = (int) substr($workStartTime, 0, 2) * 60 + (int) substr($workStartTime, 3, 2);
+                                $inMins    = (int) substr($inTimeStr, 0, 2) * 60 + (int) substr($inTimeStr, 3, 2);
+                                if ($inMins > $schedMins) {
+                                    $lateMinutes = $inMins - $schedMins;
+                                }
+                            }
+                        }
+
+                        $pageItems[] = [
+                            'id'               => $att->id,
+                            'user_id'          => $att->user_id,
+                            'user_name'        => $att->user_name,
+                            'employee_code'    => $att->employee_code,
+                            'department'       => $att->department,
+                            'date'             => $dateStr,
+                            'checkout_date'    => $checkoutDate,
+                            'is_cross_day'     => $isCrossDay,
+                            'check_in_time'    => $att->check_in_time,
+                            'check_out_time'   => $att->check_out_time,
+                            'check_in_type'    => $att->check_in_type,
+                            'check_in_lat'     => $att->check_in_lat,
+                            'check_in_lng'     => $att->check_in_lng,
+                            'status'           => $status,
+                            'late_minutes'     => $lateMinutes,
+                            'overtime_minutes' => (int) ($att->overtime_minutes ?? 0),
+                            'is_holiday'       => (bool) $att->is_holiday,
+                            'working_minutes'  => $att->working_minutes,
+                        ];
+                    }
+                } elseif (! $isFuture) {
                     $isHolidayForUser = $isRegularHoliday || isset($acceptedCollectiveLeaves[$user->id][$dateStr]);
                     if ($isHolidayForUser) {
                         $isOff = true;
                     }
 
-                    if ($isOff) {
-                        // Hari libur → tetap tampilkan di laporan dengan status 'libur'
-                        $rows[] = [
+                    $status = $isOff ? 'libur' : ($leaveLookup[$user->id][$dateStr] ?? 'absent');
+
+                    if ($filterStatus && $status !== $filterStatus) continue;
+                    if ($filterType) continue;
+                    if ($filterSearch) {
+                        if (!str_contains($user->search_name, $filterSearch) && !str_contains($user->search_code, $filterSearch)) {
+                            continue;
+                        }
+                    }
+
+                    $totalFiltered++;
+                    $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+
+                    if (!$isPaginated || ($totalFiltered > $offsetStart && $totalFiltered <= $offsetEnd)) {
+                        $pageItems[] = [
                             'id'               => null,
                             'user_id'          => $user->id,
                             'user_name'        => $user->name,
@@ -1861,50 +1983,96 @@ class AttendanceController extends Controller
                             'check_in_type'    => null,
                             'check_in_lat'     => null,
                             'check_in_lng'     => null,
-                            'status'           => 'libur',
+                            'status'           => $status,
                             'late_minutes'     => null,
                             'overtime_minutes' => 0,
-                            'is_holiday'       => $isHolidayForUser,
+                            'is_holiday'       => $isOff ? $isHolidayForUser : false,
                             'working_minutes'  => null,
                         ];
-                        continue;
                     }
-
-                    // Hari kerja tapi tidak ada presensi → absent / cuti / izin
-                    $leaveType = $leaveLookup[$user->id][$dateStr] ?? null;
-                    $rows[] = [
-                        'id'               => null,
-                        'user_id'          => $user->id,
-                        'user_name'        => $user->name,
-                        'employee_code'    => $user->employee_code,
-                        'department'       => $user->department,
-                        'date'             => $dateStr,
-                        'checkout_date'    => null,
-                        'is_cross_day'     => false,
-                        'check_in_time'    => null,
-                        'check_out_time'   => null,
-                        'check_in_type'    => null,
-                        'check_in_lat'     => null,
-                        'check_in_lng'     => null,
-                        'status'           => $leaveType ?? 'absent',
-                        'late_minutes'     => null,
-                        'overtime_minutes' => 0,
-                        'is_holiday'       => false,
-                        'working_minutes'  => null,
-                    ];
                 }
-
             }
         }
 
-        // Sort: tanggal terbaru di atas, lalu nama
-        usort($rows, fn ($a, $b) =>
-            $b['date'] !== $a['date']
-                ? strcmp($b['date'], $a['date'])
-                : strcmp($a['user_name'], $b['user_name'])
+        if ($isPaginated) {
+            return [
+                'summary' => [
+                    'present'                => $statusCounts['present']     ?? 0,
+                    'late'                   => $statusCounts['late']        ?? 0,
+                    'absent'                 => $statusCounts['absent']      ?? 0,
+                    'early_leave'            => $statusCounts['early_leave'] ?? 0,
+                    'cuti'                   => $statusCounts['cuti']        ?? 0,
+                    'izin'                   => $statusCounts['izin']        ?? 0,
+                    'sakit'                  => $statusCounts['sakit']       ?? 0,
+                    'total_working_minutes'  => $totalWorkingMinutes,
+                    'total_overtime_minutes' => $totalOvertimeMinutes,
+                ],
+                'by_type' => [
+                    'onsite' => $typeCounts['onsite'] ?? 0,
+                    'wfh'    => $typeCounts['wfh']    ?? 0,
+                    'field'  => $typeCounts['field']  ?? 0,
+                ],
+                'data'         => $pageItems,
+                'total'        => $totalFiltered,
+                'current_page' => $page,
+                'per_page'     => $perPage,
+                'last_page'    => (int) ceil($totalFiltered / max(1, $perPage)),
+            ];
+        }
+
+        return $pageItems;
+    }
+
+    // 5. reportAttendance() — rekap presensi per periode (semua karyawan)
+    public function reportAttendance(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+
+        $validated = $request->validate([
+            'start_date' => 'nullable|date',
+            'end_date'   => 'nullable|date|after_or_equal:start_date',
+            'department' => 'nullable|string|max:100',
+            'status'     => 'nullable|in:present,late,absent,early_leave,cuti,izin,sakit,wfh,libur',
+            'type'       => 'nullable|in:onsite,wfh,field',
+            'search'     => 'nullable|string|max:100',
+            'office_id'  => 'nullable|integer',
+        ]);
+
+        $companyId = $actor->role === 'super_admin' ? null : $actor->company_id;
+        $startDate = $validated['start_date'] ?? now()->startOfMonth()->toDateString();
+        $endDate   = $validated['end_date']   ?? now()->toDateString();
+
+        if (Carbon::parse($startDate)->diffInDays(Carbon::parse($endDate)) > 62) {
+            return response()->json([
+                'message' => 'Rentang tanggal maksimal 62 hari (2 bulan). Gunakan filter yang lebih sempit atau export CSV untuk data lebih lama.',
+            ], 422);
+        }
+
+        $page    = max(1, (int) $request->query('page', 1));
+        $perPage = 30;
+
+        $result = $this->buildFullRows(
+            $companyId,
+            $startDate,
+            $endDate,
+            $validated['department'] ?? null,
+            $validated['office_id'] ?? null,
+            $validated,
+            $page,
+            $perPage
         );
 
-        return $rows;
+        return response()->json([
+            'summary' => $result['summary'],
+            'by_type' => $result['by_type'],
+            'report'  => [
+                'data'         => $result['data'],
+                'current_page' => $result['current_page'],
+                'per_page'     => $result['per_page'],
+                'total'        => $result['total'],
+                'last_page'    => $result['last_page'],
+            ],
+        ]);
     }
 
     // 5c. exportReport() — export laporan presensi ke CSV
@@ -1932,21 +2100,14 @@ class AttendanceController extends Controller
             }, 'error.txt', ['Content-Type' => 'text/plain']);
         }
 
-        $rows = $this->buildFullRows($companyId, $startDate, $endDate, $validated['department'] ?? null, $validated['office_id'] ?? null);
-
-        if ($validated['status'] ?? null) {
-            $rows = array_values(array_filter($rows, fn ($r) => $r['status'] === $validated['status']));
-        }
-        if ($validated['type'] ?? null) {
-            $rows = array_values(array_filter($rows, fn ($r) => $r['check_in_type'] === $validated['type']));
-        }
-        if (!empty($validated['search'])) {
-            $searchStr = strtolower($validated['search']);
-            $rows = array_values(array_filter($rows, fn ($r) => 
-                str_contains(strtolower($r['user_name'] ?? ''), $searchStr) ||
-                str_contains(strtolower($r['employee_code'] ?? ''), $searchStr)
-            ));
-        }
+        $rows = $this->buildFullRows(
+            $companyId,
+            $startDate,
+            $endDate,
+            $validated['department'] ?? null,
+            $validated['office_id'] ?? null,
+            $validated
+        );
 
         $filename = 'laporan-presensi-' . now()->format('Ymd-His') . '.csv';
 
@@ -1982,88 +2143,6 @@ class AttendanceController extends Controller
         }, $filename, ['Content-Type' => 'text/csv']);
     }
 
-    // 5. reportAttendance() — rekap presensi per periode (semua karyawan)
-    public function reportAttendance(Request $request): JsonResponse
-    {
-        $actor = $request->user();
-
-        $validated = $request->validate([
-            'start_date' => 'nullable|date',
-            'end_date'   => 'nullable|date|after_or_equal:start_date',
-            'department' => 'nullable|string|max:100',
-            'status'     => 'nullable|in:present,late,absent,early_leave,cuti,izin,sakit,wfh,libur',
-            'type'       => 'nullable|in:onsite,wfh,field',
-            'search'     => 'nullable|string|max:100',
-            'office_id'  => 'nullable|integer',
-        ]);
-
-        $companyId = $actor->role === 'super_admin' ? null : $actor->company_id;
-        $startDate = $validated['start_date'] ?? now()->startOfMonth()->toDateString();
-        $endDate   = $validated['end_date']   ?? now()->toDateString();
-
-        if (Carbon::parse($startDate)->diffInDays(Carbon::parse($endDate)) > 62) {
-            return response()->json([
-                'message' => 'Rentang tanggal maksimal 62 hari (2 bulan). Gunakan filter yang lebih sempit atau export CSV untuk data lebih lama.',
-            ], 422);
-        }
-
-        // Bangun semua baris: presensi nyata + virtual absent/leave
-        $rows = $this->buildFullRows($companyId, $startDate, $endDate, $validated['department'] ?? null, $validated['office_id'] ?? null);
-
-        // Terapkan filter status, tipe lokasi, dan pencarian nama
-        if ($validated['status'] ?? null) {
-            $rows = array_values(array_filter($rows, fn ($r) => $r['status'] === $validated['status']));
-        }
-        if ($validated['type'] ?? null) {
-            $rows = array_values(array_filter($rows, fn ($r) => $r['check_in_type'] === $validated['type']));
-        }
-        if (!empty($validated['search'])) {
-            $searchStr = strtolower($validated['search']);
-            $rows = array_values(array_filter($rows, fn ($r) => 
-                str_contains(strtolower($r['user_name'] ?? ''), $searchStr) ||
-                str_contains(strtolower($r['employee_code'] ?? ''), $searchStr)
-            ));
-        }
-
-        // Hitung summary dari baris yang sudah difilter
-        $statusCounts         = array_count_values(array_column($rows, 'status'));
-        $typeCounts           = array_count_values(array_filter(array_column($rows, 'check_in_type')));
-        $totalWorkingMinutes  = (int) array_sum(array_column($rows, 'working_minutes'));
-        $totalOvertimeMinutes = (int) array_sum(array_column($rows, 'overtime_minutes'));
-
-        // Paginasi manual
-        $page    = max(1, (int) $request->query('page', 1));
-        $perPage = 30;
-        $total   = count($rows);
-        $items   = array_slice($rows, ($page - 1) * $perPage, $perPage);
-
-        return response()->json([
-            'summary' => [
-                'present'                => $statusCounts['present']     ?? 0,
-                'late'                   => $statusCounts['late']        ?? 0,
-                'absent'                 => $statusCounts['absent']      ?? 0,
-                'early_leave'            => $statusCounts['early_leave'] ?? 0,
-                'cuti'                   => $statusCounts['cuti']        ?? 0,
-                'izin'                   => $statusCounts['izin']        ?? 0,
-                'sakit'                  => $statusCounts['sakit']       ?? 0,
-                'total_working_minutes'  => $totalWorkingMinutes,
-                'total_overtime_minutes' => $totalOvertimeMinutes,
-            ],
-            'by_type' => [
-                'onsite' => $typeCounts['onsite'] ?? 0,
-                'wfh'    => $typeCounts['wfh']    ?? 0,
-                'field'  => $typeCounts['field']  ?? 0,
-            ],
-            'report' => [
-                'data'         => $items,
-                'current_page' => $page,
-                'per_page'     => $perPage,
-                'total'        => $total,
-                'last_page'    => (int) ceil($total / max(1, $perPage)),
-            ],
-        ]);
-    }
-
     // ═══════════════════════════════════════════════════════════
     // BAGIAN A2 — CRUD pengaturan kantor (attendance_settings)
     //             HRD bisa punya >1 kantor per perusahaan
@@ -2092,6 +2171,7 @@ class AttendanceController extends Controller
             'overtime_enabled'               => 'sometimes|boolean',
             'min_overtime_minutes'           => 'sometimes|integer|min:0|max:480',
             'early_leave_tolerance_minutes'  => 'sometimes|nullable|integer|min:0|max:480',
+            'min_checkout_interval_minutes'  => 'sometimes|nullable|integer|min:0|max:480',
             'checkout_reminder_minutes'      => 'sometimes|integer|min:5|max:120',
             'auto_checkout_grace_minutes'    => 'sometimes|integer|min:30|max:240',
             // Validasi jam kerja mingguan (opsional, bisa di-toggle per kantor)
@@ -2325,6 +2405,7 @@ class AttendanceController extends Controller
             'late_tolerance_minutes',
             'late_checkin_cutoff_minutes',
             'early_leave_tolerance_minutes',
+            'min_checkout_interval_minutes',
             'overtime_enabled',
             'min_overtime_minutes',
             'checkout_reminder_minutes',
@@ -4027,8 +4108,13 @@ class AttendanceController extends Controller
             ], 'holiday', $holiday->id);
         }
 
-        // Hapus semua leave_request terkait cuti bersama ini
-        \App\Models\LeaveRequest::where('holiday_id', $holiday->id)->delete();
+        // Hapus semua leave_request terkait cuti bersama ini (baik via holiday_id maupun nama/tanggal)
+        \App\Models\LeaveRequest::where('holiday_id', $holiday->id)
+            ->orWhere(function ($q) use ($holiday) {
+                $q->where('reason', "Cuti bersama: {$holiday->name}")
+                    ->whereDate('start_date', $holiday->date);
+            })
+            ->delete();
     }
 
     // ─── Helper: kembalikan saldo cuti approved saat HR menambah libur nasional/cabang ───
@@ -4411,7 +4497,17 @@ class AttendanceController extends Controller
             ] + Attendance::make()->buildSnapshot($jadwalHariIni, $jamPulang, $acuanOffice)
         );
 
-        $this->logActivity($user->id, $user->company_id, 'attendance_check_in', "Check-in ({$checkInType}) status {$status}", 'attendance', $attendance->id);
+        // ─── Queue Job: activity log & notifikasi di background ─────────
+        // Operasi ini dilempar ke antrean agar response check-in tetap instan
+        // saat peak hour (50+ karyawan bersamaan).
+        ProcessAttendanceBackgroundJob::dispatch(
+            $user->id,
+            $user->company_id,
+            'attendance_check_in',
+            "Check-in ({$checkInType}) status {$status}",
+            'attendance',
+            $attendance->id,
+        );
 
         // Hitung jadwal reminder & auto-checkout untuk Flutter (scheduling notif lokal).
         $reminderAt        = null;
@@ -4506,6 +4602,36 @@ class AttendanceController extends Controller
                 return response()->json(['message' => 'Anda sudah check-out hari ini.'], 409);
             }
             return response()->json(['message' => 'Anda belum check-in hari ini.'], 403);
+        }
+
+        // ─── Validasi Jeda Minimal Check-out (Cooldown Buffer) ───────────────
+        // Mencegah accidental tap / presensi kilat yang merusak rekap jam kerja.
+        // Batas menit diambil dari snapshot attendance, fallback setting kantor, default 10 mnt.
+        $snapOffice = $attendance->hasSnapshot() ? $attendance->snapshotOffice() : null;
+        $minIntervalMinutes = $attendance->snap_min_checkout_interval_minutes
+            ?? $snapOffice?->min_checkout_interval_minutes
+            ?? ($user->attendance_setting_id ? \App\Models\AttendanceSetting::find($user->attendance_setting_id)?->min_checkout_interval_minutes : null)
+            ?? 10;
+
+        if ($minIntervalMinutes > 0 && $attendance->check_in_time) {
+            $checkInCarbon = Carbon::parse($attendance->check_in_time)->setTimezone('Asia/Jakarta');
+            $nowWib        = now('Asia/Jakarta');
+            $diffSeconds   = $checkInCarbon->diffInSeconds($nowWib, false);
+            $requiredSecs  = $minIntervalMinutes * 60;
+
+            if ($diffSeconds < $requiredSecs) {
+                $earliestCheckoutTime = $checkInCarbon->copy()->addMinutes($minIntervalMinutes);
+                $remainingMinutes     = max(1, (int) ceil(($requiredSecs - $diffSeconds) / 60));
+
+                return response()->json([
+                    'message'              => "Check-out belum dapat dilakukan. Minimal durasi kehadiran adalah {$minIntervalMinutes} menit setelah check-in. Silakan coba lagi pukul {$earliestCheckoutTime->format('H:i')} WIB (sisa {$remainingMinutes} menit).",
+                    'min_checkout_minutes' => $minIntervalMinutes,
+                    'check_in_time'        => $checkInCarbon->format('H:i:s'),
+                    'earliest_checkout_at' => $earliestCheckoutTime->format('H:i'),
+                    'remaining_minutes'    => $remainingMinutes,
+                    'is_cooldown'          => true,
+                ], 422);
+            }
         }
 
         $checkOutTime = now();
@@ -4620,7 +4746,15 @@ class AttendanceController extends Controller
         $attendance->update($updateData);
         $attendance->refresh();
 
-        $this->logActivity($user->id, $user->company_id, 'attendance_check_out', 'Check-out', 'attendance', $attendance->id);
+        // ─── Queue Job: activity log di background ─────────────────────
+        ProcessAttendanceBackgroundJob::dispatch(
+            $user->id,
+            $user->company_id,
+            'attendance_check_out',
+            'Check-out',
+            'attendance',
+            $attendance->id,
+        );
 
         return response()->json([
             'message'    => 'Check-out berhasil.',
@@ -4998,7 +5132,10 @@ class AttendanceController extends Controller
             'user_id'    => 'nullable|integer',
             'start_date' => 'nullable|date',
             'end_date'   => 'nullable|date|after_or_equal:start_date',
+            'per_page'   => 'nullable|integer|min:1|max:2000',
         ]);
+
+        $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         $approvals = OvertimeApproval::query()
             ->join('users', 'overtime_approvals.user_id', '=', 'users.id')
@@ -5029,7 +5166,7 @@ class AttendanceController extends Controller
                 'overtime_approvals.created_at',
             ])
             ->orderByDesc('attendances.date')
-            ->paginate(20);
+            ->paginate($limit);
 
         // Tambahkan format jam untuk kemudahan tampilan
         $approvals->getCollection()->transform(function ($a) {
@@ -5189,6 +5326,7 @@ class AttendanceController extends Controller
         $actor = $request->user();
 
         $status = $request->query('status'); // pending|approved|rejected|null(semua)
+        $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         $query = DeviceChangeRequest::with([
                 'user:id,name,email,employee_code,department',
@@ -5205,7 +5343,7 @@ class AttendanceController extends Controller
             ->orderByRaw("FIELD(status, 'pending', 'approved', 'rejected')")
             ->orderByDesc('created_at');
 
-        return response()->json($query->paginate(20));
+        return response()->json($query->paginate($limit));
     }
 
     // approveDeviceChange() — HR setujui pindah device: device baru GANTIKAN lama.

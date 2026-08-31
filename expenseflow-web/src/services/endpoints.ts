@@ -31,11 +31,32 @@ export const receiptApi = {
   // Inbox: struk submitted yang menunggu approval (paginated)
   inbox: () => apiGet('/dashboard/receipts'),
   // Semua struk dengan filter status + summary
-  all: (status?: 'submitted' | 'approved' | 'rejected') =>
+  all: (status?: 'submitted' | 'approved' | 'rejected' | 'paid') =>
     apiGet('/dashboard/receipts/all', { status }),
   show: (id: number | string) => apiGet(`/dashboard/receipts/${id}`),
-  approve: (id: number | string, notes: string) =>
-    apiPost(`/dashboard/receipts/${id}/approve`, { notes }),
+  approve: (id: number | string, notes: string, approvedAmount?: number) =>
+    apiPost(`/dashboard/receipts/${id}/approve`, {
+      notes,
+      approved_amount: approvedAmount !== undefined ? approvedAmount : undefined,
+    }),
+  bulkApprove: (receiptIds: number[], notes?: string) =>
+    apiPost('/dashboard/receipts/bulk-approve', {
+      receipt_ids: receiptIds,
+      notes,
+    }),
+  pay: (id: number | string, payload: { payment_method: string; payment_ref_no?: string }) =>
+    apiPost(`/dashboard/receipts/${id}/pay`, payload),
+  bulkPay: (receiptIds: number[], payload: { payment_method: string; payment_ref_no?: string }) =>
+    apiPost('/dashboard/receipts/bulk-pay', {
+      receipt_ids: receiptIds,
+      ...payload,
+    }),
+  exportDisbursement: (status: 'approved' | 'paid' = 'approved') =>
+    apiDownload(
+      '/dashboard/receipts/export-disbursement',
+      `rekap-transfer-reimbursement-${status}-${new Date().toISOString().slice(0, 10)}.csv`,
+      { status }
+    ),
   reject: (id: number | string, notes: string) =>
     apiPost(`/dashboard/receipts/${id}/reject`, { notes }),
   // Fetch image as blob dan convert ke data URL untuk display di <img>
@@ -120,8 +141,8 @@ export const attendanceApi = {
   today: () => apiGet('/dashboard/attendance/today'),
 
   // Daftar karyawan + status attendance/WFH
-  users: (filter?: 'enabled' | 'disabled') =>
-    apiGet('/dashboard/attendance/users', { filter }),
+  users: (params?: { filter?: 'enabled' | 'disabled'; per_page?: number | string } | 'enabled' | 'disabled') =>
+    apiGet('/dashboard/attendance/users', typeof params === 'string' ? { filter: params } : (params as Record<string, string | number | boolean>)),
   // Semua karyawan aktif (tanpa pagination) — untuk dropdown pengecualian libur
   allUsers: () =>
     apiGet('/dashboard/attendance/users/all'),
@@ -136,6 +157,7 @@ export const attendanceApi = {
     leave_type?: 'wfh' | 'izin' | 'sakit' | 'cuti';
     user_id?: number;
     page?: number;
+    per_page?: number;
   }) => apiGet('/dashboard/attendance/leaves', filters),
   approveLeave: (id: number | string) =>
     apiPost(`/dashboard/attendance/leaves/${id}/approve`),
@@ -324,6 +346,7 @@ export const overtimeApi = {
     start_date?: string;
     end_date?: string;
     page?: number;
+    per_page?: number;
   }) => apiGet('/dashboard/attendance/overtime-approvals', filters as Record<string, string | number>),
 
   approve: (id: number | string, notes?: string) =>
@@ -338,6 +361,7 @@ export const deviceChangeApi = {
   list: (filters?: {
     status?: 'pending' | 'approved' | 'rejected';
     page?: number;
+    per_page?: number;
   }) => apiGet('/dashboard/attendance/device-changes', filters as Record<string, string | number>),
 
   approve: (id: number | string, notes?: string) =>

@@ -15,8 +15,9 @@ class RiwayatScreen extends StatefulWidget {
 
 class _RiwayatScreenState extends State<RiwayatScreen> {
   String _filter = 'Semua';
+  DateTimeRange? _selectedDateRange;
 
-  static const _filters = ['Semua', 'Menunggu', 'Disetujui', 'Ditolak', 'Draf'];
+  static const _filters = ['Semua', 'Menunggu', 'Pending', 'Dibayar', 'Ditolak', 'Draf'];
 
   @override
   void initState() {
@@ -26,9 +27,82 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
     });
   }
 
+  String _formatDate(DateTime d) {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
+    return '${d.day.toString().padLeft(2, '0')} ${months[d.month - 1]} ${d.year}';
+  }
+
   List<ReceiptRecord> _filtered(List<ReceiptRecord> all) {
-    if (_filter == 'Semua') return all;
-    return all.where((r) => r.displayStatus == _filter).toList();
+    var list = all;
+    if (_filter != 'Semua') {
+      list = list.where((r) => r.displayStatus == _filter).toList();
+    }
+    if (_selectedDateRange != null) {
+      list = list.where((r) {
+        final dStr = r.receiptDate ?? r.ocrRawDate ?? r.createdAt;
+        if (dStr.isEmpty) return true;
+        final raw = dStr.length >= 10 ? dStr.substring(0, 10) : dStr;
+        final parsed = DateTime.tryParse(raw);
+        if (parsed == null) return true;
+        final start = DateTime(_selectedDateRange!.start.year, _selectedDateRange!.start.month, _selectedDateRange!.start.day);
+        final end = DateTime(_selectedDateRange!.end.year, _selectedDateRange!.end.month, _selectedDateRange!.end.day, 23, 59, 59);
+        return (parsed.isAfter(start) || parsed.isAtSameMomentAs(start)) &&
+               (parsed.isBefore(end) || parsed.isAtSameMomentAs(end));
+      }).toList();
+    }
+    return list;
+  }
+
+  Future<void> _pickDateRange() async {
+    final now = DateTime.now();
+    final picked = await showDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(now.year + 2),
+      initialDateRange: _selectedDateRange ?? DateTimeRange(
+        start: DateTime(now.year, now.month, 1),
+        end: DateTime(now.year, now.month, now.day),
+      ),
+      builder: (context, child) {
+        return Theme(
+          data: Theme.of(context).copyWith(
+            colorScheme: const ColorScheme.light(
+              primary: Color(0xFF0088FF),
+              onPrimary: Colors.white,
+              surface: Colors.white,
+              onSurface: Colors.black87,
+            ),
+          ),
+          child: child!,
+        );
+      },
+    );
+    if (picked != null) {
+      setState(() {
+        _selectedDateRange = picked;
+      });
+    }
+  }
+
+  void _setDatePreset(String preset) {
+    final now = DateTime.now();
+    setState(() {
+      if (preset == 'bulan_ini') {
+        _selectedDateRange = DateTimeRange(
+          start: DateTime(now.year, now.month, 1),
+          end: DateTime(now.year, now.month, now.day),
+        );
+      } else if (preset == 'bulan_lalu') {
+        final lastMonth = DateTime(now.year, now.month - 1, 1);
+        final lastMonthEnd = DateTime(now.year, now.month, 0);
+        _selectedDateRange = DateTimeRange(
+          start: lastMonth,
+          end: lastMonthEnd,
+        );
+      } else {
+        _selectedDateRange = null;
+      }
+    });
   }
 
   @override
@@ -68,6 +142,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
           // ─── Kartu statistik bulan ini ─────────────────────────────
           Consumer<ReceiptProvider>(
             builder: (context, prov, _) {
+              final paidCount = prov.receipts.where((r) => r.isPaid).length;
               return Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 16,
@@ -118,7 +193,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    // Disetujui
+                    // Disetujui / Cair
                     Expanded(
                       child: Container(
                         padding: const EdgeInsets.all(16),
@@ -131,7 +206,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             const Text(
-                              'Disetujui',
+                              'Disetujui / Cair',
                               style: TextStyle(
                                 color: Color(0xFF2E7D32),
                                 fontSize: 12,
@@ -140,7 +215,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                             ),
                             const SizedBox(height: 4),
                             Text(
-                              '${prov.approvedCount} struk',
+                              '${prov.approvedCount + paidCount} struk',
                               style: const TextStyle(
                                 fontSize: 16,
                                 fontWeight: FontWeight.bold,
@@ -157,9 +232,87 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
             },
           ),
 
+          // ─── Filter Tanggal Bar ─────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: _selectedDateRange != null ? const Color(0xFFE3F2FD) : Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: _selectedDateRange != null ? const Color(0xFF90CAF9) : Colors.grey.shade200,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.calendar_month,
+                    size: 17,
+                    color: _selectedDateRange != null ? const Color(0xFF1565C0) : Colors.grey.shade600,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: InkWell(
+                      onTap: _pickDateRange,
+                      child: Text(
+                        _selectedDateRange != null
+                            ? '${_formatDate(_selectedDateRange!.start)} – ${_formatDate(_selectedDateRange!.end)}'
+                            : 'Semua Tanggal',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: _selectedDateRange != null ? FontWeight.bold : FontWeight.w500,
+                          color: _selectedDateRange != null ? const Color(0xFF1565C0) : Colors.grey.shade700,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                  if (_selectedDateRange != null) ...[
+                    GestureDetector(
+                      onTap: () => setState(() => _selectedDateRange = null),
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade100,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.close, size: 14, color: Color(0xFF0D47A1)),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  PopupMenuButton<String>(
+                    tooltip: 'Opsi Tanggal',
+                    icon: Icon(
+                      Icons.tune,
+                      size: 16,
+                      color: _selectedDateRange != null ? const Color(0xFF1565C0) : Colors.grey.shade600,
+                    ),
+                    padding: EdgeInsets.zero,
+                    onSelected: (val) {
+                      if (val == 'custom') {
+                        _pickDateRange();
+                      } else {
+                        _setDatePreset(val);
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(value: 'semua', child: Text('Semua Tanggal', style: TextStyle(fontSize: 13))),
+                      const PopupMenuItem(value: 'bulan_ini', child: Text('Bulan Ini', style: TextStyle(fontSize: 13))),
+                      const PopupMenuItem(value: 'bulan_lalu', child: Text('Bulan Lalu', style: TextStyle(fontSize: 13))),
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(value: 'custom', child: Text('Pilih Rentang...', style: TextStyle(fontSize: 13))),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+
           // ─── Filter chips ───────────────────────────────────────────
           Container(
-            height: 50,
+            height: 44,
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: ListView(
               scrollDirection: Axis.horizontal,
@@ -168,6 +321,8 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                   .toList(),
             ),
           ),
+
+          const SizedBox(height: 4),
 
           // ─── Daftar struk ───────────────────────────────────────────
           Expanded(
@@ -189,19 +344,39 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                   child: items.isEmpty
                       ? ListView(
                           physics: const AlwaysScrollableScrollPhysics(),
-                          children: const [
-                            SizedBox(height: 100),
+                          children: [
+                            const SizedBox(height: 80),
                             Center(
-                              child: Text(
-                                'Belum ada struk.',
-                                style: TextStyle(color: Colors.grey),
+                              child: Column(
+                                children: [
+                                  Icon(Icons.receipt_long_outlined, size: 48, color: Colors.grey.shade400),
+                                  const SizedBox(height: 8),
+                                  Text(
+                                    _selectedDateRange != null
+                                        ? 'Tidak ada struk pada rentang tanggal ini.'
+                                        : 'Belum ada struk.',
+                                    style: const TextStyle(color: Colors.grey, fontSize: 13),
+                                  ),
+                                  if (_selectedDateRange != null || _filter != 'Semua') ...[
+                                    const SizedBox(height: 8),
+                                    TextButton(
+                                      onPressed: () {
+                                        setState(() {
+                                          _filter = 'Semua';
+                                          _selectedDateRange = null;
+                                        });
+                                      },
+                                      child: const Text('Reset Filter'),
+                                    ),
+                                  ],
+                                ],
                               ),
                             ),
                           ],
                         )
                       : ListView.builder(
                           physics: const AlwaysScrollableScrollPhysics(),
-                          padding: const EdgeInsets.fromLTRB(16, 8, 16, 80),
+                          padding: const EdgeInsets.fromLTRB(16, 4, 16, 80),
                           itemCount: items.length,
                           itemBuilder: (_, i) =>
                               _ReceiptCard(receipt: items[i]),
@@ -253,10 +428,15 @@ class _ReceiptCard extends StatelessWidget {
     Color statusBorder;
 
     switch (receipt.status) {
+      case 'paid':
+        statusColor = const Color(0xFF00695C);
+        statusBg = const Color(0xFFE0F2F1);
+        statusBorder = const Color(0xFF80CBC4);
+        break;
       case 'approved':
-        statusColor = const Color(0xFF2E7D32);
-        statusBg = const Color(0xFFE8F5E9);
-        statusBorder = const Color(0xFFA5D6A7);
+        statusColor = const Color(0xFF1565C0);
+        statusBg = const Color(0xFFE3F2FD);
+        statusBorder = const Color(0xFF90CAF9);
         break;
       case 'rejected':
         statusColor = const Color(0xFFC62828);
@@ -273,6 +453,10 @@ class _ReceiptCard extends StatelessWidget {
         statusBg = const Color(0xFFECEFF1);
         statusBorder = const Color(0xFFCFD8DC);
     }
+
+    final hasAdjustedAmount = receipt.approvedAmount != null &&
+        receipt.claimedAmount != null &&
+        (receipt.approvedAmount! < receipt.claimedAmount!);
 
     return GestureDetector(
       onTap: () => showModalBottomSheet(
@@ -298,14 +482,39 @@ class _ReceiptCard extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Expanded(
-                    child: Text(
-                      receipt.displayMerchant,
-                      style: const TextStyle(
-                        fontWeight: FontWeight.bold,
-                        fontSize: 15,
-                        color: Colors.black87,
-                      ),
-                      overflow: TextOverflow.ellipsis,
+                    child: Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            receipt.displayMerchant,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.bold,
+                              fontSize: 15,
+                              color: Colors.black87,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (receipt.isPotentialDuplicate) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: Colors.purple.shade50,
+                              borderRadius: BorderRadius.circular(4),
+                              border: Border.all(color: Colors.purple.shade200),
+                            ),
+                            child: const Text(
+                              'Duplikat',
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                                color: Colors.purple,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
                   const SizedBox(width: 8),
@@ -350,25 +559,76 @@ class _ReceiptCard extends StatelessWidget {
               const Divider(height: 24, thickness: 0.5),
               Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Expanded(
-                    child: Text(
-                      receipt.category ?? '-',
-                      style: const TextStyle(
-                        color: Colors.black87,
-                        fontSize: 13,
-                      ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          receipt.category ?? '-',
+                          style: const TextStyle(
+                            color: Colors.black87,
+                            fontSize: 13,
+                          ),
+                        ),
+                        if (receipt.isPaid && receipt.paymentMethod != null) ...[
+                          const SizedBox(height: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFFE0F2F1),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              '${receipt.displayPaymentMethod}${receipt.paymentRefNo != null && receipt.paymentRefNo!.isNotEmpty ? ' (${receipt.paymentRefNo})' : ''}',
+                              style: const TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF00695C),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
-                  Text(
-                    receipt.displayAmount > 0
-                        ? formatCurrency(receipt.displayAmount)
-                        : '-',
-                    style: const TextStyle(
-                      fontWeight: FontWeight.bold,
-                      fontSize: 15,
-                      color: Colors.black87,
-                    ),
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      if (hasAdjustedAmount) ...[
+                        Text(
+                          formatCurrency(receipt.claimedAmount ?? 0),
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Colors.grey.shade500,
+                            decoration: TextDecoration.lineThrough,
+                          ),
+                        ),
+                        const SizedBox(height: 1),
+                      ],
+                      Text(
+                        receipt.displayAmount > 0
+                            ? formatCurrency(receipt.displayAmount)
+                            : '-',
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                          color: hasAdjustedAmount
+                              ? const Color(0xFF00695C)
+                              : Colors.black87,
+                        ),
+                      ),
+                      if (hasAdjustedAmount)
+                        const Text(
+                          'Disetujui finance',
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            color: Color(0xFF00695C),
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                    ],
                   ),
                 ],
               ),

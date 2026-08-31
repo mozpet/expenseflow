@@ -73,12 +73,15 @@ class StatusScreen extends StatelessWidget {
                     _row('ID Pengajuan', receipt.receiptNumber,
                         highlight: true),
                     const Divider(height: 24),
-                    _row('Nominal (dari OCR)',
-                        receipt.ocrRawAmount != null
-                            ? formatCurrency(double.tryParse(receipt.ocrRawAmount!) ?? 0)
-                            : '-'),
+                    _row('Nominal Klaim',
+                        receipt.claimedAmount != null
+                            ? formatCurrency(receipt.claimedAmount!)
+                            : (receipt.ocrRawAmount != null
+                                ? formatCurrency(double.tryParse(receipt.ocrRawAmount!) ?? 0)
+                                : '-'),
+                        highlight: true),
                     const Divider(height: 24),
-                    _row('Merchant (dari OCR)',
+                    _row('Merchant',
                         receipt.ocrRawMerchant ?? receipt.vendorName ?? '-'),
                     const Divider(height: 24),
                     _row('Tanggal struk', receipt.displayDate),
@@ -100,7 +103,7 @@ class StatusScreen extends StatelessWidget {
                             color: const Color(0xFFFFF3E0),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: const Text('Menunggu',
+                          child: const Text('Menunggu Review',
                               style: TextStyle(
                                   color: Colors.orange,
                                   fontWeight: FontWeight.bold,

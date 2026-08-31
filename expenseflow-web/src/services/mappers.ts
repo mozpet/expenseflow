@@ -63,6 +63,8 @@ const num = (v: unknown): number => {
 // ─── Receipt (struk) — status backend → label frontend ──────
 function mapReceiptStatus(status: string, varianceFlag?: boolean): ReceiptStatus {
   switch (status) {
+    case 'paid':
+      return 'Dibayar';
     case 'approved':
       return 'Disetujui';
     case 'rejected':
@@ -99,6 +101,7 @@ export function mapReceipt(r: any): Receipt {
   const av = avatarFor(karyawan);
   const ocr = num(r.ocr_raw_amount ?? r.total_amount);
   const klaim = num(r.claimed_amount ?? r.total_amount ?? r.ocr_raw_amount);
+  const approvedAmount = r.approved_amount !== null && r.approved_amount !== undefined ? num(r.approved_amount) : undefined;
   const items = parseReceiptItems(r.ocr_raw_items);
   const subtotal = r.ocr_raw_subtotal !== null && r.ocr_raw_subtotal !== undefined ? num(r.ocr_raw_subtotal) : undefined;
   const tax = r.ocr_raw_tax !== null && r.ocr_raw_tax !== undefined ? num(r.ocr_raw_tax) : undefined;
@@ -113,6 +116,7 @@ export function mapReceipt(r: any): Receipt {
     merchant: r.vendor_name ?? r.ocr_raw_merchant ?? '—',
     ocrNominal: ocr,
     klaim,
+    approvedAmount,
     kategori: r.category ?? '—',
     status: mapReceiptStatus(r.status, r.variance_flag),
     tanggal: formatTanggal(r.receipt_date ?? r.submitted_at ?? r.created_at),
@@ -122,10 +126,21 @@ export function mapReceipt(r: any): Receipt {
     subtotal,
     tax,
     discount,
+    isPotentialDuplicate: Boolean(r.is_potential_duplicate),
+    duplicateReceiptNumber: r.duplicate_reference?.receipt_number,
+    duplicateTotalAmount: r.duplicate_reference?.total_amount ? num(r.duplicate_reference.total_amount) : undefined,
+    notes: r.notes,
+    paidAt: r.paid_at ? formatTanggal(r.paid_at) : undefined,
+    paidBy: r.paid_by?.name ?? r.paidBy?.name,
+    paymentMethod: r.payment_method,
+    paymentRefNo: r.payment_ref_no,
+    bankName: r.user?.bank_name,
+    bankAccountNo: r.user?.bank_account_no,
+    bankAccountHolder: r.user?.bank_account_holder,
   };
 }
 
-// Riwayat approval struk (struk approved/rejected) → StrukApproval
+// Riwayat approval struk (struk approved/paid/rejected) → StrukApproval
 export function mapReceiptToApproval(r: any): StrukApproval {
   // Ambil nama approver, fallback ke "Finance"
   const approverName = r.approvals?.[0]?.user?.name ?? r.approved_by?.name ?? 'Finance';
@@ -137,13 +152,22 @@ export function mapReceiptToApproval(r: any): StrukApproval {
   const tax = r.ocr_raw_tax !== null && r.ocr_raw_tax !== undefined ? num(r.ocr_raw_tax) : undefined;
   const discount = r.ocr_raw_discount !== null && r.ocr_raw_discount !== undefined ? num(r.ocr_raw_discount) : undefined;
   const ocrNominal = r.ocr_raw_amount !== null && r.ocr_raw_amount !== undefined ? num(r.ocr_raw_amount) : undefined;
+  const approvedAmount = r.approved_amount !== null && r.approved_amount !== undefined ? num(r.approved_amount) : undefined;
+
+  let keputusan: 'Disetujui' | 'Dibayar' | 'Ditolak' = 'Ditolak';
+  if (r.status === 'paid') {
+    keputusan = 'Dibayar';
+  } else if (r.status === 'approved') {
+    keputusan = 'Disetujui';
+  }
 
   return {
     id: String(r.id),
     karyawan: r.user?.name ?? '—',
     merchant: (r.vendor_name && r.vendor_name.trim() !== '') ? r.vendor_name : (r.ocr_raw_merchant ?? '—'),
     nominal: num(r.claimed_amount ?? r.total_amount),
-    keputusan: r.status === 'approved' ? 'Disetujui' : 'Ditolak',
+    approvedAmount,
+    keputusan,
     diprosesOleh: approverName,
     waktu: formatWaktu(r.submitted_at ?? r.created_at),
     catatan: r.approvals?.[0]?.notes ?? r.rejection_reason ?? '—',
@@ -162,6 +186,15 @@ export function mapReceiptToApproval(r: any): StrukApproval {
     discount,
     ocrNominal,
     kategori: r.category ?? '—',
+    isPotentialDuplicate: Boolean(r.is_potential_duplicate),
+    duplicateReceiptNumber: r.duplicate_reference?.receipt_number,
+    paidAt: r.paid_at ? formatTanggal(r.paid_at) : undefined,
+    paidBy: r.paid_by?.name ?? r.paidBy?.name,
+    paymentMethod: r.payment_method,
+    paymentRefNo: r.payment_ref_no,
+    bankName: r.user?.bank_name,
+    bankAccountNo: r.user?.bank_account_no,
+    bankAccountHolder: r.user?.bank_account_holder,
   };
 }
 
