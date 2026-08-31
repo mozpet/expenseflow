@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../utils.dart';
 import '../widgets/skeleton.dart';
 import 'ajukan_izin_screen.dart';
 
@@ -38,21 +39,6 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
       appBar: AppBar(
         title: const Text('Izin & Cuti'),
         automaticallyImplyLeading: false,
-        actions: [
-          // Refresh manual di pojok kanan atas
-          IconButton(
-            onPressed: () {
-              final prov = Provider.of<PresensiProvider>(
-                context,
-                listen: false,
-              );
-              prov.fetchLeaveRequests();
-              prov.fetchLeaveBalance();
-            },
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-          ),
-        ],
         bottom: TabBar(
           controller: _tabController,
           labelColor: Colors.white,
@@ -215,7 +201,7 @@ class _LeaveCard extends StatelessWidget {
                     size: 14, color: Color(0xFF546E7A)),
                 const SizedBox(width: 6),
                 Text(
-                  '${leave.startDate} — ${leave.endDate}',
+                  formatDateIndonesianRange(leave.startDate, leave.endDate),
                   style: const TextStyle(
                     color: Color(0xFF455A64),
                     fontSize: 12,

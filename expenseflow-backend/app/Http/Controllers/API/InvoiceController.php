@@ -50,7 +50,7 @@ class InvoiceController extends Controller
     private function allowedRolesForLevel(int $currentLevel): array
     {
         return match ($currentLevel) {
-            0 => ['finance', 'hrd', 'admin', 'super_admin'],   // Level 1: Finance Manager
+            0 => ['finance', 'admin', 'super_admin'],           // Level 1: Finance Manager (khusus Finance, Admin, Super Admin)
             1 => ['admin', 'super_admin'],                       // Level 2: + Direksi
             2 => ['super_admin'],                                  // Level 3: + Komisaris
             default => [],

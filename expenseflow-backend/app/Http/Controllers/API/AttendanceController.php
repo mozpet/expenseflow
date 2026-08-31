@@ -1914,17 +1914,16 @@ class AttendanceController extends Controller
                     }
 
                     if (!$isPaginated || ($totalFiltered > $offsetStart && $totalFiltered <= $offsetEnd)) {
-                        $checkoutDate = $att->check_out_time ? substr($att->check_out_time, 0, 10) : null;
+                        $checkoutDate = $att->check_out_time ? Carbon::parse($att->check_out_time)->timezone('Asia/Jakarta')->toDateString() : null;
                         $isCrossDay = $checkoutDate && $checkoutDate > $dateStr;
                         $lateMinutes = null;
-                        if ($status === 'late' && $att->check_in_time && $workStartTime) {
-                            $inTimeStr = strlen($att->check_in_time) >= 16 ? substr($att->check_in_time, 11, 5) : null;
-                            if ($inTimeStr) {
-                                $schedMins = (int) substr($workStartTime, 0, 2) * 60 + (int) substr($workStartTime, 3, 2);
-                                $inMins    = (int) substr($inTimeStr, 0, 2) * 60 + (int) substr($inTimeStr, 3, 2);
-                                if ($inMins > $schedMins) {
-                                    $lateMinutes = $inMins - $schedMins;
-                                }
+                        $effectiveWorkStart = $att->snap_work_start_time ?? $workStartTime;
+                        if ($status === 'late' && $att->check_in_time && $effectiveWorkStart) {
+                            $inCarbon = Carbon::parse($att->check_in_time)->timezone('Asia/Jakarta');
+                            $schedMins = (int) substr($effectiveWorkStart, 0, 2) * 60 + (int) substr($effectiveWorkStart, 3, 2);
+                            $inMins    = (int) $inCarbon->format('H') * 60 + (int) $inCarbon->format('i');
+                            if ($inMins > $schedMins) {
+                                $lateMinutes = $inMins - $schedMins;
                             }
                         }
 
@@ -4275,7 +4274,15 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'latitude'  => 'required|numeric|between:-90,90',
             'longitude' => 'required|numeric|between:-180,180',
+            'is_mocked' => 'nullable|boolean',
         ]);
+
+        if ($request->boolean('is_mocked')) {
+            return response()->json([
+                'message'           => 'Presensi ditolak. Terdeteksi penggunaan aplikasi Fake GPS / Mock Location pada perangkat Anda. Harap matikan aplikasi pemalsu lokasi untuk melanjutkan.',
+                'fake_gps_detected' => true,
+            ], 403);
+        }
 
         $user = $request->user();
 
@@ -4306,8 +4313,16 @@ class AttendanceController extends Controller
         $isWfhScheduled = ! empty($jadwalHariIni['is_wfh']);
         $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
 
-        // Mode (a): mobile diblokir → gunakan perangkat presensi kantor (kecuali WFH global / shift WFH terjadwal)
-        if (! $user->canWfh() && ! $isWfhScheduled) {
+        // Cek apakah ada pengajuan WFH yang sudah disetujui (approved) oleh HRD untuk hari ini
+        $isWfhApproved = LeaveRequest::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->where('leave_type', 'wfh')
+            ->whereDate('start_date', '<=', $today)
+            ->whereDate('end_date', '>=', $today)
+            ->exists();
+
+        // Mode (a): mobile diblokir → gunakan perangkat presensi kantor (kecuali WFH global / shift WFH terjadwal / pengajuan WFH disetujui)
+        if (! $user->canWfh() && ! $isWfhScheduled && ! $isWfhApproved) {
             return response()->json([
                 'message' => 'Presensi aplikasi hanya untuk karyawan WFH atau lapangan. Presensi di kantor dilakukan melalui perangkat presensi.',
             ], 403);
@@ -4393,10 +4408,10 @@ class AttendanceController extends Controller
         $distanceMeters = null;
         $checkInType    = 'wfh';
 
-        // Mode WFH / Shift WFH: validasi window waktu presensi
+        // Mode WFH / Shift WFH / Pengajuan WFH Disetujui: validasi window waktu presensi
         // Cegah check-in terlalu dini (mis. subuh/malam setelah tengah malam reset).
         // Gunakan jam masuk dari shift aktif jika ada; fallback ke kantor.
-        if (! $user->hasRadiusEnabled() || $isWfhScheduled) {
+        if (! $user->hasRadiusEnabled() || $isWfhScheduled || $isWfhApproved) {
             $officeRef = $jadwalHariIni['office'];
             $jamMasuk  = $jadwalHariIni['work_start_time'];
 
@@ -4420,8 +4435,8 @@ class AttendanceController extends Controller
         }
 
         // Mode (c): lapangan — validasi radius terhadap lokasi kantor terdekat
-        // Berjalan jika: (1) user memiliki radius_enabled=true & bukan hari WFH murni, ATAU (2) hari ini adalah shift Lapangan terjadwal (is_field = true)
-        $needRadiusCheck = $isFieldScheduled || ($user->hasRadiusEnabled() && ! $isWfhScheduled);
+        // Berjalan jika: (1) user memiliki radius_enabled=true & bukan hari WFH murni/pengajuan WFH disetujui, ATAU (2) hari ini adalah shift Lapangan terjadwal (is_field = true)
+        $needRadiusCheck = $isFieldScheduled || ($user->hasRadiusEnabled() && ! $isWfhScheduled && ! $isWfhApproved);
 
         // Kantor acuan presensi hari ini — dipakai untuk validasi radius & snapshot.
         // Default: kantor penempatan karyawan; ditimpa kantor TERDEKAT bila radius check berjalan.
@@ -4552,7 +4567,15 @@ class AttendanceController extends Controller
         $validated = $request->validate([
             'latitude'  => 'required|numeric|between:-90,90',
             'longitude' => 'required|numeric|between:-180,180',
+            'is_mocked' => 'nullable|boolean',
         ]);
+
+        if ($request->boolean('is_mocked')) {
+            return response()->json([
+                'message'           => 'Presensi pulang ditolak. Terdeteksi penggunaan aplikasi Fake GPS / Mock Location pada perangkat Anda. Harap matikan aplikasi pemalsu lokasi untuk melanjutkan.',
+                'fake_gps_detected' => true,
+            ], 403);
+        }
 
         $user  = $request->user();
 
@@ -4759,7 +4782,7 @@ class AttendanceController extends Controller
         return response()->json([
             'message'    => 'Check-out berhasil.',
             'attendance' => $attendance->only([
-                'id', 'date', 'check_in_time', 'check_out_time', 'status',
+                'id', 'date', 'check_in_time', 'check_out_time', 'check_in_type', 'check_out_type', 'status',
                 'work_minutes', 'overtime_minutes', 'is_holiday',
             ]),
         ]);
@@ -5024,6 +5047,13 @@ class AttendanceController extends Controller
 
         $userOffices = $officeData ? [$officeData] : [];
 
+        $isWfhApproved = LeaveRequest::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->where('leave_type', 'wfh')
+            ->whereDate('start_date', '<=', $today)
+            ->whereDate('end_date', '>=', $today)
+            ->exists();
+
         if (! $attendance || ! $attendance->check_in_time) {
             $jadwalHariIni = $this->getWorkSchedule($user, (string) $today);
 
@@ -5035,8 +5065,9 @@ class AttendanceController extends Controller
                 'scheduled_auto_checkout_at' => null,
                 // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
                 // tombol "Catat Presensi" saat tombol Refresh ditekan.
-                'wfh_enabled'         => (bool) $user->wfh_enabled,
-                'radius_enabled'      => (bool) $user->radius_enabled,
+                'wfh_enabled'         => (bool) ($user->wfh_enabled || $isWfhApproved),
+                'radius_enabled'      => (bool) ($isWfhApproved ? false : $user->radius_enabled),
+                'is_wfh_approved'     => $isWfhApproved,
                 'office'              => $officeData,
                 'offices'             => $userOffices,
                 'active_shift'        => $jadwalHariIni['source'] === 'shift' ? [
@@ -5087,7 +5118,7 @@ class AttendanceController extends Controller
         // agar tombol checkout tetap muncul di Flutter meskipun HRD mematikan toggle WFH.
         // Toggle WFH yang dimatikan hanya berlaku untuk MENCEGAH check-in baru, bukan memblokir checkout.
         $isActiveSession = $attendance->check_in_time && ! $attendance->check_out_time;
-        $wfhEnabledForResponse = $isActiveSession ? true : (bool) $user->wfh_enabled;
+        $wfhEnabledForResponse = $isActiveSession ? true : (bool) ($user->wfh_enabled || $isWfhApproved);
 
         return response()->json([
             'checked_in'  => true,
@@ -5101,7 +5132,8 @@ class AttendanceController extends Controller
             // tombol "Catat Presensi" saat tombol Refresh ditekan.
             // Jika user sedang aktif (checked-in, belum checkout), paksa true.
             'wfh_enabled'    => $wfhEnabledForResponse,
-            'radius_enabled' => (bool) $user->radius_enabled,
+            'radius_enabled' => (bool) ($isWfhApproved || ($attendance && $attendance->check_in_type === 'wfh') ? false : $user->radius_enabled),
+            'is_wfh_approved' => $isWfhApproved,
             'office'         => $officeData,
             'offices'        => $userOffices,
             // Jadwal shift aktif hari ini (untuk tampilan di Flutter)
@@ -5182,7 +5214,22 @@ class AttendanceController extends Controller
             return $a;
         });
 
-        return response()->json($approvals);
+        $summary = OvertimeApproval::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )
+        ->selectRaw('status, COUNT(*) as total')
+        ->groupBy('status')
+        ->pluck('total', 'status');
+
+        $result = $approvals->toArray();
+        $result['summary'] = [
+            'pending'  => (int) ($summary['pending'] ?? 0),
+            'approved' => (int) ($summary['approved'] ?? 0),
+            'rejected' => (int) ($summary['rejected'] ?? 0),
+        ];
+
+        return response()->json($result);
     }
 
     // approveOvertime() — HRD setujui lembur (overtime_minutes dikonfirmasi)
@@ -5343,7 +5390,24 @@ class AttendanceController extends Controller
             ->orderByRaw("FIELD(status, 'pending', 'approved', 'rejected')")
             ->orderByDesc('created_at');
 
-        return response()->json($query->paginate($limit));
+        $paginated = $query->paginate($limit);
+
+        $summary = DeviceChangeRequest::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )
+        ->selectRaw('status, COUNT(*) as total')
+        ->groupBy('status')
+        ->pluck('total', 'status');
+
+        $result = $paginated->toArray();
+        $result['summary'] = [
+            'pending'  => (int) ($summary['pending'] ?? 0),
+            'approved' => (int) ($summary['approved'] ?? 0),
+            'rejected' => (int) ($summary['rejected'] ?? 0),
+        ];
+
+        return response()->json($result);
     }
 
     // approveDeviceChange() — HR setujui pindah device: device baru GANTIKAN lama.
@@ -5516,11 +5580,20 @@ class AttendanceController extends Controller
             'require_selfie' => (bool) $primaryOffice->require_selfie,
         ] : null;
 
+        $todayStr = $this->todayDate();
+        $isWfhApprovedToday = LeaveRequest::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->where('leave_type', 'wfh')
+            ->whereDate('start_date', '<=', $todayStr)
+            ->whereDate('end_date', '>=', $todayStr)
+            ->exists();
+
         $responseData = $attendances->toArray();
-        $responseData['wfh_enabled']    = (bool) $user->wfh_enabled;
-        $responseData['radius_enabled'] = (bool) $user->radius_enabled;
-        $responseData['office']         = $officeData;
-        $responseData['offices']        = $officeData ? [$officeData] : [];
+        $responseData['wfh_enabled']     = (bool) ($user->wfh_enabled || $isWfhApprovedToday);
+        $responseData['radius_enabled']  = (bool) ($isWfhApprovedToday ? false : $user->radius_enabled);
+        $responseData['is_wfh_approved'] = $isWfhApprovedToday;
+        $responseData['office']          = $officeData;
+        $responseData['offices']         = $officeData ? [$officeData] : [];
 
         return response()->json($responseData);
     }
@@ -5779,7 +5852,7 @@ class AttendanceController extends Controller
     //       'effective_dates'=> string[],   // tanggal yang terhitung
     //       'skipped'        => [ ['date'=>'Y-m-d','reason'=>..,'detail'=>..], .. ],
     //     ]
-    private function effectiveLeaveDays(User $user, Carbon $start, Carbon $end): array
+    private function effectiveLeaveDays(User $user, Carbon $start, Carbon $end, ?string $leaveType = null): array
     {
         // Daftar tanggal kalender dalam rentang (inklusif)
         $requestedDates = [];
@@ -5815,9 +5888,29 @@ class AttendanceController extends Controller
             }
         }
 
-        $finalDates = ! empty($takenMap)
+        // Khusus pengajuan WFH: periksa apakah tanggal sudah terjadwal WFH (shift WFH atau WFH global)
+        $alreadyWfhMap = [];
+        if ($leaveType === 'wfh') {
+            $isGloballyWfh = $user->canWfh() && ! $user->hasRadiusEnabled();
+            foreach ($requestedDates as $ds) {
+                if ($isGloballyWfh) {
+                    $alreadyWfhMap[$ds] = 'User sudah memiliki akses WFH permanen';
+                    continue;
+                }
+                $sch = \App\Http\Controllers\API\ShiftController::resolveSchedule($user, $ds);
+                if (! empty($sch['is_wfh'])) {
+                    $alreadyWfhMap[$ds] = 'Jadwal shift sudah WFH';
+                }
+            }
+        }
+
+        $filteredDates = ! empty($takenMap)
             ? array_values(array_diff($effectiveDates, array_keys($takenMap)))
             : $effectiveDates;
+
+        $finalDates = ! empty($alreadyWfhMap)
+            ? array_values(array_diff($filteredDates, array_keys($alreadyWfhMap)))
+            : $filteredDates;
 
         // Bangun daftar skip + penyebabnya untuk transparansi mobile.
         // Detail libur (nama) diambil dari holidays bila ada — dipakai mobile utk pesan.
@@ -5826,7 +5919,9 @@ class AttendanceController extends Controller
             if (in_array($ds, $finalDates, true)) {
                 continue; // hari efektif
             }
-            if (isset($takenMap[$ds])) {
+            if (isset($alreadyWfhMap[$ds])) {
+                $skipped[] = ['date' => $ds, 'reason' => 'already_wfh', 'detail' => $alreadyWfhMap[$ds]];
+            } elseif (isset($takenMap[$ds])) {
                 $skipped[] = ['date' => $ds, 'reason' => 'already_requested', 'detail' => $takenMap[$ds]];
             } else {
                 $skipped[] = ['date' => $ds, 'reason' => 'holiday_or_off_day', 'detail' => null];
@@ -5839,6 +5934,7 @@ class AttendanceController extends Controller
             'requested_dates' => $requestedDates,
             'skipped'         => $skipped,
             'taken_map'       => $takenMap,
+            'already_wfh_map' => $alreadyWfhMap,
         ];
     }
 
@@ -5849,20 +5945,22 @@ class AttendanceController extends Controller
     public function leavePreview(Request $request): JsonResponse
     {
         $validated = $request->validate([
+            'leave_type' => 'nullable|in:wfh,izin,sakit,cuti',
             'start_date' => 'required|date',
             'end_date'   => 'required|date|after_or_equal:start_date',
         ]);
 
-        $user  = $request->user();
-        $start = Carbon::parse($validated['start_date']);
-        $end   = Carbon::parse($validated['end_date']);
+        $user      = $request->user();
+        $start     = Carbon::parse($validated['start_date']);
+        $end       = Carbon::parse($validated['end_date']);
+        $leaveType = $validated['leave_type'] ?? null;
 
         // Guard ringan: rentang maksimal 1 tahun (sama seperti date picker mobile)
         if ($start->diffInDays($end) > 365) {
             return response()->json(['message' => 'Rentang tanggal maksimal 365 hari.'], 422);
         }
 
-        $result = $this->effectiveLeaveDays($user, $start, $end);
+        $result = $this->effectiveLeaveDays($user, $start, $end, $leaveType);
 
         // Perkaya skipped dgn NAMA libur (untuk pesan "tanggal X adalah <nama>")
         // & label ramah utk off-day shift/kantor.
@@ -5883,7 +5981,9 @@ class AttendanceController extends Controller
 
         $skipped = array_map(function ($item) use ($holidayNames, $offFromSchedule, $typeLabels) {
             $ds = $item['date'];
-            if ($item['reason'] === 'already_requested') {
+            if ($item['reason'] === 'already_wfh') {
+                $item['label'] = 'Sudah terjadwal WFH pada tanggal ini';
+            } elseif ($item['reason'] === 'already_requested') {
                 $label = $typeLabels[$item['detail']] ?? $item['detail'];
                 $item['label'] = "Sudah ada pengajuan {$label} di tanggal ini";
             } elseif ($name = ($holidayNames[$ds]->name ?? null)) {
@@ -5952,7 +6052,8 @@ class AttendanceController extends Controller
         $calc = $this->effectiveLeaveDays(
             $user,
             Carbon::parse($validated['start_date']),
-            Carbon::parse($validated['end_date'])
+            Carbon::parse($validated['end_date']),
+            $validated['leave_type']
         );
         $finalDates     = $calc['effective_dates'];
         $requestedDates = $calc['requested_dates'];

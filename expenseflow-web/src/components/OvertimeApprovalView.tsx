@@ -290,6 +290,11 @@ export function OvertimeApprovalView() {
       const res = await overtimeApi.list(params as Parameters<typeof overtimeApi.list>[0]);
       const data: OvertimeRecord[] = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
       setRecords(data);
+      if (res?.summary) {
+        setCountPending(res.summary.pending ?? 0);
+        setCountApproved(res.summary.approved ?? 0);
+        setCountRejected(res.summary.rejected ?? 0);
+      }
       if (res?.meta) setMeta(res.meta);
       else if (res?.current_page) setMeta({
         current_page: res.current_page,
@@ -305,24 +310,9 @@ export function OvertimeApprovalView() {
     }
   }, [filterStatus, filterStart, filterEnd]);
 
-  // Load summary counts (3 calls singkat)
-  const loadSummary = useCallback(async () => {
-    try {
-      const [rPending, rApproved, rRejected] = await Promise.all([
-        overtimeApi.list({ status: 'pending', page: 1 }),
-        overtimeApi.list({ status: 'approved', page: 1 }),
-        overtimeApi.list({ status: 'rejected', page: 1 }),
-      ]);
-      setCountPending(rPending?.total ?? rPending?.meta?.total ?? (rPending?.data?.length ?? 0));
-      setCountApproved(rApproved?.total ?? rApproved?.meta?.total ?? (rApproved?.data?.length ?? 0));
-      setCountRejected(rRejected?.total ?? rRejected?.meta?.total ?? (rRejected?.data?.length ?? 0));
-    } catch { /* diam — summary tidak kritis */ }
-  }, []);
-
   useEffect(() => {
     loadRecords(1);
-    loadSummary();
-  }, [loadRecords, loadSummary]);
+  }, [loadRecords]);
 
   const handleApply = () => loadRecords(1);
 
@@ -336,13 +326,13 @@ export function OvertimeApprovalView() {
   const doApprove = async (notes: string) => {
     if (!modal) return;
     await overtimeApi.approve(modal.record.id, notes);
-    await Promise.all([loadRecords(page), loadSummary()]);
+    await loadRecords(page);
   };
 
   const doReject = async (notes: string) => {
     if (!modal) return;
     await overtimeApi.reject(modal.record.id, notes);
-    await Promise.all([loadRecords(page), loadSummary()]);
+    await loadRecords(page);
   };
 
   const debouncedSearch = useDebounce(search, 500);
@@ -359,7 +349,7 @@ export function OvertimeApprovalView() {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <button
-          onClick={() => { loadRecords(page); loadSummary(); }}
+          onClick={() => loadRecords(page)}
           className="ml-auto self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
         >
           <RefreshCw className="w-3.5 h-3.5" /> Refresh

@@ -8,6 +8,7 @@ import { shiftApi, attendanceApi } from '../services/endpoints';
 import { ApiError } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
+import { ConfirmationDialog, ConfirmationType } from './ConfirmationDialog';
 
 
 // ═══════════════════════════════════════════════════════════════
@@ -976,6 +977,18 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
   const [history, setHistory] = useState<AssignmentRow[]>([]);
   const [loadingHist, setLoadingHist] = useState(true);
 
+  // Dialog konfirmasi hapus/akhiri assignment
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string | React.ReactNode;
+    confirmText?: string;
+    cancelText?: string;
+    type?: ConfirmationType;
+    isLoading?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
   // Shift yang relevan: company-wide atau cabang yang sama dengan karyawan (bandingkan by ID),
   // TANPA shift yang sedang AKTIF atau SEGERA dipakai karyawan (cegah assign shift yang sama).
   const relevantShifts = useMemo(() => {
@@ -1043,22 +1056,54 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
     }
   };
 
-  const handleDelete = async (h: AssignmentRow) => {
-    // Pesan konfirmasi disesuaikan dengan status assignment
-    const msg =
-      h.status === 'active'
-        ? 'Assignment ini SEDANG AKTIF. Mengakhiri akan mengembalikan karyawan ke jadwal kantor default mulai hari ini. Catatan: jika karyawan sedang dalam jam kerja shift, aksi ini DITOLAK sistem (kembalikan hanya saat di luar jam kerja). Histori shift tetap tersimpan. Lanjutkan?'
-        : h.status === 'upcoming'
-          ? 'Assignment ini belum dimulai (masa depan). Hapus permanen?'
-          : 'Assignment ini sudah berakhir. Hapus dari riwayat?';
-    if (!confirm(msg)) return;
-    try {
-      await shiftApi.destroyAssignment(h.id);
-      await loadHistory();
-      onSaved();
-    } catch (ex: unknown) {
-      setErr(ex instanceof ApiError ? ex.message : 'Gagal menghapus assignment.');
-    }
+  const handleDelete = (h: AssignmentRow) => {
+    const isAct = h.status === 'active';
+    const isUp = h.status === 'upcoming';
+    const title = isAct
+      ? 'Akhiri Assignment Aktif'
+      : isUp
+        ? 'Hapus Assignment Mendatang'
+        : 'Hapus Riwayat Assignment';
+
+    const msg = isAct
+      ? 'Assignment ini SEDANG AKTIF. Mengakhiri assignment akan mengembalikan karyawan ke jadwal kantor default mulai hari ini.'
+      : isUp
+        ? 'Assignment ini belum dimulai (masa depan). Hapus permanen dari jadwal?'
+        : 'Assignment ini sudah berakhir. Hapus catatan ini dari riwayat karyawan?';
+
+    setConfirmDialog({
+      isOpen: true,
+      title,
+      message: (
+        <div className="space-y-2">
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            {msg}
+          </p>
+          {isAct && (
+            <div className="p-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 text-xs text-amber-700 dark:text-amber-300">
+              ⚠️ <strong>Catatan:</strong> Jika karyawan sedang dalam jam kerja shift hari ini, sistem akan menolak pengakhiran demi integritas data absensi.
+            </div>
+          )}
+          <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 space-y-1">
+            <p>· Karyawan: <strong>{user.name}</strong></p>
+            <p>· Shift: <strong>{h.shift?.name ?? 'Default Kantor'}</strong></p>
+            <p>· Periode: Mulai <strong>{fmtDate(h.start_date)}</strong> {h.end_date ? <>s.d. <strong>{fmtDate(h.end_date)}</strong></> : ' (tanpa batas)'}</p>
+          </div>
+        </div>
+      ),
+      confirmText: isAct ? 'Ya, Akhiri Assignment' : 'Ya, Hapus',
+      cancelText: 'Batal',
+      type: isAct ? 'warning' : 'danger',
+      onConfirm: async () => {
+        try {
+          await shiftApi.destroyAssignment(h.id);
+          await loadHistory();
+          onSaved();
+        } catch (ex: unknown) {
+          setErr(ex instanceof ApiError ? ex.message : 'Gagal menghapus assignment.');
+        }
+      },
+    });
   };
 
   const av = avatarFor(user.name);
@@ -1250,6 +1295,24 @@ function AssignModal({ user, shifts, onClose, onSaved }: AssignModalProps) {
           </div>
         </div>
       </div>
+
+      {/* Confirmation Dialog helper */}
+      {confirmDialog && (
+        <ConfirmationDialog
+          isOpen={confirmDialog.isOpen}
+          onClose={() => setConfirmDialog(null)}
+          onConfirm={() => {
+            confirmDialog.onConfirm();
+            setConfirmDialog(null);
+          }}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmText={confirmDialog.confirmText}
+          cancelText={confirmDialog.cancelText}
+          type={confirmDialog.type}
+          isLoading={confirmDialog.isLoading}
+        />
+      )}
     </div>
   );
 }
@@ -1276,6 +1339,18 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
   const [err, setErr] = useState('');
   const [result, setResult] = useState<{ success: number; skipped: { name?: string; reason: string }[] } | null>(null);
 
+  // Dialog konfirmasi bulk assign
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string | React.ReactNode;
+    confirmText?: string;
+    cancelText?: string;
+    type?: ConfirmationType;
+    isLoading?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
   // Filter shift: hanya tampilkan shift yang cocok dengan cabang karyawan yang dipilih.
   // Shift company-wide (attendance_setting_id null) selalu ditampilkan karena berlaku untuk semua cabang.
   // Jika selectedBranchIds kosong (karyawan belum ada cabang), tampilkan semua shift aktif.
@@ -1289,7 +1364,7 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
     );
   }, [shifts, selectedBranchIds]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!shiftId) {
       setErr('Silakan pilih shift terlebih dahulu.');
@@ -1299,26 +1374,52 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
       setErr('Tanggal berakhir harus setelah tanggal mulai (minimal 1 hari setelah tanggal mulai).');
       return;
     }
-    setBusy(true);
     setErr('');
-    try {
-      const res: any = await shiftApi.bulkAssign({
-        user_ids: userIds,
-        shift_id: shiftId ? Number(shiftId) : null,
-        start_date: startDate,
-        end_date: endDate || undefined,
-        notes: notes.trim() || undefined,
-      });
-      setResult({
-        success: res?.total_success ?? res?.assigned?.length ?? 0,
-        skipped: res?.skipped ?? [],
-      });
-      onSaved();
-    } catch (ex: unknown) {
-      setErr(ex instanceof ApiError ? ex.message : 'Gagal melakukan bulk assign.');
-    } finally {
-      setBusy(false);
-    }
+
+    const targetShift = availableShifts.find((s) => String(s.id) === String(shiftId));
+
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Konfirmasi Assign Massal Shift',
+      message: (
+        <div className="space-y-2.5">
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            Apakah Anda yakin ingin menerapkan assignment shift ini secara massal ke <strong>{userIds.length} karyawan</strong> terpilih?
+          </p>
+          <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 text-xs space-y-1">
+            <p className="text-slate-700 dark:text-slate-200">· Shift: <strong className="text-indigo-600 dark:text-indigo-400">{targetShift?.name ?? 'Shift Terpilih'}</strong></p>
+            <p className="text-slate-700 dark:text-slate-200">· Periode: Mulai <strong>{fmtDate(startDate)}</strong> {endDate ? <>s.d. <strong>{fmtDate(endDate)}</strong></> : ' (tanpa batas waktu)'}</p>
+            {notes.trim() && <p className="text-slate-700 dark:text-slate-200">· Catatan: <em>{notes.trim()}</em></p>}
+            <p className="text-slate-500 dark:text-slate-400 text-[11px] pt-1">Total: {userIds.length} karyawan akan diperbarui jadwal shift-nya.</p>
+          </div>
+        </div>
+      ),
+      confirmText: `Ya, Terapkan (${userIds.length} Karyawan)`,
+      cancelText: 'Batal',
+      type: 'info',
+      onConfirm: async () => {
+        setBusy(true);
+        setErr('');
+        try {
+          const res: any = await shiftApi.bulkAssign({
+            user_ids: userIds,
+            shift_id: shiftId ? Number(shiftId) : null,
+            start_date: startDate,
+            end_date: endDate || undefined,
+            notes: notes.trim() || undefined,
+          });
+          setResult({
+            success: res?.total_success ?? res?.assigned?.length ?? 0,
+            skipped: res?.skipped ?? [],
+          });
+          onSaved();
+        } catch (ex: unknown) {
+          setErr(ex instanceof ApiError ? ex.message : 'Gagal melakukan bulk assign.');
+        } finally {
+          setBusy(false);
+        }
+      },
+    });
   };
 
   return (
@@ -1462,6 +1563,24 @@ function BulkAssignModal({ userIds, userNames, shifts, selectedBranchIds, onClos
           )}
         </div>
       </div>
+
+      {/* Confirmation Dialog helper */}
+      {confirmDialog && (
+        <ConfirmationDialog
+          isOpen={confirmDialog.isOpen}
+          onClose={() => setConfirmDialog(null)}
+          onConfirm={() => {
+            confirmDialog.onConfirm();
+            setConfirmDialog(null);
+          }}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmText={confirmDialog.confirmText}
+          cancelText={confirmDialog.cancelText}
+          type={confirmDialog.type}
+          isLoading={confirmDialog.isLoading}
+        />
+      )}
     </div>
   );
 }
@@ -1652,6 +1771,18 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [shiftForm, setShiftForm] = useState<{ editing: ShiftTemplate | null } | null>(null);
   const [shiftUsersView, setShiftUsersView] = useState<ShiftTemplate | null>(null);
 
+  // Dialog konfirmasi template shift (hapus / toggle status)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string | React.ReactNode;
+    confirmText?: string;
+    cancelText?: string;
+    type?: ConfirmationType;
+    isLoading?: boolean;
+    onConfirm: () => void;
+  } | null>(null);
+
   // ─── Loaders ───────────────────────────────────────────────
   const loadOffices = useCallback(async () => {
     try {
@@ -1712,49 +1843,89 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   useEffect(() => { if (tab === 'kalender') loadCalendar(); }, [tab, loadCalendar]);
 
   // ─── Aksi template ─────────────────────────────────────────
-  const handleDeleteShift = async (s: ShiftTemplate) => {
-    if (!confirm(`Hapus template shift "${s.name}"? Aksi ini tidak bisa dibatalkan.`)) return;
-    setError('');
-    try {
-      await shiftApi.destroy(s.id);
-      await loadShifts();
-      onAddAuditLog?.('Shift dihapus', s.name, 'bg-rose-500');
-    } catch (e: unknown) {
-      // 409 = masih ada karyawan yang memakai shift → tampilkan petunjuk lengkap
-      if (e instanceof ApiError) {
-        const affected = e.data?.affected_names as string | undefined;
-        setError(
-          affected
-            ? `${e.message}\nKaryawan terdampak: ${affected}`
-            : e.message,
-        );
-      } else {
-        setError('Gagal menghapus shift.');
-      }
-    }
+  const handleDeleteShift = (s: ShiftTemplate) => {
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Hapus Template Shift',
+      message: (
+        <div className="space-y-2">
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            Apakah Anda yakin ingin menghapus template shift <strong>"{s.name}"</strong>?
+          </p>
+          <p className="text-xs text-rose-600 dark:text-rose-400">
+            Tindakan ini tidak dapat dibatalkan. Template yang masih aktif digunakan oleh karyawan tidak dapat dihapus.
+          </p>
+        </div>
+      ),
+      confirmText: 'Ya, Hapus Shift',
+      cancelText: 'Batal',
+      type: 'danger',
+      onConfirm: async () => {
+        setError('');
+        try {
+          await shiftApi.destroy(s.id);
+          await loadShifts();
+          onAddAuditLog?.('Shift dihapus', s.name, 'bg-rose-500');
+        } catch (e: unknown) {
+          if (e instanceof ApiError) {
+            const affected = e.data?.affected_names as string | undefined;
+            setError(
+              affected
+                ? `${e.message}\nKaryawan terdampak: ${affected}`
+                : e.message,
+            );
+          } else {
+            setError('Gagal menghapus shift.');
+          }
+        }
+      },
+    });
   };
 
-  const handleToggleActive = async (s: ShiftTemplate) => {
+  const handleToggleActive = (s: ShiftTemplate) => {
     const aksi = s.is_active ? 'menonaktifkan' : 'mengaktifkan';
-    if (!confirm(`Yakin ingin ${aksi} shift "${s.name}"?`)) return;
-    setError('');
-    try {
-      await shiftApi.toggleActive(s.id);
-      await loadShifts();
-      onAddAuditLog?.(s.is_active ? 'Shift dinonaktifkan' : 'Shift diaktifkan', s.name, 'bg-indigo-500');
-    } catch (e: unknown) {
-      // 409 = masih ada karyawan yang memakai shift → tampilkan petunjuk lengkap
-      if (e instanceof ApiError) {
-        const affected = e.data?.affected_names as string | undefined;
-        setError(
-          affected
-            ? `${e.message}\nKaryawan terdampak: ${affected}`
-            : e.message,
-        );
-      } else {
-        setError(`Gagal ${aksi} shift.`);
-      }
-    }
+    setConfirmDialog({
+      isOpen: true,
+      title: s.is_active ? 'Nonaktifkan Template Shift' : 'Aktifkan Template Shift',
+      message: (
+        <div className="space-y-2">
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            Apakah Anda yakin ingin <strong>{aksi}</strong> shift <strong>"{s.name}"</strong>?
+          </p>
+          {s.is_active ? (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Shift yang dinonaktifkan tidak akan muncul di pilihan dropdown assignment baru. Karyawan yang sedang memakai shift ini tetap menyelesaikannya sesuai tanggal berlaku.
+            </p>
+          ) : (
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Shift ini akan kembali tersedia di pilihan dropdown assignment shift karyawan.
+            </p>
+          )}
+        </div>
+      ),
+      confirmText: s.is_active ? 'Ya, Nonaktifkan' : 'Ya, Aktifkan',
+      cancelText: 'Batal',
+      type: s.is_active ? 'warning' : 'info',
+      onConfirm: async () => {
+        setError('');
+        try {
+          await shiftApi.toggleActive(s.id);
+          await loadShifts();
+          onAddAuditLog?.(s.is_active ? 'Shift dinonaktifkan' : 'Shift diaktifkan', s.name, 'bg-indigo-500');
+        } catch (e: unknown) {
+          if (e instanceof ApiError) {
+            const affected = e.data?.affected_names as string | undefined;
+            setError(
+              affected
+                ? `${e.message}\nKaryawan terdampak: ${affected}`
+                : e.message,
+            );
+          } else {
+            setError(`Gagal ${aksi} shift.`);
+          }
+        }
+      },
+    });
   };
 
   // ─── Seleksi roster ────────────────────────────────────────
@@ -2747,6 +2918,24 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         <ShiftUsersModal
           shift={shiftUsersView}
           onClose={() => setShiftUsersView(null)}
+        />
+      )}
+
+      {/* Confirmation Dialog helper */}
+      {confirmDialog && (
+        <ConfirmationDialog
+          isOpen={confirmDialog.isOpen}
+          onClose={() => setConfirmDialog(null)}
+          onConfirm={() => {
+            confirmDialog.onConfirm();
+            setConfirmDialog(null);
+          }}
+          title={confirmDialog.title}
+          message={confirmDialog.message}
+          confirmText={confirmDialog.confirmText}
+          cancelText={confirmDialog.cancelText}
+          type={confirmDialog.type}
+          isLoading={confirmDialog.isLoading}
         />
       )}
     </div>

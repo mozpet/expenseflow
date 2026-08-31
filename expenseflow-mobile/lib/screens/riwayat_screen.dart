@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/receipt_provider.dart';
 import '../utils.dart';
+import '../widgets/custom_date_range_picker_dialog.dart';
 import '../widgets/skeleton.dart';
 import 'detail_pengajuan_screen.dart';
 import 'submit_step1_screen.dart';
@@ -27,10 +28,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
     });
   }
 
-  String _formatDate(DateTime d) {
-    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'];
-    return '${d.day.toString().padLeft(2, '0')} ${months[d.month - 1]} ${d.year}';
-  }
+  String _formatDate(DateTime d) => formatDateIndonesian(d);
 
   List<ReceiptRecord> _filtered(List<ReceiptRecord> all) {
     var list = all;
@@ -55,27 +53,15 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
 
   Future<void> _pickDateRange() async {
     final now = DateTime.now();
-    final picked = await showDateRangePicker(
+    final picked = await showCustomDateRangePicker(
       context: context,
       firstDate: DateTime(2020),
       lastDate: DateTime(now.year + 2),
-      initialDateRange: _selectedDateRange ?? DateTimeRange(
-        start: DateTime(now.year, now.month, 1),
-        end: DateTime(now.year, now.month, now.day),
-      ),
-      builder: (context, child) {
-        return Theme(
-          data: Theme.of(context).copyWith(
-            colorScheme: const ColorScheme.light(
-              primary: Color(0xFF0088FF),
-              onPrimary: Colors.white,
-              surface: Colors.white,
-              onSurface: Colors.black87,
-            ),
+      initialDateRange: _selectedDateRange ??
+          DateTimeRange(
+            start: DateTime(now.year, now.month, 1),
+            end: DateTime(now.year, now.month, now.day),
           ),
-          child: child!,
-        );
-      },
     );
     if (picked != null) {
       setState(() {
@@ -125,17 +111,6 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
       appBar: AppBar(
         title: const Text('Struk Saya'),
         automaticallyImplyLeading: false,
-        actions: [
-          // Refresh manual di pojok kanan atas
-          IconButton(
-            onPressed: () => Provider.of<ReceiptProvider>(
-              context,
-              listen: false,
-            ).fetchMyReceipts(),
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Refresh',
-          ),
-        ],
       ),
       body: Column(
         children: [

@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import '../services/api_service.dart';
+import '../utils.dart';
 
 class ReceiptItem {
   final String name;
@@ -179,8 +180,7 @@ class ReceiptRecord {
 
   String get displayDate {
     final raw = receiptDate ?? ocrRawDate ?? createdAt;
-    if (raw.length >= 10) return raw.substring(0, 10);
-    return raw;
+    return formatDateIndonesian(raw);
   }
 
   String get displayStatus {

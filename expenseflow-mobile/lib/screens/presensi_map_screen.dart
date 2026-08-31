@@ -29,6 +29,8 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   bool _mapReady = false;
   // Flag: true saat sedang menyinkronkan status dari backend
   bool _syncingStatus = true;
+  // Flag: true saat user menekan tombol refresh
+  bool _isRefreshing = false;
 
   /// Posisi aktif yang digunakan (GPS asli)
   LatLng get _activeLatLng =>
@@ -70,6 +72,52 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
       // gagal sync — tidak crash, hanya tampilkan tombol sesuai state lokal
     }
     if (mounted) setState(() => _syncingStatus = false);
+  }
+
+  /// Refresh lokasi GPS & status presensi backend secara simultan
+  Future<void> _handleRefresh() async {
+    if (_isRefreshing) return;
+    setState(() => _isRefreshing = true);
+
+    try {
+      final prov = Provider.of<PresensiProvider>(context, listen: false);
+      // 1. Sinkronisasi status backend (shift, jam kerja, auto-checkout)
+      await prov.syncStatusFromBackend();
+
+      // 2. Refresh posisi GPS real-time
+      await _initLocation();
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Row(
+              children: [
+                Icon(Icons.check_circle_outline, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Text('Lokasi GPS & status presensi diperbarui'),
+              ],
+            ),
+            backgroundColor: Colors.indigo.shade600,
+            behavior: SnackBarBehavior.floating,
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Gagal memperbarui: $e'),
+            backgroundColor: Colors.red.shade600,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isRefreshing = false);
+      }
+    }
   }
 
   @override
@@ -161,15 +209,89 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
 
   bool _submitting = false;
 
+  Future<void> _showMockLocationDialog() async {
+    await showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Icon(Icons.gpp_bad_rounded, color: Colors.red.shade600, size: 24),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text('Lokasi Palsu Terdeteksi',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.red.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.red.shade200),
+              ),
+              child: Text(
+                'Sistem mendeteksi penggunaan Fake GPS / Mock Location pada perangkat ini. Presensi diblokir demi keamanan dan validitas data.',
+                style: TextStyle(color: Colors.red.shade900, fontSize: 13, height: 1.4),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Cara mengatasi:',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.grey.shade800),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '1. Matikan aplikasi Fake GPS / Mock Location bila ada.\n'
+              '2. Buka Pengaturan HP > Opsi Pengembang (Developer Options).\n'
+              '3. Cari "Pilih aplikasi lokasi palsu" (Select mock location app) lalu pilih "Tidak Ada" (None).\n'
+              '4. Tekan tombol Refresh di kanan atas.',
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 12, height: 1.5),
+            ),
+          ],
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.indigo.shade600,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Mengerti', style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _simpanPresensi() async {
     if (!_hasActivePosition || _submitting) return;
+
+    // ─── Validasi Anti Fake GPS (Mock Location) ─────────────────
+    if (_position != null && _position!.isMocked) {
+      await _showMockLocationDialog();
+      return;
+    }
+
     final prov = Provider.of<PresensiProvider>(context, listen: false);
     final wasCheckIn = prov.canCheckIn;
 
     setState(() => _submitting = true);
     try {
       await prov.simpanPresensi(
-          _activeLatLng.latitude, _activeLatLng.longitude);
+          _activeLatLng.latitude, _activeLatLng.longitude,
+          isMocked: _position?.isMocked ?? false);
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -411,6 +533,22 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
         ),
+        actions: [
+          IconButton(
+            icon: _isRefreshing
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.refresh),
+            tooltip: 'Refresh Lokasi & Status',
+            onPressed: _isRefreshing ? null : _handleRefresh,
+          ),
+        ],
       ),
       body: Column(
         children: [
@@ -620,6 +758,25 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                         ),
                         const SizedBox(height: 8),
                       ],
+                      FloatingActionButton.small(
+                        heroTag: 'refresh_loc_status',
+                        backgroundColor: Colors.white,
+                        foregroundColor: Colors.indigo.shade600,
+                        elevation: 4,
+                        tooltip: 'Refresh Lokasi & Status',
+                        onPressed: _isRefreshing ? null : _handleRefresh,
+                        child: _isRefreshing
+                            ? SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.indigo.shade600,
+                                ),
+                              )
+                            : const Icon(Icons.refresh, size: 20),
+                      ),
+                      const SizedBox(height: 8),
                       if (_hasActivePosition)
                         FloatingActionButton.small(
                           heroTag: 'recenter',
@@ -790,6 +947,41 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
+
+                  // Banner Peringatan Fake GPS
+                  if (_position?.isMocked == true) ...[
+                    GestureDetector(
+                      onTap: _showMockLocationDialog,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 9),
+                        decoration: BoxDecoration(
+                          color: Colors.red.shade50,
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: Colors.red.shade200),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.gpp_bad_rounded,
+                                color: Colors.red.shade700, size: 18),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Fake GPS / Lokasi Palsu terdeteksi aktif. Klik untuk panduan.',
+                                style: TextStyle(
+                                    color: Colors.red.shade900,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600),
+                              ),
+                            ),
+                            Icon(Icons.chevron_right,
+                                color: Colors.red.shade400, size: 18),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
 
                   // Tombol simpan
                   SizedBox(

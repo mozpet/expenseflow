@@ -30,7 +30,7 @@ class AuthTest extends TestCase
 
     private function payload(User $u, string $password = 'password'): array
     {
-        return ['email' => $u->email, 'password' => $password];
+        return ['email' => $u->email, 'password' => $password, 'device_id' => 'dev-test-auth'];
     }
 
     // ── 1. Employee login mobile → berhasil ─────────────────────────

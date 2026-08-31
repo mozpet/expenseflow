@@ -2569,6 +2569,7 @@ class ShiftController extends Controller
         $personalLeaveDates = [];
         $personalLeaves = \App\Models\LeaveRequest::where('user_id', $user->id)
             ->whereNull('holiday_id')          // bukan cuti bersama
+            ->whereIn('leave_type', ['cuti', 'izin', 'sakit'])
             ->where('status', 'approved')      // hanya yang sudah disetujui HRD
             ->where('start_date', '<=', $endOfMonth->toDateString())
             ->where('end_date', '>=', $startOfMonth->toDateString())
@@ -2578,6 +2579,23 @@ class ShiftController extends Controller
                 $ds = $d->toDateString();
                 if ($ds >= $startOfMonth->toDateString() && $ds <= $endOfMonth->toDateString()) {
                     $personalLeaveDates[$ds] = true;
+                }
+            }
+        }
+
+        // WFH LEAVE yang sudah di-approve oleh HRD bulan ini.
+        $wfhApprovedDates = [];
+        $wfhLeaves = \App\Models\LeaveRequest::where('user_id', $user->id)
+            ->where('leave_type', 'wfh')
+            ->where('status', 'approved')
+            ->where('start_date', '<=', $endOfMonth->toDateString())
+            ->where('end_date', '>=', $startOfMonth->toDateString())
+            ->get(['start_date', 'end_date']);
+        foreach ($wfhLeaves as $wl) {
+            for ($d = \Carbon\Carbon::parse($wl->start_date); $d->lte(\Carbon\Carbon::parse($wl->end_date)); $d->addDay()) {
+                $ds = $d->toDateString();
+                if ($ds >= $startOfMonth->toDateString() && $ds <= $endOfMonth->toDateString()) {
+                    $wfhApprovedDates[$ds] = true;
                 }
             }
         }
@@ -2594,6 +2612,7 @@ class ShiftController extends Controller
             // Konsisten dengan isNonWorkingDay() di AttendanceController (Bug #3 fix).
             $isCollectiveLeave = $collectiveLeaves->has($dateStr);
             $isPersonalLeave   = ! $isCollectiveLeave && isset($personalLeaveDates[$dateStr]);
+            $isWfhApprovedDay  = isset($wfhApprovedDates[$dateStr]);
 
             // Cek apakah tanggal ini merupakan hari libur yang BERLAKU untuk user ini.
             $holidayObj = $holidayByDate->get($dateStr);
@@ -2642,7 +2661,7 @@ class ShiftController extends Controller
 
                 if ($shiftSchedule) {
                     $isOff = (bool) $shiftSchedule->is_off;
-                    $isWfh = $isOff ? false : (bool) $shiftSchedule->is_wfh;
+                    $isWfh = $isOff ? false : ((bool) $shiftSchedule->is_wfh || $isWfhApprovedDay);
                     $isField = ($isOff || ! $isWfh) ? false : (bool) $shiftSchedule->is_field;
                     // Cuti mandiri approved juga memaksa hari tsb libur (sama seperti cuti bersama),
                     // dengan label & flag berbeda agar UI bisa menampilkannya sebagai "CUTI MANDIRI".
@@ -2666,6 +2685,7 @@ class ShiftController extends Controller
                         'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
                         'holiday'         => $holidayInfo,
                         'personal_leave'  => $isPersonalLeave,
+                        'wfh_approved'    => $isWfhApprovedDay,
                     ];
                     $current->addDay();
                     continue;
@@ -2696,11 +2716,12 @@ class ShiftController extends Controller
                     'work_start_time' => ($isOff || $forceOff) ? null : ($customStart ?? $office->work_start_time),
                     'work_end_time'   => ($isOff || $forceOff) ? null : ($customEnd ?? $office->work_end_time),
                     'is_off'          => $forceOff ? true : $isOff,
-                    'is_wfh'          => false,
+                    'is_wfh'          => $forceOff ? false : $isWfhApprovedDay,
                     'is_field'        => false,
                     'is_cross_day'    => false,
                     'holiday'         => $holidayInfo,
                     'personal_leave'  => $isPersonalLeave,
+                    'wfh_approved'    => $isWfhApprovedDay,
                 ];
             } else {
                 // Tidak ada pengaturan kantor sama sekali
@@ -2717,11 +2738,12 @@ class ShiftController extends Controller
                     'work_start_time' => null,
                     'work_end_time'   => null,
                     'is_off'          => $forceOff,
-                    'is_wfh'          => false,
+                    'is_wfh'          => $forceOff ? false : $isWfhApprovedDay,
                     'is_field'        => false,
                     'is_cross_day'    => false,
                     'holiday'         => $holidayInfo,
                     'personal_leave'  => $isPersonalLeave,
+                    'wfh_approved'    => $isWfhApprovedDay,
                 ];
             }
 

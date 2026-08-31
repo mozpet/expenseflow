@@ -36,8 +36,9 @@ class AuthPlatformGuardTest extends TestCase
         $this->makeUser('employee');
 
         $this->postJson('/api/v1/login', [
-            'email'    => User::first()->email,
-            'password' => 'password',
+            'email'     => User::first()->email,
+            'password'  => 'password',
+            'device_id' => 'dev-test-1',
         ], ['X-Platform' => 'mobile'])
             ->assertStatus(200)
             ->assertJsonPath('user.can_access_receipts', true)
@@ -61,11 +62,12 @@ class AuthPlatformGuardTest extends TestCase
         $this->makeUser('finance');
 
         $this->postJson('/api/v1/login', [
-            'email'    => User::first()->email,
-            'password' => 'password',
+            'email'     => User::first()->email,
+            'password'  => 'password',
+            'device_id' => 'dev-test-2',
         ], ['X-Platform' => 'mobile'])
             ->assertStatus(200)
-            ->assertJsonPath('user.can_access_receipts', false);
+            ->assertJsonPath('user.can_access_receipts', true);
     }
 
     public function test_flag_kapabilitas_disertakan_di_response_login(): void
@@ -73,12 +75,13 @@ class AuthPlatformGuardTest extends TestCase
         $this->makeUser('finance', attendance: true);
 
         $this->postJson('/api/v1/login', [
-            'email'    => User::first()->email,
-            'password' => 'password',
+            'email'     => User::first()->email,
+            'password'  => 'password',
+            'device_id' => 'dev-test-3',
         ], ['X-Platform' => 'mobile'])
             ->assertStatus(200)
             ->assertJsonPath('user.attendance_enabled', true)
-            ->assertJsonPath('user.can_access_receipts', false)
+            ->assertJsonPath('user.can_access_receipts', true)
             ->assertJsonPath('user.can_access_attendance', true);
     }
 

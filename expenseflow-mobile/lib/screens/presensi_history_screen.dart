@@ -58,30 +58,6 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
       appBar: AppBar(
         title: const Text('Riwayat Presensi'),
         automaticallyImplyLeading: false,
-        actions: [
-          // Tombol refresh manual
-          if (presensiProv.loadingHistory)
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
-              ),
-            )
-          else
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              tooltip: 'Muat ulang riwayat',
-              onPressed: () {
-                // Muat ulang riwayat + status WFH live dari backend
-                presensiProv.fetchMyAttendance();
-              },
-            ),
-        ],
       ),
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

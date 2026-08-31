@@ -162,24 +162,24 @@ Sistem role ExpenseFlow menggunakan **dua lapis**:
 ---
 
 ### Built-in Role (Tidak Bisa Dihapus)
-| Role | Platform | Scan Struk (Mobile) | Approval Struk (Web) | Akses Presensi | Approval Invoice |
+| Role | Platform | Scan Struk (Mobile) | Approval Struk (Web) | Akses Presensi | Approval Invoice & Fitur Finance |
 |------|----------|---------------------|----------------------|----------------|-----------------|
 | `employee` | HANYA mobile | ✅ CRUD struk sendiri | ❌ | ✅ (jika attendance_enabled) | ❌ |
 | `finance` | mobile + web | ✅ scan & submit struk sendiri | ✅ approval struk karyawan | ✅ (jika attendance_enabled) | Level 1 (Finance Manager) |
-| `hrd` | mobile + web | ✅ scan & submit struk sendiri | ❌ **TIDAK ada akses approval struk** | ✅ (jika attendance_enabled) | Level 1 (Finance Manager) |
+| `hrd` | mobile + web | ✅ scan & submit struk sendiri | ❌ **TIDAK ada akses approval struk** | ✅ (jika attendance_enabled) | ❌ **TIDAK ada akses fitur finance & invoice** |
 | `admin` | mobile + web | ✅ scan & submit struk sendiri | ✅ approval struk karyawan | ✅ (jika attendance_enabled) | Level 1 + Level 2 (+ Direksi) |
 | `super_admin` | mobile + web | ✅ scan & submit struk sendiri | ✅ approval struk karyawan | ✅ (selalu) | Level 1 + 2 + 3 (+ Komisaris) |
 
 > **Scan Struk Mobile:** Semua role bisa upload foto, scan OCR, dan submit struk pengeluaran sendiri
 > via Flutter. Setiap user hanya bisa lihat & kelola struk miliknya sendiri (ownership check di controller).
 
-> **Approval Struk Web (Dashboard):** Tetap **khusus finance, admin, super_admin** — HRD dikecualikan.
-> Route `dashboard/receipts*` memakai middleware `role:finance,admin,super_admin` (tanpa `hrd`).
+> **Fitur Finance Web (Dashboard):** Seluruh modul finance (Approval Struk Reimbursement, Invoice Vendor & Multi-level Approval, Master Data Vendor, serta Pengaturan Aturan/Threshold Finance) **khusus finance, admin, super_admin** — HRD dikecualikan penuh.
+> Route finance memakai middleware `role:finance,admin,super_admin` (tanpa `hrd`).
 
-> **Catatan akses manajemen:** Menu **Manajemen** (Karyawan + Presensi & Cuti) adalah ranah
+> **Catatan akses manajemen:** Menu **Manajemen** (Karyawan + Presensi & Cuti + Shift + Lembur + Device Binding + Rekrutmen) adalah ranah
 > **HRD/admin/super_admin**. **Finance dikecualikan** — route `admin/users*` dan `dashboard/attendance*`
-> sudah memakai middleware `role:hrd,admin,super_admin` (tanpa `finance`), dan kedua menu disembunyikan
-> di web untuk finance. Finance fokus ke approval struk & invoice.
+> memakai middleware `role:hrd,admin,super_admin` (tanpa `finance`), dan seluruh menu manajemen disembunyikan
+> di web untuk finance. HRD fokus ke pengelolaan SDM & Presensi, sedangkan Finance fokus ke transaksi pengeluaran (struk, invoice, vendor).
 
 ---
 
@@ -351,7 +351,7 @@ draft → submitted (submitted_at diisi) → approved / rejected
 ### Approval Level (otomatis berdasarkan nominal)
 | Total Amount | Max Level | Approver |
 |-------------|-----------|----------|
-| < Rp 10.000.000 | Level 1 | Finance Manager (finance, hrd, admin, super_admin) |
+| < Rp 10.000.000 | Level 1 | Finance Manager (finance, admin, super_admin) |
 | Rp 10jt - 50jt | Level 2 | + Direksi (admin, super_admin) |
 | > Rp 50.000.000 | Level 3 | + Komisaris (super_admin) |
 
@@ -399,32 +399,40 @@ PATCH /api/v1/employee/receipts/{id}/claim  → updateClaim (edit category/notes
 POST /api/v1/employee/receipts/{id}/submit  → submit (kirim ke finance)
 ```
 
-### Dashboard (auth:sanctum + role:finance,hrd,admin,super_admin + company)
+### Dashboard Finance (auth:sanctum + role:finance,admin,super_admin + company)
 ```
-# Receipt Approval — KHUSUS finance,admin,super_admin (HRD dikecualikan via nested role)
+# Receipt Approval & Disbursement — KHUSUS finance,admin,super_admin (HRD dikecualikan)
 GET  /api/v1/dashboard/receipts             → inbox (struk menunggu approval)
 GET  /api/v1/dashboard/receipts/all         → dashboardReceipts (filter status + summary)
+POST /api/v1/dashboard/receipts/bulk-approve → bulkApprove
+POST /api/v1/dashboard/receipts/bulk-pay    → bulkDisburse
+GET  /api/v1/dashboard/receipts/export-disbursement → exportDisbursement
 GET  /api/v1/dashboard/receipts/{id}        → show (detail, no ownership check)
 GET  /api/v1/dashboard/receipts/{id}/image  → image (stream foto struk)
 POST /api/v1/dashboard/receipts/{id}/approve → approve
 POST /api/v1/dashboard/receipts/{id}/reject  → reject
+POST /api/v1/dashboard/receipts/{id}/pay    → disburse
 
-# Vendor Management
+# Vendor Management — KHUSUS finance,admin,super_admin
 GET  /api/v1/dashboard/vendors              → index (list vendor perusahaan)
 POST /api/v1/dashboard/vendors              → store (tambah vendor)
 PATCH /api/v1/dashboard/vendors/{id}        → update
 POST /api/v1/dashboard/vendors/{id}/toggle  → toggleActive
 
-# Invoice
+# Invoice — KHUSUS finance,admin,super_admin
 GET  /api/v1/dashboard/invoices             → index (list + filter status + summary)
 GET  /api/v1/dashboard/invoices/{id}        → show (detail + items + approvals)
 POST /api/v1/dashboard/invoices             → store (input invoice manual)
 POST /api/v1/dashboard/invoices/{id}/approve → approve (multi-level)
 POST /api/v1/dashboard/invoices/{id}/reject  → reject
 
-# Receipt image (foto struk privat untuk web)
-GET  /api/v1/dashboard/receipts/{id}/image  → image (stream file)
+# Pengaturan threshold & batas klaim (Finance Rules) — KHUSUS finance,admin,super_admin
+GET       /api/v1/dashboard/settings        → index
+PUT/PATCH /api/v1/dashboard/settings        → update (upsert company_settings)
+```
 
+### Dashboard Shared (auth:sanctum + role:finance,hrd,admin,super_admin + company)
+```
 # Notifikasi
 GET    /api/v1/dashboard/notifications        → index (+ unread_count)
 POST   /api/v1/dashboard/notifications/read-all → markAllRead
@@ -433,10 +441,6 @@ DELETE /api/v1/dashboard/notifications/{id}   → destroy
 
 # Audit log
 GET  /api/v1/dashboard/activity-logs        → index (filter action, entity_type)
-
-# Pengaturan threshold & batas klaim
-GET       /api/v1/dashboard/settings        → index
-PUT/PATCH /api/v1/dashboard/settings        → update (upsert company_settings)
 ```
 
 ### Admin (auth:sanctum + role:hrd,admin,super_admin + company)
@@ -1379,6 +1383,208 @@ bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceMa
     5. **Gzip / Brotli & HTTP/2**: Pastikan Nginx mengaktifkan kompresi Brotli/Gzip dan protokol HTTP/2 untuk loading aset frontend React instan.
     6. **Automated Database Backup**: Jadwalkan backup database otomatis harian (e.g. `mysqldump` terenkripsi di-upload ke remote backup bucket) dengan retensi minimal 30 hari.
     7. **Analisis Bisnis & Valuasi Lengkap**: Rincian model bisnis, penetapan harga SaaS per user, analisis BEP, dan valuasi jual putus dapat dilihat pada dokumen: [doc/10-BUSINESS-PRICING-VALUATION-MODEL.md](file:///e:/koding/coba/backend-gawe/doc/10-BUSINESS-PRICING-VALUATION-MODEL.md).
+
+---
+
+## 11. Analisis & Roadmap Fitur: Face Recognition Presensi Karyawan (Rencana Fitur AI) 📋 ROADMAP / BACKLOG
+
+> **Status:** KAJIAN TEKNIS & ROADMAP (Belum diimplementasikan — disiapkan untuk sprint fitur absensi cerdas anti-fraud).
+
+Dokumentasi opsi teknologi, analisis kelebihan-kekurangan, dan arsitektur verifikasi wajah (*facial recognition & anti-spoofing*) untuk check-in/out selfie presensi karyawan di ExpenseFlow.
+
+### A. Matriks Perbandingan Tools Face Recognition (Fase Development / Gratis)
+
+| Pendekatan | Tool / Library | Biaya Dev & Prod | Tingkat Akurasi | Beban Server | Kebutuhan Internet | Kompleksitas Setup |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. On-Device Mobile (Edge AI)** | **Google ML Kit + TFLite (MobileFaceNet)** | **100% GRATIS** | 98.5% (Tinggi) | **0% (Diolah di HP)** | Bisa Offline | Sedang (Pre-processing tensor) |
+| **2. Self-Hosted REST API Backend** | **CompreFace (Exadel Docker)** | **100% GRATIS (Open Source)** | 99.8% (ArcFace) | Sedang (RAM 2–4GB) | Perlu ke Server | Sangat Mudah (Docker compose) |
+| **3. Microservice AI Python** | **DeepFace / InsightFace (FastAPI)** | **100% GRATIS (Open Source)** | 99.8% (SOTA) | Sedang (RAM 1–2GB) | Perlu ke Server | Sedang (Python service) |
+| **4. Cloud API Managed** | **AWS Rekognition / Azure Face** | Gratis 5.000 req/bln (12 bln) | Enterprise Grade | 0% (Serverless) | Perlu Internet Cepat | Sangat Mudah (REST SDK) |
+
+---
+
+### B. Analisis Mendalam: Google ML Kit + TFLite (MobileFaceNet) di Flutter
+
+#### Kelebihan:
+1. **100% Gratis Selamanya**: Tanpa biaya langganan API cloud berbayar atau kuota bulanan.
+2. **Latensi Sangat Cepat (< 200ms)**: Perhitungan embedding vector wajah dilakukan langsung di chipset HP tanpa jeda upload foto resolusi tinggi ke server.
+3. **Nol Beban Server**: Server backend Laravel tidak perlu kartu grafis (GPU) atau CPU besar untuk inferensi neural network.
+
+#### Kekurangan & Tantangan Nyata:
+1. **Kerentanan Keamanan Sisi Klien (*Client-Side Vulnerability*)**:
+   - Karena perbandingan kemiripan berjalan di aplikasi Flutter, perangkat yang di-*root* atau dimodifikasi (*reverse engineering/Frida*) berisiko memalsukan status verifikasi (`isMatched = true`) sebelum data check-in dikirim ke backend Laravel.
+2. **Anti-Spoofing 2D Terbatas**:
+   - Kamera HP standar membaca citra 2D datar tanpa sensor kedalaman (3D depth sensor seperti Apple TrueDepth). Jika liveness detection hanya mengandalkan kedipan mata, masih berpotensi diakali dengan rekaman video atau cetakan foto resolusi tinggi.
+3. **Beban Komputasi di HP Low-End (Android Entry-Level)**:
+   - Stream kamera + ekstraksi tensor wajah memakan CPU/RAM yang menyebabkan *frame drop*, HP cepat panas, inferensi lambat (1–2 detik di chipset kelas bawah), atau potensi crash Out of Memory (OOM).
+4. **Ukuran APK Membengkak (+20 MB – 40 MB)**:
+   - Binary C++ TFLite native (`libtensorflowlite.so`), file model `.tflite` (~4–6 MB), dan Google Play Services ML Kit native bindings menambah bobot APK.
+5. **Kompleksitas Image Pre-Processing di Flutter**:
+   - Konversi format stream kamera raw (`YUV420/NV21` Android, `BGRA` iOS) ke Bitmap RGB normalisasi `112x112 pixel` rentan bug rotasi sensor kamera depan (0°, 90°, 270°).
+6. **Kesulitan Pembaruan Model AI**:
+   - Peningkatan akurasi model AI di kemudian hari mewajibkan rilis update APK/AAB di Play Store & App Store (semua karyawan wajib update app).
+
+---
+
+### C. Rekomendasi Arsitektur Terbaik (Hybrid Architecture)
+
+Untuk menghasilkan sistem absensi wajah yang **100% murah/gratis**, **aman dari kecurangan HP root**, dan **ringan bagi HP karyawan**:
+
+1. **Sisi Mobile (Flutter)**:
+   - Gunakan `google_mlkit_face_detection` **hanya** untuk:
+     - Deteksi keberadaan wajah di dalam area lingkaran pandu (*guide frame*).
+     - *Passive liveness check* (memastikan mata terbuka & berkedip sebelum tombol ambil foto aktif).
+2. **Sisi Backend (Laravel + CompreFace / DeepFace Container)**:
+   - Foto selfie dikirim ke Laravel bersama payload absensi GPS.
+   - Laravel memverifikasi kemiripan wajah via container gratis **CompreFace** (`/api/v1/recognition/faces/verify`) terhadap foto master karyawan di database.
+   - Keputusan valid/tidaknya absensi murni ditentukan oleh server (aman dari manipulasi HP root) dan ukuran APK Flutter tetap kecil & ringan.
+
+---
+
+## 12. Sistem Keamanan Anti-Fake GPS & Mock Location Presensi Mobile (2026-08-31) ✅ AKTIF
+
+Sistem keamanan anti-kecurangan lokasi palsu (*Anti-Fake GPS / Mock Location*) untuk memastikan titik koordinat check-in dan check-out presensi mobile karyawan valid dan bebas manipulasi, dengan prinsip **Zero False-Positive** (tidak salah mendeteksi karyawan jujur).
+
+### A. Prinsip Kerja & Zero False-Positive Design
+1. **Pengecekan Berbasis OS Asli (`position.isMocked`)**:
+   - Memanfaatkan fitur native Android (`location.isMock()`) dan iOS melalui package `geolocator`.
+   - **Bebas False-Positive**: Sistem **TIDAK** memblokir karyawan hanya karena mengaktifkan *Developer Options* atau *USB Debugging* biasa (misal untuk transfer file atau tema HP). Flag `isMocked` hanya bernilai `true` jika karyawan secara eksplisit memilih aplikasi pemalsu lokasi di menu *"Select mock location app"*.
+2. **Tidak Menggunakan Root-Checker Agresif**:
+   - Menghindari pemblokiran palsu pada fitur bawaan HP seperti *Dual Apps / Second Space* di Xiaomi/MIUI, Oppo/ColorOS, atau Infinix.
+
+### B. Validasi Sisi Klien (Flutter Mobile)
+1. **Pencegahan Langsung di Halaman Presensi (`presensi_map_screen.dart`)**:
+   - Saat `_position.isMocked == true`:
+     - Tombol simpan presensi dinonaktifkan / memicu dialog edukasi panduan.
+     - Muncul banner peringatan merah: *"Fake GPS / Lokasi Palsu terdeteksi aktif. Klik untuk panduan."*
+2. **Dialog Edukasi Solutif**:
+   - Jika terdeteksi lokasi palsu, aplikasi tidak hanya menampilkan pesan error, melainkan memberikan langkah spesifik:
+     1. Matikan aplikasi Fake GPS.
+     2. Buka Pengaturan HP > Opsi Pengembang (Developer Options).
+     3. Ubah *Pilih aplikasi lokasi palsu* menjadi *Tidak Ada (None)*.
+     4. Tekan tombol Refresh di halaman presensi.
+3. **Payload Signature Integrity**:
+   - Parameter `is_mocked` dikirimkan dalam payload API `POST /attendance/check-in` dan `POST /attendance/check-out`.
+
+### C. Validasi Sisi Server (Laravel Backend)
+1. **Proteksi di Controller (`AttendanceController.php`)**:
+   - `checkIn` dan `checkOut` memvalidasi `$request->boolean('is_mocked')`.
+   - Jika bernilai `true`, backend langsung menolak dengan response HTTP 403:
+     ```json
+     {
+       "message": "Presensi ditolak. Terdeteksi penggunaan aplikasi Fake GPS / Mock Location pada perangkat Anda. Harap matikan aplikasi pemalsu lokasi untuk melanjutkan.",
+       "fake_gps_detected": true
+     }
+     ```
+2. **Testing & Integrity**:
+   - Teruji otomatis via unit test `test_checkin_fake_gps_ditolak` dan `test_checkout_fake_gps_ditolak` (100% lulus).
+
+---
+
+## 13. Integrasi Pengajuan WFH Otomatis & Validasi Filter Jadwal Kerja / Libur (2026-08-31) ✅ AKTIF
+
+Sistem pengajuan Work From Home (WFH) karyawan terintegrasi dengan validasi jadwal kerja, kalender libur, dan sistem presensi mobile secara otomatis.
+
+### A. Validasi Cerdas & Auto-Skipping Tanggal Pengajuan WFH (`leave_type === 'wfh'`)
+Saat karyawan mengajukan WFH (baik via preview `GET /attendance/leave-preview` maupun submit `POST /attendance/leave-request`), sistem backend secara otomatis menyaring (`skip`) tanggal-tanggal yang tidak memenuhi syarat:
+1. **Sudah Terjadwal WFH (`already_wfh`)**:
+   - Jika shift karyawan pada tanggal tersebut sudah berstatus WFH (`is_wfh = true`) atau karyawan memiliki status WFH global permanen (`wfh_enabled = true` & `radius_enabled = false`).
+   - Karyawan tidak perlu lagi mengajukan WFH untuk hari yang memang sudah dijadwalkan WFH.
+2. **Hari Libur & Tanggal Merah (`holiday_or_off_day`)**:
+   - Libur nasional, libur perusahaan, dan libur cabang penempatan karyawan otomatis dilewati.
+3. **Cuti Bersama (`holiday_or_off_day`)**:
+   - Cuti bersama yang telah di-accept karyawan dilewati.
+4. **Off-Day Shift & Libur Mingguan (`holiday_or_off_day`)**:
+   - Hari libur shift / hari non-kerja kantor dilewati.
+5. **Pengajuan Lain yang Bentrok (`already_requested`)**:
+   - Tanggal yang sudah memiliki izin, sakit, cuti mandiri, atau WFH sebelumnya (status pending/approved) otomatis dilewati.
+6. **Guard Validasi**:
+   - Pengajuan hanya dihitung dari sisa **hari kerja kantor biasa (onsite)** yang valid. Jika tidak ada hari kerja valid tersisa (misal seluruh rentang adalah libur/sudah WFH), backend mengembalikan HTTP 422.
+
+### B. Aktivasi Presensi WFH Otomatis Setelah Disetujui HRD
+Ketika HRD menyetujui (`approve`) pengajuan WFH karyawan:
+1. **Bypass Pembatasan Presensi Kantor**:
+   - Karyawan onsite biasa (yang normalnya `wfh_enabled = false`) pada tanggal efektif yang disetujui otomatis diizinkan melakukan presensi masuk dan pulang via mobile (`checkIn` & `checkOut`).
+2. **Bypass Validasi Radius Kantor**:
+   - Validasi jarak radius kantor dilewati sehingga karyawan dapat melakukan presensi dari rumah tanpa ditolak radius.
+3. **Pencatatan Record Presensi**:
+   - Kolom `check_in_type` dan `check_out_type` tercatat sebagai `'wfh'`.
+4. **Sinkronisasi Status & Kalender Mobile**:
+   - Endpoint `GET /attendance/status` dan `GET /attendance/my` mengembalikan `wfh_enabled = true` dan `is_wfh_approved = true` pada tanggal yang disetujui.
+   - Endpoint `GET /attendance/my-schedule-calendar` menandai tanggal tersebut dengan `is_wfh = true` dan `wfh_approved = true`.
+
+---
+
+## 14. Standar Spesifikasi Perangkat HP (Smartphone Requirements) untuk Aplikasi Mobile ExpenseFlow (2026-08-31) ✅ PANDUAN PENGGUNA
+
+Panduan spesifikasi minimum dan rekomendasi perangkat telepon pintar (*smartphone*) Android dan iOS untuk menginstal serta menjalankan aplikasi mobile **ExpenseFlow** secara lancar, responsif, dan optimal.
+
+### A. Matriks Spesifikasi Perangkat (Android & iOS)
+
+| Komponen / Fitur | Spesifikasi Minimum (*Minimum Requirements*) | Spesifikasi Rekomendasi (*Recommended*) | Catatan & Dampak Fungsional |
+| :--- | :--- | :--- | :--- |
+| **Sistem Operasi (Android)** | **Android 8.0 (Oreo / API Level 26)** | **Android 11.0 – Android 15.0+** | Kompatibilitas library Flutter 3.x, enkripsi data lokal, dan keamanan token JWT. |
+| **Sistem Operasi (iOS)** | **iOS 14.0** (iPhone 7 / iPhone SE Gen 1+) | **iOS 16.0 – iOS 18.0+** (iPhone 11 ke atas) | Dukungan runtime Swift, APNs (Apple Push Notification), dan otorisasi privasi. |
+| **Memori RAM** | **2 GB RAM** | **3 GB – 4 GB RAM+** | Memastikan aplikasi tidak force-close (*OOM*) saat membuka stream kamera resolusi tinggi & render peta koordinat simultan. |
+| **Penyimpanan Bebas (*Free Storage*)** | **Minimal 150 MB** | **500 MB – 1 GB+** | Digunakan untuk instalasi APK (~25–35 MB), asset cache, thumbnail gambar struk, dan file sementara (*temporary files*). |
+| **Prosesor / Chipset** | Quad-Core 1.5 GHz (ARMv7 / ARM64) | Octa-Core 2.0 GHz+ (Snapdragon 600/700/800 series, MediaTek Helio/Dimensity, Apple Bionic) | Menghasilkan navigasi UI mulus (60 FPS) dan kecepatan rendering halaman. |
+| **Kamera Belakang** | **5.0 Megapixel (MP)** | **8.0 MP – 12.0 MP+ (dengan Auto-Focus & Flash)** | **Kritis untuk OCR**: Resolusi kamera dan ketajaman fokus sangat menentukan keberhasilan ekstraksi otomatis teks struk belanja. |
+| **Kamera Depan** | 2.0 Megapixel (MP) | 5.0 MP – 8.0 MP+ | Digunakan untuk foto selfie verifikasi kehadiran (jika fitur selfie absensi diaktifkan). |
+| **Modul Sensor Lokasi (GPS)** | **A-GPS / GLONASS bawaan HP** | Multi-Band GNSS (GPS, GLONASS, Galileo, BeiDou) | **Kritis untuk Presensi**: Akurasi tinggi (*high accuracy*) diperlukan untuk validasi radius geofence kantor (toleransi 10–50 meter). |
+| **Konektivitas Internet** | 3G / HSPA / Wi-Fi stabil (Min. 512 Kbps) | **4G LTE / 5G / Wi-Fi broadband** (Min. 2 Mbps) | Upload foto struk (ukuran 500 KB – 2 MB per struk) dan sinkronisasi realtime status persetujuan. |
+| **Layar & Resolusi** | HD 720 × 1280 px (rasio 16:9) | FHD+ 1080 × 2400 px (rasio 18:9, 19.5:9, 20:9) | Tampilan UI Material 3, kalender range picker, dan kartu statistik presensi ter-render proporsional. |
+| **Google Play Services (GMS)** | **Wajib Aktif (versi terbaru)** | Versi terupdate otomatis | Diperlukan untuk Firebase Cloud Messaging (FCM Push Notification) dan Google Play Location Provider. |
+
+---
+
+### B. Izin Aplikasi (*App Permissions*) yang Wajib Diberikan
+
+Agar seluruh fitur aplikasi mobile dapat berjalan normal tanpa kendala, karyawan wajib menyetujui izin-izin berikut saat pertama kali membuka aplikasi:
+
+1. **Izin Lokasi (*Location Permission*)**:
+   - **Tingkat Akses**: Pilih *"Saat Aplikasi Digunakan"* (*While using the app*).
+   - **Mode Presisi**: Wajib mengaktifkan opsi *"Presisi Tepat / Lokasi Akurat"* (*Precise Location*). Jangan gunakan mode *Approximate* agar titik koordinat tidak melenceng dari radius kantor.
+2. **Izin Kamera (*Camera Permission*)**:
+   - Diperlukan saat memotret struk belanja untuk klaim reimbursement dan mengambil foto selfie presensi.
+3. **Izin Notifikasi (*Notification Permission - Khusus Android 13+ & iOS*)**:
+   - Wajib diizinkan (*Allow*) agar pengingat jam checkout otomatis (*checkout reminder*), notifikasi persetujuan lembur, cuti, dan pengumuman perusahaan muncul di layar HP.
+4. **Izin Penyimpanan / Foto (*Photos / Storage Permission*)**:
+   - Diperlukan saat karyawan ingin melampirkan file surat dokter (format PDF atau gambar dari galeri) pada pengajuan izin/sakit.
+
+---
+
+### C. Panduan Pengaturan Khusus Merek HP (Optimasi Latar Belakang & Notifikasi)
+
+Beberapa sistem antarmuka Android bawaan pabrikan memiliki manajemen baterai agresif yang dapat mematikan notifikasi push atau pengingat checkout. Berikut rekomendasi pengaturannya:
+
+1. **Xiaomi / Redmi / POCO (MIUI / HyperOS)**:
+   - Buka *Pengaturan > Aplikasi > Kelola Aplikasi > ExpenseFlow*:
+     - Aktifkan **Mulai Otomatis (*Autostart*)**.
+     - Ubah *Penghemat Baterai* menjadi **Tidak ada pembatasan (*No restrictions*)**.
+2. **Oppo / Realme (ColorOS / Realme UI)**:
+   - Buka *Pengaturan > Manajemen Aplikasi > ExpenseFlow*:
+     - Aktifkan **Izinkan aktivitas latar belakang (*Allow background activity*)**.
+     - Di bagian *Baterai*, nonaktifkan *Pengoptimalan Baterai*.
+3. **Vivo / iQOO (Funtouch OS)**:
+   - Buka *Pengaturan > Baterai > Penggunaan Baterai di Latar Belakang*:
+     - Pilih aplikasi *ExpenseFlow* dan ubah ke **Izinkan penggunaan latar belakang tinggi (*High background power usage*)**.
+4. **Samsung (One UI)**:
+   - Buka *Pengaturan > Aplikasi > ExpenseFlow > Baterai*:
+     - Pilih opsi **Tidak Dibatasi (*Unrestricted*)**.
+     - Pastikan aplikasi tidak dimasukkan ke dalam daftar *Sleeping apps* atau *Deep sleeping apps*.
+
+---
+
+### D. Perangkat & Kondisi yang TIDAK Didukung / Dilarang (*Unsupported Devices*)
+
+1. **Perangkat dengan Aplikasi Pemalsu Lokasi Aktif (*Mock Location / Fake GPS*)**:
+   - Sistem secara otomatis memblokir tombol presensi dan menolak request check-in/out jika terdeteksi manipulasi GPS (`is_mocked = true`).
+2. **HP Android Tanpa Layanan Google (*Non-GMS / Huawei HMS murni*)**:
+   - Model smartphone tanpa Google Play Services (misal seri Huawei baru tanpa GMS) tidak dapat menerima notifikasi push Firebase Cloud Messaging (FCM) secara realtime dan memerlukan pembaruan status manual.
+3. **Perangkat Emulator PC (Bluestacks, Nox, LDPlayer)**:
+   - Penggunaan emulator PC untuk absensi mobile sangat tidak disarankan karena tidak memiliki sensor kamera asli dan koordinat GPS fisik yang akurat.
+
+---
 
 # note untuk refaktoring
 perbaiki dulu error di atas ,

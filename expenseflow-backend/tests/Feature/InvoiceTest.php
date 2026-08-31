@@ -209,18 +209,17 @@ class InvoiceTest extends TestCase
     // ── 6. Direktur tidak bisa approve dua level sendiri (separation of duties) ─
     public function test_satu_user_tidak_bisa_approve_dua_level_invoice_sama(): void
     {
-        $finance     = $this->user('finance');
-        $superAdmin  = $this->user('super_admin');
-        $inv         = $this->invoice($finance, 60_000_000); // max_level = 3
+        $admin = $this->user('admin');
+        $inv   = $this->invoice($admin, 20_000_000); // max_level = 2
 
-        // super_admin approve level 0 → 1
+        // admin approve level 0 → 1
         $this->postJson("/api/v1/dashboard/invoices/{$inv->id}/approve",
-            [], $this->token($superAdmin)
+            [], $this->token($admin)
         )->assertOk();
 
-        // super_admin coba approve lagi → ditolak (separation of duties)
+        // admin coba approve lagi → ditolak (separation of duties)
         $this->postJson("/api/v1/dashboard/invoices/{$inv->id}/approve",
-            [], $this->token($superAdmin)
+            [], $this->token($admin)
         )->assertStatus(403);
     }
 
@@ -288,4 +287,60 @@ class InvoiceTest extends TestCase
         $this->getJson("/api/v1/dashboard/invoices/{$otherInvoice->id}", $this->token($finance))
             ->assertStatus(403);
     }
+
+    // ── 8. HRD tidak bisa mengakses fitur-fitur Finance ──────────────
+    public function test_hrd_tidak_bisa_akses_invoices(): void
+    {
+        $hrd = $this->user('hrd');
+
+        $this->getJson('/api/v1/dashboard/invoices', $this->token($hrd))
+            ->assertStatus(403);
+    }
+
+    public function test_hrd_tidak_bisa_buat_invoice(): void
+    {
+        $hrd = $this->user('hrd');
+
+        $this->postJson('/api/v1/dashboard/invoices',
+            $this->invoicePayload(5_000_000),
+            $this->token($hrd)
+        )->assertStatus(403);
+    }
+
+    public function test_hrd_tidak_bisa_approve_invoice(): void
+    {
+        $finance = $this->user('finance');
+        $hrd     = $this->user('hrd');
+        $inv     = $this->invoice($finance, 5_000_000);
+
+        $this->postJson("/api/v1/dashboard/invoices/{$inv->id}/approve",
+            ['notes' => 'HRD coba approve'],
+            $this->token($hrd)
+        )->assertStatus(403);
+    }
+
+    public function test_hrd_tidak_bisa_akses_vendors(): void
+    {
+        $hrd = $this->user('hrd');
+
+        $this->getJson('/api/v1/dashboard/vendors', $this->token($hrd))
+            ->assertStatus(403);
+    }
+
+    public function test_hrd_tidak_bisa_akses_receipts_inbox(): void
+    {
+        $hrd = $this->user('hrd');
+
+        $this->getJson('/api/v1/dashboard/receipts', $this->token($hrd))
+            ->assertStatus(403);
+    }
+
+    public function test_hrd_tidak_bisa_akses_finance_settings(): void
+    {
+        $hrd = $this->user('hrd');
+
+        $this->getJson('/api/v1/dashboard/settings', $this->token($hrd))
+            ->assertStatus(403);
+    }
 }
+

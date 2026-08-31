@@ -172,15 +172,15 @@ class ApiService {
 
   // ─── Presensi ─────────────────────────────────────────────
   static Future<Map<String, dynamic>> checkIn(
-      double lat, double lng) async {
+      double lat, double lng, {bool isMocked = false}) async {
     return _request('POST', '/attendance/check-in',
-        body: {'latitude': lat, 'longitude': lng});
+        body: {'latitude': lat, 'longitude': lng, 'is_mocked': isMocked});
   }
 
   static Future<Map<String, dynamic>> checkOut(
-      double lat, double lng) async {
+      double lat, double lng, {bool isMocked = false}) async {
     return _request('POST', '/attendance/check-out',
-        body: {'latitude': lat, 'longitude': lng});
+        body: {'latitude': lat, 'longitude': lng, 'is_mocked': isMocked});
   }
 
   static Future<Map<String, dynamic>> myAttendance() async {
@@ -274,16 +274,21 @@ class ApiService {
     return _request('GET', '/attendance/my-leaves');
   }
 
-  // Preview hitungan hari EFEKTIF pengajuan (backend skip libur/off-day/bentrok).
+  // Preview hitungan hari EFEKTIF pengajuan (backend skip libur/off-day/bentrok/wfh).
   // Response: { total_days, calendar_days, effective_dates[], skipped_dates[] }
   static Future<Map<String, dynamic>> leavePreview({
     required String startDate,
     required String endDate,
+    String? leaveType,
   }) async {
-    return _request('GET', '/attendance/leave-preview', query: {
+    final query = <String, String>{
       'start_date': startDate,
       'end_date': endDate,
-    });
+    };
+    if (leaveType != null && leaveType.isNotEmpty) {
+      query['leave_type'] = leaveType;
+    }
+    return _request('GET', '/attendance/leave-preview', query: query);
   }
 
   static Future<Map<String, dynamic>> requestLeave({

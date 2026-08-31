@@ -331,28 +331,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
               child: Column(
                 children: [
-                  // Baris Header: Reload Button + Notifikasi Icon
+                  // Baris Header: Notifikasi Icon
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    mainAxisAlignment: MainAxisAlignment.end,
                     children: [
-                      // Tombol Reload/Refresh Data
-                      Container(
-                        decoration: BoxDecoration(
-                          color: Colors.grey.shade100,
-                          shape: BoxShape.circle,
-                        ),
-                        child: IconButton(
-                          icon: _isReloading
-                              ? const SizedBox(
-                                  width: 18,
-                                  height: 18,
-                                  child: CircularProgressIndicator(strokeWidth: 2),
-                                )
-                              : const Icon(Icons.refresh, color: Colors.black87),
-                          tooltip: 'Muat Ulang Data',
-                          onPressed: _refreshHomeData,
-                        ),
-                      ),
                       // Notifikasi Icon
                       Stack(
                         clipBehavior: Clip.none,

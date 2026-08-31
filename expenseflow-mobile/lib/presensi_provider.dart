@@ -106,9 +106,11 @@ class PresensiProvider extends ChangeNotifier {
 
   // ─── Presensi check-in/out ke API ─────────────────────────
   /// Kirim koordinat ke backend. Lempar ApiException bila gagal.
-  Future<void> simpanPresensi(double lat, double lng) async {
+  Future<void> simpanPresensi(double lat, double lng,
+      {bool isMocked = false}) async {
     if (canCheckIn) {
-      final res = await ApiService.checkIn(lat, lng);
+      final res =
+          await ApiService.checkIn(lat, lng, isMocked: isMocked);
       final att = res['attendance'] as Map<String, dynamic>?;
       _todayMasuk = _extractTime(att?['check_in_time']) ?? _nowTime();
       _records.insert(
@@ -134,7 +136,8 @@ class PresensiProvider extends ChangeNotifier {
 
       notifyListeners();
     } else if (canCheckOut) {
-      final res = await ApiService.checkOut(lat, lng);
+      final res =
+          await ApiService.checkOut(lat, lng, isMocked: isMocked);
       final att = res['attendance'] as Map<String, dynamic>?;
       _todayPulang = _extractTime(att?['check_out_time']) ?? _nowTime();
       _todayOvertimeMinutes = (att?['overtime_minutes'] as num?)?.toInt() ?? 0;
@@ -463,14 +466,19 @@ class PresensiProvider extends ChangeNotifier {
   // ─── Preview hari EFEKTIF pengajuan (badge "Total N hari") ────
   /// Meminta hitungan backend utk rentang tanggal. Backend melewatkan
   /// libur nasional/perusahaan/cabang, cuti bersama accepted, cuti pribadi
-  /// yang sudah diajukan, libur mingguan kantor & off-day shift.
+  /// yang sudah diajukan, libur mingguan kantor, off-day shift & WFH terjadwal.
   /// Return null bila gagal (mobile fallback ke hitungan kalender sederhana).
   Future<Map<String, dynamic>?> fetchLeavePreview({
     required String startDate,
     required String endDate,
+    String? leaveType,
   }) async {
     try {
-      return await ApiService.leavePreview(startDate: startDate, endDate: endDate);
+      return await ApiService.leavePreview(
+        startDate: startDate,
+        endDate: endDate,
+        leaveType: leaveType,
+      );
     } catch (_) {
       return null;
     }

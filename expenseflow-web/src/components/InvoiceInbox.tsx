@@ -33,7 +33,7 @@ const LEVEL_LABELS = ['Finance Manager', 'Direksi', 'Komisaris'];
 // Role yang berwenang approve pada level saat ini (currentLevel = jumlah approval
 // yang sudah masuk). Selaras dengan backend InvoiceController::allowedRolesForLevel.
 function roleAllowedForLevel(role: string, currentLevel: number): boolean {
-  if (currentLevel === 0) return ['finance', 'hrd', 'admin', 'super_admin'].includes(role);
+  if (currentLevel === 0) return ['finance', 'admin', 'super_admin'].includes(role);
   if (currentLevel === 1) return ['admin', 'super_admin'].includes(role);
   if (currentLevel === 2) return ['super_admin'].includes(role);
   return false;

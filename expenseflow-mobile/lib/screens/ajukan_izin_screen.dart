@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../utils.dart';
 import '../widgets/custom_date_picker_dialog.dart';
 
 class AjukanIzinScreen extends StatefulWidget {
@@ -49,6 +50,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
       final res = await prov.fetchLeavePreview(
         startDate: _toStr(_startDate),
         endDate: _toStr(_endDate),
+        leaveType: _selectedType,
       );
       if (!mounted) return;
       setState(() {
@@ -130,13 +132,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
     _fetchPreview();
   }
 
-  String _formatDate(DateTime dt) {
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun',
-      'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'
-    ];
-    return '${dt.day} ${months[dt.month - 1]} ${dt.year}';
-  }
+  String _formatDate(DateTime dt) => formatDateIndonesian(dt);
 
   // Pilih surat dokter dari penyimpanan (gambar/PDF).
   Future<void> _pickDocument() async {
@@ -261,7 +257,10 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
               children: _types.map((t) {
                 final isSelected = _selectedType == t.$1;
                 return GestureDetector(
-                  onTap: () => setState(() => _selectedType = t.$1),
+                  onTap: () {
+                    setState(() => _selectedType = t.$1);
+                    _fetchPreview();
+                  },
                   child: AnimatedContainer(
                     duration: const Duration(milliseconds: 150),
                     padding: const EdgeInsets.symmetric(

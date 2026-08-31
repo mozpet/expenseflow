@@ -96,9 +96,9 @@ Route::prefix('v1')->group(function () {
     Route::middleware(['auth:sanctum', 'role:finance,hrd,admin,super_admin', 'company'])
         ->prefix('dashboard')
         ->group(function () {
-            // Receipt approval — struk karyawan khusus FINANCE (HRD dikecualikan).
-            // Dibungkus role tambahan tanpa 'hrd'; admin & super_admin tetap bisa.
+            // ─── Fitur Finance (Khusus Finance, Admin, Super Admin — HRD Dikecualikan) ───
             Route::middleware('role:finance,admin,super_admin')->group(function () {
+                // Receipt approval & disbursement
                 Route::get('/receipts', [ReceiptController::class, 'inbox']);
                 Route::get('/receipts/all', [ReceiptController::class, 'dashboardReceipts']);
                 Route::post('/receipts/bulk-approve', [ReceiptController::class, 'bulkApprove']);
@@ -109,21 +109,26 @@ Route::prefix('v1')->group(function () {
                 Route::post('/receipts/{receipt}/approve', [ReceiptController::class, 'approve']);
                 Route::post('/receipts/{receipt}/reject', [ReceiptController::class, 'reject']);
                 Route::post('/receipts/{receipt}/pay', [ReceiptController::class, 'disburse']);
+
+                // Vendor management
+                Route::get('/vendors', [VendorController::class, 'index']);
+                Route::post('/vendors', [VendorController::class, 'store']);
+                Route::patch('/vendors/{vendor}', [VendorController::class, 'update']);
+                Route::post('/vendors/{vendor}/toggle', [VendorController::class, 'toggleActive']);
+
+                // Invoice
+                Route::get('/invoices', [InvoiceController::class, 'index']);
+                Route::get('/invoices/{invoice}', [InvoiceController::class, 'show']);
+                Route::post('/invoices', [InvoiceController::class, 'store']);
+                Route::post('/invoices/{invoice}/approve', [InvoiceController::class, 'approve']);
+                Route::post('/invoices/{invoice}/reject', [InvoiceController::class, 'reject']);
+
+                // Pengaturan threshold & batas klaim (Finance Rules)
+                Route::get('/settings', [SettingsController::class, 'index']);
+                Route::match(['put', 'patch'], '/settings', [SettingsController::class, 'update']);
             });
 
-            // Vendor management
-            Route::get('/vendors', [VendorController::class, 'index']);
-            Route::post('/vendors', [VendorController::class, 'store']);
-            Route::patch('/vendors/{vendor}', [VendorController::class, 'update']);
-            Route::post('/vendors/{vendor}/toggle', [VendorController::class, 'toggleActive']);
-
-            // Invoice
-            Route::get('/invoices', [InvoiceController::class, 'index']);
-            Route::get('/invoices/{invoice}', [InvoiceController::class, 'show']);
-            Route::post('/invoices', [InvoiceController::class, 'store']);
-            Route::post('/invoices/{invoice}/approve', [InvoiceController::class, 'approve']);
-            Route::post('/invoices/{invoice}/reject', [InvoiceController::class, 'reject']);
-
+            // ─── Fitur Bersama (Finance, HRD, Admin, Super Admin) ───────────────
             // Notifikasi
             Route::get('/notifications', [NotificationController::class, 'index']);
             Route::post('/notifications/read-all', [NotificationController::class, 'markAllRead']);
@@ -132,10 +137,6 @@ Route::prefix('v1')->group(function () {
 
             // Audit log (activity logs)
             Route::get('/activity-logs', [ActivityLogController::class, 'index']);
-
-            // Pengaturan threshold & batas klaim
-            Route::get('/settings', [SettingsController::class, 'index']);
-            Route::match(['put', 'patch'], '/settings', [SettingsController::class, 'update']);
         });
 
     // Super Admin / HRD / Admin routes — akses penuh

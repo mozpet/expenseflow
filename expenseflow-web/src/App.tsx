@@ -76,9 +76,9 @@ import {
 export default function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
 
-  // HRD tidak punya akses struk karyawan (khusus finance) → halaman struk disembunyikan.
+  // HRD tidak punya akses seluruh fitur finance (struk, invoice, vendor, setting) → disembunyikan.
   const isHrd = user?.role === 'hrd';
-  const RECEIPT_PAGES = ['inbox', 'riwayat-struk'];
+  const FINANCE_PAGES = ['inbox', 'riwayat-struk', 'invoice-inbox', 'input-invoice', 'scan-invoice', 'riwayat-invoice', 'master-vendor'];
 
   // Finance tidak punya akses menu Manajemen (Karyawan & Presensi/Cuti = ranah HRD).
   const isFinance = user?.role === 'finance';
@@ -89,9 +89,9 @@ export default function App() {
   const SETTINGS_PAGES = ['setting'];
 
   // Global React States
-  // HRD mendarat langsung ke Inbox Invoice (bukan Inbox Struk).
+  // HRD mendarat langsung ke Manajemen Karyawan (bukan fitur Finance).
   const [activePage, setActivePage] = useState<string>(
-    user?.role === 'hrd' ? 'invoice-inbox' : 'inbox',
+    user?.role === 'hrd' ? 'karyawan' : 'inbox',
   );
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(false);
@@ -176,10 +176,10 @@ export default function App() {
     setDataLoading(true);
     setDataError(null);
     try {
-      // HRD tidak punya akses struk → jangan panggil endpoint receipt (akan 403).
-      const tasks = [loadInvoices(), loadNotifications(), loadAuditLogs(), loadSettings(), loadPendingOvertime(), loadPendingDevice()];
+      // HRD tidak punya akses finance → jangan panggil endpoint receipt, invoice, atau settings (akan 403).
+      const tasks = [loadNotifications(), loadAuditLogs(), loadPendingOvertime(), loadPendingDevice()];
       if (user?.role !== 'hrd') {
-        tasks.push(loadReceipts(), loadReceiptHistory());
+        tasks.push(loadInvoices(), loadReceipts(), loadReceiptHistory(), loadSettings());
       }
       await Promise.all(tasks);
     } catch (e: any) {
@@ -195,9 +195,9 @@ export default function App() {
 
   // Jaga-jaga: alihkan user dari halaman yang tidak boleh ia akses.
   useEffect(() => {
-    // HRD tidak boleh di halaman struk → alihkan ke invoice.
-    if (isHrd && RECEIPT_PAGES.includes(activePage)) {
-      setActivePage('invoice-inbox');
+    // HRD tidak boleh di halaman finance → alihkan ke karyawan.
+    if (isHrd && FINANCE_PAGES.includes(activePage)) {
+      setActivePage('karyawan');
     }
     // Finance tidak boleh di halaman manajemen → alihkan ke inbox struk.
     if (isFinance && MANAGEMENT_PAGES.includes(activePage)) {
@@ -205,7 +205,7 @@ export default function App() {
     }
     // HRD & finance tidak boleh di Pengaturan Aturan → alihkan ke halaman default.
     if (!isAdminOrSuperAdmin && SETTINGS_PAGES.includes(activePage)) {
-      setActivePage(user?.role === 'hrd' ? 'invoice-inbox' : 'inbox');
+      setActivePage(user?.role === 'hrd' ? 'karyawan' : 'inbox');
     }
   }, [isHrd, isFinance, isAdminOrSuperAdmin, activePage]);
 
