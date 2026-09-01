@@ -932,8 +932,8 @@ No | Kode Karyawan | Nama Karyawan | Bank | No Rekening | Nama Pemilik Rekening 
 
 # Roadmap Fitur Payroll (Gaji)
 > 📄 **Dokumentasi & Spesifikasi Lengkap Telah Dipindahkan:**  
-> Roadmap detail, analisis kekurangan data/tabel, aturan PPh 21 TER 2024 (PP 58/2023), BPJS Ketenagakerjaan & Kesehatan, lembur (PP 35/2021), THR (Permenaker 6/2016), multi-cabang, skema database, dan daftar API endpoint kini terdokumentasi lengkap di:  
-> **👉 [doc/07-PAYROLL-ROADMAP.md](07-PAYROLL-ROADMAP.md)**
+> Roadmap detail, analisis kekurangan data/tabel, aturan PPh 21 TER 2024 (PP 58/2023), BPJS Ketenagakerjaan & Kesehatan, lembur (PP 35/2021), THR (Permenaker 6/2016), multi-cabang, skema database, audit kekurangan, kontrol keamanan PII/fraud, dan daftar API endpoint kini terdokumentasi lengkap di:  
+> **👉 [doc/07-PAYROLL-ROADMAP.md](07-PAYROLL-ROADMAP.md)** (Revisi V3 — Audit & Backlog Kepatuhan/Fleksibilitas).
 
 reminders: bug user statusnya sedang cuti di hari itu masih bisa presensi, 
 fix: ✅ SELESAI 2026-07-09 — checkIn() di AttendanceController sekarang mengecek LeaveRequest (approved, leave_type cuti/sakit/izin) yang mencakup tanggal hari ini; jika ada → tolak 403 dengan pesan status cuti/sakit/izin.
