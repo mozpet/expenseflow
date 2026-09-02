@@ -702,7 +702,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setLoading(true);
     setError(null);
     try {
-      const res: any = await attendanceApi.leaves({ per_page: 2000 });
+      // per_page: 500 — cukup untuk perusahaan UKM. Tidak bisa server-side pagination
+      // karena conflict detection (deteksi bentrok cuti) butuh semua data leaves (semua status).
+      const res: any = await attendanceApi.leaves({ per_page: 500 });
       setLeaves(rows(res));
     } catch (e) {
       reportApiError(e, 'Gagal memuat pengajuan izin/cuti.');
@@ -715,7 +717,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setLoading(true);
     setError(null);
     try {
-      const res: any = await attendanceApi.users({ per_page: 2000 });
+      // per_page: 300 — cukup untuk perusahaan UKM (≤ 300 karyawan aktif).
+      // Filter office/search dilakukan client-side karena backend belum support filter tersebut.
+      const res: any = await attendanceApi.users({ per_page: 300 });
       setUsers(rows(res));
     } catch (e) {
       reportApiError(e, 'Gagal memuat daftar karyawan.');
@@ -825,7 +829,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     else if (tab === 'holidays') {
       loadHolidays();
       if (users.length === 0) {
-        attendanceApi.users().then(res => setUsers(rows(res))).catch(() => {});
+        attendanceApi.users({ per_page: 300 }).then(res => setUsers(rows(res))).catch(() => {});
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -922,7 +926,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       );
       await loadBalances();
       // Perbarui juga data allUsers agar status leave_active userOptions langsung sinkron
-      attendanceApi.allUsers().catch(() => {});
+      attendanceApi.allUsers(true).catch(() => {}); // forceRefresh=true agar cache tidak stale
     } catch (e) {
       reportApiError(e, 'Gagal mengubah kuota cuti.');
     } finally {

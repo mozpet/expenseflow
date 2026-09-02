@@ -170,6 +170,34 @@ class ApiService {
     await clearToken();
   }
 
+  // ─── Forgot Password OTP ───────────────────────────────────
+  static Future<Map<String, dynamic>> sendForgotPasswordOtp(String email) async {
+    return _request('POST', '/auth/forgot-password/send-otp',
+        auth: false, body: {'email': email});
+  }
+
+  static Future<Map<String, dynamic>> verifyForgotPasswordOtp(
+      String email, String otp) async {
+    return _request('POST', '/auth/forgot-password/verify-otp',
+        auth: false, body: {'email': email, 'otp': otp});
+  }
+
+  static Future<Map<String, dynamic>> resetPasswordWithOtp({
+    required String email,
+    required String resetToken,
+    required String password,
+    required String passwordConfirmation,
+  }) async {
+    return _request('POST', '/auth/forgot-password/reset',
+        auth: false,
+        body: {
+          'email': email,
+          'reset_token': resetToken,
+          'password': password,
+          'password_confirmation': passwordConfirmation,
+        });
+  }
+
   // ─── Presensi ─────────────────────────────────────────────
   static Future<Map<String, dynamic>> checkIn(
       double lat, double lng, {bool isMocked = false}) async {

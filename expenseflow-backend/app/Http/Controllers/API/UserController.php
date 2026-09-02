@@ -235,33 +235,6 @@ class UserController extends Controller
     }
 
     /**
-     * HR reset password karyawan — set password baru + revoke token.
-     * POST /api/v1/admin/users/{user}/reset-password
-     */
-    public function resetPassword(Request $request, User $user): JsonResponse
-    {
-        // Cegah admin mereset password akun super_admin (account takeover).
-        if ($deny = $this->denyIfProtectedTarget($request->user(), $user)) {
-            return $deny;
-        }
-
-        $validated = $request->validate([
-            'password' => 'required|string|min:8',
-        ]);
-
-        $user->update([
-            'password' => Hash::make($validated['password']),
-        ]);
-
-        // Cabut semua token — user harus login ulang
-        $user->tokens()->delete();
-
-        return response()->json([
-            'message' => 'Password berhasil direset.',
-        ]);
-    }
-
-    /**
      * Hapus akun karyawan (Soft Delete).
      * DELETE /api/v1/admin/users/{user}
      */

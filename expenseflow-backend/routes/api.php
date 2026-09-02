@@ -3,6 +3,7 @@
 use App\Http\Controllers\API\ActivityLogController;
 use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\AuthController;
+use App\Http\Controllers\API\ForgotPasswordController;
 use App\Http\Controllers\API\InvoiceController;
 use App\Http\Controllers\API\NotificationController;
 use App\Http\Controllers\API\PublicRecruitmentController;
@@ -68,6 +69,16 @@ Route::prefix('v1')->group(function () {
     // Auth — public (rate limited: 5 attempts/min)
     Route::post('/login', [AuthController::class, 'login'])
         ->middleware('throttle:login');
+
+    // Forgot Password OTP flow — public (rate limited)
+    Route::prefix('auth/forgot-password')->group(function () {
+        Route::post('/send-otp', [ForgotPasswordController::class, 'sendOtp'])
+            ->middleware('throttle:5,10'); // Max 5 request / 10 menit per IP
+        Route::post('/verify-otp', [ForgotPasswordController::class, 'verifyOtp'])
+            ->middleware('throttle:10,5'); // Max 10 verifikasi / 5 menit per IP
+        Route::post('/reset', [ForgotPasswordController::class, 'resetPassword'])
+            ->middleware('throttle:5,10');
+    });
 
     // Auth — authenticated
     Route::middleware('auth:sanctum')->group(function () {
@@ -151,7 +162,6 @@ Route::prefix('v1')->group(function () {
                 Route::put('/users/{user}', [UserController::class, 'update']);
                 Route::patch('/users/{user}/deactivate', [UserController::class, 'deactivate']);
                 Route::patch('/users/{user}/activate', [UserController::class, 'activate']);
-                Route::post('/users/{user}/reset-password', [UserController::class, 'resetPassword']);
                 Route::delete('/users/{user}', [UserController::class, 'destroy']);
             });
         });

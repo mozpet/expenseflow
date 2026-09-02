@@ -1,7 +1,11 @@
-import 'dart:io';
 import 'dart:math';
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:shared_preferences/shared_preferences.dart';
+
+// dart:io Platform hanya tersedia di mobile/desktop, bukan Flutter Web.
+// Semua akses ke Platform.isAndroid/isIOS wajib dipagari oleh !kIsWeb.
+import 'dart:io' show Platform;
 
 class DeviceService {
   static const String _persistentDeviceIdKey = 'persistent_device_id';
@@ -11,26 +15,28 @@ class DeviceService {
   static Future<String> getDeviceId() async {
     final prefs = await SharedPreferences.getInstance();
 
-    try {
-      if (Platform.isAndroid) {
-        final androidInfo = await _deviceInfo.androidInfo;
-        // Gunakan androidInfo.id atau serial/fingerprint
-        final rawId = androidInfo.id;
-        if (rawId.isNotEmpty) {
-          return 'android_$rawId';
+    if (!kIsWeb) {
+      try {
+        if (Platform.isAndroid) {
+          final androidInfo = await _deviceInfo.androidInfo;
+          // Gunakan androidInfo.id atau serial/fingerprint
+          final rawId = androidInfo.id;
+          if (rawId.isNotEmpty) {
+            return 'android_$rawId';
+          }
+        } else if (Platform.isIOS) {
+          final iosInfo = await _deviceInfo.iosInfo;
+          final rawId = iosInfo.identifierForVendor;
+          if (rawId != null && rawId.isNotEmpty) {
+            return 'ios_$rawId';
+          }
         }
-      } else if (Platform.isIOS) {
-        final iosInfo = await _deviceInfo.iosInfo;
-        final rawId = iosInfo.identifierForVendor;
-        if (rawId != null && rawId.isNotEmpty) {
-          return 'ios_$rawId';
-        }
+      } catch (_) {
+        // Fallback jika terjadi error pada device_info plugin
       }
-    } catch (_) {
-      // Fallback jika terjadi error pada device_info plugin
     }
 
-    // Fallback: Persistent ID di SharedPreferences
+    // Fallback: Persistent ID di SharedPreferences (dipakai oleh web & jika device_info gagal)
     String? persistentId = prefs.getString(_persistentDeviceIdKey);
     if (persistentId == null || persistentId.isEmpty) {
       final randomNum = Random().nextInt(900000) + 100000;
@@ -42,6 +48,8 @@ class DeviceService {
 
   /// Mendapatkan Nama Perangkat yang mudah dikenali (contoh: "Infinix X6853", "Samsung SM-A525F").
   static Future<String> getDeviceName() async {
+    if (kIsWeb) return 'Web Browser';
+
     try {
       if (Platform.isAndroid) {
         final androidInfo = await _deviceInfo.androidInfo;

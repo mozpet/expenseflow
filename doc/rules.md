@@ -44,7 +44,8 @@ app/
         ReceiptController.php       ← struk: store, updateClaim, submit, approve, reject, show, myReceipts, inbox, dashboardReceipts
         InvoiceController.php       ← invoice: store, approve (multi-level), reject
         VendorController.php        ← vendor: index, store, update, toggleActive
-        UserController.php          ← user: index, store, update, deactivate, resetPassword
+        ForgotPasswordController.php  ← public OTP password reset: sendOtp, verifyOtp, resetPassword
+        UserController.php          ← user: index, store, update, deactivate, activate, destroy
         AttendanceController.php    ← presensi: checkIn, checkOut, myAttendance, requestLeave, myLeaveBalance,
                                        toggleAttendance, toggleWfh, listUsers, approveLeave, rejectLeave, listLeaves,
                                        today, monthlySummary, reportAttendance, exportReport,
@@ -449,7 +450,8 @@ GET  /api/v1/admin/users                    → index (list karyawan)
 POST /api/v1/admin/users                    → store (tambah user) [+ role:admin,super_admin]
 PUT  /api/v1/admin/users/{id}               → update
 PATCH /api/v1/admin/users/{id}/deactivate   → deactivate
-POST /api/v1/admin/users/{id}/reset-password → resetPassword
+PATCH /api/v1/admin/users/{id}/activate     → activate
+DELETE /api/v1/admin/users/{id}             → destroy (soft delete)
 ```
 
 ### Attendance Dashboard (auth:sanctum + role:hrd,admin,super_admin + company)
@@ -1588,3 +1590,101 @@ Beberapa sistem antarmuka Android bawaan pabrikan memiliki manajemen baterai agr
 
 # note untuk refaktoring
 perbaiki dulu error di atas ,
+
+---
+
+## Panduan State Management Frontend (React Web)
+
+> **Konteks:** `expenseflow-web` menggunakan React dengan State terpusat di `App.tsx` dan state lokal di dalam masing-masing komponen.
+> Aturan ini menentukan data mana yang **BOLEH** disimpan di state terpusat (`App.tsx` / Global Cache / Context) dan mana yang **WAJIB** dimuat lokal (*on-demand* per halaman).
+
+---
+
+### ✅ BOLEH — State Terpusat / Global Cache
+
+Data berikut **boleh dan dianjurkan** disimpan di state terpusat karena bersifat **statis, jarang berubah, dan dipakai bersama oleh banyak halaman**:
+
+| Data | Endpoint | Alasan |
+|---|---|---|
+| **Profil user yang sedang login** | `GET /me` | Dipakai di header, sidebar, dan setiap validasi role. Hanya berubah saat user update profil sendiri. |
+| **Pengaturan aplikasi keuangan** (`AppSettings`) | `GET /dashboard/settings` | Dipakai di halaman Struk, Invoice, dan Settings. Hanya berubah jika admin mengubah batas klaim/variance. |
+| **Daftar cabang kantor** (`offices`) | `GET /dashboard/attendance/settings` | Dipakai di dropdown Karyawan, Presensi, dan Shift. Sangat jarang berubah. ✅ **Sudah diimplementasikan dengan in-memory cache TTL 60 detik.** |
+| **Jumlah badge notifikasi** (unread count) | `GET /dashboard/notifications` | Ditampilkan di sidebar/header seluruh halaman. |
+| **Jumlah badge lembur & device change pending** | `GET /overtime?status=pending`, `/device-changes?status=pending` | Ditampilkan di badge menu sidebar. |
+
+---
+
+### ❌ DILARANG — State Terpusat (Wajib Dimuat On-Demand per Halaman)
+
+Data berikut **dilarang** disimpan di state terpusat karena bersifat **dinamis, bervolume besar, atau hanya relevan untuk 1 halaman spesifik**:
+
+| Data | Endpoint | Alasan |
+|---|---|---|
+| **Presensi hari ini** (`today`) | `GET /dashboard/attendance/today` | Berubah setiap menit (karyawan check-in/out real-time). Harus fresh setiap kali halaman dibuka. |
+| **Daftar pengajuan izin/cuti** (`leaves`) | `GET /dashboard/attendance/leaves` | Bervolume besar (bisa ribuan baris). Hanya dibutuhkan saat halaman Presensi aktif. |
+| **Daftar karyawan** (`users`) | `GET /dashboard/attendance/users` | Bervolume besar. Hanya dibutuhkan di halaman Karyawan & Presensi. |
+| **Laporan presensi** (`report`) | `GET /dashboard/attendance/report` | Bervolume sangat besar + filter dinamis. Wajib on-demand dengan paginasi. |
+| **Kalender libur** (`holidays`) | `GET /dashboard/attendance/holidays` | Hanya dibutuhkan di tab Kalender Libur. |
+| **Saldo cuti karyawan** (`leave-balances`) | `GET /dashboard/attendance/leave-balances` | Hanya dibutuhkan di tab Saldo Cuti. |
+| **Daftar lembur** (`overtime`) | `GET /dashboard/attendance/overtime` | Hanya dibutuhkan di halaman Persetujuan Lembur. |
+| **Daftar request ganti perangkat** (`device-changes`) | `GET /dashboard/attendance/device-changes` | Hanya dibutuhkan di halaman Device Change. |
+| **Daftar shift** (`shifts`) | `GET /dashboard/shifts` | Hanya dibutuhkan di halaman Manajemen Shift. |
+| **Log audit** (`activity-logs`) | `GET /dashboard/activity-logs` | Hanya dibutuhkan di halaman Audit Log. Tidak perlu realtime. |
+| **Riwayat pengajuan rekrutmen** (`job-applications`) | `GET /recruitment/applications` | Hanya dibutuhkan di halaman Rekrutmen. Bervolume besar. |
+| **Rekap saldo cuti historis** (`leave-balance-histories`) | `GET /dashboard/attendance/leave-balance-histories` | Hanya dibutuhkan di sub-tab Riwayat Saldo. |
+
+---
+
+### ⚠️ PERHATIAN KHUSUS — Struk & Invoice (State Terpusat dengan Batasan)
+
+Struk dan Invoice saat ini dimuat di state terpusat (`App.tsx`) karena dipakai di beberapa tempat, namun ada batasan yang harus dijaga:
+
+| Aturan | Detail |
+|---|---|
+| **Inbox struk & invoice**: BOLEH state terpusat | Jumlah item inbox biasanya kecil (hanya yang `pending`). |
+| **Riwayat struk & invoice**: HATI-HATI | Berpotensi besar jika perusahaan sudah lama beroperasi. Pertimbangkan paginasi server-side jika data > 1.000 baris. |
+| **Selalu refresh setelah aksi approve/reject/pay** | Panggil ulang loader (`loadReceipts()`, `loadInvoices()`) setiap setelah mutasi data agar state tidak basi. |
+
+---
+
+### 🏗️ Implementasi Cache yang Sudah Ada
+
+Berikut adalah cache yang sudah diimplementasikan di `src/services/endpoints.ts`:
+
+```typescript
+// attendanceApi.settings — In-memory cache TTL 60 detik
+attendanceApi.settings.list()          // Membaca cache jika masih valid
+attendanceApi.settings.list(true)      // forceRefresh=true untuk paksa fetch ulang
+attendanceApi.settings.clearCache()    // Kosongkan cache manual
+
+// settingsApi — In-memory cache TTL 60 detik
+settingsApi.get()                      // Membaca cache jika masih valid
+settingsApi.get(true)                  // forceRefresh=true
+settingsApi.clearCache()               // Kosongkan cache manual
+```
+
+**Aturan:** Cache **wajib di-clear** setelah operasi `create`, `update`, atau `destroy` pada data yang bersangkutan agar data tidak basi.
+
+---
+
+### 📐 Ringkasan Keputusan Cepat
+
+```
+Pertanyaan sebelum memutuskan strategi data:
+
+1. Apakah data ini dipakai di LEBIH DARI 1 halaman berbeda?
+   → YA  : Pertimbangkan state terpusat atau cache.
+   → TIDAK: Wajib on-demand lokal di komponen tersebut.
+
+2. Apakah data ini bisa berubah setiap menit (real-time)?
+   → YA  : DILARANG state terpusat. Selalu on-demand saat halaman dibuka.
+   → TIDAK: Aman dijadikan cache.
+
+3. Apakah jumlah baris data ini bisa > 500 baris?
+   → YA  : DILARANG state terpusat. Wajib paginasi server-side.
+   → TIDAK: Bisa dipertimbangkan state terpusat.
+```
+
+---
+
+*Bagian ini ditambahkan pada 2026-09-02 berdasarkan analisis bottleneck performa Network tab (37 request serentak saat load pertama).*

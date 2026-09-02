@@ -21,8 +21,9 @@ $RECYCLE.BIN/
 /expenseflow-backend/public/build/
 /expenseflow-backend/public/hot
 /expenseflow-backend/public/storage
-/expenseflow-backend/storage/*.key
 /expenseflow-backend/.env
+/expenseflow-backend/.env.*
+!/expenseflow-backend/.env.example
 /expenseflow-backend/.env.backup
 /expenseflow-backend/.phpunit.result.cache
 /expenseflow-backend/.claude/

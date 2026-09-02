@@ -2,12 +2,14 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Lock, Mail, Eye, EyeOff, AlertCircle, LogIn, Timer } from 'lucide-react';
 import { useAuth } from '../auth/AuthContext';
 import { ApiError, getRetryAfterSeconds, formatWaitTime } from '../services/api';
+import { ForgotPasswordModal } from './ForgotPasswordModal';
 
 export const LoginPage: React.FC = () => {
   const { login } = useAuth();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showForgotModal, setShowForgotModal] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   // Countdown rate-limit (detik tersisa). Saat > 0, tombol Masuk di-disable.
@@ -116,7 +118,16 @@ export const LoginPage: React.FC = () => {
 
           {/* Password */}
           <div className="space-y-1.5">
-            <label className="text-xs font-semibold text-slate-700">Password</label>
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-slate-700">Password</label>
+              <button
+                type="button"
+                onClick={() => setShowForgotModal(true)}
+                className="text-[11px] font-semibold text-indigo-600 hover:text-indigo-700 transition"
+              >
+                Lupa password?
+              </button>
+            </div>
             <div className="relative">
               <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
@@ -164,6 +175,13 @@ export const LoginPage: React.FC = () => {
         <p className="text-center text-[11px] text-slate-500 mt-5">
           Karyawan (employee) hanya bisa login lewat aplikasi mobile.
         </p>
+
+        {/* Forgot Password Modal */}
+        <ForgotPasswordModal
+          isOpen={showForgotModal}
+          onClose={() => setShowForgotModal(false)}
+          initialEmail={email}
+        />
       </div>
     </div>
   );

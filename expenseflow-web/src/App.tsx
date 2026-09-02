@@ -4,7 +4,6 @@ import {
   Receipt,
   StrukApproval,
   Invoice,
-  AuditLog,
   NotificationItem,
   AppSettings
 } from './types';
@@ -14,7 +13,6 @@ import {
   receiptApi,
   invoiceApi,
   notificationApi,
-  activityLogApi,
   settingsApi,
   overtimeApi,
   deviceChangeApi,
@@ -24,7 +22,6 @@ import {
   mapReceiptToApproval,
   mapInvoice,
   mapNotification,
-  mapAuditLog,
   mapSettings,
 } from './services/mappers';
 
@@ -100,7 +97,7 @@ export default function App() {
   const [receiptHistory, setReceiptHistory] = useState<StrukApproval[]>([]);
   const [invoices, setInvoices] = useState<Invoice[]>([]);
   const [invoiceHistory, setInvoiceHistory] = useState<Invoice[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  // auditLogs dipindahkan ke AuditLogView (on-demand, sesuai rules state management)
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [settings, setSettings] = useState<AppSettings>(defaultSettings);
 
@@ -143,10 +140,7 @@ export default function App() {
     setNotifications(rows(res.notifications ?? res).map(mapNotification));
   }, []);
 
-  const loadAuditLogs = useCallback(async () => {
-    const res = await activityLogApi.list();
-    setAuditLogs(rows(res).map(mapAuditLog));
-  }, []);
+  // loadAuditLogs dipindahkan ke AuditLogView — data audit hanya dibutuhkan saat halaman Audit Log dibuka
 
   const loadSettings = useCallback(async () => {
     const res = await settingsApi.get();
@@ -177,7 +171,7 @@ export default function App() {
     setDataError(null);
     try {
       // HRD tidak punya akses finance → jangan panggil endpoint receipt, invoice, atau settings (akan 403).
-      const tasks = [loadNotifications(), loadAuditLogs(), loadPendingOvertime(), loadPendingDevice()];
+      const tasks = [loadNotifications(), loadPendingOvertime(), loadPendingDevice()];
       if (user?.role !== 'hrd') {
         tasks.push(loadInvoices(), loadReceipts(), loadReceiptHistory(), loadSettings());
       }
@@ -187,7 +181,7 @@ export default function App() {
     } finally {
       setDataLoading(false);
     }
-  }, [loadReceipts, loadReceiptHistory, loadInvoices, loadNotifications, loadAuditLogs, loadSettings, loadPendingOvertime, loadPendingDevice, user?.role]);
+  }, [loadReceipts, loadReceiptHistory, loadInvoices, loadNotifications, loadSettings, loadPendingOvertime, loadPendingDevice, user?.role]);
 
   useEffect(() => {
     if (isAuthenticated) loadAll();
@@ -234,27 +228,27 @@ export default function App() {
   // 1. Receipt approve/reject/bulk-approve/pay/bulk-pay → panggil API lalu refresh.
   const handleApproveReceipt = async (id: string, note: string, approvedAmount?: number) => {
     await receiptApi.approve(id, note, approvedAmount);
-    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadNotifications()]);
   };
 
   const handleBulkApproveReceipts = async (ids: string[], note?: string) => {
     await receiptApi.bulkApprove(ids.map(Number), note);
-    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadNotifications()]);
   };
 
   const handleRejectReceipt = async (id: string, note: string) => {
     await receiptApi.reject(id, note || 'Ditolak oleh Finance');
-    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadNotifications()]);
   };
 
   const handlePayReceipt = async (id: string, payload: { payment_method: string; payment_ref_no?: string }) => {
     await receiptApi.pay(id, payload);
-    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadNotifications()]);
   };
 
   const handleBulkPayReceipts = async (ids: string[], payload: { payment_method: string; payment_ref_no?: string }) => {
     await receiptApi.bulkPay(ids.map(Number), payload);
-    await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadReceipts(), loadReceiptHistory(), loadNotifications()]);
   };
 
   // Cari backendId numerik dari daftar invoice berdasarkan id tampilan.
@@ -272,7 +266,7 @@ export default function App() {
     } catch (e: any) {
       alert(e?.message ?? 'Gagal memproses invoice.');
     }
-    await Promise.all([loadInvoices(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadInvoices(), loadNotifications()]);
   };
 
   const handleApproveInvoice = async (id: string, note: string) => {
@@ -283,7 +277,7 @@ export default function App() {
     } catch (e: any) {
       alert(e?.message ?? 'Gagal menyetujui invoice.');
     }
-    await Promise.all([loadInvoices(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadInvoices(), loadNotifications()]);
   };
 
   const handleRejectInvoice = async (id: string, note: string) => {
@@ -294,13 +288,13 @@ export default function App() {
     } catch (e: any) {
       alert(e?.message ?? 'Gagal menolak invoice.');
     }
-    await Promise.all([loadInvoices(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadInvoices(), loadNotifications()]);
   };
 
   // 3. Invoice baru (Input manual / Scan) sudah disimpan via API di komponen;
   //    di sini cukup refresh daftar lalu kembali ke inbox.
   const handleAddNewInvoice = async (_inv: Invoice) => {
-    await Promise.all([loadInvoices(), loadAuditLogs(), loadNotifications()]);
+    await Promise.all([loadInvoices(), loadNotifications()]);
     setActivePage('invoice-inbox');
   };
 
@@ -336,14 +330,14 @@ export default function App() {
       threshold_three: newSettings.thresholdThree,
     });
     setSettings(mapSettings(res.settings));
-    await loadAuditLogs();
+    // audit log tidak perlu di-refresh dari sini — AuditLogView mengurus sendiri
   };
 
   // Refresh ulang data struk (inbox) — dipakai tombol Refresh di halaman Inbox Struk.
   const refreshReceipts = async () => {
     setRefreshing(true);
     try {
-      await Promise.all([loadReceipts(), loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+      await Promise.all([loadReceipts(), loadReceiptHistory(), loadNotifications()]);
     } catch (e: any) {
       setDataError(e?.message ?? 'Gagal memuat data dari server.');
     } finally {
@@ -355,7 +349,7 @@ export default function App() {
   const refreshReceiptHistory = async () => {
     setRefreshing(true);
     try {
-      await Promise.all([loadReceiptHistory(), loadAuditLogs(), loadNotifications()]);
+      await Promise.all([loadReceiptHistory(), loadNotifications()]);
     } catch (e: any) {
       setDataError(e?.message ?? 'Gagal memuat data dari server.');
     } finally {
@@ -364,8 +358,10 @@ export default function App() {
   };
 
   // Dipakai komponen Karyawan & Vendor untuk refresh audit/notif setelah aksi.
+  // handleAddAuditLogDirect: audit log kini self-contained di AuditLogView.
+  // Fungsi ini tetap ada agar prop signature komponen anak tidak perlu diubah.
   const handleAddAuditLogDirect = (_title: string, _details: string, _bgBg: string) => {
-    loadAuditLogs();
+    // no-op: AuditLogView akan auto-refresh saat dibuka kembali
   };
 
   const handleAddNotificationDirect = (
@@ -472,7 +468,7 @@ export default function App() {
           />
         );
       case 'auditlog':
-        return <AuditLogView logs={auditLogs} />;
+        return <AuditLogView />;
       case 'notif':
         return (
           <NotificationsView 

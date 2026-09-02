@@ -395,14 +395,6 @@ export const KaryawanManagement: React.FC<{
     overtimeEligible: true,
   });
 
-  const [resetPwdEmployee, setResetPwdEmployee] = useState<Employee | null>(null);
-  const [resetPwdForm, setResetPwdForm] = useState({
-    password: 'Reset2026!',
-    confirm: 'Reset2026!',
-    alasan: 'Karyawan lupa password'
-  });
-  const [showProgressReset, setShowProgressReset] = useState(false);
-
   const [nonaktifEmployee, setNonaktifEmployee] = useState<Employee | null>(null);
   const [nonaktifForm, setNonaktifForm] = useState({
     alasan: '',
@@ -741,36 +733,6 @@ export const KaryawanManagement: React.FC<{
     });
   };
 
-  // Reset password logic
-  const handleOpenResetPwd = (emp: Employee) => {
-    setResetPwdEmployee(emp);
-    setResetPwdForm({
-      password: 'Reset2026!',
-      confirm: 'Reset2026!',
-      alasan: 'Karyawan lupa password'
-    });
-  };
-
-  const handleResetPwdSubmit = async () => {
-    if (!resetPwdEmployee) return;
-    if (resetPwdForm.password !== resetPwdForm.confirm) {
-      alert('Password baru tidak cocok!');
-      return;
-    }
-
-    setShowProgressReset(true);
-    try {
-      await userApi.resetPassword(resetPwdEmployee.backendId, resetPwdForm.password);
-      onAddAuditLog('Reset Password Karyawan', `Password ${resetPwdEmployee.nama} direset. Alasan: ${resetPwdForm.alasan}`, 'bg-amber-600');
-      onAddNotification('flag', 'Reset Password Berhasil', `Sistem mereset akses login untuk ${resetPwdEmployee.nama}.`);
-      setResetPwdEmployee(null);
-    } catch (err) {
-      reportApiError(err, 'Gagal mereset password.');
-    } finally {
-      setShowProgressReset(false);
-    }
-  };
-
   // Deactivate or reactivation toggle
   const handleOpenToggleStatus = (emp: Employee) => {
     if (emp.status === 'Nonaktif') {
@@ -856,7 +818,7 @@ export const KaryawanManagement: React.FC<{
             Manajemen Karyawan ExpenseFlow
           </h3>
           <p className="text-xs text-slate-400 dark:text-slate-500 mt-1">
-            Persiapan dan monitoring profil limit klaim struk karyawan, reset password oleh HRD, serta deaktifasi akun.
+            Persiapan dan monitoring profil limit klaim struk karyawan, status presensi &amp; payroll, serta deaktifasi akun.
           </p>
         </div>
         <div className="flex gap-2.5 w-full sm:w-auto shrink-0">
@@ -1261,15 +1223,6 @@ export const KaryawanManagement: React.FC<{
                               {/* 3. Aksi berdasarkan Status: Aktif vs Nonaktif */}
                               {emp.status !== 'Nonaktif' ? (
                                 <>
-                                  {/* Reset Password */}
-                                  <button
-                                    onClick={() => handleOpenResetPwd(emp)}
-                                    className="p-1.5 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-950/50 dark:hover:text-amber-400 transition cursor-pointer"
-                                    title="Reset Password Karyawan"
-                                  >
-                                    <Lock className="w-4 h-4" />
-                                  </button>
-
                                   {/* Nonaktifkan Akun (Bekukan) */}
                                   <button
                                     onClick={() => handleOpenToggleStatus(emp)}
@@ -2804,101 +2757,6 @@ export const KaryawanManagement: React.FC<{
             </div>
           </div>
         </form>
-      )}
-
-      {/* MODAL RESET PASSWORD KARYAWAN */}
-      {resetPwdEmployee && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          <div onClick={() => setResetPwdEmployee(null)} className="fixed inset-0 bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-sm" />
-
-          <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-md p-6 shadow-2xl relative z-10 leading-relaxed overflow-hidden">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-              <h3 className="text-sm font-bold text-slate-850 dark:text-slate-100 flex items-center gap-1.5">
-                <Lock className="w-4.5 h-4.5 text-amber-500" />
-                Reset Password Karyawan
-              </h3>
-              <button onClick={() => setResetPwdEmployee(null)} className="p-1 hover:bg-slate-50 dark:hover:bg-slate-850 rounded-full text-slate-400">
-                <X className="w-4.5 h-4.5" />
-              </button>
-            </div>
-
-            <div className="py-4 space-y-4">
-              <div className="flex items-center gap-2.5 bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-                <span className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 select-none ${resetPwdEmployee.avatarBg} ${resetPwdEmployee.avatarColor}`}>
-                  {resetPwdEmployee.initials}
-                </span>
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">{resetPwdEmployee.nama}</p>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-505 truncate mt-0.5">{resetPwdEmployee.email} · {resetPwdEmployee.id}</p>
-                </div>
-              </div>
-
-              <div className="p-3 bg-amber-50 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/30 rounded-xl text-[11px] text-amber-800 dark:text-amber-400 flex items-start gap-1.5 leading-relaxed shrink-0">
-                <AlertTriangle className="w-4.5 h-4.5 shrink-0 text-amber-600 mt-0.5 animate-pulse" />
-                <span>Password lama akan langsung tidak bisa digunakan untuk masuk ke Flutter mobile app. HRD wajib memberitahu password baru ini ke karyawan secara langsung.</span>
-              </div>
-
-              <div className="space-y-3">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Password Baru *</label>
-                  <input
-                    type="password"
-                    value={resetPwdForm.password}
-                    onChange={(e) => setResetPwdForm({ ...resetPwdForm, password: e.target.value })}
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Konfirmasi Password Baru *</label>
-                  <input
-                    type="password"
-                    value={resetPwdForm.confirm}
-                    onChange={(e) => setResetPwdForm({ ...resetPwdForm, confirm: e.target.value })}
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none"
-                  />
-                </div>
-
-                <div className="space-y-1 font-sans">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Alasan Reset (untuk Audit Log)</label>
-                  <select
-                    value={resetPwdForm.alasan}
-                    onChange={(e) => setResetPwdForm({ ...resetPwdForm, alasan: e.target.value })}
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-850 text-slate-800 dark:text-slate-100"
-                  >
-                    <option value="Karyawan lupa password">Karyawan lupa password</option>
-                    <option value="Login pertama kali">Login pertama kali</option>
-                    <option value="Keamanan akun">Keamanan akun/Indikasi compromised</option>
-                    <option value="Permintaan langsung oleh karyawan">Permintaan langsung oleh karyawan</option>
-                  </select>
-                </div>
-              </div>
-
-            </div>
-
-            {/* Reset buttons */}
-            <div className="flex gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
-              <button
-                type="button"
-                onClick={() => setResetPwdEmployee(null)}
-                disabled={showProgressReset}
-                className="flex-1 py-2.5 border border-slate-200 dark:border-slate-800 dark:hover:bg-slate-805 text-slate-600 dark:text-slate-400 rounded-xl text-xs font-semibold hover:bg-slate-50 cursor-pointer disabled:opacity-50"
-              >
-                Batal
-              </button>
-              <button
-                type="button"
-                onClick={handleResetPwdSubmit}
-                disabled={showProgressReset}
-                className="flex-1 py-2.5 bg-amber-500 hover:bg-amber-600 text-white font-bold rounded-xl text-xs shadow-sm cursor-pointer flex items-center justify-center gap-1.5 disabled:opacity-50"
-              >
-                {showProgressReset ? <span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin shrink-0"></span> : <Lock className="w-3.5 h-3.5" />}
-                <span>{showProgressReset ? 'Memproses...' : 'Reset Password'}</span>
-              </button>
-            </div>
-
-          </div>
-        </div>
       )}
 
       {/* MODAL NONAKTIFKAN AKUN KARYAWAN */}

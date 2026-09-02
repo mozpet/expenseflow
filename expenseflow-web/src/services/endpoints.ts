@@ -24,6 +24,21 @@ export const authApi = {
       clearToken();
     }
   },
+  sendForgotPasswordOtp: (email: string) =>
+    apiPost<{ status: string; message: string; cooldown_seconds?: number; expires_in_seconds?: number; debug_otp?: string }>(
+      '/auth/forgot-password/send-otp',
+      { email }
+    ),
+  verifyForgotPasswordOtp: (email: string, otp: string) =>
+    apiPost<{ status: string; message: string; reset_token: string }>(
+      '/auth/forgot-password/verify-otp',
+      { email, otp }
+    ),
+  resetPassword: (payload: { email: string; reset_token: string; password: string; password_confirmation: string }) =>
+    apiPost<{ status: string; message: string }>(
+      '/auth/forgot-password/reset',
+      payload
+    ),
 };
 
 // ─── Receipts (struk) ───────────────────────────────────────
@@ -115,8 +130,6 @@ export const userApi = {
     apiPut(`/admin/users/${id}`, payload),
   deactivate: (id: number | string) => apiPatch(`/admin/users/${id}/deactivate`),
   activate: (id: number | string) => apiPatch(`/admin/users/${id}/activate`),
-  resetPassword: (id: number | string, password: string) =>
-    apiPost(`/admin/users/${id}/reset-password`, { password }),
   destroy: (id: number | string) => apiDelete<{ message: string }>(`/admin/users/${id}`),
 };
 
@@ -144,8 +157,24 @@ export const attendanceApi = {
   users: (params?: { filter?: 'enabled' | 'disabled'; per_page?: number | string } | 'enabled' | 'disabled') =>
     apiGet('/dashboard/attendance/users', typeof params === 'string' ? { filter: params } : (params as Record<string, string | number | boolean>)),
   // Semua karyawan aktif (tanpa pagination) — untuk dropdown pengecualian libur
-  allUsers: () =>
-    apiGet('/dashboard/attendance/users/all'),
+  // Cache 5 menit + request deduplication: request ke-2 sebelum request ke-1 selesai
+  // akan mendapatkan promise yang sama (1 HTTP request saja).
+  allUsers: (() => {
+    let _promise: Promise<any> | null = null;
+    let _ts = 0;
+    const TTL = 5 * 60 * 1000; // 5 menit
+    return (forceRefresh = false) => {
+      const now = Date.now();
+      if (!forceRefresh && _promise && (now - _ts < TTL)) return _promise;
+      _ts = now;
+      _promise = apiGet('/dashboard/attendance/users/all').catch((err) => {
+        _promise = null;
+        _ts = 0;
+        throw err;
+      });
+      return _promise;
+    };
+  })(),
   toggleWfh: (id: number | string) =>
     apiPost(`/dashboard/attendance/users/${id}/toggle-wfh`),
   toggleRadius: (id: number | string) =>
@@ -225,16 +254,46 @@ export const attendanceApi = {
   monthlySummary: (filters: { user_id: number; month?: number; year?: number }) =>
     apiGet('/dashboard/attendance/summary', filters),
 
-  // CRUD pengaturan kantor (lokasi & radius presensi)
-  settings: {
-    list: () => apiGet('/dashboard/attendance/settings'),
-    create: (payload: Record<string, unknown>) =>
-      apiPost('/dashboard/attendance/settings', payload),
-    update: (id: number | string, payload: Record<string, unknown>) =>
-      apiPut(`/dashboard/attendance/settings/${id}`, payload),
-    destroy: (id: number | string) =>
-      apiDelete(`/dashboard/attendance/settings/${id}`),
-  },
+  // CRUD pengaturan kantor (lokasi & radius presensi) — dengan in-memory cache & deduplikasi request
+  settings: (() => {
+    let cachedPromise: Promise<unknown> | null = null;
+    let lastFetchTime = 0;
+    const TTL = 60 * 1000; // Cache valid selama 60 detik
+
+    return {
+      list: (forceRefresh = false) => {
+        const now = Date.now();
+        if (!forceRefresh && cachedPromise && (now - lastFetchTime < TTL)) {
+          return cachedPromise;
+        }
+        lastFetchTime = now;
+        cachedPromise = apiGet('/dashboard/attendance/settings').catch((err) => {
+          cachedPromise = null;
+          throw err;
+        });
+        return cachedPromise;
+      },
+      clearCache: () => {
+        cachedPromise = null;
+        lastFetchTime = 0;
+      },
+      create: async (payload: Record<string, unknown>) => {
+        cachedPromise = null;
+        lastFetchTime = 0;
+        return apiPost('/dashboard/attendance/settings', payload);
+      },
+      update: async (id: number | string, payload: Record<string, unknown>) => {
+        cachedPromise = null;
+        lastFetchTime = 0;
+        return apiPut(`/dashboard/attendance/settings/${id}`, payload);
+      },
+      destroy: async (id: number | string) => {
+        cachedPromise = null;
+        lastFetchTime = 0;
+        return apiDelete(`/dashboard/attendance/settings/${id}`);
+      },
+    };
+  })(),
 
   // Kalender libur nasional / cuti bersama perusahaan
   holidays: {
@@ -372,16 +431,41 @@ export const deviceChangeApi = {
 };
 
 // ─── Settings ───────────────────────────────────────────────
-export const settingsApi = {
-  get: () => apiGet<{ settings: any }>('/dashboard/settings'),
-  update: (payload: {
-    variance_limit: number;
-    max_claim_limit: number;
-    threshold_single: string;
-    threshold_two: string;
-    threshold_three: string;
-  }) => apiPut<{ settings: any }>('/dashboard/settings', payload),
-};
+export const settingsApi = (() => {
+  let cachedPromise: Promise<{ settings: any }> | null = null;
+  let lastFetchTime = 0;
+  const TTL = 60 * 1000;
+
+  return {
+    get: (forceRefresh = false) => {
+      const now = Date.now();
+      if (!forceRefresh && cachedPromise && (now - lastFetchTime < TTL)) {
+        return cachedPromise;
+      }
+      lastFetchTime = now;
+      cachedPromise = apiGet<{ settings: any }>('/dashboard/settings').catch((err) => {
+        cachedPromise = null;
+        throw err;
+      });
+      return cachedPromise;
+    },
+    clearCache: () => {
+      cachedPromise = null;
+      lastFetchTime = 0;
+    },
+    update: async (payload: {
+      variance_limit: number;
+      max_claim_limit: number;
+      threshold_single: string;
+      threshold_two: string;
+      threshold_three: string;
+    }) => {
+      cachedPromise = null;
+      lastFetchTime = 0;
+      return apiPut<{ settings: any }>('/dashboard/settings', payload);
+    },
+  };
+})();
 
 // ─── Recruitment — HRD & Admin ──────────────────────────────
 export const recruitmentApi = {
