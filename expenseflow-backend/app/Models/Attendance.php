@@ -28,6 +28,8 @@ class Attendance extends Model
         'notes',
         'auto_checkout_at',
         'is_auto_checkout',
+        'is_offline_sync',
+        'offline_recorded_at',
 
         // Snapshot pengaturan kantor saat check-in (lihat migration 2026_08_26)
         'snap_office_id',
@@ -54,6 +56,7 @@ class Attendance extends Model
             'check_in_time'            => 'datetime',
             'check_out_time'           => 'datetime',
             'auto_checkout_at'         => 'datetime',
+            'offline_recorded_at'      => 'datetime',
             'check_in_lat'             => 'decimal:8',
             'check_in_lng'             => 'decimal:8',
             'check_out_lat'            => 'decimal:8',
@@ -63,6 +66,7 @@ class Attendance extends Model
             'overtime_minutes'         => 'integer',
             'is_holiday'               => 'boolean',
             'is_auto_checkout'         => 'boolean',
+            'is_offline_sync'          => 'boolean',
             'snap_office_latitude'     => 'decimal:8',
             'snap_office_longitude'    => 'decimal:11',
             'snap_radius_meters'       => 'integer',

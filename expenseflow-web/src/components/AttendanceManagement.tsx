@@ -116,13 +116,15 @@ const statusBadge = (status: string) => {
   switch (status) {
     case 'present': return 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400';
     case 'late': return 'bg-amber-50 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400';
-    case 'absent': return 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400';
+    case 'absent':
+    case 'alpha': return 'bg-rose-50 text-rose-700 dark:bg-rose-950/30 dark:text-rose-400';
     case 'early_leave': return 'bg-violet-50 text-violet-700 dark:bg-violet-950/30 dark:text-violet-400';
     case 'cuti': return 'bg-teal-50 text-teal-700 dark:bg-teal-950/30 dark:text-teal-400';
     case 'izin': return 'bg-purple-50 text-purple-700 dark:bg-purple-950/30 dark:text-purple-400';
     case 'sakit': return 'bg-orange-50 text-orange-700 dark:bg-orange-950/30 dark:text-orange-400';
     case 'wfh': return 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/30 dark:text-indigo-400';
     case 'libur': return 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400';
+    case 'belum_hadir': return 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400';
     default: return 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300';
   }
 };
@@ -131,13 +133,15 @@ const statusLabel = (status: string) => {
   switch (status) {
     case 'present': return 'Hadir';
     case 'late': return 'Telat';
-    case 'absent': return 'Alpha';
+    case 'absent':
+    case 'alpha': return 'Alpha';
     case 'early_leave': return 'Pulang Awal';
     case 'cuti': return 'Cuti';
     case 'izin': return 'Izin';
     case 'sakit': return 'Sakit';
     case 'wfh': return 'WFH';
     case 'libur': return 'Libur';
+    case 'belum_hadir': return 'Belum Hadir';
     default: return status;
   }
 };
@@ -951,9 +955,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   };
 
   // ─── Render helpers ───────────────────────────────────────
-  const SummaryCard = ({ label, value, color }: { label: string; value: number | string; color: string }) => (
+  const SummaryCard = ({ label, value, color, badge }: { label: string; value: number | string; color: string; badge?: React.ReactNode }) => (
     <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 shadow-xs">
-      <p className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">{label}</p>
+      <div className="flex items-center justify-between">
+        <p className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider">{label}</p>
+        {badge}
+      </div>
       <p className={`text-2xl font-bold mt-1 ${color}`}>{value}</p>
     </div>
   );
@@ -1158,17 +1165,33 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           <p className="text-[11px] text-slate-400 py-3 text-center">{searchNotCheckedIn || todayOfficeFilter ? 'Tidak ditemukan.' : 'Semua sudah hadir.'}</p>
                         ) : (
                           <>
-                            {notCheckedIn.slice(0, todayColumnLimit.notCheckedIn || 40).map((p: any) => (
-                              <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
-                                <div className="min-w-0">
-                                  <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
-                                  <p className="text-[10px] text-slate-400">
-                                    {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
-                                    {p.department ?? '—'}
-                                  </p>
+                            {notCheckedIn.slice(0, todayColumnLimit.notCheckedIn || 40).map((p: any) => {
+                              const isAlpha = p.is_alpha || p.status === 'alpha';
+                              return (
+                                <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
+                                  <div className="min-w-0">
+                                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                    <p className="text-[10px] text-slate-400">
+                                      {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
+                                      {p.department ?? '—'}
+                                      {p.cutoff_time && (
+                                        <span className="ml-1">· Batas {p.cutoff_time}</span>
+                                      )}
+                                    </p>
+                                  </div>
+                                  {isAlpha && (
+                                    <div className="flex items-center shrink-0 ml-2">
+                                      <span
+                                        className="text-[9px] font-bold px-2 py-0.5 rounded bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 shrink-0"
+                                        title={p.cutoff_time ? `Melewati batas waktu presensi (${p.cutoff_time} WIB)` : 'Alpha'}
+                                      >
+                                        Alpha
+                                      </span>
+                                    </div>
+                                  )}
                                 </div>
-                              </div>
-                            ))}
+                              );
+                            })}
                             {notCheckedIn.length > (todayColumnLimit.notCheckedIn || 40) && (
                               <button
                                 type="button"
@@ -2973,6 +2996,85 @@ const HolidaysTab: React.FC<{
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // ─── Fitur Tarik Libur Otomatis (SKB 3 Menteri) ───────────────
+  const [showAutoSyncModal, setShowAutoSyncModal] = useState(false);
+  const [autoSyncYear, setAutoSyncYear] = useState<number>(year);
+  const [loadingAutoSyncPreview, setLoadingAutoSyncPreview] = useState(false);
+  const [autoSyncPreviewData, setAutoSyncPreviewData] = useState<any | null>(null);
+  const [selectedAutoHolidays, setSelectedAutoHolidays] = useState<Record<string, boolean>>({});
+  const [collectiveTreatment, setCollectiveTreatment] = useState<'nasional' | 'collective'>('nasional');
+  const [syncingHolidays, setSyncingHolidays] = useState(false);
+  const [autoSyncSuccessMsg, setAutoSyncSuccessMsg] = useState<string | null>(null);
+
+  const loadAutoSyncPreview = useCallback(async (targetYear: number) => {
+    setLoadingAutoSyncPreview(true);
+    setAutoSyncSuccessMsg(null);
+    try {
+      const res: any = await attendanceApi.holidays.previewNational(targetYear);
+      setAutoSyncPreviewData(res);
+      const initialSelected: Record<string, boolean> = {};
+      (res?.holidays || []).forEach((h: any) => {
+        initialSelected[h.date] = !h.already_exists;
+      });
+      setSelectedAutoHolidays(initialSelected);
+    } catch (err: any) {
+      onError(err, 'Gagal memuat daftar hari libur nasional');
+    } finally {
+      setLoadingAutoSyncPreview(false);
+    }
+  }, [onError]);
+
+  const handleOpenAutoSyncModal = () => {
+    setAutoSyncYear(year);
+    setAutoSyncSuccessMsg(null);
+    setShowAutoSyncModal(true);
+    loadAutoSyncPreview(year);
+  };
+
+  const handleYearChangeAutoSync = (newY: number) => {
+    setAutoSyncYear(newY);
+    loadAutoSyncPreview(newY);
+  };
+
+  const handleToggleSelectAll = () => {
+    if (!autoSyncPreviewData?.holidays) return;
+    const allSelected = autoSyncPreviewData.holidays.every((h: any) => selectedAutoHolidays[h.date]);
+    const updated: Record<string, boolean> = {};
+    autoSyncPreviewData.holidays.forEach((h: any) => {
+      updated[h.date] = !allSelected;
+    });
+    setSelectedAutoHolidays(updated);
+  };
+
+  const selectedCount = useMemo(() => {
+    return Object.values(selectedAutoHolidays).filter(Boolean).length;
+  }, [selectedAutoHolidays]);
+
+  const handleExecuteSync = async () => {
+    if (!autoSyncPreviewData?.holidays) return;
+    const toImport = autoSyncPreviewData.holidays.filter((h: any) => selectedAutoHolidays[h.date]);
+    if (toImport.length === 0) {
+      alert('Pilih setidaknya 1 hari libur untuk disinkronkan.');
+      return;
+    }
+
+    setSyncingHolidays(true);
+    try {
+      const res: any = await attendanceApi.holidays.syncNational({
+        year: autoSyncYear,
+        holidays: toImport,
+        collective_treatment: collectiveTreatment,
+      });
+      setAutoSyncSuccessMsg(res?.message || 'Sinkronisasi berhasil.');
+      onAddAuditLog('Tarik Libur Otomatis', `Sinkronisasi ${res?.synced_count ?? 0} hari libur nasional tahun ${autoSyncYear}`, 'attendance');
+      await reload();
+    } catch (err: any) {
+      onError(err, 'Gagal menyinkronkan hari libur');
+    } finally {
+      setSyncingHolidays(false);
+    }
+  };
+
   // Libur yang relevan dg filter kantor yang dipilih.
   // '' = Semua Kantor → tampilkan semua libur perusahaan + nasional.
   // kantor spesifik → tampilkan: nasional + company-wide (attendance_setting_id null)
@@ -3267,6 +3369,17 @@ const HolidaysTab: React.FC<{
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {/* Tombol Tarik Libur Otomatis */}
+          <button
+            type="button"
+            onClick={handleOpenAutoSyncModal}
+            className="flex items-center gap-1.5 py-1.5 px-3 text-[11px] font-semibold rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-700 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 dark:text-rose-300 border border-rose-200 dark:border-rose-800/60 transition-colors shadow-sm cursor-pointer"
+            title="Tarik & Sinkronkan Hari Libur Nasional Indonesia (SKB 3 Menteri) Otomatis"
+          >
+            <Sparkles className="w-3.5 h-3.5 text-rose-500 shrink-0" />
+            <span>Tarik Libur Otomatis</span>
+          </button>
+
           {/* Filter kantor — hanya tampil jika ada lebih dari 1 kantor */}
           {offices.length > 1 && (
             <div className="flex items-center gap-1.5">
@@ -4264,6 +4377,238 @@ const HolidaysTab: React.FC<{
           type="danger"
           isLoading={deletingHoliday}
         />
+      )}
+
+      {/* Modal Tarik Libur Nasional Otomatis (SKB 3 Menteri) */}
+      {showAutoSyncModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4 py-6"
+          onClick={(e) => { if (e.target === e.currentTarget && !syncingHolidays) setShowAutoSyncModal(false); }}
+        >
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto animate-in fade-in zoom-in-95 duration-200 border border-slate-100 dark:border-slate-800 flex flex-col">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900 z-10">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-100 dark:bg-rose-950/60 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0 shadow-sm">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                    Tarik Libur Nasional Otomatis
+                    <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">
+                      SKB 3 Menteri
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-500 mt-0.5">
+                    Sinkronkan daftar hari libur nasional resmi & cuti bersama Indonesia langsung ke kalender.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAutoSyncModal(false)}
+                disabled={syncingHolidays}
+                className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition disabled:opacity-50"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="p-6 space-y-4 flex-1">
+              {/* Controls bar: Pilih Tahun & Kebijakan Cuti Bersama */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/60 rounded-xl border border-slate-200/70 dark:border-slate-700/60">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    Tahun Kalender
+                  </label>
+                  <select
+                    value={autoSyncYear}
+                    onChange={(e) => handleYearChangeAutoSync(Number(e.target.value))}
+                    disabled={loadingAutoSyncPreview || syncingHolidays}
+                    className="w-full py-1.5 px-3 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none"
+                  >
+                    {[2024, 2025, 2026, 2027].map(y => (
+                      <option key={y} value={y}>Tahun {y}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 dark:text-slate-300 mb-1">
+                    Kebijakan Cuti Bersama
+                  </label>
+                  <select
+                    value={collectiveTreatment}
+                    onChange={(e) => setCollectiveTreatment(e.target.value as any)}
+                    disabled={syncingHolidays}
+                    className="w-full py-1.5 px-3 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none"
+                  >
+                    <option value="nasional">Libur Nasional (Bebas Cuti / Tanggal Merah)</option>
+                    <option value="collective">Cuti Bersama Perusahaan (Potong Kuota Cuti)</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Status Alert jika baru saja sukses */}
+              {autoSyncSuccessMsg && (
+                <div className="p-3.5 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 rounded-xl flex items-center gap-2.5 text-emerald-800 dark:text-emerald-300 text-xs font-semibold">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                  <span>{autoSyncSuccessMsg}</span>
+                </div>
+              )}
+
+              {/* Summary Badges */}
+              {autoSyncPreviewData && (
+                <div className="grid grid-cols-4 gap-2 text-center">
+                  <div className="p-2.5 rounded-lg bg-slate-100 dark:bg-slate-800/80 border border-slate-200/60 dark:border-slate-700">
+                    <p className="text-lg font-extrabold text-slate-800 dark:text-slate-100">{autoSyncPreviewData.total ?? 0}</p>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Total Hari</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-rose-50 dark:bg-rose-950/30 border border-rose-200/60 dark:border-rose-900/40">
+                    <p className="text-lg font-extrabold text-rose-700 dark:text-rose-400">{autoSyncPreviewData.total_national ?? 0}</p>
+                    <p className="text-[10px] font-bold text-rose-600 dark:text-rose-400 uppercase tracking-wider">Libur Nasional</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40">
+                    <p className="text-lg font-extrabold text-amber-700 dark:text-amber-400">{autoSyncPreviewData.total_collective ?? 0}</p>
+                    <p className="text-[10px] font-bold text-amber-600 dark:text-amber-400 uppercase tracking-wider">Cuti Bersama</p>
+                  </div>
+                  <div className="p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-200/60 dark:border-slate-700">
+                    <p className="text-lg font-extrabold text-slate-600 dark:text-slate-400">{autoSyncPreviewData.total_already_exists ?? 0}</p>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Sudah Ada</p>
+                  </div>
+                </div>
+              )}
+
+              {/* Table / List */}
+              <div className="border border-slate-200 dark:border-slate-800 rounded-xl overflow-hidden">
+                <div className="flex items-center justify-between px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 text-xs">
+                  <button
+                    type="button"
+                    onClick={handleToggleSelectAll}
+                    disabled={loadingAutoSyncPreview || syncingHolidays}
+                    className="flex items-center gap-2 font-bold text-slate-700 dark:text-slate-200 hover:text-rose-600 transition"
+                  >
+                    <span className="w-4 h-4 rounded border border-slate-300 dark:border-slate-600 flex items-center justify-center bg-white dark:bg-slate-700">
+                      {autoSyncPreviewData?.holidays?.length > 0 &&
+                       autoSyncPreviewData.holidays.every((h: any) => selectedAutoHolidays[h.date]) ? (
+                        <Check className="w-3 h-3 text-rose-600" />
+                      ) : null}
+                    </span>
+                    <span>Pilih Semua Hari Libur</span>
+                  </button>
+
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {selectedCount} dari {autoSyncPreviewData?.holidays?.length ?? 0} dipilih
+                  </span>
+                </div>
+
+                <div className="max-h-[300px] overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800">
+                  {loadingAutoSyncPreview ? (
+                    <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-400">
+                      <Loader2 className="w-6 h-6 animate-spin text-rose-500" />
+                      <p className="text-xs">Menghubungi API Hari Libur Indonesia...</p>
+                    </div>
+                  ) : (!autoSyncPreviewData?.holidays || autoSyncPreviewData.holidays.length === 0) ? (
+                    <div className="py-8 text-center text-xs text-slate-400">
+                      Tidak ada data hari libur ditemukan untuk tahun {autoSyncYear}.
+                    </div>
+                  ) : (
+                    autoSyncPreviewData.holidays.map((h: any) => {
+                      const isChecked = !!selectedAutoHolidays[h.date];
+                      return (
+                        <label
+                          key={h.date}
+                          className={`flex items-center justify-between px-3.5 py-2.5 text-xs hover:bg-slate-50/80 dark:hover:bg-slate-800/40 cursor-pointer transition ${
+                            isChecked ? 'bg-rose-50/30 dark:bg-rose-950/10' : ''
+                          }`}
+                        >
+                          <div className="flex items-center gap-3 min-w-0 pr-3">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                setSelectedAutoHolidays(prev => ({
+                                  ...prev,
+                                  [h.date]: e.target.checked,
+                                }));
+                              }}
+                              disabled={syncingHolidays}
+                              className="rounded border-slate-300 text-rose-600 focus:ring-rose-500 w-4 h-4 cursor-pointer shrink-0"
+                            />
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-800 dark:text-slate-100 truncate">
+                                {h.name}
+                              </p>
+                              <p className="text-[11px] text-slate-400 mt-0.5">
+                                📅 {fmtDate(h.date)}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold uppercase ${
+                              h.is_collective
+                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300'
+                                : 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300'
+                            }`}>
+                              {h.is_collective ? 'Cuti Bersama' : 'Nasional'}
+                            </span>
+
+                            {h.already_exists ? (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full font-semibold bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+                                Sudah Ada
+                              </span>
+                            ) : (
+                              <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                                Baru
+                              </span>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-between">
+              <div className="text-xs text-slate-500">
+                <span className="font-bold text-slate-700 dark:text-slate-300">{selectedCount}</span> hari libur akan disinkronkan
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowAutoSyncModal(false)}
+                  disabled={syncingHolidays}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition"
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  onClick={handleExecuteSync}
+                  disabled={syncingHolidays || selectedCount === 0}
+                  className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-xl shadow-md shadow-rose-500/20 transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  {syncingHolidays ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Menyinkronkan...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-3.5 h-3.5" />
+                      <span>Impor ke Kalender</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -8,6 +8,8 @@ class PresensiRecord {
   final bool isHoliday;
   final bool isAutoCheckout;
   final int lateMinutes;
+  final bool isOfflineSync;
+  final bool isOfflinePending;
   // null = belum ada lembur / belum diproses; 'pending'/'approved'/'rejected'
   final String? overtimeStatus;
   final String? overtimeReason;
@@ -22,6 +24,8 @@ class PresensiRecord {
     this.isHoliday = false,
     this.isAutoCheckout = false,
     this.lateMinutes = 0,
+    this.isOfflineSync = false,
+    this.isOfflinePending = false,
     this.overtimeStatus,
     this.overtimeReason,
   });
@@ -36,6 +40,8 @@ class PresensiRecord {
     bool? isHoliday,
     bool? isAutoCheckout,
     int? lateMinutes,
+    bool? isOfflineSync,
+    bool? isOfflinePending,
     String? overtimeStatus,
     String? overtimeReason,
   }) {
@@ -49,6 +55,8 @@ class PresensiRecord {
       isHoliday: isHoliday ?? this.isHoliday,
       isAutoCheckout: isAutoCheckout ?? this.isAutoCheckout,
       lateMinutes: lateMinutes ?? this.lateMinutes,
+      isOfflineSync: isOfflineSync ?? this.isOfflineSync,
+      isOfflinePending: isOfflinePending ?? this.isOfflinePending,
       overtimeStatus: overtimeStatus ?? this.overtimeStatus,
       overtimeReason: overtimeReason ?? this.overtimeReason,
     );

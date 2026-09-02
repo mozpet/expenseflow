@@ -22,6 +22,7 @@ class ApiException implements Exception {
 /// Layer HTTP terpusat ke backend Laravel.
 class ApiService {
   static const String _tokenKey = 'auth_token';
+  static const String _userCacheKey = 'auth_user_cache';
 
   // ─── Token storage ────────────────────────────────────────
   static Future<String?> getToken() async {
@@ -37,6 +38,28 @@ class ApiService {
   static Future<void> clearToken() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_tokenKey);
+  }
+
+  // ─── User Profile Cache (Persistent Session) ──────────────
+  static Future<Map<String, dynamic>?> getCachedUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_userCacheKey);
+    if (raw == null || raw.isEmpty) return null;
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<void> saveCachedUser(Map<String, dynamic> userMap) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_userCacheKey, jsonEncode(userMap));
+  }
+
+  static Future<void> clearCachedUser() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_userCacheKey);
   }
 
   // ─── Header builder ───────────────────────────────────────
@@ -168,6 +191,7 @@ class ApiService {
       // walau gagal di server, tetap lanjut hapus token lokal
     }
     await clearToken();
+    await clearCachedUser();
   }
 
   // ─── Forgot Password OTP ───────────────────────────────────
@@ -200,15 +224,51 @@ class ApiService {
 
   // ─── Presensi ─────────────────────────────────────────────
   static Future<Map<String, dynamic>> checkIn(
-      double lat, double lng, {bool isMocked = false}) async {
-    return _request('POST', '/attendance/check-in',
-        body: {'latitude': lat, 'longitude': lng, 'is_mocked': isMocked});
+    double lat,
+    double lng, {
+    bool isMocked = false,
+    DateTime? recordedAt,
+    bool isOfflineSync = false,
+  }) async {
+    final body = <String, dynamic>{
+      'latitude': lat,
+      'longitude': lng,
+      'is_mocked': isMocked,
+    };
+    if (recordedAt != null) {
+      body['recorded_at'] = recordedAt.toIso8601String();
+    }
+    if (isOfflineSync) {
+      body['is_offline_sync'] = true;
+    }
+    return _request('POST', '/attendance/check-in', body: body);
   }
 
   static Future<Map<String, dynamic>> checkOut(
-      double lat, double lng, {bool isMocked = false}) async {
-    return _request('POST', '/attendance/check-out',
-        body: {'latitude': lat, 'longitude': lng, 'is_mocked': isMocked});
+    double lat,
+    double lng, {
+    bool isMocked = false,
+    DateTime? recordedAt,
+    bool isOfflineSync = false,
+  }) async {
+    final body = <String, dynamic>{
+      'latitude': lat,
+      'longitude': lng,
+      'is_mocked': isMocked,
+    };
+    if (recordedAt != null) {
+      body['recorded_at'] = recordedAt.toIso8601String();
+    }
+    if (isOfflineSync) {
+      body['is_offline_sync'] = true;
+    }
+    return _request('POST', '/attendance/check-out', body: body);
+  }
+
+  static Future<Map<String, dynamic>> syncOfflineAttendance(
+    List<Map<String, dynamic>> items,
+  ) async {
+    return _request('POST', '/attendance/sync-offline', body: {'items': items});
   }
 
   static Future<Map<String, dynamic>> myAttendance() async {

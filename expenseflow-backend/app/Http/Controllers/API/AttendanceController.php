@@ -26,19 +26,28 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AttendanceController extends Controller
 {
-    // ─── Helper: catat aktivitas ──────────────────────────────
-    private function logActivity(int $userId, ?int $companyId, string $action, string $description, ?string $entityType = null, ?int $entityId = null): void
+    // ─── Helper: catat aktivitas dengan AuditLogger ───────────
+    private function logActivity(int $userId, ?int $companyId, string $action, string $description, ?string $entityType = null, ?int $entityId = null, ?array $oldValues = null, ?array $newValues = null): void
     {
-        DB::table('activity_logs')->insert([
-            'company_id'  => $companyId,
-            'user_id'     => $userId,
-            'action'      => $action,
-            'description' => $description,
-            'entity_type' => $entityType,
-            'entity_id'   => $entityId,
-            'created_at'  => now(),
-            'updated_at'  => now(),
-        ]);
+        $severity = \App\Services\AuditLogger::SEVERITY_INFO;
+        $category = \App\Services\AuditLogger::CATEGORY_ATTENDANCE;
+
+        if (str_contains($action, 'device') || str_contains($action, 'reset') || str_contains($action, 'setting') || str_contains($action, 'delete')) {
+            $severity = \App\Services\AuditLogger::SEVERITY_WARNING;
+        }
+
+        \App\Services\AuditLogger::log(
+            action: $action,
+            description: $description,
+            category: $category,
+            severity: $severity,
+            entityType: $entityType,
+            entityId: $entityId,
+            oldValues: $oldValues,
+            newValues: $newValues,
+            companyId: $companyId,
+            userId: $userId
+        );
     }
 
     // ─── Helper: kirim notifikasi ke user (DB + FCM) ─────────
@@ -1094,12 +1103,34 @@ class AttendanceController extends Controller
                 }) !== null;
 
                 $isHolidayForUser = $regularHolidayForEmp || in_array($empId, $acceptedCollectiveLeaveUserIds);
+                $workStartTime = null;
+                $cutoffMinutes = null;
+
                 if ($isHolidayForUser) {
                     $isOff = true;
                 } else {
                     $schedule = $schedulesByUser[$empId] ?? null;
                     $isOff    = (bool) ($schedule['is_off'] ?? false);
+                    $workStartTime = $schedule['work_start_time'] ?? null;
+                    $office = $schedule['office'] ?? null;
+                    $cutoffMinutes = $office?->late_checkin_cutoff_minutes;
                 }
+
+                $isAlpha = false;
+                $cutoffTimeStr = null;
+
+                if (! $isOff && $workStartTime && $cutoffMinutes !== null) {
+                    $nowWib          = now('Asia/Jakarta');
+                    $workStartCarbon = Carbon::parse("{$today} {$workStartTime}", 'Asia/Jakarta');
+                    $cutoffCarbon    = $workStartCarbon->copy()->addMinutes($cutoffMinutes);
+                    $cutoffTimeStr   = $cutoffCarbon->format('H:i');
+
+                    if ($nowWib->gt($cutoffCarbon)) {
+                        $isAlpha = true;
+                    }
+                }
+
+                $status = $isOff ? 'libur' : ($isAlpha ? 'alpha' : 'belum_hadir');
 
                 $notCheckedIn[] = [
                     'user_id'               => $emp->id,
@@ -1108,9 +1139,16 @@ class AttendanceController extends Controller
                     'employee_code'         => $emp->employee_code,
                     'attendance_setting_id' => $emp->attendance_setting_id,
                     'is_off'                => $isOff,
+                    'is_alpha'              => $isAlpha,
+                    'status'                => $status,
+                    'cutoff_time'           => $cutoffTimeStr,
+                    'cutoff_minutes'        => $cutoffMinutes,
+                    'work_start_time'       => $workStartTime ? substr($workStartTime, 0, 5) : null,
                 ];
             }
         }
+
+        $alphaCount = count(array_filter($notCheckedIn, fn ($p) => ($p['is_alpha'] ?? false) === true));
 
         return response()->json([
             'date'    => $today,
@@ -1118,6 +1156,7 @@ class AttendanceController extends Controller
                 'total_employees' => $employees->count(),
                 'checked_in'      => count($checkedIn),
                 'not_checked_in'  => count($notCheckedIn),
+                'alpha'           => $alphaCount,
                 'on_leave'        => count($leaveList),
             ],
             'checked_in'     => $checkedIn,
@@ -1954,7 +1993,33 @@ class AttendanceController extends Controller
                         $isOff = true;
                     }
 
-                    $status = $isOff ? 'libur' : ($leaveLookup[$user->id][$dateStr] ?? 'absent');
+                    // Evaluasi batas waktu presensi telat untuk hari ini
+                    $isToday = ($dateStr === $today);
+                    $isPastCutoff = true;
+
+                    if ($isToday && ! $isOff && $workStartTime) {
+                        $offId = $user->attendance_setting_id ?? $fallbackOffId;
+                        $office = $allOffices[$offId] ?? null;
+                        $cutoffMins = $office?->late_checkin_cutoff_minutes;
+                        $nowWib = now('Asia/Jakarta');
+
+                        if ($cutoffMins !== null) {
+                            $cutoffCarbon = Carbon::parse("{$today} {$workStartTime}", 'Asia/Jakarta')->addMinutes($cutoffMins);
+                            $isPastCutoff = $nowWib->gt($cutoffCarbon);
+                        } else {
+                            $isPastCutoff = false;
+                        }
+                    }
+
+                    if ($isOff) {
+                        $status = 'libur';
+                    } elseif (isset($leaveLookup[$user->id][$dateStr])) {
+                        $status = $leaveLookup[$user->id][$dateStr];
+                    } elseif ($isToday && ! $isPastCutoff) {
+                        $status = 'belum_hadir';
+                    } else {
+                        $status = 'absent';
+                    }
 
                     if ($filterStatus && $status !== $filterStatus) continue;
                     if ($filterType) continue;
@@ -2605,6 +2670,182 @@ class AttendanceController extends Controller
             });
 
         return response()->json(['year' => (int) $year, 'holidays' => $holidays]);
+    }
+
+    /**
+     * Preview hari libur nasional resmi Indonesia untuk tahun tertentu.
+     * Mengambil dari API Hari Libur Indonesia (dengan fallback offline) dan
+     * menandai mana yang sudah ada di database vs mana yang baru.
+     */
+    public function previewNationalHolidays(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $companyId = $user->company_id;
+        $year = (int) $request->query('year', now('Asia/Jakarta')->year);
+
+        $service = app(\App\Services\IndonesianHolidayService::class);
+        $fetched = $service->getHolidays($year);
+
+        // Ambil hari libur yang sudah ada di database untuk tahun ini (nasional atau milik perusahaan ini)
+        $existing = Holiday::where(function ($q) use ($companyId) {
+            $q->whereNull('company_id')->orWhere('company_id', $companyId);
+        })
+        ->whereYear('date', $year)
+        ->get()
+        ->keyBy(fn ($h) => $h->date->toDateString());
+
+        $holidays = [];
+        $totalNational = 0;
+        $totalCollective = 0;
+        $totalAlreadyExists = 0;
+
+        foreach ($fetched as $item) {
+            $date = $item['date'];
+            $exists = isset($existing[$date]);
+            $existingItem = $exists ? $existing[$date] : null;
+
+            if ($item['is_collective']) {
+                $totalCollective++;
+            } else {
+                $totalNational++;
+            }
+
+            if ($exists) {
+                $totalAlreadyExists++;
+            }
+
+            $holidays[] = [
+                'date'           => $date,
+                'name'           => $item['name'],
+                'is_national'    => $item['is_national'],
+                'is_collective'  => $item['is_collective'],
+                'already_exists' => $exists,
+                'existing_name'  => $existingItem?->name,
+                'existing_type'  => $existingItem ? ($existingItem->is_national ? 'nasional' : ($existingItem->is_collective ? 'collective' : 'perusahaan')) : null,
+                'source'         => $item['source'] ?? 'api',
+            ];
+        }
+
+        return response()->json([
+            'year'                 => $year,
+            'total'                => count($holidays),
+            'total_national'       => $totalNational,
+            'total_collective'     => $totalCollective,
+            'total_already_exists' => $totalAlreadyExists,
+            'holidays'             => $holidays,
+        ]);
+    }
+
+    /**
+     * Batch sync / import hari libur nasional Indonesia ke database kalender.
+     */
+    public function syncNationalHolidays(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        $companyId = $user->company_id;
+
+        $validated = $request->validate([
+            'year'                      => 'required|integer|min:2020|max:2035',
+            'holidays'                  => 'required|array|min:1',
+            'holidays.*.date'           => 'required|date',
+            'holidays.*.name'           => 'required|string|max:255',
+            'holidays.*.is_collective'  => 'nullable|boolean',
+            'collective_treatment'      => 'nullable|in:nasional,collective',
+            'overwrite_existing'        => 'nullable|boolean',
+        ]);
+
+        $year = (int) $validated['year'];
+        $collectiveTreatment = $validated['collective_treatment'] ?? 'nasional';
+        $overwrite = (bool) ($validated['overwrite_existing'] ?? false);
+
+        $syncedCount = 0;
+        $skippedCount = 0;
+
+        DB::beginTransaction();
+        try {
+            foreach ($validated['holidays'] as $item) {
+                $date = Carbon::parse($item['date'])->toDateString();
+                $name = trim($item['name']);
+                $isCollectiveRaw = (bool) ($item['is_collective'] ?? false);
+
+                // Tentukan tipe libur sesuai preferensi user
+                $isCollective = ($isCollectiveRaw && $collectiveTreatment === 'collective');
+                $isNational   = !$isCollective;
+
+                // Scope: Libur nasional berlaku global (company_id = null)
+                // Cuti bersama perusahaan berlaku untuk company_id user
+                $targetCompanyId = $isNational ? null : $companyId;
+
+                // Cek apakah tanggal ini sudah ada di scope yang sama
+                $existing = Holiday::whereDate('date', $date)
+                    ->where(function ($q) use ($targetCompanyId) {
+                        if ($targetCompanyId === null) {
+                            $q->whereNull('company_id');
+                        } else {
+                            $q->where('company_id', $targetCompanyId);
+                        }
+                    })
+                    ->first();
+
+                if ($existing) {
+                    if ($overwrite) {
+                        $existing->update([
+                            'name'          => $name,
+                            'is_national'   => $isNational,
+                            'is_collective' => $isCollective,
+                        ]);
+                        $syncedCount++;
+                    } else {
+                        $skippedCount++;
+                        continue;
+                    }
+                } else {
+                    $holiday = Holiday::create([
+                        'company_id'            => $targetCompanyId,
+                        'attendance_setting_id' => null,
+                        'date'                  => $date,
+                        'name'                  => $name,
+                        'is_national'           => $isNational,
+                        'is_collective'         => $isCollective,
+                    ]);
+
+                    // Jika cuti bersama perusahaan, inisialisasi collective requests jika companyId ada
+                    if ($isCollective && $companyId) {
+                        $this->createCollectiveLeaveRequests($holiday, $companyId);
+                    }
+
+                    // Jika libur nasional, kompensasi cuti tahunan yang sebelumnya sempat approved pada tanggal tsb
+                    if ($isNational && $companyId) {
+                        $this->compensateApprovedLeavesForHoliday($holiday, $companyId, true);
+                    }
+
+                    $syncedCount++;
+                }
+            }
+
+            DB::commit();
+
+            $this->logActivity(
+                $user->id,
+                $companyId,
+                'holiday_national_synced',
+                "Sinkronisasi {$syncedCount} hari libur nasional Indonesia tahun {$year} (Dilewati: {$skippedCount})",
+                'holiday',
+                null
+            );
+
+            return response()->json([
+                'message'       => "Sinkronisasi kalender tahun {$year} berhasil. {$syncedCount} hari libur diproses, {$skippedCount} dilewati.",
+                'year'          => $year,
+                'synced_count'  => $syncedCount,
+                'skipped_count' => $skippedCount,
+            ]);
+        } catch (\Throwable $e) {
+            DB::rollBack();
+            return response()->json([
+                'message' => "Gagal menyinkronkan hari libur: {$e->getMessage()}",
+            ], 500);
+        }
     }
 
     // storeHolidays() — tambah libur, mendukung 3 tipe:
@@ -4272,9 +4513,11 @@ class AttendanceController extends Controller
     public function checkIn(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'latitude'  => 'required|numeric|between:-90,90',
-            'longitude' => 'required|numeric|between:-180,180',
-            'is_mocked' => 'nullable|boolean',
+            'latitude'    => 'required|numeric|between:-90,90',
+            'longitude'   => 'required|numeric|between:-180,180',
+            'is_mocked'   => 'nullable|boolean',
+            'recorded_at' => 'nullable|date',
+            'is_offline_sync' => 'nullable|boolean',
         ]);
 
         if ($request->boolean('is_mocked')) {
@@ -4308,7 +4551,12 @@ class AttendanceController extends Controller
             }
         }
 
-        $today = $this->todayDate();
+        $isOfflineSync = $request->boolean('is_offline_sync') || $request->filled('recorded_at');
+        $checkInTime   = $request->filled('recorded_at')
+            ? Carbon::parse($request->input('recorded_at'), 'Asia/Jakarta')->setTimezone('Asia/Jakarta')
+            : now('Asia/Jakarta');
+
+        $today = $checkInTime->toDateString();
         $jadwalHariIni = $this->getWorkSchedule($user, $today);
         $isWfhScheduled = ! empty($jadwalHariIni['is_wfh']);
         $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
@@ -4369,12 +4617,12 @@ class AttendanceController extends Controller
             && $officeForCutoff->late_checkin_cutoff_minutes !== null
             && $jamMasukCutoff
         ) {
-            $nowWib       = now('Asia/Jakarta');
-            $tanggalWib   = $nowWib->toDateString();
+            $evalTimeWib     = $isOfflineSync ? $checkInTime : now('Asia/Jakarta');
+            $tanggalWib      = $evalTimeWib->toDateString();
             $workStartCutoff = Carbon::parse("{$tanggalWib} {$jamMasukCutoff}", 'Asia/Jakarta');
             $cutoffTime      = $workStartCutoff->copy()->addMinutes($officeForCutoff->late_checkin_cutoff_minutes);
 
-            if ($nowWib->gt($cutoffTime)) {
+            if ($evalTimeWib->gt($cutoffTime)) {
                 return response()->json([
                     'message'         => "Presensi sudah ditutup. Batas presensi masuk hari ini sampai jam {$cutoffTime->format('H:i')} WIB ({$officeForCutoff->late_checkin_cutoff_minutes} menit setelah jam masuk).",
                     'cutoff_at'       => $cutoffTime->format('H:i'),
@@ -4419,12 +4667,12 @@ class AttendanceController extends Controller
                 && $officeRef->wfh_checkin_window_minutes !== null
                 && $jamMasuk
             ) {
-                $nowWib      = now('Asia/Jakarta');
-                $tanggalWib  = $nowWib->toDateString();
+                $evalTimeWib = $isOfflineSync ? $checkInTime : now('Asia/Jakarta');
+                $tanggalWib  = $evalTimeWib->toDateString();
                 $workStart   = Carbon::parse("{$tanggalWib} {$jamMasuk}", 'Asia/Jakarta');
                 $windowOpens = $workStart->copy()->subMinutes($officeRef->wfh_checkin_window_minutes);
 
-                if ($nowWib->lt($windowOpens)) {
+                if ($evalTimeWib->lt($windowOpens)) {
                     return response()->json([
                         'message'         => "Presensi WFH belum bisa dilakukan. Silakan presensi mulai jam {$windowOpens->format('H:i')} WIB.",
                         'window_open_at'  => $windowOpens->format('H:i'),
@@ -4485,7 +4733,7 @@ class AttendanceController extends Controller
 
         // Ambil jadwal efektif untuk menentukan status (hadir/telat) & reminder
         $jadwalHariIni = $this->getWorkSchedule($user, $today);
-        $status        = $this->determineStatus($user, now(), $today);
+        $status        = $this->determineStatus($user, $checkInTime, $today);
 
         // Jam pulang efektif hari ini (shift aktif; fallback jam pulang kantor pada
         // hari libur shift). Dipakai untuk snapshot & jadwal notifikasi Flutter.
@@ -4499,12 +4747,14 @@ class AttendanceController extends Controller
             ['user_id' => $user->id, 'date' => $today],
             [
                 'company_id'               => $user->company_id,
-                'check_in_time'            => now(),
+                'check_in_time'            => $checkInTime,
                 'check_in_lat'             => $validated['latitude'],
                 'check_in_lng'             => $validated['longitude'],
                 'check_in_distance_meters' => $distanceMeters,
                 'check_in_type'            => $checkInType,
                 'status'                   => $status,
+                'is_offline_sync'          => $isOfflineSync,
+                'offline_recorded_at'      => $isOfflineSync ? $checkInTime : null,
                 // SNAPSHOT: bekukan aturan yang berlaku saat check-in (jam kerja,
                 // kantor acuan, lembur, toleransi, auto-checkout). Perubahan setting
                 // HRD di siang hari tidak lagi mempengaruhi record ini — lihat
@@ -4565,9 +4815,11 @@ class AttendanceController extends Controller
     public function checkOut(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'latitude'  => 'required|numeric|between:-90,90',
-            'longitude' => 'required|numeric|between:-180,180',
-            'is_mocked' => 'nullable|boolean',
+            'latitude'        => 'required|numeric|between:-90,90',
+            'longitude'       => 'required|numeric|between:-180,180',
+            'is_mocked'       => 'nullable|boolean',
+            'recorded_at'     => 'nullable|date',
+            'is_offline_sync' => 'nullable|boolean',
         ]);
 
         if ($request->boolean('is_mocked')) {
@@ -4592,7 +4844,12 @@ class AttendanceController extends Controller
             }
         }
 
-        $today = $this->todayDate();
+        $isOfflineSync = $request->boolean('is_offline_sync') || $request->filled('recorded_at');
+        $checkOutTime  = $request->filled('recorded_at')
+            ? Carbon::parse($request->input('recorded_at'), 'Asia/Jakarta')->setTimezone('Asia/Jakarta')
+            : now('Asia/Jakarta');
+
+        $today = $checkOutTime->toDateString();
 
         // 1. Cari record hari ini yang belum di-checkout (shift normal)
         $attendance = Attendance::where('user_id', $user->id)
@@ -4602,17 +4859,28 @@ class AttendanceController extends Controller
 
         // 2. Jika tidak ada, cek shift lintas hari (cross-day) dari KEMARIN yang masih terbuka.
         //    Shift malam 22:00 (Jumat) -> check-out 06:00 (Sabtu): record ada di tanggal Jumat.
-        //    scheduleDate menyimpan tanggal shift asli untuk perhitungan lembur.
+        //    Juga fallback jika karyawan shift normal/libur lembur hingga melewati tengah malam (dini hari).
         $scheduleDate = (string) $today;
         if (! $attendance) {
-            $crossDay = \App\Http\Controllers\API\ShiftController::resolveYesterdayCrossDay($user, (string) $today);
+            $yesterday = Carbon::parse($today)->subDay()->toDateString();
+            $crossDay  = \App\Http\Controllers\API\ShiftController::resolveYesterdayCrossDay($user, (string) $today);
             if ($crossDay) {
-                $yesterday  = Carbon::parse($today)->subDay()->toDateString();
                 $attendance = Attendance::where('user_id', $user->id)
                     ->whereDate('date', $yesterday)
                     ->whereNull('check_out_time')
                     ->first();
                 if ($attendance) {
+                    $scheduleDate = $yesterday;
+                }
+            } else {
+                // Fallback lembur hingga dini hari: karyawan check-in kemarin belum checkout
+                $yesterdayAtt = Attendance::where('user_id', $user->id)
+                    ->whereDate('date', $yesterday)
+                    ->whereNotNull('check_in_time')
+                    ->whereNull('check_out_time')
+                    ->first();
+                if ($yesterdayAtt) {
+                    $attendance   = $yesterdayAtt;
                     $scheduleDate = $yesterday;
                 }
             }
@@ -4638,7 +4906,7 @@ class AttendanceController extends Controller
 
         if ($minIntervalMinutes > 0 && $attendance->check_in_time) {
             $checkInCarbon = Carbon::parse($attendance->check_in_time)->setTimezone('Asia/Jakarta');
-            $nowWib        = now('Asia/Jakarta');
+            $nowWib        = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
             $diffSeconds   = $checkInCarbon->diffInSeconds($nowWib, false);
             $requiredSecs  = $minIntervalMinutes * 60;
 
@@ -4656,8 +4924,6 @@ class AttendanceController extends Controller
                 ], 422);
             }
         }
-
-        $checkOutTime = now();
 
         // ─── Validasi GPS radius checkout (konsisten dengan check-in) ────────
         // Jika karyawan check-in sebagai 'onsite' atau 'field' (bukan WFH),
@@ -4752,13 +5018,15 @@ class AttendanceController extends Controller
         $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking, $schedule);
 
         $updateData = [
-            'check_out_time'   => $checkOutTime,
-            'check_out_lat'    => $validated['latitude'],
-            'check_out_lng'    => $validated['longitude'],
-            'check_out_type'   => $attendance->check_in_type,
-            'work_minutes'     => $workMinutes,
-            'overtime_minutes' => $overtimeMinutes,
-            'is_holiday'       => $nonWorking,
+            'check_out_time'      => $checkOutTime,
+            'check_out_lat'       => $validated['latitude'],
+            'check_out_lng'       => $validated['longitude'],
+            'check_out_type'      => $attendance->check_in_type,
+            'work_minutes'        => $workMinutes,
+            'overtime_minutes'    => $overtimeMinutes,
+            'is_holiday'          => $nonWorking,
+            'is_offline_sync'     => $isOfflineSync || (bool) $attendance->is_offline_sync,
+            'offline_recorded_at' => $isOfflineSync ? $checkOutTime : $attendance->offline_recorded_at,
         ];
 
         // Tandai early leave — tidak berlaku di hari libur/weekend
@@ -4783,8 +5051,85 @@ class AttendanceController extends Controller
             'message'    => 'Check-out berhasil.',
             'attendance' => $attendance->only([
                 'id', 'date', 'check_in_time', 'check_out_time', 'check_in_type', 'check_out_type', 'status',
-                'work_minutes', 'overtime_minutes', 'is_holiday',
+                'work_minutes', 'overtime_minutes', 'is_holiday', 'is_offline_sync', 'offline_recorded_at',
             ]),
+        ]);
+    }
+
+    /**
+     * Batch sync antrean presensi offline dari aplikasi mobile.
+     */
+    public function syncOffline(Request $request): JsonResponse
+    {
+        $validated = $request->validate([
+            'items'               => 'required|array|min:1',
+            'items.*.id'          => 'nullable|string',
+            'items.*.type'        => 'required|in:check_in,check_out',
+            'items.*.latitude'    => 'required|numeric|between:-90,90',
+            'items.*.longitude'   => 'required|numeric|between:-180,180',
+            'items.*.recorded_at' => 'required|date',
+            'items.*.is_mocked'   => 'nullable|boolean',
+        ]);
+
+        $user = $request->user();
+        $results = [];
+
+        foreach ($validated['items'] as $item) {
+            $itemId = $item['id'] ?? (string) Str::uuid();
+            $type = $item['type'];
+
+            $subRequest = Request::create(
+                $type === 'check_in' ? '/api/attendance/check-in' : '/api/attendance/check-out',
+                'POST',
+                [
+                    'latitude'        => $item['latitude'],
+                    'longitude'       => $item['longitude'],
+                    'is_mocked'       => $item['is_mocked'] ?? false,
+                    'recorded_at'     => $item['recorded_at'],
+                    'is_offline_sync' => true,
+                ],
+                [],
+                [],
+                [
+                    'HTTP_ACCEPT'      => 'application/json',
+                    'HTTP_X_PLATFORM'  => $request->header('X-Platform', 'mobile'),
+                    'HTTP_X_DEVICE_ID' => $request->header('X-Device-Id'),
+                ]
+            );
+            $subRequest->setUserResolver(fn () => $user);
+
+            try {
+                $response = $type === 'check_in'
+                    ? $this->checkIn($subRequest)
+                    : $this->checkOut($subRequest);
+
+                $statusCode = $response->getStatusCode();
+                $data = $response->getData(true);
+
+                $results[] = [
+                    'id'          => $itemId,
+                    'type'        => $type,
+                    'status_code' => $statusCode,
+                    'success'     => $statusCode >= 200 && $statusCode < 300,
+                    'message'     => $data['message'] ?? 'Berhasil diproses.',
+                    'data'        => $data,
+                ];
+            } catch (\Exception $e) {
+                $results[] = [
+                    'id'          => $itemId,
+                    'type'        => $type,
+                    'status_code' => 500,
+                    'success'     => false,
+                    'message'     => $e->getMessage(),
+                ];
+            }
+        }
+
+        return response()->json([
+            'message' => 'Proses sinkronisasi presensi offline selesai.',
+            'synced'  => count(array_filter($results, fn ($r) => $r['success'])),
+            'failed'  => count(array_filter($results, fn ($r) => ! $r['success'])),
+            'results' => $results,
         ]);
     }
 

@@ -11,7 +11,7 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
 - **Mobile**   : Flutter + Dio + Firebase FCM
 - **Backend**  : Laravel 11 (Framework 13.15.0) + Sanctum + MySQL
 - **Web**      : HTML/CSS/JS + Alpine.js + Tailwind
-- **OCR**      : Tesseract (dev) / Google Cloud Vision API (production)
+- **OCR**      : Google gemini
 - **Queue**    : Laravel Queue (driver: database)
 - **Storage**  : Local disk (`storage/app/private/`), nanti R2
 - **Auth**     : Sanctum token — mobile TANPA expiry (tetap login sampai Logout), web expired 24 jam
@@ -21,16 +21,29 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
 - Frontend Flutter : SELESAI
 - Frontend Web     : SELESAI
 - Backend Laravel  : SEDANG DIKERJAKAN
-  - Auth & security        : SELESAI (login, rate limit, token expiry)
-  - Receipt (struk) CRUD   : SELESAI (upload OCR, submit, approve/reject, variance)
+  - Auth & security        : SELESAI (login, rate limit, token expiry, mobile persistent session)
+  - Receipt (struk) CRUD   : SELESAI (upload OCR Gemini, submit, approve/reject, variance, deteksi duplikat 2-layer)
   - Invoice multi-level    : SELESAI (store, approve 3 level, reject)
-  - Vendor management      : SELESAI (CRUD, toggle active)
-  - User management        : SELESAI (CRUD, deactivate, reset password)
-  - Presensi (attendance)  : SELESAI (check-in/out WFH, leave, report, CSV export)
+  - Vendor management      : SELESAI (CRUD, toggle active, audit log)
+  - User management        : SELESAI (CRUD, deactivate, reset password, audit log pengubahan data sensitif)
+  - Presensi (attendance)  : SELESAI (check-in/out WFH, leave, report, CSV export, offline mode & batch sync)
   - Custom Shift/Scheduling: SELESAI (shift per karyawan & cabang, override jam kerja, roster, bulk assign) — 2026-07-04
+  - Audit Log Sensitif     : SELESAI (diff Sebelum vs Sesudah, masking password/token, severity, export CSV) — 2026-09-02
+  - Offline Presensi Mobile: SELESAI (local queue, recorded_at accuracy, auto-sync batch, banner UI) — 2026-09-02
+  - Kalender Libur Otomatis: SELESAI (API Hari Libur Indonesia SKB 3 Menteri, preview modal, auto-sync batch, artisan command) — 2026-09-02
+  - Status Alpha Batas Presensi Telat: SELESAI (karyawan belum check-in & lewat batas waktu cutoff kantor langsung berstatus Alpha di laporan hari ini & dashboard HRD) — 2026-09-02
+  - Approval Matrix Bertingkat: DI-KEEP DULU (multi-level expense approval ditunda atas arahan user — 2026-09-02)
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
-  - Custom Role Management  : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
-  - Sedang di              : (tambahkan fitur baru di sini)
+  - Custom Role Management : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
+  - Fitur yang Di-Keep / Ditunda Sementara (Arahan User 2026-09-02):
+    - Approval Matrix Bertingkat (keep dulu)
+    - Invoice PRD (masih tahap PRD)
+    - Liveness Detection Presensi (keep dulu)
+    - Biometrik Login Mobile (tidak usah, diganti Mobile Persistent Session)
+    - PDF Payslip (keep dulu, UI masih statis)
+    - Widget / Quick Tile Android & iOS (skip dulu)
+    - Laporan Visual & Grafik Tren Klaim (keep dulu, UI masih statis)
+    - Auto-reminder Email Klaim Mengendap > 3 Hari (keep dulu)
 
 ---
 
@@ -1687,4 +1700,268 @@ Pertanyaan sebelum memutuskan strategi data:
 
 ---
 
-*Bagian ini ditambahkan pada 2026-09-02 berdasarkan analisis bottleneck performa Network tab (37 request serentak saat load pertama).*
+*Bagian ini ditambahkan pada 2026-09-02 berdasarkan analisis bottleneck performa Network tab (37 request serentak saat load pertama).*
+
+---
+
+# Dokumentasi & Aturan Fitur Baru (2026-09-02)
+
+## 1. Fitur #1: Deteksi Struk Duplikat (Duplicate Receipt Detection)
+
+### A. Latar Belakang & Mekanisme 2-Layer
+Mencegah klaim ganda (*double reimbursement*) baik disengaja maupun tidak sengaja oleh karyawan melalui verifikasi dua lapis:
+
+1. **Layer 1: SHA-256 Hash Foto Identik (100% Match)**
+   - Saat struk diunggah, server menghitung `hash_file('sha256', $file)` dan menyimpannya di kolom `receipts.sha256_hash`.
+   - Jika hash cocok dengan struk lain dalam perusahaan yang sama (status selain `rejected`), struk langsung ditandai `is_potential_duplicate = true` dengan pesan:
+     `"Foto struk identik 100% (SHA-256 hash sama) dengan struk {receipt_number}."`
+
+2. **Layer 2: Kecocokan Metadata (Merchant + Tanggal + Nominal)**
+   - Jika foto berbeda (misal difoto ulang dengan sudut atau pencahayaan berbeda), sistem membandingkan metadata:
+     - Kesamaan nominal (`total_amount`, `claimed_amount`, atau `ocr_raw_amount`).
+     - Kesamaan tanggal struk (`receipt_date` atau `ocr_raw_date`).
+     - Kesamaan nama merchant/vendor (`vendor_name` atau `ocr_raw_merchant`).
+   - Jika cocok, ditandai `is_potential_duplicate = true` dengan alasan spesifik:
+     `"Kombinasi tanggal ({date}), nominal ({amount}) di {merchant} serupa dengan struk {receipt_number}."`
+
+### B. Database & Model
+- Kolom pada tabel `receipts`:
+  - `sha256_hash` (string 64 char, indexed)
+  - `is_potential_duplicate` (boolean, default false)
+  - `duplicate_reference_id` (unsignedBigInteger, nullable, FK ke `receipts.id`)
+  - `duplicate_reason` (text, nullable)
+- Method pada Model `Receipt`:
+  - `detectPotentialDuplicate(): bool`
+  - Relasi `duplicateReference(): BelongsTo`
+
+### C. Antarmuka (Web & Mobile)
+- **Web Dashboard**:
+  - Badge kuning/merah *"Potensi Duplikat"* di tabel Inbox & Riwayat Struk.
+  - Tombol *"Bandingkan Struk"* membuka modal perbandingan berdampingan (*Side-by-Side Comparison*): foto asli vs duplikat, nominal, tanggal, dan pengaju.
+  - Finance dapat memilih tetap menyetujui (*Approve*) atau menolak (*Reject*).
+- **Flutter Mobile**:
+  - Badge peringatan di Riwayat Struk karyawan agar karyawan tahu struk sedang diperiksa ganda oleh tim Finance.
+
+---
+
+## 2. Fitur #3: Audit Log Pengubahan Data Sensitif
+
+### A. Tujuan & Standar Keamanan
+Merekam jejak audit (*audit trail*) yang tidak dapat diubah terhadap pengubahan data kritis perusahaan, seperti rekening bank karyawan, limit klaim, hak akses/role, status aktif, pengaturan keuangan, dan radius kantor.
+
+### B. Database Schema (`activity_logs`)
+Migration `2026_09_02_000003_add_sensitive_audit_fields_to_activity_logs_table.php`:
+- `category` (string, e.g. `HR_EMPLOYEE`, `PAYROLL_FINANCE`, `EXPENSE_CLAIM`, `ATTENDANCE_OFFICE`, `SECURITY_AUTH`, `COMPANY_SETTINGS`)
+- `severity` (enum: `info`, `warning`, `critical`)
+- `old_values` (json, nullable) — snapshot data sebelum diubah
+- `new_values` (json, nullable) — snapshot data sesudah diubah
+- `ip_address` (string 45, nullable)
+- `user_agent` (text, nullable)
+
+### C. Layanan Terpusat: `App\Services\AuditLogger.php`
+- **Masking Keamanan Otomatis**: Kunci sensitif seperti `password`, `token`, `remember_token`, `otp`, `secret`, `api_key` otomatis dimasking menjadi `********` sebelum disimpan ke database.
+- **Deteksi Perubahan (*Diffing*)**: Fungsi `computeDiff($old, $new)` hanya merekam field yang benar-benar mengalami perubahan nilai.
+- **Konstanta Kategori & Severity**:
+  - `AuditLogger::CATEGORY_HR`, `CATEGORY_FINANCE`, `CATEGORY_EXPENSE`, `CATEGORY_ATTENDANCE`, `CATEGORY_SECURITY`, `CATEGORY_SETTINGS`.
+  - `AuditLogger::SEVERITY_INFO`, `SEVERITY_WARNING`, `SEVERITY_CRITICAL`.
+
+### D. Titik Integrasi Backend
+- `UserController.php`: Penambahan, pengubahan rekening bank, role, limit klaim, departemen, dan aktivasi/deaktivasi user.
+- `SettingsController.php`: Perubahan limit klaim maksimal dan toleransi variansi struk.
+- `AttendanceController.php`: Perubahan koordinat GPS kantor, radius geofence, dan reset kuota cuti.
+- `VendorController.php`: Perubahan nomor rekening dan kontak vendor.
+
+### E. Frontend Web (`AuditLogView.tsx`)
+- Ringkasan KPI: Total Aktivitas, Perubahan Kritis (Sensitif), Peringatan, dan Aktivitas Pengguna Unik.
+- Filter Severity (`Semua`, `🚨 Kritis / Data Sensitif`, `⚠️ Peringatan`, `ℹ️ Informasi`) & Kategori.
+- Modal Diff Interaktif: Menampilkan tabel perbandingan nilai **Sebelum** vs **Sesudah** secara visual.
+- Tombol **Export CSV Audit Log** untuk kepatuhan regulasi dan audit eksternal.
+
+---
+
+## 3. Fitur #4: Mobile Persistent Session (Sesi Mobile Permanen)
+
+### A. Kebijakan Sesi Sesuai Arahan User
+> *"user khusus mobile sekali login tidak pernah logout, jika mau log out klik manual"*
+
+Aplikasi mobile Flutter dirancang agar karyawan tidak perlu login berulang-ulang, tidak ter-logout saat aplikasi ditutup/dibuka kembali, dan tetap dapat masuk saat offline/sinyal lemah.
+
+### B. Implementasi Backend (`AuthController.php`)
+- Saat login dari mobile (`X-Platform: mobile`), token Sanctum dibuat dengan nama `auth-token-mobile` dan `expires_at = null` (tanpa batas waktu).
+- Token web tetap menggunakan masa berlaku 24 jam demi keamanan browser bersama.
+
+### C. Implementasi Mobile (`api_service.dart` & `auth_provider.dart`)
+1. **Local User Cache**:
+   - Data user profil lengkap disimpan di `SharedPreferences` menggunakan kunci `cached_user_profile`.
+   - Method pendukung: `saveCachedUser()`, `getCachedUser()`, `clearCachedUser()`.
+2. **Instant Startup (*Zero Wait Time*)**:
+   - Saat aplikasi dibuka (`loadSession()`), data user langsung dihidrasi dari local cache seketika sehingga antarmuka home screen terbuka instan tanpa layar loading blank.
+   - Panggilan `ApiService.me()` dijalankan di latar belakang (*background sync*) untuk menyinkronkan pembaruan role/departemen jika ada.
+3. **Resilience Terhadap Gangguan Sinyal**:
+   - Jika koneksi jaringan timeout, server 5xx, atau HP offline, sesi login **TIDAK PERNAH DIHAPUS**. Aplikasi tetap berjalan menggunakan data cache.
+   - Sesi token dan cache hanya dihapus bila server mengembalikan respons **HTTP 401 Unauthorized** (token dicabut) atau pengguna secara sadar menekan tombol **Keluar (Logout)** di halaman Profil.
+
+---
+
+## 4. Fitur #5: Offline Mode Presensi (Bad Network Fallback & Auto-Sync)
+
+### A. Latar Belakang & Masalah Lapangan
+Karyawan seringkali melakukan presensi di lokasi minim sinyal (misalnya di basement parkir kantor, proyek lapangan, atau saat jaringan seluler down). Presensi tidak boleh gagal hanya karena ketiadaan sinyal internet sesaat.
+
+### B. Database Schema (`attendances`)
+Migration `2026_09_02_000004_add_offline_sync_to_attendances_table.php`:
+- `is_offline_sync` (boolean, default false) — penanda presensi dicatat offline.
+- `offline_recorded_at` (datetime, nullable) — waktu aktual tombol presensi ditekan pada HP.
+
+### C. Backend API: Preservasi Jam & Keterlambatan Akurat
+1. **Dukungan `recorded_at` pada `checkIn` dan `checkOut`**:
+   - Backend menerima parameter `recorded_at` (ISO 8601 string waktu lokal HP).
+   - Penentuan status kehadiran (*Hadir Tepat Waktu* vs *Terlambat / Late*) dan perhitungan *work_minutes* dihitung berdasarkan **waktu aktual presensi ditekan saat offline**, BUKAN waktu saat internet baru tersambung jam kemudian.
+2. **Batch Sync Endpoint (`POST /api/v1/attendance/sync-offline`)**:
+   - Menerima kumpulan array aksi offline:
+     ```json
+     {
+       "items": [
+         {
+           "id": "offline_1725300000000_check_in",
+           "type": "check_in",
+           "latitude": -6.2088,
+           "longitude": 106.8456,
+           "recorded_at": "2026-09-02T07:45:00+07:00",
+           "is_mocked": false
+         }
+       ]
+     }
+     ```
+   - Bersifat **Idempotent**: Pengiriman ulang aksi yang sama tidak menimbulkan error atau record ganda.
+
+### D. Mobile Service & Provider (`OfflineAttendanceService` & `presensi_provider.dart`)
+1. **Antrean Lokal (*Offline Queue*)**:
+   - Disimpan di `SharedPreferences` dalam format JSON list.
+   - Memiliki method: `enqueue()`, `getQueue()`, `syncQueue()`, `clearQueue()`.
+2. **Fallback Otomatis saat Presensi**:
+   - Pada method `simpanPresensi()` di `presensi_provider.dart`:
+     - Jika `ApiService.checkIn` atau `checkOut` mengalami error koneksi jaringan / timeout / 5xx, aksi otomatis masuk ke antrean offline.
+     - State UI lokal langsung terupdate secara optimistik (jam masuk/pulang langsung tampil) dan melempar `OfflineAttendanceSavedException`.
+     - `presensi_map_screen.dart` menangkap exception ini dan menampilkan snackbar oranye informatif:
+       `"Presensi disimpan secara offline (07:45 WIB). Akan disinkronkan saat koneksi tersedia."`
+3. **Background Auto-Sync & Manual Sync**:
+   - Saat app dibuka kembali atau `syncStatusFromBackend()` berjalan dan server dapat dihubungi, antrean otomatis disinkronkan di latar belakang.
+   - **Banner Beranda**: Jika terdapat antrean offline yang belum tersinkron, `home_screen.dart` menampilkan banner kuning *"Presensi Offline (X)"* lengkap dengan tombol **"Sync"** untuk sinkronisasi manual.
+
+---
+
+## 5. Fitur #8: Kalender Libur Nasional Otomatis (API Hari Libur Indonesia & Auto-Sync)
+
+### A. Latar Belakang & Masalah
+HRD sebelumnya harus menginput tanggal merah dan cuti bersama secara manual satu per satu setiap tahun. Dengan fitur ini, seluruh daftar hari libur resmi Indonesia (SKB 3 Menteri) dapat ditarik secara otomatis langsung ke dalam kalender sistem.
+
+### B. Sumber Data & Arsitektur Layanan (`IndonesianHolidayService.php`)
+1. **Live API Hari Libur Indonesia**:
+   - Endpoint: `https://api-hari-libur.vercel.app/api?year={year}` (timeout 8s).
+   - Mengembalikan daftar resmi hari libur nasional dan cuti bersama.
+2. **Built-in Curated Fallback Dataset (Offline Resilience)**:
+   - Jika server API eksternal down atau lingkungan server tidak memiliki koneksi internet keluar, service secara otomatis beralih ke database kurasi bawaan (tahun 2024, 2025, 2026, 2027).
+   - Menjamin proses sinkronisasi kalender selalu berhasil 100% tanpa kegagalan.
+
+### C. Backend Endpoints & Artisan Command
+1. **Preview Endpoint (`GET /api/v1/dashboard/attendance/holidays/preview-national?year={year}`)**:
+   - Membandingkan daftar hari libur dari API dengan data yang sudah terdaftar di database `holidays`.
+   - Mengembalikan statistik: `total`, `total_national`, `total_collective`, `total_already_exists`, serta flag `already_exists` per item.
+2. **Batch Sync Endpoint (`POST /api/v1/dashboard/attendance/holidays/sync-national`)**:
+   - Menerima array hari libur yang dipilih user beserta opsi kebijakan cuti bersama:
+     - `collective_treatment = 'nasional'`: Cuti bersama diberlakukan sebagai libur nasional (bebas masuk, tanggal merah, tanpa potong kuota cuti).
+     - `collective_treatment = 'collective'`: Cuti bersama diperlakukan sebagai cuti bersama perusahaan yang memotong kuota cuti tahunan dan mengaktifkan notifikasi opt-in karyawan.
+   - Idempotent: Melewatkan tanggal yang sudah ada jika tidak dicentang overwrite.
+   - Mengaktifkan pengembalian saldo cuti otomatis (`compensateApprovedLeavesForHoliday`) jika tanggal baru bertabrakan dengan cuti tahunan approved.
+   - Mencatat jejak audit ke `activity_logs` via `AuditLogger`.
+3. **CLI Artisan Command (`php artisan holidays:sync-national {year?} {--overwrite}`)**:
+   - Memudahkan tim DevOps / Sysadmin melakukan sinkronisasi kalender tahunan via scheduler atau cron terminal.
+
+### D. Frontend Web UI (`AttendanceManagement.tsx`)
+1. **Tombol "Tarik Libur Otomatis"**:
+   - Terletak di header tab Kalender Libur berdampingan dengan filter kantor.
+2. **Modal Interaktif (SKB 3 Menteri)**:
+   - Selector tahun kalender (2024, 2025, 2026, 2027).
+   - Kartu KPI ringkasan: Total Hari, Libur Nasional, Cuti Bersama, dan Status Sudah Ada.
+   - Dropdown Kebijakan Cuti Bersama (Bebas Cuti vs Potong Saldo).
+   - Tabel checklist dengan fitur *Pilih Semua / Batal Pilih*, badge status (*Baru* / *Sudah Ada*), dan detail tanggal.
+   - Konfirmasi impor sekali klik yang otomatis memuat ulang kalender setelah selesai.
+
+
+
+---
+
+## 6. Daftar Fitur yang Ditunda / Di-Keep (Keputusan User 2026-09-02)
+
+Berdasarkan instruksi langsung dari user, fitur-fitur berikut **DITUNDA (DI-KEEP / DILANGKAHI)** untuk saat ini dan belum boleh dikerjakan sebelum ada arahan lebih lanjut:
+
+1. **Fitur #9: Approval Matrix Bertingkat (Multi-Level Expense Approval)**
+   - *Status*: **DI-KEEP DULU**
+   - *Keterangan*: Alur persetujuan klaim struk bertingkat (misal: Supervisor -> Manager -> Finance berdasarkan threshold nominal) ditunda sementara atas permintaan user. Alur persetujuan klaim struk tetap menggunakan alur operasional standar peran Finance/Admin yang telah berjalan stabil.
+
+2. **Invoice PRD**
+   - *Status*: **DI-KEEP DULU**
+   - *Keterangan*: Fitur faktur/invoice eksternal masih dalam tahap perancangan PRD produk.
+
+3. **Liveness Detection pada Presensi Mobile**
+   - *Status*: **DI-KEEP DULU**
+   - *Keterangan*: Verifikasi wajah liveness anti-spoofing saat presensi belum diterapkan.
+
+4. **Biometrik Login Mobile**
+   - *Status*: **DIBATALKAN / DIGANTIKAN**
+   - *Keterangan*: Tidak menggunakan fingerprint/biometrik lokal; digantikan oleh fitur *Mobile Persistent Session* (sekali login tidak pernah logout otomatis, hanya logout jika ditekan manual).
+
+5. **PDF Payslip (Slip Gaji Digital)**
+   - *Status*: **DI-KEEP DULU**
+   - *Keterangan*: Pembuatan dokumen slip gaji PDF ditunda, antarmuka frontend masih berupa tampilan statis.
+
+6. **Widget / Quick Tile Android & iOS**
+   - *Status*: **DI-SKIP DULU**
+   - *Keterangan*: Shortcut presensi via home screen widget / quick settings tile ditunda.
+
+7. **Laporan Visual & Analytics Grafik Tren Biaya Klaim**
+   - *Status*: **DI-KEEP DULU**
+   - *Keterangan*: Grafik analitik pengeluaran di frontend masih menggunakan dummy/mock statis.
+
+8. **Email Rekap Harian Klaim Mengendap > 3 Hari**
+   - *Status*: **DI-KEEP DULU**
+   - *Keterangan*: Pengiriman email peringatan otomatis untuk klaim struk yang mengendap ditunda.
+
+---
+
+## 7. Dokumentasi Status Alpha Otomatis Setelah Batas Waktu Presensi Telat (2026-09-02)
+
+### A. Latar Belakang & Aturan Bisnis
+Di pengaturan kantor (`AttendanceSetting`), terdapat field **Batas Waktu Presensi Telat** (`late_checkin_cutoff_minutes`).
+1. Jika waktu sekarang sudah melewati batas cutoff (`work_start_time + late_checkin_cutoff_minutes`), karyawan sudah diblokir dari melakukan check-in hari ini (HTTP 403: *"Presensi sudah ditutup. Batas presensi masuk hari ini sampai jam ... WIB"*).
+2. Karena karyawan yang telah melewati batas waktu tersebut **sudah tidak bisa melakukan presensi masuk lagi**, maka pada laporan hari ini karyawan tersebut **wajib berstatus Alpha** (bukan sekadar "Belum Check-In" atau menunggu).
+
+### B. Logika Backend (`AttendanceController.php`)
+1. **Endpoint Dashboard Hari Ini (`GET /api/v1/dashboard/attendance/today`)**:
+   - Untuk setiap karyawan di daftar `not_checked_in` yang tidak sedang libur (`!is_off`) dan tidak cuti/izin:
+     - Dihitung jam batas presensi kantor: `$cutoffTime = Carbon::parse("{$today} {$workStartTime}")->addMinutes($office->late_checkin_cutoff_minutes)`.
+     - Jika waktu saat ini (`now('Asia/Jakarta')`) melebihi `$cutoffTime`:
+       - Status ditetapkan sebagai: `'status' => 'alpha'`, `'is_alpha' => true`.
+       - Menyertakan data pelengkap: `'cutoff_time' => '10:00'`, `'cutoff_minutes' => 120`, `'work_start_time' => '08:00'`.
+     - Jika belum melewati cutoff: status tetap `'belum_hadir'`, `'is_alpha' => false`.
+     - Jika kantor tidak membatasi menit telat (`late_checkin_cutoff_minutes === null`), status menjadi `alpha` hanya bila seluruh jam kerja hari ini (`work_end_time`) telah usai.
+   - Ringkasan KPI (`summary`):
+     - Ditambahkan metrik `alpha`: jumlah karyawan belum check-in yang sudah melewati batas waktu presensi telat.
+
+2. **Endpoint Rekap & Ekspor Laporan (`reportAttendance` & `exportReport`) via `buildFullRows()`**:
+   - Untuk record hari ini (`$dateStr === $today`):
+     - Jika karyawan belum check-in dan waktu telah melewati cutoff telat kantornya, baris laporan virtual hari ini secara otomatis diberi status `'absent'` (yang berlabel **Alpha** di antarmuka dan berkas CSV).
+     - Jika waktu belum melewati batas cutoff, baris presensi hari ini berstatus `'belum_hadir'` (menunggu jam kerja).
+
+### C. Antarmuka Web Dashboard (`AttendanceManagement.tsx`)
+1. **Kartu Ringkasan ("Belum Check-in")**:
+   - Menampilkan angka total karyawan yang belum check-in secara standar dan bersih tanpa badge hitungan alpha terpisah.
+2. **Kolom "Belum Check-in" Tab Hari Ini**:
+   - Header kolom bersih standar: `Belum Check-in ({count})` (tanpa badge jumlah alpha).
+   - Tampilan baris bersih standar (tanpa background merah / red card wrapper).
+   - Nama karyawan tampil polos tanpa tag Alpha ganda di sebelah nama.
+   - Keterangan jam batas presensi menggunakan font abu-abu netral (`· Batas {cutoff_time}`).
+   - **Hanya 1 tulisan/badge Alpha** di paling pojok kanan baris (hanya muncul jika user memang sudah berstatus Alpha setelah jam batas cutoff terlewati).
+   - Jika karyawan **belum melewati batas waktu cutoff**, baris presensi tetap standar tanpa badge Alpha.
+

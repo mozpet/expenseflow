@@ -51,6 +51,22 @@ class AppUser {
       monthlyClaimLimit: parseLimit(json['monthly_claim_limit']),
     );
   }
+
+  Map<String, dynamic> toJson() {
+    return {
+      'id': id,
+      'name': name,
+      'email': email,
+      'role': role,
+      'department': department,
+      'wfh_enabled': wfhEnabled,
+      'attendance_enabled': attendanceEnabled,
+      'bank_name': bankName,
+      'bank_account_no': bankAccountNo,
+      'bank_account_holder': bankAccountHolder,
+      'monthly_claim_limit': monthlyClaimLimit,
+    };
+  }
 }
 
 class AuthProvider extends ChangeNotifier {
@@ -67,22 +83,42 @@ class AuthProvider extends ChangeNotifier {
   bool get isLoggedIn => _user != null;
   bool get wfhEnabled => _user?.wfhEnabled ?? false;
 
-  /// Dipanggil saat app start: cek token tersimpan → auto login.
+  /// Dipanggil saat app start: cek token & user cache tersimpan → auto login persistent.
   Future<bool> loadSession() async {
     final token = await ApiService.getToken();
     if (token == null || token.isEmpty) return false;
 
+    // 1. Pulihkan user dari cache lokal jika ada (instan startup & offline support)
+    final cachedUserMap = await ApiService.getCachedUser();
+    if (cachedUserMap != null) {
+      _user = AppUser.fromJson(cachedUserMap);
+      notifyListeners();
+      _initNotifications();
+    }
+
+    // 2. Sync data profil terbaru dari backend di background
     try {
       final res = await ApiService.me();
-      _user = AppUser.fromJson(res['user'] as Map<String, dynamic>);
+      final userMap = res['user'] as Map<String, dynamic>;
+      _user = AppUser.fromJson(userMap);
+      await ApiService.saveCachedUser(userMap);
       notifyListeners();
-      // Request permission & daftarkan FCM token saat resume session
       _initNotifications();
       return true;
+    } on ApiException catch (e) {
+      // HANYA jika server mengembalikan 401 Unauthorized secara eksplisit (misal user dihapus / token dicabut admin)
+      if (e.statusCode == 401) {
+        await ApiService.clearToken();
+        await ApiService.clearCachedUser();
+        _user = null;
+        notifyListeners();
+        return false;
+      }
+      // Jika error karena jaringan/offline/timeout: JANGAN LOGOUT! Tetap gunakan sesi user yang ada.
+      return _user != null;
     } catch (_) {
-      // token kadaluarsa / server mati → bersihkan
-      await ApiService.clearToken();
-      return false;
+      // Error jaringan umum / timeout: Tetap login menggunakan cached session
+      return _user != null;
     }
   }
 
@@ -98,7 +134,10 @@ class AuthProvider extends ChangeNotifier {
       if (token == null) throw ApiException('Token tidak diterima dari server.');
 
       await ApiService.saveToken(token);
-      _user = AppUser.fromJson(res['user'] as Map<String, dynamic>);
+      final userMap = res['user'] as Map<String, dynamic>;
+      _user = AppUser.fromJson(userMap);
+      await ApiService.saveCachedUser(userMap);
+
       _isLoading = false;
       notifyListeners();
       // Request permission & daftarkan FCM token setelah login berhasil

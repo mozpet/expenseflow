@@ -201,6 +201,8 @@ Route::prefix('v1')->group(function () {
             Route::post('/settings/{id}/reset-leave-balances', [AttendanceController::class, 'resetOfficeLeaveBalances']);
 
             // Kalender libur nasional / cuti bersama perusahaan
+            Route::get('/holidays/preview-national', [AttendanceController::class, 'previewNationalHolidays']);
+            Route::post('/holidays/sync-national', [AttendanceController::class, 'syncNationalHolidays']);
             Route::get('/holidays', [AttendanceController::class, 'listHolidays']);
             Route::post('/holidays/collective-preview', [AttendanceController::class, 'previewCollectiveLeave']);
             Route::post('/holidays', [AttendanceController::class, 'storeHolidays']);
@@ -256,6 +258,7 @@ Route::prefix('v1')->group(function () {
         ->group(function () {
             Route::post('/check-in', [AttendanceController::class, 'checkIn']);
             Route::post('/check-out', [AttendanceController::class, 'checkOut']);
+            Route::post('/sync-offline', [AttendanceController::class, 'syncOffline']);
         });
 
     // Status, riwayat presensi & cuti/izin — semua karyawan, tanpa gerbang attendance_access.

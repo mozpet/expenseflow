@@ -129,6 +129,17 @@ export function mapReceipt(r: any): Receipt {
     isPotentialDuplicate: Boolean(r.is_potential_duplicate),
     duplicateReceiptNumber: r.duplicate_reference?.receipt_number,
     duplicateTotalAmount: r.duplicate_reference?.total_amount ? num(r.duplicate_reference.total_amount) : undefined,
+    duplicateReason: r.duplicate_reason,
+    duplicateReferenceId: r.duplicate_reference_id ? Number(r.duplicate_reference_id) : undefined,
+    duplicateReference: r.duplicate_reference ? {
+      id: Number(r.duplicate_reference.id),
+      receiptNumber: r.duplicate_reference.receipt_number,
+      totalAmount: num(r.duplicate_reference.total_amount),
+      receiptDate: r.duplicate_reference.receipt_date,
+      imagePath: r.duplicate_reference.image_path,
+      uploaderName: r.duplicate_reference.user?.name,
+      department: r.duplicate_reference.user?.department,
+    } : undefined,
     notes: r.notes,
     paidAt: r.paid_at ? formatTanggal(r.paid_at) : undefined,
     paidBy: r.paid_by?.name ?? r.paidBy?.name,
@@ -188,6 +199,18 @@ export function mapReceiptToApproval(r: any): StrukApproval {
     kategori: r.category ?? '—',
     isPotentialDuplicate: Boolean(r.is_potential_duplicate),
     duplicateReceiptNumber: r.duplicate_reference?.receipt_number,
+    duplicateTotalAmount: r.duplicate_reference?.total_amount ? num(r.duplicate_reference.total_amount) : undefined,
+    duplicateReason: r.duplicate_reason,
+    duplicateReferenceId: r.duplicate_reference_id ? Number(r.duplicate_reference_id) : undefined,
+    duplicateReference: r.duplicate_reference ? {
+      id: Number(r.duplicate_reference.id),
+      receiptNumber: r.duplicate_reference.receipt_number,
+      totalAmount: num(r.duplicate_reference.total_amount),
+      receiptDate: r.duplicate_reference.receipt_date,
+      imagePath: r.duplicate_reference.image_path,
+      uploaderName: r.duplicate_reference.user?.name,
+      department: r.duplicate_reference.user?.department,
+    } : undefined,
     paidAt: r.paid_at ? formatTanggal(r.paid_at) : undefined,
     paidBy: r.paid_by?.name ?? r.paidBy?.name,
     paymentMethod: r.payment_method,
@@ -335,20 +358,33 @@ const ACTION_COLOR: Record<string, string> = {
   updated: 'bg-slate-700',
 };
 
-function colorForAction(action: string): string {
+function colorForAction(action: string, severity?: string): string {
+  if (severity === 'critical') return 'bg-rose-600';
+  if (severity === 'warning') return 'bg-amber-600';
   for (const key of Object.keys(ACTION_COLOR)) {
     if (action.includes(key)) return ACTION_COLOR[key];
   }
-  return 'bg-slate-600';
+  return 'bg-indigo-600';
 }
 
 export function mapAuditLog(l: any): AuditLog {
   const actor = l.user_name ?? 'Sistem';
   return {
     id: String(l.id),
-    iconBg: colorForAction(l.action ?? ''),
+    iconBg: colorForAction(l.action ?? '', l.severity),
     title: l.description ?? l.action ?? 'Aktivitas',
     details: `${actor}${l.user_role ? ' (' + l.user_role + ')' : ''} · ${formatWaktu(l.created_at)}`,
+    action: l.action,
+    category: l.category,
+    severity: l.severity ?? 'info',
+    userName: l.user_name,
+    userRole: l.user_role,
+    ipAddress: l.ip_address,
+    userAgent: l.user_agent,
+    entityType: l.entity_type,
+    entityId: l.entity_id,
+    oldValues: l.old_values,
+    newValues: l.new_values,
     waktu: formatWaktu(l.created_at),
     created_at: l.created_at, // Simpan tanggal asli untuk filtering
   };

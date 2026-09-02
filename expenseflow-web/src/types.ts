@@ -29,6 +29,17 @@ export interface Receipt {
   isPotentialDuplicate?: boolean;
   duplicateReceiptNumber?: string;
   duplicateTotalAmount?: number;
+  duplicateReason?: string;
+  duplicateReferenceId?: number;
+  duplicateReference?: {
+    id: number;
+    receiptNumber: string;
+    totalAmount: number;
+    receiptDate?: string;
+    imagePath?: string;
+    uploaderName?: string;
+    department?: string;
+  };
   notes?: string;
   paidAt?: string;
   paidBy?: string;
@@ -65,6 +76,18 @@ export interface StrukApproval {
   kategori?: string;
   isPotentialDuplicate?: boolean;
   duplicateReceiptNumber?: string;
+  duplicateTotalAmount?: number;
+  duplicateReason?: string;
+  duplicateReferenceId?: number;
+  duplicateReference?: {
+    id: number;
+    receiptNumber: string;
+    totalAmount: number;
+    receiptDate?: string;
+    imagePath?: string;
+    uploaderName?: string;
+    department?: string;
+  };
   paidAt?: string;
   paidBy?: string;
   paymentMethod?: string;
@@ -116,6 +139,17 @@ export interface AuditLog {
   iconBg: string; // e.g., bg-green-500
   title: string;
   details: string;
+  action?: string;
+  category?: 'HR_EMPLOYEE' | 'PAYROLL_FINANCE' | 'EXPENSE_CLAIM' | 'ATTENDANCE_OFFICE' | 'SECURITY_AUTH' | 'COMPANY_SETTINGS' | string;
+  severity?: 'info' | 'warning' | 'critical';
+  userName?: string;
+  userRole?: string;
+  ipAddress?: string;
+  userAgent?: string;
+  entityType?: string;
+  entityId?: number;
+  oldValues?: Record<string, any> | null;
+  newValues?: Record<string, any> | null;
   waktu: string;
   created_at?: string; // ISO format tanggal asli untuk filtering
 }

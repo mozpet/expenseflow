@@ -117,6 +117,8 @@ class VendorController extends Controller
             'bank_account_name' => 'sometimes|required|string|max:255',
         ]);
 
+        $original = $vendor->only(['name', 'tax_id', 'bank_name', 'bank_account_no', 'bank_account_name', 'email', 'phone', 'address']);
+
         // Map 'npwp' → 'tax_id' untuk penyimpanan
         if (array_key_exists('npwp', $validated)) {
             $validated['tax_id'] = $validated['npwp'];
@@ -124,11 +126,19 @@ class VendorController extends Controller
         }
 
         $vendor->update($validated);
+        $updated = $vendor->only(array_keys($original));
 
-        $this->logActivity(
-            $request->user()->id, $request->user()->company_id,
-            'vendor_updated', 'Update vendor ' . $vendor->name,
-            'vendor', $vendor->id
+        $bankChanged = (isset($original['bank_account_no']) && $original['bank_account_no'] != ($updated['bank_account_no'] ?? null));
+
+        \App\Services\AuditLogger::logModelDiff(
+            action: 'VENDOR_UPDATED',
+            description: "Memperbarui data vendor {$vendor->name}" . ($bankChanged ? " (Rekening Bank Diubah)" : ""),
+            category: \App\Services\AuditLogger::CATEGORY_FINANCE,
+            severity: $bankChanged ? \App\Services\AuditLogger::SEVERITY_CRITICAL : \App\Services\AuditLogger::SEVERITY_INFO,
+            entityType: 'Vendor',
+            entityId: $vendor->id,
+            original: $original,
+            updated: $updated
         );
 
         return response()->json([

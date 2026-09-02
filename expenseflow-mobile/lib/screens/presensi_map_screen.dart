@@ -303,6 +303,27 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
         ),
       );
       Navigator.pop(context);
+    } on OfflineAttendanceSavedException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Row(
+            children: [
+              const Icon(Icons.cloud_off, color: Colors.white, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  e.message,
+                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+                ),
+              ),
+            ],
+          ),
+          backgroundColor: Colors.amber.shade800,
+          duration: const Duration(seconds: 4),
+        ),
+      );
+      Navigator.pop(context);
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _submitting = false);

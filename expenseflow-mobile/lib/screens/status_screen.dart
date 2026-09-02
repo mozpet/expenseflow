@@ -56,6 +56,45 @@ class StatusScreen extends StatelessWidget {
             ),
             const SizedBox(height: 24),
 
+            if (receipt.isPotentialDuplicate) ...[
+              Container(
+                margin: const EdgeInsets.only(bottom: 16),
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF3E8FF),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFD8B4FE)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(Icons.info_outline, color: Colors.purple, size: 20),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Text(
+                            'Peringatan: Terindikasi Duplikat',
+                            style: TextStyle(
+                              fontSize: 12.5,
+                              fontWeight: FontWeight.bold,
+                              color: Color(0xFF6B21A8),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            receipt.duplicateReason ?? 'Struk ini terdeteksi memiliki kemiripan dengan pengajuan lain. Finance akan memverifikasi bukti fisik transaksi.',
+                            style: const TextStyle(fontSize: 11, color: Color(0xFF7E22CE)),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             // Ringkasan pengajuan
             const Text('Ringkasan pengajuan',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),

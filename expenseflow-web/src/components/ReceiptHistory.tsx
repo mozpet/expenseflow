@@ -638,6 +638,42 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                 )}
               </div>
 
+              {/* Duplicate Warning Box */}
+              {selectedApproval.isPotentialDuplicate && (
+                <div className="bg-purple-50/80 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/60 rounded-xl p-3 text-xs text-purple-900 dark:text-purple-200 space-y-1.5">
+                  <div className="flex items-center gap-2 font-bold text-purple-700 dark:text-purple-300">
+                    <ShieldAlert className="w-4 h-4 shrink-0" />
+                    <span>Peringatan: Terindikasi Struk Duplikat</span>
+                  </div>
+                  <p className="text-[11px] text-purple-800 dark:text-purple-300 leading-relaxed">
+                    {selectedApproval.duplicateReason || (
+                      <>
+                        Sistem mendeteksi struk ini memiliki kemiripan dengan struk lain{' '}
+                        {selectedApproval.duplicateReceiptNumber && (
+                          <strong className="underline font-mono">({selectedApproval.duplicateReceiptNumber})</strong>
+                        )}.
+                      </>
+                    )}
+                  </p>
+                  {selectedApproval.duplicateReference && (
+                    <div className="bg-white/70 dark:bg-slate-900/60 border border-purple-100 dark:border-purple-900/50 rounded-lg p-2 text-[10.5px] grid grid-cols-2 gap-1.5 font-mono">
+                      <div>
+                        <span className="text-slate-400 font-sans block">Struk Referensi:</span>
+                        <span className="font-semibold text-purple-700 dark:text-purple-300">
+                          {selectedApproval.duplicateReference.receiptNumber}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-sans block">Pengunggah:</span>
+                        <span className="font-semibold text-slate-700 dark:text-slate-200">
+                          {selectedApproval.duplicateReference.uploaderName || 'Karyawan lain'}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Details Fields */}
               <div className="grid grid-cols-2 gap-2.5 text-xs bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                 <div>

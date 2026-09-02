@@ -104,6 +104,9 @@ class ReceiptController extends Controller
         // Dispatch OCR job ke queue — semua ocr_raw_* + claimed_amount diisi di sini
         ProcessOcrJob::dispatch($receipt->id);
 
+        // Layer 1: Deteksi duplikat instan via SHA-256 hash saat upload
+        $receipt->detectPotentialDuplicate();
+
         $this->logActivity($user->id, $companyId, 'receipt_uploaded', 'Upload struk ' . $receipt->receipt_number, $receipt->id, 'receipt', $receipt->id);
 
         return response()->json([
@@ -111,6 +114,7 @@ class ReceiptController extends Controller
             'receipt' => $receipt->only([
                 'id', 'receipt_number', 'sha256_hash', 'image_path',
                 'status', 'ocr_status', 'category', 'notes',
+                'is_potential_duplicate', 'duplicate_reference_id', 'duplicate_reason',
             ]),
         ], 201);
     }
@@ -220,29 +224,7 @@ class ReceiptController extends Controller
     // ─── Helper: deteksi potensi struk duplikat cerdas ─────────
     private function checkPotentialDuplicate(Receipt $receipt): void
     {
-        if (!$receipt->total_amount || !$receipt->receipt_date) {
-            return;
-        }
-
-        $duplicate = Receipt::where('company_id', $receipt->company_id)
-            ->where('id', '!=', $receipt->id)
-            ->where('status', '!=', 'rejected')
-            ->where('total_amount', $receipt->total_amount)
-            ->where('receipt_date', $receipt->receipt_date)
-            ->where(function ($q) use ($receipt) {
-                $merchant = $receipt->vendor_name ?: $receipt->ocr_raw_merchant;
-                if ($merchant) {
-                    $q->where('vendor_name', 'like', '%' . $merchant . '%')
-                      ->orWhere('ocr_raw_merchant', 'like', '%' . $merchant . '%');
-                }
-            })
-            ->first();
-
-        if ($duplicate) {
-            $receipt->is_potential_duplicate = true;
-            $receipt->duplicate_reference_id = $duplicate->id;
-            $receipt->saveQuietly();
-        }
+        $receipt->detectPotentialDuplicate();
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -822,7 +804,9 @@ class ReceiptController extends Controller
                 'payment_ref_no'         => $receipt->payment_ref_no,
                 'payment_proof_path'     => $receipt->payment_proof_path,
                 'is_potential_duplicate' => $receipt->is_potential_duplicate,
-                'duplicate_reference'    => $receipt->duplicateReference,
+                'duplicate_reference_id' => $receipt->duplicate_reference_id,
+                'duplicate_reason'       => $receipt->duplicate_reason,
+                'duplicate_reference'    => $receipt->duplicateReference ? $receipt->duplicateReference->load('user:id,name,email,department') : null,
                 'ocr_status'             => $receipt->ocr_status,
                 'ocr_raw_amount'         => $receipt->ocr_raw_amount,
                 'ocr_raw_subtotal'       => $receipt->ocr_raw_subtotal,
@@ -851,6 +835,9 @@ class ReceiptController extends Controller
     public function myReceipts(Request $request): JsonResponse
     {
         $receipts = Receipt::where('user_id', $request->user()->id)
+            ->with([
+                'duplicateReference:id,receipt_number,total_amount,receipt_date',
+            ])
             ->select([
                 'id', 'receipt_number', 'vendor_name', 'total_amount',
                 'claimed_amount', 'approved_amount', 'ocr_raw_amount', 'ocr_raw_subtotal',
@@ -858,7 +845,7 @@ class ReceiptController extends Controller
                 'ocr_raw_date', 'receipt_date', 'status', 'submitted_at', 'paid_at',
                 'payment_method', 'payment_ref_no', 'ocr_status',
                 'category', 'notes', 'variance_flag', 'variance_pct',
-                'is_potential_duplicate', 'created_at',
+                'is_potential_duplicate', 'duplicate_reference_id', 'duplicate_reason', 'created_at',
             ])
             ->selectRaw(
                 "(SELECT notes FROM receipt_approvals WHERE receipt_id = receipts.id AND status = 'rejected' ORDER BY id DESC LIMIT 1) as rejection_reason"
@@ -882,15 +869,16 @@ class ReceiptController extends Controller
             ->where('status', 'submitted')
             ->with([
                 'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder',
-                'duplicateReference:id,receipt_number,total_amount,receipt_date',
+                'duplicateReference:id,receipt_number,total_amount,receipt_date,image_path,user_id',
+                'duplicateReference.user:id,name,email,department',
             ])
             ->select([
-                'id', 'user_id', 'receipt_number', 'vendor_name', 'ocr_raw_merchant',
+                'id', 'user_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
                 'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
                 'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
                 'receipt_date', 'status', 'ocr_status', 'category', 'notes',
                 'variance_flag', 'variance_pct', 'is_potential_duplicate',
-                'duplicate_reference_id', 'submitted_at', 'created_at',
+                'duplicate_reference_id', 'duplicate_reason', 'submitted_at', 'created_at',
             ])
             ->latest()
             ->paginate($limit);
@@ -916,15 +904,16 @@ class ReceiptController extends Controller
                 'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder',
                 'approvals.user:id,name,email,role',
                 'paidBy:id,name,email,role',
-                'duplicateReference:id,receipt_number,total_amount,receipt_date',
+                'duplicateReference:id,receipt_number,total_amount,receipt_date,image_path,user_id',
+                'duplicateReference.user:id,name,email,department',
             ])
             ->select([
-                'id', 'user_id', 'receipt_number', 'vendor_name', 'ocr_raw_merchant',
+                'id', 'user_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
                 'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
                 'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
                 'receipt_date', 'status', 'ocr_status', 'category', 'notes',
                 'variance_flag', 'variance_pct', 'is_potential_duplicate',
-                'duplicate_reference_id', 'paid_at', 'paid_by', 'payment_method',
+                'duplicate_reference_id', 'duplicate_reason', 'paid_at', 'paid_by', 'payment_method',
                 'payment_ref_no', 'submitted_at', 'created_at',
             ]);
 

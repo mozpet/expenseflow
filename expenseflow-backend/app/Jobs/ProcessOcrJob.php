@@ -122,9 +122,10 @@ class ProcessOcrJob implements ShouldQueue
             ]);
         }
 
-        // Hitung ulang variance flag
+        // Hitung ulang variance flag & deteksi potensi duplikat
         $receipt->refresh();
         $receipt->recalculateVariance();
+        $receipt->detectPotentialDuplicate();
 
         // ─── Notifikasi sukses ─────────────────────────────────
         $this->logNotification($receipt, 'ocr_completed', 'OCR berhasil. Nominal: ' . ($ocrResult['amount'] ?? 'N/A'), 'receipt', $receipt->id);

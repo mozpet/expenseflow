@@ -144,8 +144,30 @@ export const notificationApi = {
 
 // ─── Activity logs (audit) ──────────────────────────────────
 export const activityLogApi = {
-  list: (filters?: { action?: string; entity_type?: string }) =>
-    apiGet('/dashboard/activity-logs', filters),
+  list: (filters?: {
+    search?: string;
+    severity?: string;
+    category?: string;
+    action?: string;
+    entity_type?: string;
+    start_date?: string;
+    end_date?: string;
+    page?: number;
+    per_page?: number;
+  }) => apiGet<{ data: any[]; current_page: number; last_page: number; total: number }>('/dashboard/activity-logs', filters as Record<string, string | number>),
+
+  exportCsv: (filters?: {
+    search?: string;
+    severity?: string;
+    category?: string;
+    action?: string;
+    start_date?: string;
+    end_date?: string;
+  }) => apiDownload(
+    '/dashboard/activity-logs',
+    `audit_logs_${new Date().toISOString().slice(0, 10)}.csv`,
+    { ...filters, export: 'csv' } as Record<string, string | number>
+  ),
 };
 
 // ─── Attendance (presensi) — HRD/Admin dashboard ────────────
@@ -299,6 +321,10 @@ export const attendanceApi = {
   holidays: {
     list: (year?: number) =>
       apiGet('/dashboard/attendance/holidays', { year }),
+    previewNational: (year?: number) =>
+      apiGet('/dashboard/attendance/holidays/preview-national', { year }),
+    syncNational: (payload: { year: number; holidays: any[]; collective_treatment?: 'nasional' | 'collective'; overwrite_existing?: boolean }) =>
+      apiPost('/dashboard/attendance/holidays/sync-national', payload),
     previewCollective: (payload: { holiday_id?: number | null; date: string; name: string; attendance_setting_id?: number | null; excluded_user_ids?: number[] }) =>
       apiPost('/dashboard/attendance/holidays/collective-preview', payload),
     create: (payload: { date: string; name: string; type?: 'nasional' | 'collective' | 'perusahaan'; is_collective?: boolean; attendance_setting_id?: number | null; excluded_user_ids?: number[] }) =>

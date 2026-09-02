@@ -4,6 +4,7 @@ namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
@@ -116,6 +117,21 @@ class UserController extends Controller
             'bank_account_holder'   => $validated['bank_account_holder'] ?? null,
         ]);
 
+        AuditLogger::log(
+            action: 'EMPLOYEE_CREATED',
+            description: "Menambahkan karyawan baru: {$user->name} ({$user->email}) - Role: {$user->role}",
+            category: AuditLogger::CATEGORY_HR,
+            severity: AuditLogger::SEVERITY_INFO,
+            entityType: 'User',
+            entityId: $user->id,
+            newValues: $user->only([
+                'employee_code', 'name', 'email', 'role', 'department', 'phone',
+                'identity_number', 'monthly_claim_limit', 'employment_type',
+                'joined_date', 'contract_start_date', 'contract_end_date',
+                'bank_name', 'bank_account_no', 'bank_account_holder',
+            ])
+        );
+
         return response()->json([
             'message' => 'Karyawan berhasil ditambahkan.',
             'user'    => $user->only([
@@ -173,7 +189,38 @@ class UserController extends Controller
             ], 403);
         }
 
+        $original = $user->only([
+            'name', 'email', 'phone', 'role', 'department', 'employee_code',
+            'identity_number', 'attendance_setting_id', 'monthly_claim_limit',
+            'employment_type', 'joined_date', 'contract_start_date',
+            'contract_end_date', 'bank_name', 'bank_account_no', 'bank_account_holder',
+        ]);
+
         $user->update($validated);
+
+        $updated = $user->only(array_keys($original));
+
+        // Tentukan tingkat severity: jika rekening bank, role, NIK, atau limit klaim berubah -> CRITICAL
+        $isCriticalChange = (isset($original['bank_account_no']) && $original['bank_account_no'] != ($updated['bank_account_no'] ?? null))
+            || (isset($original['role']) && $original['role'] != ($updated['role'] ?? null))
+            || (isset($original['identity_number']) && $original['identity_number'] != ($updated['identity_number'] ?? null))
+            || (isset($original['monthly_claim_limit']) && $original['monthly_claim_limit'] != ($updated['monthly_claim_limit'] ?? null));
+
+        $severity = $isCriticalChange ? AuditLogger::SEVERITY_CRITICAL : AuditLogger::SEVERITY_INFO;
+        $category = (isset($original['bank_account_no']) && $original['bank_account_no'] != ($updated['bank_account_no'] ?? null))
+            ? AuditLogger::CATEGORY_FINANCE
+            : AuditLogger::CATEGORY_HR;
+
+        AuditLogger::logModelDiff(
+            action: 'EMPLOYEE_UPDATED',
+            description: "Memperbarui data profil karyawan {$user->name}" . ($isCriticalChange ? " (Data Sensitif Berubah)" : ""),
+            category: $category,
+            severity: $severity,
+            entityType: 'User',
+            entityId: $user->id,
+            original: $original,
+            updated: $updated
+        );
 
         return response()->json([
             'message' => 'Data karyawan berhasil diperbarui.',
@@ -211,6 +258,17 @@ class UserController extends Controller
         // Cabut semua token yang aktif
         $user->tokens()->delete();
 
+        AuditLogger::log(
+            action: 'EMPLOYEE_DEACTIVATED',
+            description: "Menonaktifkan akun karyawan {$user->name} ({$user->email})",
+            category: AuditLogger::CATEGORY_HR,
+            severity: AuditLogger::SEVERITY_WARNING,
+            entityType: 'User',
+            entityId: $user->id,
+            oldValues: ['is_active' => true],
+            newValues: ['is_active' => false]
+        );
+
         return response()->json([
             'message' => 'Akun karyawan berhasil dinonaktifkan.',
         ]);
@@ -228,6 +286,17 @@ class UserController extends Controller
         }
 
         $user->update(['is_active' => true]);
+
+        AuditLogger::log(
+            action: 'EMPLOYEE_ACTIVATED',
+            description: "Mengaktifkan kembali akun karyawan {$user->name} ({$user->email})",
+            category: AuditLogger::CATEGORY_HR,
+            severity: AuditLogger::SEVERITY_INFO,
+            entityType: 'User',
+            entityId: $user->id,
+            oldValues: ['is_active' => false],
+            newValues: ['is_active' => true]
+        );
 
         return response()->json([
             'message' => 'Akun karyawan berhasil diaktifkan kembali.',
@@ -263,6 +332,16 @@ class UserController extends Controller
 
         // Cabut semua token sesi user
         $user->tokens()->delete();
+
+        AuditLogger::log(
+            action: 'EMPLOYEE_DELETED',
+            description: "Menghapus akun karyawan {$user->name} ({$user->email}) secara soft delete",
+            category: AuditLogger::CATEGORY_HR,
+            severity: AuditLogger::SEVERITY_CRITICAL,
+            entityType: 'User',
+            entityId: $user->id,
+            oldValues: $user->only(['name', 'email', 'role', 'department', 'employee_code'])
+        );
 
         // Lakukan soft delete Eloquent (mengisi kolom deleted_at)
         $user->delete();

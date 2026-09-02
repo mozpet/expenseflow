@@ -81,7 +81,8 @@ Kembalikan HANYA format JSON valid tanpa tanda markdown tambahan:
 }
 PROMPT;
 
-        $url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key={$apiKey}";
+        $model = env('GEMINI_MODEL', 'gemini-1.5-flash');
+        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
         $payload = [
             'contents' => [

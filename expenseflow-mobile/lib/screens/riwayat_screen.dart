@@ -642,6 +642,46 @@ class _ReceiptCard extends StatelessWidget {
                   ),
                 ),
               ],
+              if (receipt.isPotentialDuplicate) ...[
+                const SizedBox(height: 12),
+                Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF3E8FF),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: const Color(0xFFD8B4FE)),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Row(
+                        children: [
+                          Icon(Icons.shield_outlined, color: Color(0xFF7E22CE), size: 14),
+                          SizedBox(width: 4),
+                          Text(
+                            'Peringatan Potensi Duplikat:',
+                            style: TextStyle(
+                              color: Color(0xFF6B21A8),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        receipt.duplicateReason ?? 'Struk ini terindikasi memiliki kemiripan dengan pengajuan lain.',
+                        style: const TextStyle(
+                          color: Color(0xFF7E22CE),
+                          fontSize: 11,
+                          height: 1.4,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ],
           ),
         ),

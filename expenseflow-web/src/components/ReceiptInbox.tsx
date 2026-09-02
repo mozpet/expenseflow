@@ -73,6 +73,9 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   const [showImagePreview, setShowImagePreview] = useState(false);
   const [zoomLevel, setZoomLevel] = useState(100);
   const [rotation, setRotation] = useState(0);
+  const [showCompareModal, setShowCompareModal] = useState<boolean>(false);
+  const [compareImageUrl, setCompareImageUrl] = useState<string | null>(null);
+  const [loadingCompareImage, setLoadingCompareImage] = useState<boolean>(false);
   const [localSettings, setLocalSettings] = useState<AppSettings>(currentSettings ?? { varianceLimit: 10, maxClaimLimit: 500000 });
   const [varianceInput, setVarianceInput] = useState(String(currentSettings?.varianceLimit ?? 10));
   const [claimInput, setClaimInput] = useState(String(currentSettings?.maxClaimLimit ?? 500000));
@@ -211,6 +214,21 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
     setApprovedAmountInput(String(receipt.approvedAmount ?? receipt.klaim));
     setShowModal(true);
     setImageUrl(null);
+  };
+
+  const handleOpenCompare = async () => {
+    if (!selectedReceipt?.duplicateReferenceId) return;
+    setShowCompareModal(true);
+    setLoadingCompareImage(true);
+    setCompareImageUrl(null);
+    try {
+      const url = await receiptApi.fetchImageAsDataUrl(selectedReceipt.duplicateReferenceId);
+      setCompareImageUrl(url);
+    } catch {
+      setCompareImageUrl(null);
+    } finally {
+      setLoadingCompareImage(false);
+    }
   };
 
   // Fetch image on demand
@@ -922,17 +940,49 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
 
               {/* Duplicate Warning Box */}
               {selectedReceipt.isPotentialDuplicate && (
-                <div className="bg-purple-50/70 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/60 rounded-xl p-3 text-xs text-purple-900 dark:text-purple-300">
-                  <div className="flex items-center gap-2 font-bold mb-1">
-                    <ShieldAlert className="w-4 h-4 text-purple-600 shrink-0" />
-                    <span>Peringatan: Potensi Struk Duplikat!</span>
+                <div className="bg-purple-50/80 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800/60 rounded-xl p-3.5 text-xs text-purple-900 dark:text-purple-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2 font-bold text-purple-700 dark:text-purple-300">
+                      <ShieldAlert className="w-4 h-4 shrink-0" />
+                      <span>Peringatan: Terindikasi Struk Duplikat!</span>
+                    </div>
+                    {selectedReceipt.duplicateReferenceId && (
+                      <button
+                        type="button"
+                        onClick={handleOpenCompare}
+                        className="px-2.5 py-1 text-[11px] font-semibold bg-purple-600 hover:bg-purple-700 text-white rounded-lg shadow-xs flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <Eye className="w-3 h-3" />
+                        <span>Bandingkan Struk</span>
+                      </button>
+                    )}
                   </div>
-                  <p className="text-[11px] text-purple-800/90 dark:text-purple-300/90 leading-relaxed">
-                    Sistem mendeteksi struk ini memiliki kombinasi tanggal, merchant, dan nominal yang serupa dengan struk lain{' '}
-                    {selectedReceipt.duplicateReceiptNumber && (
-                      <strong className="underline font-mono">({selectedReceipt.duplicateReceiptNumber})</strong>
-                    )}. Harap periksa keaslian bukti fisik sebelum menyetujui.
+                  <p className="text-[11px] text-purple-800 dark:text-purple-300 leading-relaxed">
+                    {selectedReceipt.duplicateReason || (
+                      <>
+                        Sistem mendeteksi struk ini memiliki kemiripan dengan struk lain{' '}
+                        {selectedReceipt.duplicateReceiptNumber && (
+                          <strong className="underline font-mono">({selectedReceipt.duplicateReceiptNumber})</strong>
+                        )}.
+                      </>
+                    )}
                   </p>
+                  {selectedReceipt.duplicateReference && (
+                    <div className="bg-white/70 dark:bg-slate-900/60 border border-purple-100 dark:border-purple-900/50 rounded-lg p-2 text-[10.5px] grid grid-cols-2 gap-1.5 font-mono">
+                      <div>
+                        <span className="text-slate-400 font-sans block">Struk Referensi Asli:</span>
+                        <span className="font-semibold text-purple-700 dark:text-purple-300">
+                          {selectedReceipt.duplicateReference.receiptNumber}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-slate-400 font-sans block">Pengunggah Asli:</span>
+                        <span className="font-semibold text-slate-700 dark:text-slate-200">
+                          {selectedReceipt.duplicateReference.uploaderName || 'Karyawan lain'} {selectedReceipt.duplicateReference.department ? `(${selectedReceipt.duplicateReference.department})` : ''}
+                        </span>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1254,6 +1304,142 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
             <p>
               Gunakan <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">+</kbd> / <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">-</kbd> atau scroll untuk zoom • <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">R</kbd> untuk rotate • <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">0</kbd> untuk reset • <kbd className="px-2 py-1 bg-white/10 rounded text-white/90 font-mono">ESC</kbd> untuk tutup
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* ─── MODAL PERBANDINGAN STRUK DUPLIKAT BERDAMPINGAN ─── */}
+      {showCompareModal && selectedReceipt && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-800 w-full max-w-5xl max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-purple-50/50 dark:bg-purple-950/20">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-purple-100 dark:bg-purple-900/50 text-purple-600 dark:text-purple-300 rounded-xl">
+                  <ShieldAlert className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-slate-100">
+                    Perbandingan Struk Terindikasi Duplikat (Side-by-Side)
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">
+                    {selectedReceipt.duplicateReason || 'Bandingkan foto dan rincian struk baru dengan struk referensi yang sudah ada.'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowCompareModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body - 2 Columns */}
+            <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 md:grid-cols-2 gap-6 bg-slate-50/50 dark:bg-slate-950/50">
+              {/* Kolom Kiri: Struk Baru (Saat Ini) */}
+              <div className="bg-white dark:bg-slate-900 rounded-xl border-2 border-purple-300 dark:border-purple-700/60 p-4 flex flex-col shadow-xs">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-3">
+                  <div>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-purple-100 dark:bg-purple-900 text-purple-700 dark:text-purple-300">
+                      Struk yang Diajukan (Baru)
+                    </span>
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 mt-1 font-mono">
+                      #{selectedReceipt.id} ({selectedReceipt.kategori})
+                    </h4>
+                  </div>
+                  <span className="text-base font-extrabold text-purple-600 dark:text-purple-400 font-mono">
+                    {formatCurrency(selectedReceipt.klaim)}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-xs mb-3 text-slate-600 dark:text-slate-300">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Karyawan:</span>
+                    <span className="font-semibold">{selectedReceipt.karyawan} ({selectedReceipt.departemen})</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Merchant:</span>
+                    <span className="font-semibold">{selectedReceipt.merchant}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Tanggal:</span>
+                    <span className="font-semibold">{selectedReceipt.tanggal}</span>
+                  </div>
+                </div>
+
+                {/* Gambar Struk Baru */}
+                <div className="flex-1 min-h-[280px] bg-slate-100 dark:bg-slate-950 rounded-lg flex items-center justify-center overflow-hidden border border-slate-200 dark:border-slate-800 p-2">
+                  {loadingImage ? (
+                    <div className="flex flex-col items-center gap-2 text-slate-400 text-xs">
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                      <span>Memuat gambar...</span>
+                    </div>
+                  ) : imageUrl ? (
+                    <img src={imageUrl} alt="Struk Baru" className="max-h-[320px] w-auto object-contain rounded shadow-xs" />
+                  ) : (
+                    <span className="text-xs text-slate-400">Gambar tidak tersedia</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Kolom Kanan: Struk Asli / Referensi */}
+              <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-200 dark:border-slate-800 p-4 flex flex-col shadow-xs">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800 mb-3">
+                  <div>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                      Struk Referensi Asli (Terdahulu)
+                    </span>
+                    <h4 className="text-sm font-bold text-slate-800 dark:text-slate-200 mt-1 font-mono">
+                      {selectedReceipt.duplicateReceiptNumber || `#${selectedReceipt.duplicateReferenceId}`}
+                    </h4>
+                  </div>
+                  <span className="text-base font-extrabold text-slate-700 dark:text-slate-300 font-mono">
+                    {selectedReceipt.duplicateTotalAmount ? formatCurrency(selectedReceipt.duplicateTotalAmount) : formatCurrency(selectedReceipt.duplicateReference?.totalAmount ?? selectedReceipt.klaim)}
+                  </span>
+                </div>
+
+                <div className="space-y-1.5 text-xs mb-3 text-slate-600 dark:text-slate-300">
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Pengunggah Asli:</span>
+                    <span className="font-semibold">
+                      {selectedReceipt.duplicateReference?.uploaderName || 'Karyawan Lain'} {selectedReceipt.duplicateReference?.department ? `(${selectedReceipt.duplicateReference.department})` : ''}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Tanggal:</span>
+                    <span className="font-semibold">
+                      {selectedReceipt.duplicateReference?.receiptDate || selectedReceipt.tanggal}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Gambar Struk Asli */}
+                <div className="flex-1 min-h-[280px] bg-slate-100 dark:bg-slate-950 rounded-lg flex items-center justify-center overflow-hidden border border-slate-200 dark:border-slate-800 p-2">
+                  {loadingCompareImage ? (
+                    <div className="flex flex-col items-center gap-2 text-slate-400 text-xs">
+                      <RefreshCw className="w-5 h-5 animate-spin" />
+                      <span>Memuat gambar referensi...</span>
+                    </div>
+                  ) : compareImageUrl ? (
+                    <img src={compareImageUrl} alt="Struk Referensi" className="max-h-[320px] w-auto object-contain rounded shadow-xs" />
+                  ) : (
+                    <span className="text-xs text-slate-400">Gambar referensi tidak ditemukan</span>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3 border-t border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowCompareModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                Tutup Perbandingan
+              </button>
+            </div>
           </div>
         </div>
       )}

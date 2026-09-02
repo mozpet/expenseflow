@@ -57,6 +57,8 @@ class ReceiptRecord {
   final double? approvedAmount;
   final bool isPotentialDuplicate;
   final int? duplicateReferenceId;
+  final String? duplicateReceiptNumber;
+  final String? duplicateReason;
   final String? paidAt;
   final String? paidBy;
   final String? paymentMethod;
@@ -84,6 +86,8 @@ class ReceiptRecord {
     this.approvedAmount,
     this.isPotentialDuplicate = false,
     this.duplicateReferenceId,
+    this.duplicateReceiptNumber,
+    this.duplicateReason,
     this.paidAt,
     this.paidBy,
     this.paymentMethod,
@@ -138,6 +142,8 @@ class ReceiptRecord {
       }
     }
 
+    final dupRef = m['duplicate_reference'] is Map ? m['duplicate_reference'] as Map<String, dynamic> : null;
+
     return ReceiptRecord(
       id: (m['id'] as num).toInt(),
       receiptNumber: (m['receipt_number'] ?? '').toString(),
@@ -152,6 +158,8 @@ class ReceiptRecord {
       approvedAmount: parseAmount(m['approved_amount']),
       isPotentialDuplicate: m['is_potential_duplicate'] == true || m['is_potential_duplicate'] == 1,
       duplicateReferenceId: (m['duplicate_reference_id'] as num?)?.toInt(),
+      duplicateReceiptNumber: dupRef?['receipt_number']?.toString(),
+      duplicateReason: m['duplicate_reason']?.toString(),
       paidAt: m['paid_at']?.toString(),
       paidBy: m['paid_by']?.toString(),
       paymentMethod: m['payment_method']?.toString(),

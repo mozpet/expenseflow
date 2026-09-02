@@ -5,9 +5,24 @@ import 'models/attendance_model.dart';
 import 'models/leave_model.dart';
 import 'services/api_service.dart';
 import 'services/notification_service.dart';
+import 'services/offline_attendance_service.dart';
 
 export 'models/attendance_model.dart';
 export 'models/leave_model.dart';
+export 'services/offline_attendance_service.dart';
+
+class OfflineAttendanceSavedException implements Exception {
+  final String message;
+  final String type; // 'check_in' | 'check_out'
+  final String recordedTime;
+  OfflineAttendanceSavedException({
+    required this.message,
+    required this.type,
+    required this.recordedTime,
+  });
+  @override
+  String toString() => message;
+}
 
 class PresensiProvider extends ChangeNotifier {
   // Flag dari backend (diisi setelah login): true = boleh presensi WFH via app
@@ -22,6 +37,9 @@ class PresensiProvider extends ChangeNotifier {
   final List<OfficeArea> _offices = [];
   OfficeArea? _primaryOffice;
   bool _radiusEnabled = false;
+
+  List<OfflineAttendanceItem> _offlineQueue = [];
+  bool _isSyncingOffline = false;
 
   String? _todayMasuk;
   String? _todayPulang;
@@ -47,6 +65,16 @@ class PresensiProvider extends ChangeNotifier {
   bool get radiusEnabled => _radiusEnabled;
   bool get isRadiusEnforced => _radiusEnabled;
   bool get isWfhMode => wfhEnabled && !_radiusEnabled;
+
+  List<OfflineAttendanceItem> get offlineQueue => _offlineQueue;
+  bool get isSyncingOffline => _isSyncingOffline;
+  bool get hasPendingOfflineSync =>
+      _offlineQueue.any((item) => item.status == 'pending');
+
+  Future<void> loadOfflineQueue() async {
+    _offlineQueue = await OfflineAttendanceService.getQueue();
+    notifyListeners();
+  }
   CollectiveLeaveRecord? get activeCollectiveLeaveBanner {
     for (final item in _collectiveLeaves) {
       if (item.showBanner && item.collectiveStatus == 'pending') return item;
@@ -104,54 +132,187 @@ class PresensiProvider extends ChangeNotifier {
     return '$dayName, ${now.day} $monthName ${now.year}';
   }
 
-  // ─── Presensi check-in/out ke API ─────────────────────────
-  /// Kirim koordinat ke backend. Lempar ApiException bila gagal.
+  // ─── Presensi check-in/out ke API (dengan fallback Offline Mode) ─────────
+  /// Kirim koordinat ke backend. Jika jaringan offline/gagal koneksi, otomatis masuk ke offline queue.
   Future<void> simpanPresensi(double lat, double lng,
       {bool isMocked = false}) async {
+    final now = DateTime.now();
+    final nowFormatted = _nowTime();
+
     if (canCheckIn) {
-      final res =
-          await ApiService.checkIn(lat, lng, isMocked: isMocked);
-      final att = res['attendance'] as Map<String, dynamic>?;
-      _todayMasuk = _extractTime(att?['check_in_time']) ?? _nowTime();
-      _records.insert(
-        0,
-        PresensiRecord(
-          date: todayDateFormatted,
-          masukTime: _todayMasuk!,
-          pulangTime: '-',
-        ),
-      );
+      try {
+        final res =
+            await ApiService.checkIn(lat, lng, isMocked: isMocked);
+        final att = res['attendance'] as Map<String, dynamic>?;
+        _todayMasuk = _extractTime(att?['check_in_time']) ?? nowFormatted;
+        _records.insert(
+          0,
+          PresensiRecord(
+            date: todayDateFormatted,
+            masukTime: _todayMasuk!,
+            pulangTime: '-',
+          ),
+        );
 
-      // Jadwalkan notifikasi reminder & peringatan auto-checkout
-      // Backend mengirim reminder_at dan auto_checkout_at dalam ISO format
-      final reminderAt = res['reminder_at'] as String?;
-      final autoCheckoutAt = res['auto_checkout_at'] as String?;
-      final notifSvc = NotificationService();
-      if (reminderAt != null) {
-        await notifSvc.scheduleCheckoutReminder(reminderAt);
-      }
-      if (autoCheckoutAt != null) {
-        await notifSvc.scheduleAutoCheckoutWarning(autoCheckoutAt);
-      }
+        // Jadwalkan notifikasi reminder & peringatan auto-checkout
+        final reminderAt = res['reminder_at'] as String?;
+        final autoCheckoutAt = res['auto_checkout_at'] as String?;
+        final notifSvc = NotificationService();
+        if (reminderAt != null) {
+          await notifSvc.scheduleCheckoutReminder(reminderAt);
+        }
+        if (autoCheckoutAt != null) {
+          await notifSvc.scheduleAutoCheckoutWarning(autoCheckoutAt);
+        }
 
-      notifyListeners();
-    } else if (canCheckOut) {
-      final res =
-          await ApiService.checkOut(lat, lng, isMocked: isMocked);
-      final att = res['attendance'] as Map<String, dynamic>?;
-      _todayPulang = _extractTime(att?['check_out_time']) ?? _nowTime();
-      _todayOvertimeMinutes = (att?['overtime_minutes'] as num?)?.toInt() ?? 0;
-      if (_records.isNotEmpty && _records.first.date == todayDateFormatted) {
-        _records[0] = _records[0].copyWith(
-          pulangTime: _todayPulang!,
-          overtimeMinutes: _todayOvertimeMinutes,
+        notifyListeners();
+      } on ApiException catch (e) {
+        // Jika error jaringan / server unreachable (statusCode null atau 502/503/504) → Simpan Offline
+        if (e.statusCode == null || e.statusCode == 502 || e.statusCode == 503 || e.statusCode == 504) {
+          await OfflineAttendanceService.enqueue(
+            type: 'check_in',
+            latitude: lat,
+            longitude: lng,
+            isMocked: isMocked,
+            recordedAt: now,
+          );
+          _todayMasuk = nowFormatted;
+          _records.insert(
+            0,
+            PresensiRecord(
+              date: todayDateFormatted,
+              masukTime: _todayMasuk!,
+              pulangTime: '-',
+              isOfflineSync: true,
+              isOfflinePending: true,
+            ),
+          );
+          await loadOfflineQueue();
+          notifyListeners();
+          throw OfflineAttendanceSavedException(
+            message: 'Presensi masuk disimpan secara offline ($nowFormatted WIB). Akan disinkronkan saat koneksi tersedia.',
+            type: 'check_in',
+            recordedTime: nowFormatted,
+          );
+        }
+        rethrow;
+      } catch (e) {
+        // Error koneksi Socket/Timeout umum
+        await OfflineAttendanceService.enqueue(
+          type: 'check_in',
+          latitude: lat,
+          longitude: lng,
+          isMocked: isMocked,
+          recordedAt: now,
+        );
+        _todayMasuk = nowFormatted;
+        _records.insert(
+          0,
+          PresensiRecord(
+            date: todayDateFormatted,
+            masukTime: _todayMasuk!,
+            pulangTime: '-',
+            isOfflineSync: true,
+            isOfflinePending: true,
+          ),
+        );
+        await loadOfflineQueue();
+        notifyListeners();
+        throw OfflineAttendanceSavedException(
+          message: 'Presensi masuk disimpan secara offline ($nowFormatted WIB). Akan disinkronkan saat koneksi tersedia.',
+          type: 'check_in',
+          recordedTime: nowFormatted,
         );
       }
+    } else if (canCheckOut) {
+      try {
+        final res =
+            await ApiService.checkOut(lat, lng, isMocked: isMocked);
+        final att = res['attendance'] as Map<String, dynamic>?;
+        _todayPulang = _extractTime(att?['check_out_time']) ?? nowFormatted;
+        _todayOvertimeMinutes = (att?['overtime_minutes'] as num?)?.toInt() ?? 0;
+        if (_records.isNotEmpty && _records.first.date == todayDateFormatted) {
+          _records[0] = _records[0].copyWith(
+            pulangTime: _todayPulang!,
+            overtimeMinutes: _todayOvertimeMinutes,
+          );
+        }
 
-      // Batalkan semua notifikasi reminder setelah checkout berhasil
-      await NotificationService().cancelCheckoutNotifications();
+        // Batalkan semua notifikasi reminder setelah checkout berhasil
+        await NotificationService().cancelCheckoutNotifications();
+        notifyListeners();
+      } on ApiException catch (e) {
+        if (e.statusCode == null || e.statusCode == 502 || e.statusCode == 503 || e.statusCode == 504) {
+          await OfflineAttendanceService.enqueue(
+            type: 'check_out',
+            latitude: lat,
+            longitude: lng,
+            isMocked: isMocked,
+            recordedAt: now,
+          );
+          _todayPulang = nowFormatted;
+          if (_records.isNotEmpty && _records.first.date == todayDateFormatted) {
+            _records[0] = _records[0].copyWith(
+              pulangTime: _todayPulang!,
+              isOfflineSync: true,
+              isOfflinePending: true,
+            );
+          }
+          await NotificationService().cancelCheckoutNotifications();
+          await loadOfflineQueue();
+          notifyListeners();
+          throw OfflineAttendanceSavedException(
+            message: 'Presensi pulang disimpan secara offline ($nowFormatted WIB). Akan disinkronkan saat koneksi tersedia.',
+            type: 'check_out',
+            recordedTime: nowFormatted,
+          );
+        }
+        rethrow;
+      } catch (e) {
+        await OfflineAttendanceService.enqueue(
+          type: 'check_out',
+          latitude: lat,
+          longitude: lng,
+          isMocked: isMocked,
+          recordedAt: now,
+        );
+        _todayPulang = nowFormatted;
+        if (_records.isNotEmpty && _records.first.date == todayDateFormatted) {
+          _records[0] = _records[0].copyWith(
+            pulangTime: _todayPulang!,
+            isOfflineSync: true,
+            isOfflinePending: true,
+          );
+        }
+        await NotificationService().cancelCheckoutNotifications();
+        await loadOfflineQueue();
+        notifyListeners();
+        throw OfflineAttendanceSavedException(
+          message: 'Presensi pulang disimpan secara offline ($nowFormatted WIB). Akan disinkronkan saat koneksi tersedia.',
+          type: 'check_out',
+          recordedTime: nowFormatted,
+        );
+      }
+    }
+  }
 
+  /// Sinkronkan seluruh antrean presensi offline ke server
+  Future<Map<String, dynamic>> syncOfflineQueue() async {
+    _isSyncingOffline = true;
+    notifyListeners();
+
+    try {
+      final res = await OfflineAttendanceService.syncQueue();
+      await loadOfflineQueue();
+      await syncStatusFromBackend();
+      await fetchMyAttendance();
+      _isSyncingOffline = false;
       notifyListeners();
+      return res;
+    } catch (e) {
+      _isSyncingOffline = false;
+      notifyListeners();
+      rethrow;
     }
   }
 
@@ -159,9 +320,15 @@ class PresensiProvider extends ChangeNotifier {
   /// Dipanggil saat app dibuka (resume), tab presensi dibuka, atau saat soft reload.
   /// Memperbarui flag wfh_enabled, status check-in/out hari ini, dan auto-checkout.
   Future<void> syncStatusFromBackend() async {
+    await loadOfflineQueue();
     final notifSvc = NotificationService();
     final status = await notifSvc.checkAttendanceStatus();
     if (status == null) return;
+
+    if (hasPendingOfflineSync && !_isSyncingOffline) {
+      // Auto-sync antrean offline di background saat server kembali dapat diakses
+      syncOfflineQueue().catchError((_) => <String, dynamic>{});
+    }
 
     // Sinkronkan flag WFH dan Radius dari backend (menentukan mode presensi).
     final newWfhEnabled = status['wfh_enabled'] == true;

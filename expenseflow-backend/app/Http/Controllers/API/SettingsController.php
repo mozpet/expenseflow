@@ -77,6 +77,8 @@ class SettingsController extends Controller
 
         $companyId = $request->user()->company_id;
 
+        $oldSettings = $this->fetchSettings($companyId);
+
         // Upsert tiap key ke company_settings
         foreach ($validated as $key => $value) {
             DB::table('company_settings')->updateOrInsert(
@@ -85,11 +87,15 @@ class SettingsController extends Controller
             );
         }
 
-        $this->logActivity(
-            $request->user()->id,
-            $companyId,
-            'settings_updated',
-            'Update pengaturan threshold & batas klaim'
+        \App\Services\AuditLogger::log(
+            action: 'SETTINGS_UPDATED',
+            description: "Memperbarui konfigurasi batas variansi OCR ({$validated['variance_limit']}%) dan limit klaim (Rp " . number_format($validated['max_claim_limit'], 0, ',', '.') . ")",
+            category: \App\Services\AuditLogger::CATEGORY_SETTINGS,
+            severity: \App\Services\AuditLogger::SEVERITY_WARNING,
+            entityType: 'CompanySettings',
+            entityId: $companyId,
+            oldValues: $oldSettings,
+            newValues: $validated
         );
 
         return $this->index($request);
