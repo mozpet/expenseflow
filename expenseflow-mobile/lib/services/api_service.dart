@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 import '../config/api_config.dart';
 import 'device_service.dart';
+import 'api_cache_service.dart';
 
 /// Exception standar untuk error dari API (membawa pesan dari backend).
 class ApiException implements Exception {
@@ -89,71 +90,108 @@ class ApiService {
     Map<String, dynamic>? body,
     Map<String, String>? query,
     bool auth = true,
+    bool forceRefresh = false,
   }) async {
-    var uri = Uri.parse('${ApiConfig.baseUrl}$path');
-    if (query != null && query.isNotEmpty) {
-      uri = uri.replace(queryParameters: query);
-    }
+    final isGet = method == 'GET';
+    final ttl = isGet ? ApiCacheService.resolveTtl(path) : null;
+    final cacheKey = isGet && ttl != null ? ApiCacheService.createCacheKey(path, query) : null;
 
-    final headers = await _headers(auth: auth);
-
-    http.Response res;
-    try {
-      switch (method) {
-        case 'POST':
-          res = await http
-              .post(uri, headers: headers, body: jsonEncode(body ?? {}))
-              .timeout(const Duration(seconds: 20));
-          break;
-        case 'PATCH':
-          res = await http
-              .patch(uri, headers: headers, body: jsonEncode(body ?? {}))
-              .timeout(const Duration(seconds: 20));
-          break;
-        case 'DELETE':
-          res = await http
-              .delete(uri, headers: headers)
-              .timeout(const Duration(seconds: 20));
-          break;
-        case 'GET':
-        default:
-          res = await http
-              .get(uri, headers: headers)
-              .timeout(const Duration(seconds: 20));
-          break;
+    if (isGet && cacheKey != null && !forceRefresh) {
+      final cached = ApiCacheService.get(cacheKey);
+      if (cached != null) {
+        return cached;
       }
-    } catch (e) {
-      throw ApiException(
-          'Tidak dapat terhubung ke server. Pastikan backend menyala.');
+      final inFlight = ApiCacheService.getInFlight(cacheKey);
+      if (inFlight != null) {
+        return inFlight;
+      }
     }
 
-    Map<String, dynamic> data = {};
-    if (res.body.isNotEmpty) {
+    Future<Map<String, dynamic>> executeNetwork() async {
+      var uri = Uri.parse('${ApiConfig.baseUrl}$path');
+      if (query != null && query.isNotEmpty) {
+        uri = uri.replace(queryParameters: query);
+      }
+
+      final headers = await _headers(auth: auth);
+
+      http.Response res;
       try {
-        final decoded = jsonDecode(res.body);
-        if (decoded is Map<String, dynamic>) data = decoded;
-      } catch (_) {
-        // body bukan JSON (mis. HTML error) — biarkan data kosong
+        switch (method) {
+          case 'POST':
+            res = await http
+                .post(uri, headers: headers, body: jsonEncode(body ?? {}))
+                .timeout(const Duration(seconds: 20));
+            break;
+          case 'PATCH':
+            res = await http
+                .patch(uri, headers: headers, body: jsonEncode(body ?? {}))
+                .timeout(const Duration(seconds: 20));
+            break;
+          case 'DELETE':
+            res = await http
+                .delete(uri, headers: headers)
+                .timeout(const Duration(seconds: 20));
+            break;
+          case 'GET':
+          default:
+            res = await http
+                .get(uri, headers: headers)
+                .timeout(const Duration(seconds: 20));
+            break;
+        }
+      } catch (e) {
+        throw ApiException(
+            'Tidak dapat terhubung ke server. Pastikan backend menyala.');
       }
+
+      Map<String, dynamic> data = {};
+      if (res.body.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(res.body);
+          if (decoded is Map<String, dynamic>) data = decoded;
+        } catch (_) {
+          // body bukan JSON (mis. HTML error) — biarkan data kosong
+        }
+      }
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        if (isGet && cacheKey != null && ttl != null) {
+          ApiCacheService.set(cacheKey, data, ttl);
+        } else if (!isGet) {
+          ApiCacheService.handleMutation(path);
+        }
+        return data;
+      }
+
+      // Ambil pesan error dari backend
+      final msg = (data['message'] as String?) ??
+          'Terjadi kesalahan (${res.statusCode}).';
+      // Rate-limit (429): bawa retry_after (detik) untuk ditampilkan di UI.
+      final retryAfter = data['retry_after'] is int
+          ? data['retry_after'] as int
+          : null;
+      throw ApiException(msg, res.statusCode, data, retryAfter);
     }
 
-    if (res.statusCode >= 200 && res.statusCode < 300) {
-      return data;
+    if (isGet && cacheKey != null) {
+      final future = executeNetwork().whenComplete(() {
+        ApiCacheService.clearInFlight(cacheKey);
+      });
+      ApiCacheService.setInFlight(cacheKey, future);
+      return future;
     }
 
-    // Ambil pesan error dari backend
-    final msg = (data['message'] as String?) ??
-        'Terjadi kesalahan (${res.statusCode}).';
-    // Rate-limit (429): bawa retry_after (detik) untuk ditampilkan di UI.
-    final retryAfter = data['retry_after'] is int
-        ? data['retry_after'] as int
-        : null;
-    throw ApiException(msg, res.statusCode, data, retryAfter);
+    return executeNetwork();
   }
 
   // ─── Generic GET ──────────────────────────────────────────
-  static Future<Map<String, dynamic>> get(String path, {Map<String, String>? query}) async {
-    return _request('GET', path, query: query);
+  static Future<Map<String, dynamic>> get(
+    String path, {
+    Map<String, String>? query,
+    bool forceRefresh = false,
+  }) async {
+    return _request('GET', path, query: query, forceRefresh: forceRefresh);
   }
 
   // ─── Generic POST ─────────────────────────────────────────
@@ -180,8 +218,8 @@ class ApiService {
         });
   }
 
-  static Future<Map<String, dynamic>> me() async {
-    return _request('GET', '/me');
+  static Future<Map<String, dynamic>> me({bool forceRefresh = false}) async {
+    return _request('GET', '/me', forceRefresh: forceRefresh);
   }
 
   static Future<void> logout() async {
@@ -192,6 +230,7 @@ class ApiService {
     }
     await clearToken();
     await clearCachedUser();
+    ApiCacheService.clearAll();
   }
 
   // ─── Forgot Password OTP ───────────────────────────────────
@@ -271,8 +310,8 @@ class ApiService {
     return _request('POST', '/attendance/sync-offline', body: {'items': items});
   }
 
-  static Future<Map<String, dynamic>> myAttendance() async {
-    return _request('GET', '/attendance/my');
+  static Future<Map<String, dynamic>> myAttendance({bool forceRefresh = false}) async {
+    return _request('GET', '/attendance/my', forceRefresh: forceRefresh);
   }
 
   // ─── Struk / Receipt ──────────────────────────────────────
@@ -311,7 +350,10 @@ class ApiService {
         if (decoded is Map<String, dynamic>) data = decoded;
       } catch (_) {}
     }
-    if (res.statusCode >= 200 && res.statusCode < 300) return data;
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      ApiCacheService.handleMutation('/employee/receipts');
+      return data;
+    }
     final msg = (data['message'] as String?) ?? 'Terjadi kesalahan (${res.statusCode}).';
     final retryAfter = data['retry_after'] is int
         ? data['retry_after'] as int
@@ -319,12 +361,12 @@ class ApiService {
     throw ApiException(msg, res.statusCode, data, retryAfter);
   }
 
-  static Future<Map<String, dynamic>> getReceipt(int id) async {
-    return _request('GET', '/employee/receipts/$id');
+  static Future<Map<String, dynamic>> getReceipt(int id, {bool forceRefresh = false}) async {
+    return _request('GET', '/employee/receipts/$id', forceRefresh: forceRefresh);
   }
 
-  static Future<Map<String, dynamic>> myReceipts() async {
-    return _request('GET', '/employee/receipts');
+  static Future<Map<String, dynamic>> myReceipts({bool forceRefresh = false}) async {
+    return _request('GET', '/employee/receipts', forceRefresh: forceRefresh);
   }
 
   static Future<Map<String, dynamic>> updateClaim(
@@ -354,12 +396,12 @@ class ApiService {
   }
 
   // ─── Izin / Cuti ──────────────────────────────────────────
-  static Future<Map<String, dynamic>> leaveBalance() async {
-    return _request('GET', '/attendance/leave-balance');
+  static Future<Map<String, dynamic>> leaveBalance({bool forceRefresh = false}) async {
+    return _request('GET', '/attendance/leave-balance', forceRefresh: forceRefresh);
   }
 
-  static Future<Map<String, dynamic>> myLeaves() async {
-    return _request('GET', '/attendance/my-leaves');
+  static Future<Map<String, dynamic>> myLeaves({bool forceRefresh = false}) async {
+    return _request('GET', '/attendance/my-leaves', forceRefresh: forceRefresh);
   }
 
   // Preview hitungan hari EFEKTIF pengajuan (backend skip libur/off-day/bentrok/wfh).
@@ -431,7 +473,10 @@ class ApiService {
         if (decoded is Map<String, dynamic>) data = decoded;
       } catch (_) {}
     }
-    if (res.statusCode >= 200 && res.statusCode < 300) return data;
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      ApiCacheService.handleMutation('/attendance/leave-request');
+      return data;
+    }
     final msg = (data['message'] as String?) ?? 'Terjadi kesalahan (${res.statusCode}).';
     final retryAfter = data['retry_after'] is int
         ? data['retry_after'] as int
@@ -442,8 +487,8 @@ class ApiService {
 
   // ─── Cuti Bersama ───────────────────────────────────────────
   /// Daftar cuti bersama mendatang + status pilihan karyawan login.
-  static Future<Map<String, dynamic>> collectiveLeaves() async {
-    return _request('GET', '/attendance/collective-leaves');
+  static Future<Map<String, dynamic>> collectiveLeaves({bool forceRefresh = false}) async {
+    return _request('GET', '/attendance/collective-leaves', forceRefresh: forceRefresh);
   }
 
   /// Pilih ikut / tidak ikut cuti bersama.
@@ -466,8 +511,8 @@ class ApiService {
   // ─── Presensi — status & auto-checkout ──────────────────────
   /// Cek status presensi hari ini + jadwal auto-checkout dari backend.
   /// Response: {checked_in, checked_out, attendance, scheduled_auto_checkout_at, overtime_approval}
-  static Future<Map<String, dynamic>> attendanceStatus() async {
-    return _request('GET', '/attendance/status');
+  static Future<Map<String, dynamic>> attendanceStatus({bool forceRefresh = false}) async {
+    return _request('GET', '/attendance/status', forceRefresh: forceRefresh);
   }
 
   // ─── FCM token ────────────────────────────────────────────────
@@ -483,9 +528,9 @@ class ApiService {
 
   // ─── Overtime approvals ─────────────────────────────────────
   /// Riwayat status lembur karyawan yang login (pending/approved/rejected).
-  static Future<Map<String, dynamic>> myOvertimeApprovals({int page = 1}) async {
+  static Future<Map<String, dynamic>> myOvertimeApprovals({int page = 1, bool forceRefresh = false}) async {
     return _request('GET', '/attendance/my-overtime',
-        query: {'page': page.toString()});
+        query: {'page': page.toString()}, forceRefresh: forceRefresh);
   }
 
   /// Klaim / ajukan lembur dengan deskripsi pekerjaan.

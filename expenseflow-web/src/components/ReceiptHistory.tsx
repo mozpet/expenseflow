@@ -23,6 +23,7 @@ import {
   ChevronRight,
   Landmark,
   Clock,
+  ShieldAlert,
   Building2,
   CreditCard,
 } from 'lucide-react';

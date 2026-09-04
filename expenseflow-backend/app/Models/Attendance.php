@@ -31,12 +31,14 @@ class Attendance extends Model
         'is_offline_sync',
         'offline_recorded_at',
 
-        // Snapshot pengaturan kantor saat check-in (lihat migration 2026_08_26)
+        // Snapshot pengaturan kantor saat check-in (lihat migration 2026_08_26 & 2026_09_04)
         'snap_office_id',
         'snap_office_latitude',
         'snap_office_longitude',
         'snap_radius_meters',
         'snap_source',
+        'snap_shift_id',
+        'snap_shift_name',
         'snap_work_start_time',
         'snap_work_end_time',
         'snap_is_off',
@@ -70,6 +72,7 @@ class Attendance extends Model
             'snap_office_latitude'     => 'decimal:8',
             'snap_office_longitude'    => 'decimal:11',
             'snap_radius_meters'       => 'integer',
+            'snap_shift_id'            => 'integer',
             'snap_is_off'              => 'boolean',
             'snap_is_cross_day'        => 'boolean',
             'snap_overtime_enabled'    => 'boolean',
@@ -127,6 +130,8 @@ class Attendance extends Model
             'snap_office_longitude'              => $office?->office_longitude,
             'snap_radius_meters'                 => $office?->radius_meters,
             'snap_source'                        => $schedule['source'] === 'shift' ? 'shift' : 'office',
+            'snap_shift_id'                      => $schedule['shift_id'] ?? null,
+            'snap_shift_name'                    => $schedule['shift_name'] ?? null,
             'snap_work_start_time'               => $schedule['work_start_time'],
             'snap_work_end_time'                 => $jamPulang,
             'snap_is_off'                        => (bool) $schedule['is_off'],
@@ -163,14 +168,15 @@ class Attendance extends Model
 
         return [
             'source'          => $this->snap_source,
-            'shift_id'        => null,
-            'shift_name'      => null,
+            'shift_id'        => $this->snap_shift_id ? (int) $this->snap_shift_id : null,
+            'shift_name'      => $this->snap_shift_name,
             'work_start_time' => $this->snap_work_start_time ? substr((string) $this->snap_work_start_time, 0, 5) : null,
             'work_end_time'   => $this->snap_work_end_time ? substr((string) $this->snap_work_end_time, 0, 5) : null,
             'is_off'          => (bool) $this->snap_is_off,
             'is_wfh'          => false,
             'is_field'        => false,
             'is_cross_day'    => (bool) $this->snap_is_cross_day,
+            'break_minutes'   => (int) ($this->snapshotOffice()?->break_minutes ?? 60),
             'office'          => $this->snapshotOffice(),
         ];
     }

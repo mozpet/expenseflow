@@ -9,7 +9,7 @@ import {
   Printer, FileCheck, CheckCheck, ArrowUp, ArrowDown
 } from 'lucide-react';
 import { recruitmentApi } from '../services/endpoints';
-import { ApiError, getStoredUser } from '../services/api';
+import { ApiError, getStoredUser, invalidateCache } from '../services/api';
 import CustomDatePicker from './CustomDatePicker';
 import CustomTimePicker from './CustomTimePicker';
 
@@ -207,15 +207,16 @@ export function RecruitmentManagement() {
   }, [error]);
 
   // ── Load Postings ──────────────────────────────────────────────────────────
-  const fetchPostings = useCallback(async () => {
+  const fetchPostings = useCallback(async (forceRefresh = false) => {
     setLoadingPostings(true);
     try {
+      if (forceRefresh) invalidateCache('/recruitment/postings');
       const res = await recruitmentApi.listPostings({
         page: currentPage,
         per_page: 12,
         status: statusFilter || undefined,
         search: searchQuery.trim() || undefined,
-      });
+      }, forceRefresh);
       setPostings(res.data ?? []);
       setPostingsMeta(res.meta ?? null);
       setPostingsSummary(res.summary ?? {});
@@ -227,9 +228,10 @@ export function RecruitmentManagement() {
   }, [currentPage, statusFilter, searchQuery]);
 
   // ── Load Applications ──────────────────────────────────────────────────────
-  const fetchApplications = useCallback(async () => {
+  const fetchApplications = useCallback(async (forceRefresh = false) => {
     setLoadingApps(true);
     try {
+      if (forceRefresh) invalidateCache('/recruitment/applications');
       const res = await recruitmentApi.listApplications(
         filterPostingId || undefined,
         {
@@ -237,7 +239,8 @@ export function RecruitmentManagement() {
           per_page: 20,
           status: appStatusFilter || undefined,
           search: appSearch.trim() || undefined,
-        }
+        },
+        forceRefresh,
       );
       setApplications(res.data ?? []);
       setApplicationsMeta(res.meta ?? null);
@@ -460,8 +463,8 @@ export function RecruitmentManagement() {
           <div className="flex gap-2.5 w-full sm:w-auto shrink-0">
             <button 
               onClick={() => {
-                if (activeTab === 'postings') fetchPostings();
-                else fetchApplications();
+                if (activeTab === 'postings') fetchPostings(true);
+                else fetchApplications(true);
               }}
               disabled={loadingPostings || loadingApps}
               className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition duration-150 cursor-pointer disabled:opacity-50"

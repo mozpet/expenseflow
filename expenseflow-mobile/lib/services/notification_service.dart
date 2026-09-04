@@ -257,9 +257,9 @@ class NotificationService {
   }
 
   // ─── Polling status dari backend ──────────────────────────────────────────
-  Future<Map<String, dynamic>?> checkAttendanceStatus() async {
+  Future<Map<String, dynamic>?> checkAttendanceStatus({bool forceRefresh = false}) async {
     try {
-      return await ApiService.attendanceStatus();
+      return await ApiService.attendanceStatus(forceRefresh: forceRefresh);
     } catch (e) {
       if (e is ApiException && e.statusCode == 403) {
         return {'wfh_enabled': false, 'checked_in': false, 'checked_out': false};

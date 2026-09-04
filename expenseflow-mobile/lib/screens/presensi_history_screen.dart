@@ -424,7 +424,7 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
           // History ListView with Pull to Refresh
           Expanded(
             child: RefreshIndicator(
-              onRefresh: presensiProv.fetchMyAttendance,
+              onRefresh: () => presensiProv.fetchMyAttendance(forceRefresh: true),
               child: presensiProv.loadingHistory && presensiProv.records.isEmpty
                   ? ShimmerLoading(
                       child: ListView.builder(

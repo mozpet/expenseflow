@@ -1,5 +1,23 @@
+import {
+  createCacheKey,
+  resolveCacheConfig,
+  getCache,
+  setCache,
+  invalidateCache,
+  invalidateCacheByTag,
+  handleMutationInvalidation,
+  clearAllCache,
+  getInFlight,
+  setInFlight,
+  clearInFlight,
+  notifyCacheUpdate,
+  onCacheUpdate,
+} from './apiCache';
+
+export { invalidateCache, invalidateCacheByTag, clearAllCache, onCacheUpdate };
+
 // Lapisan dasar HTTP untuk komunikasi dengan backend Laravel.
-// Menangani: base URL, header Authorization (Bearer) + X-Platform, dan error 401.
+// Menangani: base URL, header Authorization (Bearer) + X-Platform, smart in-memory caching, dan error 401.
 
 const BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
@@ -16,6 +34,7 @@ export const clearToken = (): void => {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
   localStorage.removeItem(TOKEN_EXPIRES_KEY);
+  clearAllCache();
 };
 
 export const getStoredUser = (): any | null => {
@@ -57,12 +76,17 @@ export const setUnauthorizedHandler = (fn: () => void): void => {
   onUnauthorized = fn;
 };
 
-type RequestOptions = {
+export type RequestOptions = {
   method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   body?: unknown;
   // Jika true, jangan set Content-Type (dipakai untuk FormData / multipart).
   isFormData?: boolean;
   query?: Record<string, string | number | boolean | undefined | null>;
+  // Caching options
+  cache?: boolean; // default true untuk GET jika rule ditemukan
+  forceRefresh?: boolean; // bypass read cache dan paksa fetch dari server, lalu update cache
+  ttl?: number; // custom TTL dalam milidetik (override default rule)
+  swr?: boolean; // custom SWR (override default rule)
 };
 
 function buildUrl(path: string, query?: RequestOptions['query']): string {
@@ -79,9 +103,13 @@ function buildUrl(path: string, query?: RequestOptions['query']): string {
   return url.toString();
 }
 
-export async function request<T = any>(
+/**
+ * Eksekusi HTTP fetch aktual ke backend Laravel.
+ */
+async function executeFetch<T = any>(
   path: string,
-  options: RequestOptions = {},
+  options: RequestOptions,
+  triggerUnauthorized: boolean = true,
 ): Promise<T> {
   const { method = 'GET', body, isFormData = false, query } = options;
 
@@ -110,10 +138,10 @@ export async function request<T = any>(
     throw new ApiError('Tidak dapat terhubung ke server. Pastikan backend berjalan.', 0);
   }
 
-  // 401 → token invalid / kedaluwarsa → paksa logout.
+  // 401 → token invalid / kedaluwarsa → paksa logout & bersihkan cache
   if (res.status === 401) {
     clearToken();
-    if (onUnauthorized) onUnauthorized();
+    if (triggerUnauthorized && onUnauthorized) onUnauthorized();
     throw new ApiError('Sesi Anda telah berakhir. Silakan login kembali.', 401);
   }
 
@@ -139,6 +167,101 @@ export async function request<T = any>(
   return data as T;
 }
 
+export async function request<T = any>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<T> {
+  const {
+    method = 'GET',
+    cache: userCacheOption,
+    forceRefresh = false,
+    ttl: userTtl,
+    swr: userSwr,
+    query,
+  } = options;
+
+  const isGet = method === 'GET';
+
+  // ─── Tangani Caching & Deduplikasi untuk request GET ──────────────
+  if (isGet) {
+    const cacheConfig = resolveCacheConfig(path);
+    const shouldCache =
+      userCacheOption !== false &&
+      (userCacheOption === true || (cacheConfig !== null && cacheConfig.ttl > 0));
+    const ttl = userTtl ?? cacheConfig?.ttl ?? 0;
+    const swr = userSwr ?? cacheConfig?.swr ?? false;
+    const tags = cacheConfig?.tags ?? [];
+
+    if (shouldCache && ttl > 0) {
+      const cacheKey = createCacheKey(path, query as Record<string, unknown>);
+
+      // Cek apakah data sudah ada di in-memory cache
+      if (!forceRefresh) {
+        const cached = getCache<T>(cacheKey);
+        if (cached.hit) {
+          // Kasus 1: Cache masih fresh → kembalikan instan (0ms)
+          if (!cached.isStale) {
+            return cached.data!;
+          }
+
+          // Kasus 2: Cache stale tetapi SWR aktif → kembalikan data stale seketika,
+          // lalu picu fetch latar belakang untuk memperbarui cache.
+          if (cached.swr || swr) {
+            if (!getInFlight(cacheKey)) {
+              const bgPromise = executeFetch<T>(path, { ...options, forceRefresh: true }, false)
+                .then((freshData) => {
+                  setCache(cacheKey, freshData, ttl, swr, tags);
+                  notifyCacheUpdate(cacheKey, path, freshData);
+                  return freshData;
+                })
+                .catch(() => {
+                  /* abaikan error revalidasi background */
+                })
+                .finally(() => {
+                  clearInFlight(cacheKey);
+                });
+              setInFlight(cacheKey, bgPromise);
+            }
+            return cached.data!;
+          }
+        }
+      }
+
+      // Kasus 3: Tidak ada cache atau cache stale (non-SWR) atau forceRefresh
+      // Deduplikasi request: jika request yang sama sedang in-flight, tunggu promise yang sama
+      if (!forceRefresh) {
+        const inFlight = getInFlight(cacheKey);
+        if (inFlight) {
+          return inFlight as Promise<T>;
+        }
+      }
+
+      // Buat promise eksekusi fetch baru
+      const fetchPromise = executeFetch<T>(path, options, true)
+        .then((freshData) => {
+          setCache(cacheKey, freshData, ttl, swr, tags);
+          return freshData;
+        })
+        .finally(() => {
+          clearInFlight(cacheKey);
+        });
+
+      setInFlight(cacheKey, fetchPromise);
+      return fetchPromise;
+    }
+  }
+
+  // Request non-GET atau GET yang tidak di-cache
+  const result = await executeFetch<T>(path, options, true);
+
+  // Jika mutasi berhasil (POST/PUT/PATCH/DELETE), jalankan auto-invalidation
+  if (!isGet) {
+    handleMutationInvalidation(path);
+  }
+
+  return result;
+}
+
 // Ambil waktu tunggu (detik) dari error rate-limit (429) — dipakai LoginPage
 // untuk menampilkan countdown. Nilai bersumber dari body `retry_after`.
 export const getRetryAfterSeconds = (err: unknown): number | null => {
@@ -159,8 +282,11 @@ export const formatWaitTime = (seconds: number): string => {
 };
 
 // Shortcut helpers
-export const apiGet = <T = any>(path: string, query?: RequestOptions['query']) =>
-  request<T>(path, { method: 'GET', query });
+export const apiGet = <T = any>(
+  path: string,
+  query?: RequestOptions['query'],
+  cacheOptions?: Pick<RequestOptions, 'cache' | 'forceRefresh' | 'ttl' | 'swr'>,
+) => request<T>(path, { method: 'GET', query, ...cacheOptions });
 export const apiPost = <T = any>(path: string, body?: unknown) =>
   request<T>(path, { method: 'POST', body });
 export const apiPut = <T = any>(path: string, body?: unknown) =>

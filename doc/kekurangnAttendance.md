@@ -86,25 +86,34 @@ $todayStr = now()->toDateString(); // ← UTC!
 
 ---
 
-### 4. SEDANG — Guard jam kerja membandingkan kolom yang salah **⏸ DITUNDA**
+### 4. [SELESAI ✅ 2026-09-04] Fleksibilitas HRD Mengubah/Menghapus Shift di Tengah Hari Kerja dengan Proteksi Snapshot Presensi
 
-**Lokasi:** `ShiftController::assignShift()` (~line 927)
+**Lokasi Kode:**
+- Migrasi DB: `2026_09_04_000003_add_snap_shift_details_to_attendances_table.php` (`snap_shift_id`, `snap_shift_name`).
+- Model: `Attendance.php` (fillable, casts, `buildSnapshot()`, `snapshotSchedule()`).
+- Controller Presensi: `AttendanceController.php` (`checkStatus()`, `checkOut()`).
+- Controller Shift: `ShiftController.php` (`destroyAssignment()`, `updateAssignment()`, `assignShift()`, `bulkAssign()`).
+- Frontend Web: `ShiftManagement.tsx` (pemberitahuan proteksi sesi aktif).
+- Automated Tests: `tests/Feature/ShiftSnapshotMiddayChangeTest.php` (3 passed tests).
 
-```php
-->where('id', '!=', $validated['shift_id'] ?? 0) // ← PK user_shifts vs shift_id input
-```
+**Masalah Sebelumnya:**
+1. Di masa lalu, terdapat guard kaku `checkWithinWorkingHours()` yang menolak HRD (HTTP 422) jika mencoba mengubah (`updateAssignment`) atau menghapus (`destroyAssignment`) penugasan shift seorang karyawan di tengah jam kerja aktif hari itu.
+2. Penugasan shift baru juga memblokir tanggal mulai hari ini (`start_date <= today`), memaksa selalu H+1.
+3. Jika shift dihapus di tengah hari kerja, tanpa sistem snapshot jadwal aktif, karyawan yang sedang berdinas akan kehilangan acuan shift dan mendadak terdisrupsi ke jadwal kantor default saat presensi/checkout.
 
-- Membandingkan primary key `user_shifts.id` dengan `shift_id` dari input request — dua entitas berbeda.
-- Guard anti-"ubah shift di tengah jam kerja" jadi salah mengecualikan/menyasar assignment.
-
-**Fix:** bandingkan dengan assignment lama secara eksplisit, mis. simpan `$activeOld` dulu lalu exclude by id assignment itu, atau filter `where('shift_id', '!=', ...)` jika maksudnya shift baru.
-
-> **⏸ DITUNDA — risiko diterima (keputusan 2026-08-25):** TIDAK diperbaiki untuk saat ini karena secara praktis sudah tertutup fitur **Minimum Notice Perubahan Shift (H-N Hari)** di form Edit Kantor (`attendance_settings.shift_notice_days`):
-> - `checkNoticeError()` dieksekusi **SEBELUM** guard coversToday di `assignShift()` (line ~908 vs ~913). Bila notice ≥ 1 hari, start_date hari ini/mundur langsung ditolak 422 → `$coversToday` tidak mungkin true → query yang salah tidak pernah tereksekusi (dead path).
-> - Bila pun guard itu jalan (kantor tanpa notice), dampaknya sangat sempit: cek `duplicateActive` sudah menolak kombinasi shift-sama-masih-aktif lebih awal, jadi kegagalan hanya terjadi bila PK assignment lama kebetulan bernilai sama dengan shift_id baru (kasus langka).
-> - Lapisan lain tetap sehat: `updateAssignment()` & `destroyAssignment()` memakai objek `$userShift` nyata (tanpa kesalahan kolom), dan `bulkAssign()` sudah difix benar via Bug #5.
->
-> **Syarat penerimaan risiko:** semua kantor sebaiknya mengisi `shift_notice_days` ≥ 1. Bila kelak ada kantor yang membiarkan notice kosong/0, fix-nya satu baris saja: ganti `where('id', '!=', $validated['shift_id'] ?? 0)` menjadi `where('shift_id', '!=', $validated['shift_id'])` (atau exclude by PK assignment lama secara eksplisit).
+**Solusi & Arsitektur Snapshot yang Diimplementasikan:**
+1. **Pencabutan Blokir Kaku (Unblocking HRD):**
+   - HRD kini diizinkan **bebas mengubah atau menghapus/mengakhiri penugasan shift kapan saja** tanpa penolakan HTTP 422.
+   - `start_date` diizinkan mulai hari ini (H-0) dan hanya menolak tanggal lampau.
+2. **Penguncian Detail Shift di Record Presensi (`snapshot`):**
+   - Saat karyawan melakukan check-in, record `attendances` menyimpan snapshot lengkap aturan saat masuk: `snap_source = 'shift'`, `snap_work_start_time`, `snap_work_end_time`, `snap_is_cross_day`, serta `snap_shift_id` dan `snap_shift_name`.
+3. **Proteksi Sesi Kerja Aktif (Active Session Protection):**
+   - Karyawan yang **sudah check-in hari ini** tetap menyelesaikan tugas dan melakukan check-out berdasarkan jadwal shift yang dibekukan saat check-in (`snapshotSchedule()`).
+   - Perhitungan jam kerja aktual, jam istirahat (`break_minutes`), status keterlambatan, kepulangan awal, lembur, dan auto-checkout tetap konsisten mengacu pada shift saat check-in.
+   - Endpoint status aplikasi mobile (`checkStatus`) memprioritaskan jadwal dari `snapshot` selama karyawan masih berada dalam sesi aktif (belum checkout), sehingga tampilan jam kerja di HP karyawan tidak berubah mendadak di tengah hari.
+4. **Momen Transisi:**
+   - Jadwal baru (atau jadwal default kantor bila shift dihapus) **otomatis berlaku setelah karyawan menekan tombol Check-Out** (atau mulai hari kerja berikutnya).
+   - Jika karyawan **belum check-in hari ini** dan HRD menghapus shift, jadwal hari ini langsung kembali ke default kantor.
 
 ---
 
@@ -289,3 +298,186 @@ if ($startStr === $today) {
 
 ---
 *Catatan dibuat otomatis hasil review Claude — 2026-08-25. Status: Bug #2, #3, #5, #6, #7, & #9 SELESAI (2026-08-25/26); Bug #4 DITUNDA (risiko diterima, tertutup fitur notice period); sisanya (#1, #8) masih open/belum diperbaiki.*
+
+---
+
+## 🏢 Bagian 4 — Audit Mendalam Khusus Sistem Shift (`ShiftManagement.tsx` & `ShiftController.php`) (2026-09-04)
+
+> Hasil audit mendalam terhadap arsitektur, kepatuhan regulasi K3 (UU Ketenagakerjaan No. 13/2003 & PP No. 35/2021), fungsionalitas operasional, dan pengalaman pengguna (UX) pada berkas:
+> - **Backend Controller**: `app/Http/Controllers/API/ShiftController.php` (±2.820 baris)
+> - **Frontend Component**: `src/components/ShiftManagement.tsx` (±2.950 baris)
+
+---
+
+### 🔴 Kategori A — Cacat Desain Data & Regulasi K3 / Ketenagakerjaan
+
+#### 1. KRITIS: False-Positive Batas 40 Jam/Minggu akibat Ketiadaan Pengaturan Jam Istirahat (Break Time) — ✅ SELESAI (2026-09-04)
+- **Lokasi Kode:** `ShiftController::validateWeeklyHours()`, `ShiftController::resolveSchedule()`, `AttendanceController::checkOut()`, `AutoCheckoutCommand`, `SettingsManagement.tsx`, & `ShiftManagement.tsx`
+- **Akar Masalah:** Model `attendance_settings` dan `shift_schedules` sebelumnya hanya memiliki `work_start_time` dan `work_end_time` tanpa pengaturan `break_minutes`.
+- **Dampak Kritis Sebelumnya:** Jadwal 08:00–17:00 (5 hari kerja) dihitung 45 jam kotor/minggu sehingga false-positive ditolak aturan 40 jam Depnaker, dan jam checkout menggelembung 1 jam/hari.
+- **Implementasi Solusi (2026-09-04):**
+  - Migrasi `2026_09_04_000001_add_break_minutes_to_attendance_settings_and_shift_schedules.php` menambahkan kolom `break_minutes` default 60 di kedua tabel.
+  - Model `AttendanceSetting` dan `ShiftSchedule` diperbarui fillable & integer cast.
+  - `ShiftController::validateWeeklyHours()` dan frontend `computeWeeklyHours()` & `calculatedWeeklyHours` mengurangkan `break_minutes` dari gross time, menghasilkan tepat **40.0 jam/minggu**.
+  - `AttendanceController::checkOut()` dan `AutoCheckoutCommand::processAutoCheckout()` memotong `break_minutes` saat durasi kerja kotor $\ge 5$ jam (300 menit) sesuai UU 13/2003 Pasal 79.
+  - Form UI Web di `SettingsManagement.tsx` dan `ShiftManagement.tsx` telah dilengkapi input durasi jam istirahat.
+
+---
+
+#### 2. TINGGI: Ketiadaan Validasi Batas Hari Kerja Berturut-turut (Max Consecutive Working Days)
+- **Lokasi Kode:** `ShiftRestService.php`, `ShiftController::assignShift()`, & `bulkAssign()`
+- **Akar Masalah:** `ShiftRestService` sudah memvalidasi jeda istirahat antar shift (min 8 jam, disarankan 11 jam), tetapi **TIDAK ADA validasi batas berapa hari karyawan boleh bekerja berturut-turut tanpa jeda libur mingguan**.
+- **Dampak Hukum & K3:**
+  - Sesuai Pasal 79 UU No. 13/2003 & PP 35/2021, pengusaha wajib memberikan istirahat mingguan sekurang-kurangnya 1 hari untuk 6 hari kerja atau 2 hari untuk 5 hari kerja.
+  - Saat ini, HRD dapat menugaskan karyawan shift masuk 10–14 hari berturut-turut tanpa ada peringatan atau penolakan dari sistem (pelanggaran K3 dan ketenagakerjaan).
+- **Rekomendasi Solusi:**
+  - Tambahkan pemeriksaan pada `assignShift()` dan `bulkAssign()`: jika penugasan menyebabkan seorang karyawan bekerja $\ge 7$ hari berturut-turut tanpa ada hari `is_off`, sistem wajib menolak (atau minimal menampilkan peringatan K3 keras di layar).
+
+---
+
+#### 3. [SELESAI ✅ 2026-09-04] Proteksi K3 untuk Pekerja Rentan pada Shift Malam & Form Demografi Karyawan
+- **Lokasi Kode:**
+  - Migrasi DB: `2026_09_04_000002_add_demographic_and_k3_fields_to_users_table.php` (`gender`, `birth_place`, `birth_date`, `is_pregnant`).
+  - Model: `User.php` (`age` accessor, `birth_date`, `is_pregnant`), `ShiftSchedule.php` (`isNightSchedule`), `Shift.php` (`hasNightSchedule`).
+  - Backend Controller: `UserController.php` (CRUD & Bulk Import demographic data), `ShiftController.php` (`MIN_NIGHT_SHIFT_AGE = 17`, `checkNightShiftVulnerability()`, `assignShift()`, `bulkAssign()`, `updateAssignment()`, `roster()`).
+  - Frontend Web: `KaryawanManagement.tsx` (Add & Edit Form, Detail Profil), `ImportEmployeeModal.tsx` (Mapping & Excel template), `ShiftManagement.tsx` (`AssignModal`, `BulkAssignModal`, badge `🌙 Shift Malam`).
+  - Automated Tests: `tests/Feature/NightShiftK3ProtectionTest.php` (7 passed tests).
+- **Dasar Hukum Regulasi:**
+  - UU No. 13/2003 Pasal 76 ayat (1): Pengusaha dilarang mempekerjakan pekerja di bawah umur dan pekerja perempuan hamil pada shift malam (23:00–07:00).
+  - UU No. 13/2003 Pasal 76 ayat (3) & (4): Pengusaha wajib menyediakan makanan/minuman bergizi serta fasilitas angkutan antar-jemput bagi pekerja perempuan yang bekerja shift malam.
+  - Keputusan Bisnis Pengguna: Batas usia minimum shift malam ditetapkan **17 tahun**.
+- **Implementasi Fitur:**
+  1. **Field Demografi Baru di Tabel Users**:
+     - `gender` ('Laki-laki' / 'Perempuan').
+     - `birth_place` (string 100, tempat/kota lahir).
+     - `birth_date` (date, tanggal lahir).
+     - `is_pregnant` (boolean default false, flag status kehamilan untuk pekerja perempuan).
+     - Accessor `$user->age`: Menghitung umur karyawan secara dinamis berdasarkan `birth_date`.
+  2. **Validasi & Proteksi K3 Shift Malam**:
+     - **Definisi Shift Malam:** Jadwal kerja shift yang beririsan dengan jendela 23:00–07:00 (misal shift lintas tengah malam `is_cross_day` atau start $< \text{07:00}$ atau end $> \text{23:00}$).
+     - **Hard Block Usia:** Pekerja berusia $< 17$ tahun dilarang ditugaskan shift malam (HTTP 422). Pekerja $\ge 17$ tahun diizinkan bekerja.
+     - **Hard Block Kehamilan:** Pekerja perempuan yang tercatat hamil dilarang ditugaskan shift malam (HTTP 422).
+     - **K3 Advisory Warning:**
+       - Jika usia tepat 17 tahun: Catatan pengawasan ekstra pekerja muda pada jam malam.
+       - Jika tanggal lahir belum diisi di profil: Catatan K3 agar HRD memastikan usia $\ge 17$ tahun.
+       - Jika perempuan (tidak hamil): Catatan kepatuhan penyediaan makanan bergizi & fasilitas antar-jemput aman.
+     - **Perilaku Bulk Assign:** Pekerja rentan ($< 17$ tahun atau hamil) dilewati secara otomatis (`$dilewati[]` / `$skipped[]`) dengan alasan K3 tanpa membatalkan penugasan pekerja dewasa lainnya.
+  3. **Antarmuka Pengguna (Web Frontend)**:
+     - Manajemen Karyawan: Input jenis kelamin, tempat lahir, tanggal lahir (dengan badge live kalkulasi umur), dan toggle kehamilan otomatis tampil jika gender perempuan.
+     - Impor Karyawan: Mendukung mapping kolom jenis kelamin, tempat lahir, dan tanggal lahir dari file Excel/CSV beserta template resmi yang dapat diunduh.
+     - Manajemen Shift & Roster: Badge `🌙 Shift Malam` pada template shift, alert blokir penugasan instan di `AssignModal`, notifikasi proteksi otomatis di `BulkAssignModal`.
+
+---
+
+### 🟡 Kategori B — Kekurangan Fungsional & Kebutuhan Operasional Lapangan
+
+#### 4. TINGGI: Ketiadaan Fitur Pertukaran Shift Antar Karyawan (Shift Swap / Tukar Shift)
+- **Kondisi Saat Ini:** Dalam operasional riil (rumah sakit, pabrik, hotel, security 24/7), pergantian dinas darurat paling sering dilakukan dalam bentuk **Tukar Shift Antar Karyawan** (misal: Budi shift pagi tukar hari Kamis dengan Doni shift malam).
+- **Kelemahan Sistem:**
+  - Karyawan tidak bisa mengajukan tukar shift melalui aplikasi mobile.
+  - HRD harus menghapus/mengubah penugasan Budi dan Doni secara manual satu per satu di dashboard web.
+- **Kebutuhan Fitur:**
+  - Model & tabel baru `shift_swap_requests` (requester_id, target_user_id, date, requester_shift_id, target_shift_id, status: pending/approved/rejected, approved_by).
+  - Alur: Karyawan A request ke Karyawan B $\rightarrow$ Karyawan B setuju di mobile $\rightarrow$ Notifikasi ke HRD/Supervisor untuk approval $\rightarrow$ Jadwal swap otomatis aktif untuk tanggal tersebut.
+
+---
+
+#### 5. TINGGI: Ketiadaan Pola Rotasi Shift Berulang Otomatis (Shift Pattern / Recurring Rolling Cycle) — ✅ SELESAI (2026-09-04)
+- **Kondisi Sebelumnya:** Template shift terikat secara statis pada 7 hari kalender (Minggu s/d Sabtu / `day_of_week` 0–6). HRD di sektor manufaktur/lapangan harus me-reassign shift karyawan setiap minggu untuk pola rotasi (4-2, 2-2-2, 3-1, dsb.).
+- **Solusi Implementasi Lengkap (2026-09-04):**
+  1. **Database & Relasi:**
+     - Tabel `shift_patterns` (`company_id`, `attendance_setting_id` (nullable: null = company-wide, foreign key ke `attendance_settings`), `name`, `description`, `cycle_days` (2–30), `is_active`).
+     - Tabel `shift_pattern_items` (`shift_pattern_id`, `day_order` (1–cycle_days), `shift_id`, `is_off`, `work_start_time`, `work_end_time`, `break_minutes`, `is_cross_day`).
+     - Relasi `user_shifts` ditambah kolom `shift_pattern_id` (foreign key) dan `anchor_day_order` (default 1).
+  2. **Engine Deterministik $O(1)$ (`resolveSchedule`):**
+     - Jadwal ditentukan secara deterministik melalui selisih hari dari `start_date` penugasan:
+       $$\text{dayIndex} = ((\text{anchor\_day\_order} - 1) + \text{diffDays}) \pmod{\text{cycle\_days}}$$
+       $$\text{dayOrder} = \text{dayIndex} + 1$$
+     - Menghilangkan kebutuhan cron job, tanpa bloat baris database ke depan, serta mendukung fase tim berbeda (Tim A mulai H1, Tim B mulai H5 pada pola yang sama).
+  3. **Backend API Endpoints & Proteksi Lintas Cabang:**
+     - CRUD: `GET/POST /api/v1/dashboard/attendance/shift-patterns`, `GET/PUT/DELETE /api/v1/dashboard/attendance/shift-patterns/{id}` (mendukung filter dan payload `attendance_setting_id`).
+     - Penugasan: `assignShift()` dan `bulkAssign()` memvalidasi kecocokan cabang (`assertPatternBranchMatch`), menolak karyawan cabang A ditugaskan pola cabang B dengan error HTTP 422, serta otomatis melewati (skip) karyawan beda cabang pada penugasan massal.
+     - Validasi proteksi penghapusan pola jika sedang aktif digunakan oleh karyawan.
+  4. **Frontend UI Web (`ShiftManagement.tsx`):**
+     - Tab baru **"Pola Rotasi (Cycle)"** dilengkapi filter cabang di toolbar atas, visual strip urutan hari kerja vs libur, preset populer (4-2, 3-1, 5-2, 6-1), toggle kerja/libur, dan jam custom/template per hari.
+     - Modal pembuatan pola menyediakan dropdown pemilihan cabang spesifik atau berlaku company-wide.
+     - Modal **Assign** & **Bulk Assign** otomatis memfilter pola rotasi yang relevan sesuai cabang karyawan yang dipilih dan menampilkan label nama cabang di dropdown.
+     - Roster Harian menampilkan badge pola dan fase hari berjalan (contoh: `Pola 4-2 · H3`).
+  5. **Automated Test Suite:**
+     - Suite uji `ShiftPatternRotationTest.php` (6 skenario, 66 assertions) lulus 100% green bersama seluruh suite Shift (22 tests, 143 assertions) dan Attendance (26 tests, 93 assertions).
+
+---
+
+#### 6. SEDANG: Ketiadaan Dukungan Split Shift (Shift Terbagi / Double Duty)
+- **Kondisi Saat Ini:** Sektor Food & Beverage (restoran, cafe, katering) banyak menerapkan **Split Shift** (contoh: Sesi 1 Makan Siang 10:00–14:00, jeda istirahat 3 jam, Sesi 2 Makan Malam 17:00–21:00).
+- **Kelemahan Sistem:** `shift_schedules` hanya memiliki 1 pasang `work_start_time` dan `work_end_time` per hari. Sistem tidak mendukung 2 sesi check-in/out di hari yang sama.
+
+---
+
+#### 7. SEDANG: Ketiadaan Atribut Premi / Tunjangan Shift (Shift Differential Allowance)
+- **Kondisi Saat Ini:** Shift malam (22:00–06:00) atau shift akhir pekan umumnya memiliki insentif tunjangan shift (misal: Uang Makan/Premi Malam Rp 25.000 s/d Rp 50.000 per kehadiran shift malam).
+- **Kelemahan Sistem:** Tabel `shifts` tidak memiliki kolom tunjangan nominal (`shift_allowance_amount`) atau penggali lembur. Saat modul Payroll dibangun nanti, sistem tidak memiliki data dasar untuk menghitung kompensasi shift secara otomatis.
+
+---
+
+### 🔵 Kategori C — Kekurangan pada Antarmuka Frontend Web (`ShiftManagement.tsx`)
+
+#### 8. TINGGI: Ketiadaan Fitur Impor Jadwal Roster Bulanan dari Excel / CSV (Matrix Roster Import)
+- **Kondisi Saat Ini:**
+  - HRD biasanya menyusun jadwal shift sebulan penuh untuk 50–200 karyawan di spreadsheet Excel (format matriks: Baris = Karyawan, Kolom = Tanggal 1 s/d 31, Sel = Kode Shift `PAGI`, `SIANG`, `MALAM`, `OFF`).
+  - Di `ShiftManagement.tsx`, saat ini hanya ada fitur `bulkAssign` yang hanya bisa memberikan **1 shift yang sama untuk sekelompok karyawan pada rentang tanggal yang sama**.
+- **Dampak Operasional:** Untuk menyusun jadwal karyawan yang berganti-ganti shift setiap harinya (roster dinamis), HRD harus mengklik dan menugaskan manual satu per satu. Untuk 50 karyawan $\times$ 30 hari = 1.500 penugasan, proses ini membutuhkan waktu berhari-hari.
+- **Rekomendasi Solusi:** Buat modal **"Import Roster Bulanan (Matrix Excel)"** yang membaca berkas spreadsheet jadwal bulanan dan memprosesnya secara batch ke backend.
+
+---
+
+#### 9. TINGGI: Ketiadaan Fitur Ekspor Roster Bulanan ke Excel & Cetak Dokumen PDF
+- **Kondisi Saat Ini:** Di tab Kalender maupun Roster, tidak ada tombol **Export Roster Excel** atau **Cetak PDF Jadwal Shift**.
+- **Dampak Operasional:** Di operasional kantor cabang, pabrik, atau toko, jadwal shift bulanan **wajib dicetak fisik** untuk ditempel di mading/papan pengumuman kantor dan dibagikan ke supervisor divisi. Saat ini HRD tidak bisa mengekspor tampilan kalender roster tersebut.
+- **Rekomendasi Solusi:** Tambahkan tombol ekspor format Excel (tabel matriks karyawan vs tanggal) dan tombol cetak PDF dengan tata letak lanskap siap cetak.
+
+---
+
+#### 10. SEDANG: Ketiadaan Filter Departemen / Divisi di Tab Roster dan Kalender
+- **Kondisi Saat Ini:** Di tab Roster dan Kalender hanya terdapat filter Kantor/Cabang (`rosterBranch` / `calBranch`) dan pencarian nama.
+- **Dampak Operasional:** Jika satu kantor cabang memiliki ratusan karyawan dari berbagai divisi (misal: Security, Front Office, Housekeeping, IT, F&B), daftar roster bercampur baur dan supervisor departemen kesulitan mengawasi jadwal timnya sendiri.
+- **Rekomendasi Solusi:** Tambahkan dropdown filter `Departemen` di sebelah filter kantor pada tab Roster dan Kalender.
+
+---
+
+#### 11. SEDANG: Tampilan Kalender Belum Menampilkan Jumlah Total Karyawan Libur (OFF) per Hari
+- **Kondisi Saat Ini:** Pada sel kalender bulanan (`calData`), hanya ditampilkan badge shift yang masuk (misal: *Shift Pagi: 8 org, Shift Malam: 4 org*).
+- **Dampak Operasional:** HRD tidak dapat melihat berapa jumlah total karyawan yang sedang **LIBUR (OFF)** pada tanggal tersebut, sehingga sulit mendeteksi potensi kekurangan tenaga kerja (*understaffing*) pada hari tertentu.
+- **Rekomendasi Solusi:** Tambahkan indikator ringkas di sel kalender: misal `Libur (OFF): 5 org`.
+
+---
+
+#### 12. RENDAH: Ketiadaan Tab / Filter Khusus "Karyawan Belum Terjadwal" (Unassigned Floating Staff)
+- **Kondisi Saat Ini:** Karyawan yang tidak memiliki shift custom diberi label `source: office` (mengikuti jadwal default kantor).
+- **Dampak Operasional:** HRD kesulitan melacak karyawan operasional mana saja yang belum memiliki penugasan shift untuk bulan depan, rawan ada karyawan yang terlewat tidak dijadwalkan.
+
+---
+
+### 🟣 Kategori D — Masalah Backend Skalabilitas & Konfigurasi Fleksibel (`ShiftController.php`)
+
+#### 13. TINGGI: Server-Side Pagination & Skalabilitas Memori pada Endpoint `ShiftController::roster()`
+- **Lokasi Kode:** `ShiftController::roster()` (line ~1898)
+- **Akar Masalah:**
+  - Method `roster()` memuat **seluruh karyawan perusahaan/cabang sekaligus ke memori PHP** dalam satu request tanpa pagination di tingkat database.
+  - Frontend (`ShiftManagement.tsx`) yang melakukan pemotongan halaman secara client-side (`rosterPageSize = 25`).
+- **Dampak Skalabilitas:** Jika sebuah perusahaan memiliki 1.000+ karyawan di satu cabang, request `GET /api/v1/dashboard/attendance/shifts/roster` dapat memakan waktu lama (*slow query*), menghabiskan kuota memori PHP (*memory limit exhausted*), dan menyebabkan dashboard web freeze saat dibuka.
+- **Rekomendasi Solusi:** Tambahkan parameter `page` dan `per_page` pada query SQL di `ShiftController::roster()`, mengembalikan struktur paginasi standar Laravel (`current_page`, `last_page`, `total`, `data`).
+
+---
+
+#### 14. SEDANG: Pengaturan Toleransi Keterlambatan Masih Terkunci di Level Kantor, Bukan Level Shift
+- **Kondisi Saat Ini:** Kolom toleransi telat (`late_tolerance_minutes`) dan jam cutoff telat hanya ada di tabel `attendance_settings` (kantor).
+- **Dampak:** Shift malam (misal 23:00–07:00) atau shift akhir pekan darurat seringkali membutuhkan aturan toleransi yang berbeda dari jam kerja kantor normal. Saat ini sistem tidak mengizinkan kustomisasi toleransi keterlambatan pada tingkat template `Shift`.
+- **Rekomendasi Solusi:** Tambahkan kolom opsional `late_tolerance_minutes` di tabel `shifts`. Jika bernilai `null`, gunakan nilai default dari kantor (`attendance_settings`).
+
+---
+
+#### 15. SEDANG: Ketiadaan Laporan Kepatuhan Shift (Shift Adherence / Variance Report)
+- **Kondisi Saat Ini:** Tidak ada endpoint analitik yang membandingkan antara **Shift yang Ditugaskan** vs **Presensi Nyata di Lapangan**.
+- **Dampak Operasional:** HRD tidak dapat mendeteksi karyawan yang melakukan presensi di luar jadwal shift-nya (misal: dijadwalkan Shift 1 Pagi tapi masuk di Shift 2 Siang tanpa izin tukar dinas).
+

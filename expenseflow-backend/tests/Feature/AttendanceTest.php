@@ -507,6 +507,7 @@ class AttendanceTest extends TestCase
             'work_days'        => [0, 1, 2, 3, 4, 5, 6],
             'work_start_time'  => '08:00',
             'work_end_time'    => '17:00',
+            'wfh_checkin_window_minutes' => null,
             'min_checkout_interval_minutes' => 0,
         ]);
 

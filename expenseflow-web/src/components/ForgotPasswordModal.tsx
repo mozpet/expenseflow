@@ -203,19 +203,19 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-      <div className="relative w-full max-w-md bg-white rounded-2xl shadow-2xl overflow-hidden border border-slate-100 font-sans">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-sm p-4 animate-in fade-in duration-200">
+      <div className="relative w-full max-w-md bg-white dark:bg-slate-900 rounded-2xl shadow-2xl overflow-hidden border border-slate-100 dark:border-slate-800 font-sans">
         {/* Modal Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/50">
           <div className="flex items-center gap-2">
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 flex items-center justify-center text-indigo-600">
+            <div className="w-8 h-8 rounded-lg bg-indigo-50 dark:bg-indigo-950/60 flex items-center justify-center text-indigo-600 dark:text-indigo-400">
               <KeyRound className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-slate-800">
+              <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
                 {step === 4 ? 'Reset Selesai' : 'Reset Password'}
               </h3>
-              <p className="text-[11px] text-slate-500">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400">
                 {step === 1 && 'Langkah 1: Masukkan Email Akun'}
                 {step === 2 && 'Langkah 2: Verifikasi Kode OTP'}
                 {step === 3 && 'Langkah 3: Buat Password Baru'}
@@ -225,7 +225,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition"
+            className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition"
           >
             <X className="w-4 h-4" />
           </button>
@@ -233,7 +233,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
 
         {/* Progress Bar */}
         {step < 4 && (
-          <div className="w-full bg-slate-100 h-1">
+          <div className="w-full bg-slate-100 dark:bg-slate-800 h-1">
             <div
               className="bg-indigo-600 h-1 transition-all duration-300"
               style={{ width: `${(step / 3) * 100}%` }}
@@ -244,7 +244,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
         <div className="p-6">
           {/* Alert Error */}
           {error && (
-            <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-3.5 py-2.5 text-xs mb-5 animate-in fade-in">
+            <div className="flex items-start gap-2 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-400 rounded-xl px-3.5 py-2.5 text-xs mb-5 animate-in fade-in">
               <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
               <span>{error}</span>
             </div>
@@ -254,7 +254,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
           {step === 1 && (
             <form onSubmit={handleSendOtp} className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1.5">
                   Email Terdaftar
                 </label>
                 <div className="relative">
@@ -266,10 +266,10 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     placeholder="nama@perusahaan.co.id"
-                    className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                   />
                 </div>
-                <p className="text-[11px] text-slate-500 mt-2 leading-relaxed">
+                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-2 leading-relaxed">
                   Kami akan mengirimkan 6 digit kode verifikasi OTP ke email ini untuk memvalidasi identitas Anda.
                 </p>
               </div>
@@ -300,12 +300,12 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
           {step === 2 && (
             <form onSubmit={handleVerifyOtp} className="space-y-5">
               <div className="text-center">
-                <div className="w-12 h-12 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mx-auto mb-3">
+                <div className="w-12 h-12 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-2xl flex items-center justify-center mx-auto mb-3">
                   <ShieldCheck className="w-6 h-6" />
                 </div>
-                <h4 className="text-sm font-bold text-slate-800">Masukkan 6 Digit OTP</h4>
-                <p className="text-xs text-slate-500 mt-1">
-                  Kode verifikasi telah dikirim ke <span className="font-semibold text-slate-700">{email}</span>
+                <h4 className="text-sm font-bold text-slate-800 dark:text-slate-100">Masukkan 6 Digit OTP</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                  Kode verifikasi telah dikirim ke <span className="font-semibold text-slate-700 dark:text-slate-300">{email}</span>
                 </p>
               </div>
 
@@ -320,7 +320,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
                     value={digit}
                     onChange={(e) => handleOtpChange(idx, e.target.value)}
                     onKeyDown={(e) => handleOtpKeyDown(idx, e)}
-                    className="w-11 h-12 text-center text-lg font-bold text-slate-800 bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    className="w-11 h-12 text-center text-lg font-bold text-slate-800 dark:text-slate-100 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:bg-white dark:focus:bg-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                   />
                 ))}
               </div>
@@ -332,7 +332,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
                     const digits = debugOtp.split('').slice(0, 6);
                     setOtp(digits);
                   }}
-                  className="bg-amber-50 border border-amber-200 text-amber-800 text-[11px] p-2 rounded-lg text-center cursor-pointer hover:bg-amber-100 transition font-mono"
+                  className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900 text-amber-800 dark:text-amber-300 text-[11px] p-2 rounded-lg text-center cursor-pointer hover:bg-amber-100 dark:hover:bg-amber-950/60 transition font-mono"
                 >
                   ⚡ Dev Auto-fill OTP: <span className="font-bold underline">{debugOtp}</span> (Klik untuk isi)
                 </div>
@@ -357,14 +357,14 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
                 <div className="text-center">
                   {resendCooldown > 0 ? (
                     <span className="text-xs text-slate-400">
-                      Kirim ulang kode dalam <span className="font-semibold text-slate-600">{resendCooldown} detik</span>
+                      Kirim ulang kode dalam <span className="font-semibold text-slate-600 dark:text-slate-300">{resendCooldown} detik</span>
                     </span>
                   ) : (
                     <button
                       type="button"
                       disabled={loading}
                       onClick={() => handleSendOtp()}
-                      className="text-xs font-semibold text-indigo-600 hover:text-indigo-700 inline-flex items-center gap-1"
+                      className="text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 inline-flex items-center gap-1"
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
                       Kirim Ulang Kode OTP
@@ -379,7 +379,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
           {step === 3 && (
             <form onSubmit={handleResetPassword} className="space-y-4">
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1.5">
                   Password Baru
                 </label>
                 <div className="relative">
@@ -391,12 +391,12 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder="Minimal 8 karakter"
-                    className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                   />
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -404,7 +404,7 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
               </div>
 
               <div>
-                <label className="text-xs font-semibold text-slate-700 block mb-1.5">
+                <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 block mb-1.5">
                   Konfirmasi Password Baru
                 </label>
                 <div className="relative">
@@ -415,12 +415,12 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Ulangi password baru"
-                    className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                    className="w-full pl-10 pr-10 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-sm bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
                   />
                   <button
                     type="button"
                     onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                    className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
                   >
                     {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -449,12 +449,12 @@ export const ForgotPasswordModal: React.FC<ForgotPasswordModalProps> = ({
           {/* ─── STEP 4: Success State ─── */}
           {step === 4 && (
             <div className="text-center py-4 space-y-4">
-              <div className="w-14 h-14 bg-emerald-50 text-emerald-600 rounded-full flex items-center justify-center mx-auto">
+              <div className="w-14 h-14 bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 rounded-full flex items-center justify-center mx-auto">
                 <CheckCircle2 className="w-8 h-8" />
               </div>
               <div>
-                <h4 className="text-base font-bold text-slate-800">Password Berhasil Diperbarui!</h4>
-                <p className="text-xs text-slate-500 mt-1 max-w-xs mx-auto leading-relaxed">
+                <h4 className="text-base font-bold text-slate-800 dark:text-slate-100">Password Berhasil Diperbarui!</h4>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-xs mx-auto leading-relaxed">
                   Kata sandi akun Anda telah diperbarui. Silakan gunakan kata sandi baru untuk masuk ke dashboard.
                 </p>
               </div>

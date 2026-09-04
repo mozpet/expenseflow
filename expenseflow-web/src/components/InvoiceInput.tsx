@@ -200,7 +200,7 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
                 type="text"
                 value={invoiceId}
                 onChange={(e) => setInvoiceId(e.target.value)}
-                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-150 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
                 placeholder="Contoh: INV-0192"
                 required
               />
@@ -227,7 +227,7 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
               <select
                 value={vendorId}
                 onChange={(e) => setVendorId(e.target.value === '' ? '' : Number(e.target.value))}
-                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-150 focus:outline-none"
+                className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none"
                 required
               >
                 <option value="">— Pilih Vendor —</option>
@@ -255,7 +255,7 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
               value={poNumber}
               onChange={(e) => setPoNumber(e.target.value)}
               placeholder="Contoh: PO-0035"
-              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-150 focus:outline-none"
+              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none"
             />
           </div>
 
@@ -321,11 +321,11 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
           </div>
 
           {/* Form to insert temporary line item */}
-          <div className="bg-slate-50/50 dark:bg-slate-850/30 p-3.5 rounded-xl border border-slate-150/40 dark:border-slate-800 space-y-2 text-xs">
+          <div className="bg-slate-50/50 dark:bg-slate-800/40 p-3.5 rounded-xl border border-slate-200 dark:border-slate-800 space-y-2 text-xs">
             <div className="font-semibold text-slate-800 dark:text-slate-300 text-[11px] mb-1">Tambah Baris Invoice</div>
             <div className="grid grid-cols-1 md:grid-cols-1 gap-2">
-              <input 
-                type="text" 
+              <input
+                type="text"
                 placeholder="Deskripsi item... (Contoh: Adobe Licenses)"
                 value={newDesc}
                 onChange={(e) => setNewDesc(e.target.value)}
@@ -335,26 +335,26 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
             <div className="grid grid-cols-3 gap-2">
               <div>
                 <label className="text-[10px] text-slate-400">Qty</label>
-                <input 
-                  type="number" 
+                <input
+                  type="number"
                   value={newQty}
                   onChange={(e) => setNewQty(Math.max(1, parseInt(e.target.value) || 1))}
-                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-150 font-mono text-center"
+                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-mono text-center"
                 />
               </div>
               <div className="col-span-2">
                 <label className="text-[10px] text-slate-400">Harga Satuan (Rp)</label>
-                <input 
-                  type="number" 
+                <input
+                  type="number"
                   placeholder="Rp..."
                   value={newHarga || ''}
                   onChange={(e) => setNewHarga(parseInt(e.target.value) || 0)}
-                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-150 font-mono"
+                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-mono"
                 />
               </div>
             </div>
-            <button 
-              type="button" 
+            <button
+              type="button"
               onClick={handleAddItem}
               className="w-full py-1.5 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:text-indigo-400 rounded-lg font-bold flex items-center justify-center gap-1 transition"
             >
@@ -370,7 +370,7 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
             <div className="overflow-x-auto">
               <table className="w-full text-xs text-left border-collapse">
                 <thead>
-                  <tr className="bg-slate-55 border-b border-slate-100 dark:border-slate-800">
+                  <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-100 dark:border-slate-800">
                     <th className="py-2 px-3 text-slate-500 font-semibold">Deskripsi</th>
                     <th className="py-2 px-3 text-slate-500 font-semibold text-center w-12">Qty</th>
                     <th className="py-2 px-3 text-slate-500 font-semibold text-right">Harga</th>
@@ -380,12 +380,12 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {items.map((item) => (
-                    <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-850">
+                    <tr key={item.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
                       <td className="py-2.5 px-3 font-medium text-slate-800 dark:text-slate-300">
                         {item.deskripsi}
                       </td>
-                      <td className="py-2.5 px-3 text-center text-slate-650 font-mono">{item.qty}</td>
-                      <td className="py-2.5 px-3 text-right font-mono text-slate-650">{formatCurrency(item.harga)}</td>
+                      <td className="py-2.5 px-3 text-center text-slate-600 dark:text-slate-300 font-mono">{item.qty}</td>
+                      <td className="py-2.5 px-3 text-right font-mono text-slate-600 dark:text-slate-300">{formatCurrency(item.harga)}</td>
                       <td className="py-2.5 px-3 text-right font-semibold font-mono text-slate-800 dark:text-slate-200">{formatCurrency(item.subtotal)}</td>
                       <td className="py-2.5 px-3 text-right">
                         <button 
@@ -404,7 +404,7 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
           )}
 
           {/* Totals Breakdown */}
-          <div className="border-t border-slate-150 dark:border-slate-850 pt-3 space-y-1.5 text-xs text-slate-600 dark:text-slate-400">
+          <div className="border-t border-slate-200 dark:border-slate-800 pt-3 space-y-1.5 text-xs text-slate-600 dark:text-slate-400">
             <div className="flex justify-between">
               <span>Subtotal Pembiayaan</span>
               <span className="font-mono">{formatCurrency(itemsSubtotal)}</span>
@@ -449,10 +449,10 @@ export const InvoiceInput: React.FC<InvoiceInputProps> = ({ onAddInvoice }) => {
             <div className="flex gap-3">
               <div className="relative flex flex-col items-center">
                 <span className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-950 dark:text-indigo-400 font-bold text-[10px] flex items-center justify-center shrink-0">3</span>
-                <span className="w-0.5 h-6 bg-slate-150 dark:bg-slate-850"></span>
+                <span className="w-0.5 h-6 bg-slate-200 dark:bg-slate-800"></span>
               </div>
               <div className="pt-0.5">
-                <p className="font-bold text-slate-700 dark:text-slate-350">Direksi Approval (&gt; Rp 10 jt)</p>
+                <p className="font-bold text-slate-700 dark:text-slate-300">Direksi Approval (&gt; Rp 10 jt)</p>
                 <span className="text-slate-400 block">Nominal melebihi batas, perlu tandatangan direktur tingkat II</span>
               </div>
             </div>

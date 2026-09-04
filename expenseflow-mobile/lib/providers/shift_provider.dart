@@ -199,13 +199,13 @@ class ShiftProvider extends ChangeNotifier {
     return _calendarDays[key];
   }
 
-  Future<void> fetchMySchedule() async {
+  Future<void> fetchMySchedule({bool forceRefresh = false}) async {
     _loading = true;
     _error = null;
     notifyListeners();
 
     try {
-      final data = await ApiService.get('/employee/my-schedule');
+      final data = await ApiService.get('/employee/my-schedule', forceRefresh: forceRefresh);
       _source = data['source'] ?? 'none';
 
       if (data['shift'] != null) {
@@ -241,8 +241,8 @@ class ShiftProvider extends ChangeNotifier {
   //     Memakai endpoint /attendance/my-schedule-calendar yang menentukan
   //     jadwal berdasarkan TANGGAL yang dilihat, bukan shift aktif hari ini.
   //     Sehingga perubahan jadwal HRD langsung terlihat di kalender.
-  Future<void> fetchScheduleCalendar(int year, int month) async {
-    if (_calendarYear == year && _calendarMonth == month && _calendarDays.isNotEmpty) {
+  Future<void> fetchScheduleCalendar(int year, int month, {bool forceRefresh = false}) async {
+    if (!forceRefresh && _calendarYear == year && _calendarMonth == month && _calendarDays.isNotEmpty) {
       return; // sudah di-load untuk bulan ini
     }
 
@@ -257,6 +257,7 @@ class ShiftProvider extends ChangeNotifier {
           'month': month.toString(),
           'year': year.toString(),
         },
+        forceRefresh: forceRefresh,
       );
 
       final days = data['days'] as Map<String, dynamic>? ?? {};
@@ -294,9 +295,9 @@ class ShiftProvider extends ChangeNotifier {
   }
 
   // ─── Cek notifikasi shift terbaru (untuk banner "Shift Diperbarui" di beranda) ──
-  Future<void> checkShiftUpdates() async {
+  Future<void> checkShiftUpdates({bool forceRefresh = false}) async {
     try {
-      final data = await ApiService.get('/attendance/shift-updates');
+      final data = await ApiService.get('/attendance/shift-updates', forceRefresh: forceRefresh);
       _hasShiftUpdate = data['has_update'] == true;
       if (_hasShiftUpdate) {
         final latest = data['latest'] as Map<String, dynamic>?;

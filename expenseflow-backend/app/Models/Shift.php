@@ -91,4 +91,19 @@ class Shift extends Model
     {
         return $this->hasMany(UserShift::class);
     }
+
+    /**
+     * Cek apakah template shift memiliki setidaknya satu hari kerja malam (23:00 - 07:00).
+     */
+    public function hasNightSchedule(?string $date = null): bool
+    {
+        $scheds = $date ? $this->schedulesForDate($date) : $this->schedules;
+        foreach ($scheds as $sch) {
+            if (! $sch->is_off && ShiftSchedule::isNightSchedule($sch->work_start_time, $sch->work_end_time, (bool) $sch->is_cross_day)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
 }

@@ -3,6 +3,7 @@ import {
   Users,
   UserPlus,
   Download,
+  FileSpreadsheet,
   Search,
   Plus,
   Check,
@@ -41,9 +42,10 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { userApi, attendanceApi } from '../services/endpoints';
-import { ApiError } from '../services/api';
+import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
+import { ImportEmployeeModal } from './ImportEmployeeModal';
 
 interface Employee {
 
@@ -66,6 +68,11 @@ interface Employee {
   officeId: number | null; // attendance_setting_id — kantor penempatan
   officeName: string; // nama kantor untuk tampilan
   nikKtp: string | null; // NIK KTP (identity_number)
+  gender?: 'Laki-laki' | 'Perempuan' | string | null;
+  birthPlace?: string | null;
+  birthDate?: string | null;
+  isPregnant?: boolean;
+  age?: number | null;
   // Tipe hubungan kerja & kontrak
   employmentType: string | null; // 'PKWTT' | 'PKWT' | 'Probation' | 'Internship' | null
   joinedDate: string | null;
@@ -137,6 +144,11 @@ function mapEmployee(u: any): Employee {
     officeId: u.attendance_setting_id ?? null,
     officeName: u.office?.office_name ?? '—',
     nikKtp: u.identity_number ?? null,
+    gender: u.gender ?? null,
+    birthPlace: u.birth_place ?? null,
+    birthDate: u.birth_date ? String(u.birth_date).slice(0, 10) : null,
+    isPregnant: Boolean(u.is_pregnant),
+    age: u.birth_date ? Math.floor((new Date().getTime() - new Date(u.birth_date).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
     employmentType: u.employment_type ?? null,
     joinedDate: u.joined_date ?? null,
     contractStartDate: u.contract_start_date ?? null,
@@ -235,10 +247,12 @@ export const KaryawanManagement: React.FC<{
 
   // Daftar kantor perusahaan (untuk dropdown penempatan karyawan).
   const [offices, setOffices] = useState<Office[]>([]);
+  const [showImportModal, setShowImportModal] = useState<boolean>(false);
 
-  const loadOffices = async () => {
+  const loadOffices = async (forceRefresh = false) => {
     try {
-      const res: any = await attendanceApi.settings.list();
+      if (forceRefresh) invalidateCache('/dashboard/attendance/settings');
+      const res: any = await attendanceApi.settings.list(forceRefresh);
       const list: Office[] = Array.isArray(res?.settings) ? res.settings
         : Array.isArray(res?.data) ? res.data
           : Array.isArray(res) ? res : [];
@@ -246,11 +260,12 @@ export const KaryawanManagement: React.FC<{
     } catch { /* diam — kantor opsional, tidak kritis */ }
   };
 
-  const loadEmployees = async () => {
+  const loadEmployees = async (forceRefresh = false) => {
     setLoadingEmployees(true);
     setLoadError(null);
     try {
-      const res: any = await userApi.list();
+      if (forceRefresh) invalidateCache('/admin/users');
+      const res: any = await userApi.list(undefined, forceRefresh);
       const list = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
       setEmployees(list.map(mapEmployee));
     } catch (e: any) {
@@ -360,6 +375,10 @@ export const KaryawanManagement: React.FC<{
     nama: '',
     nik: '',
     nikKtp: '',
+    gender: 'Laki-laki' as 'Laki-laki' | 'Perempuan',
+    birthPlace: '',
+    birthDate: '',
+    isPregnant: false,
     email: '',
     hp: '',
     tanggalMasuk: '',
@@ -411,6 +430,10 @@ export const KaryawanManagement: React.FC<{
     nama: '',
     nik: '',
     nikKtp: '',
+    gender: 'Laki-laki' as 'Laki-laki' | 'Perempuan',
+    birthPlace: '',
+    birthDate: '',
+    isPregnant: false,
     email: '',
     hp: '',
     tanggalMasuk: new Date().toISOString().split('T')[0],
@@ -527,7 +550,7 @@ export const KaryawanManagement: React.FC<{
       'bg-amber-50 dark:bg-amber-950/40 text-amber-600 dark:text-amber-400',
       'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-600 dark:text-emerald-400',
       'bg-purple-50 dark:bg-purple-950/40 text-purple-600 dark:text-purple-400',
-      'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-455',
+      'bg-sky-50 dark:bg-sky-950/40 text-sky-600 dark:text-sky-400',
     ];
     return bgs[Math.floor(Math.random() * bgs.length)];
   };
@@ -584,6 +607,10 @@ export const KaryawanManagement: React.FC<{
             role: addForm.role,
             employee_code: addForm.nik || undefined,
             identity_number: addForm.nikKtp || undefined,
+            gender: addForm.gender,
+            birth_place: addForm.birthPlace || undefined,
+            birth_date: addForm.birthDate || undefined,
+            is_pregnant: addForm.gender === 'Perempuan' ? addForm.isPregnant : false,
             department: addForm.dept || undefined,
             attendance_setting_id: addForm.officeId === '' ? null : addForm.officeId,
             monthly_claim_limit: addForm.limit === '' || addForm.limit === null ? null : addForm.limit,
@@ -605,6 +632,10 @@ export const KaryawanManagement: React.FC<{
             nama: '',
             nik: '',
             nikKtp: '',
+            gender: 'Laki-laki',
+            birthPlace: '',
+            birthDate: '',
+            isPregnant: false,
             email: '',
             hp: '',
             tanggalMasuk: new Date().toISOString().split('T')[0],
@@ -654,6 +685,10 @@ export const KaryawanManagement: React.FC<{
       nama: emp.nama,
       nik: emp.id.startsWith('EMP-') ? '' : emp.id,
       nikKtp: emp.nikKtp ?? '',
+      gender: (emp.gender as any) || 'Laki-laki',
+      birthPlace: emp.birthPlace ?? '',
+      birthDate: emp.birthDate ?? '',
+      isPregnant: Boolean(emp.isPregnant),
       email: emp.email,
       hp: emp.hp === '—' ? '' : emp.hp,
       tanggalMasuk: emp.tanggalMasuk ?? new Date().toISOString().split('T')[0],
@@ -704,6 +739,10 @@ export const KaryawanManagement: React.FC<{
             name: editForm.nama,
             employee_code: editForm.nik || undefined,
             identity_number: editForm.nikKtp || undefined,
+            gender: editForm.gender,
+            birth_place: editForm.birthPlace || undefined,
+            birth_date: editForm.birthDate || undefined,
+            is_pregnant: editForm.gender === 'Perempuan' ? editForm.isPregnant : false,
             phone: editForm.hp || undefined,
             role: editForm.role || undefined,
             department: editForm.dept || undefined,
@@ -823,7 +862,7 @@ export const KaryawanManagement: React.FC<{
         </div>
         <div className="flex gap-2.5 w-full sm:w-auto shrink-0">
           <button
-            onClick={() => { loadEmployees(); loadOffices(); }}
+            onClick={() => { loadEmployees(true); loadOffices(true); }}
             disabled={loadingEmployees}
             className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition duration-150 cursor-pointer disabled:opacity-50"
             title="Refresh Data"
@@ -839,6 +878,16 @@ export const KaryawanManagement: React.FC<{
             <Download className="w-3.5 h-3.5 text-indigo-600" />
             <span>Export Excel</span>
           </button>
+
+          {viewMode === 'list' && (
+            <button
+              onClick={() => setShowImportModal(true)}
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 hover:bg-emerald-100 dark:bg-emerald-950/40 dark:hover:bg-emerald-900/50 border border-emerald-300/70 dark:border-emerald-700/60 transition duration-150 cursor-pointer shadow-2xs"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+              <span>Import Excel / CSV</span>
+            </button>
+          )}
 
           {viewMode === 'list' && (
             <button
@@ -933,7 +982,7 @@ export const KaryawanManagement: React.FC<{
             <div className="flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-3 pb-1">
 
               {/* Status Segmented Switch: Karyawan Aktif (Default) vs Karyawan Nonaktif */}
-              <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800/80 rounded-2xl border border-slate-200/60 dark:border-slate-750 self-start sm:self-auto shrink-0">
+              <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800/80 rounded-2xl border border-slate-200/60 dark:border-slate-700 self-start sm:self-auto shrink-0">
                 <button
                   type="button"
                   onClick={() => setStatusFilter('active')}
@@ -1026,25 +1075,25 @@ export const KaryawanManagement: React.FC<{
             </div>
 
             {/* Table Area */}
-            <div className="overflow-x-auto border border-slate-100 dark:border-slate-800 rounded-2xl">
+            <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-2xl bg-white dark:bg-slate-900">
               <table className="w-full text-left border-collapse min-w-[900px]">
                 <thead>
-                  <tr className="bg-slate-50/70 dark:bg-slate-800/20 border-b border-slate-100 dark:border-slate-800">
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '180px' }}>Karyawan</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '90px' }}>NIK</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Departemen</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '100px' }}>Jabatan</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '130px' }}>Status & Kontrak</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '130px' }}>Tanggal Masuk</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Batas Klaim</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Nomor HP</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-400 uppercase tracking-widest text-right" style={{ width: '150px' }}>Aksi</th>
+                  <tr className="bg-slate-50/70 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800">
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '180px' }}>Karyawan</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '90px' }}>NIK</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Departemen</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '100px' }}>Jabatan</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '130px' }}>Status & Kontrak</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '130px' }}>Tanggal Masuk</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Batas Klaim</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Nomor HP</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest text-right" style={{ width: '150px' }}>Aksi</th>
                   </tr>
                 </thead>
-                <tbody>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
                   {loadingEmployees ? (
                     [1, 2, 3, 4, 5].map((i) => (
-                      <tr key={`skeleton-${i}`} className="border-b border-slate-100 dark:border-slate-805/40 animate-pulse">
+                      <tr key={`skeleton-${i}`} className="border-b border-slate-100 dark:border-slate-800 animate-pulse">
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2.5">
                             <div className="w-[30px] h-[30px] rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />
@@ -1083,7 +1132,7 @@ export const KaryawanManagement: React.FC<{
                     ))
                   ) : filteredEmployees.length === 0 ? (
                     <tr>
-                      <td colSpan={9} className="py-12 text-center text-xs text-slate-450 dark:text-slate-500">
+                      <td colSpan={9} className="py-12 text-center text-xs text-slate-400 dark:text-slate-500">
                         Tidak ada data karyawan yang cocok dengan pencarian dan filter Anda.
                       </td>
                     </tr>
@@ -1095,7 +1144,7 @@ export const KaryawanManagement: React.FC<{
                       return (
                         <tr
                           key={emp.id}
-                          className="hover:bg-slate-50/40 dark:hover:bg-slate-850/10 border-b border-slate-100 dark:border-slate-805/40 transition last:border-b-0"
+                          className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 border-b border-slate-100 dark:border-slate-800 transition last:border-b-0"
                         >
                           <td className="py-3 px-4">
                             <div className="flex items-center gap-2.5">
@@ -1110,11 +1159,11 @@ export const KaryawanManagement: React.FC<{
                           </td>
 
                           <td className="py-3 px-4">
-                            <span className="text-[11px] font-semibold text-slate-500 font-mono tracking-tight">{emp.id}</span>
+                            <span className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 font-mono tracking-tight">{emp.id}</span>
                           </td>
 
                           <td className="py-3 px-4">
-                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-350 block">{emp.dept}</span>
+                            <span className="text-xs font-semibold text-slate-700 dark:text-slate-300 block">{emp.dept}</span>
                             {emp.officeId && (
                               <span className="text-[10px] text-indigo-500 dark:text-indigo-400 flex items-center gap-1 mt-0.5">
                                 <Building className="w-3 h-3 shrink-0" />
@@ -1130,19 +1179,19 @@ export const KaryawanManagement: React.FC<{
                           <td className="py-3 px-4 space-y-1">
                             <div className="flex flex-wrap items-center gap-1">
                               {emp.status === 'Aktif' && (
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-450 bg-emerald-50 dark:bg-emerald-950/20 rounded-full">
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 rounded-full">
                                   <Check className="w-2.5 h-2.5 shrink-0" />
                                   <span>Aktif</span>
                                 </span>
                               )}
                               {emp.status === 'Nonaktif' && (
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-rose-600 dark:text-rose-450 bg-rose-50 dark:bg-rose-950/20 rounded-full">
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 rounded-full">
                                   <Ban className="w-2.5 h-2.5 shrink-0" />
                                   <span>Nonaktif</span>
                                 </span>
                               )}
                               {emp.status === 'Belum login' && (
-                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-amber-600 dark:text-amber-450 bg-amber-50 dark:bg-amber-950/20 rounded-full whitespace-nowrap">
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 rounded-full whitespace-nowrap">
                                   <Clock className="w-2.5 h-2.5 shrink-0" />
                                   <span>Belum login</span>
                                 </span>
@@ -1343,7 +1392,7 @@ export const KaryawanManagement: React.FC<{
           <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
               <div>
-                <span className="text-xs font-bold text-slate-850 dark:text-slate-100 flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                   <Briefcase className="w-4 h-4 text-indigo-600" />
                   Pilih Status Hubungan Kerja Karyawan *
                 </span>
@@ -1538,7 +1587,7 @@ export const KaryawanManagement: React.FC<{
             {/* KOLOM KIRI: DATA PRIBADI & PEKERJAAN */}
             <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
               <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-bold text-slate-850 dark:text-slate-100 flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                   <UserPlus className="w-4 h-4 text-indigo-600" />
                   1. Data Pribadi & Profil Pekerjaan
                 </span>
@@ -1546,7 +1595,7 @@ export const KaryawanManagement: React.FC<{
               </div>
 
               <div className="space-y-3.5">
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 mb-3">
                   Identitas Diri
                 </span>
 
@@ -1559,7 +1608,7 @@ export const KaryawanManagement: React.FC<{
                       onChange={(e) => setAddForm({ ...addForm, nama: e.target.value })}
                       required
                       placeholder="Sesuai KTP"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
                   <div className="space-y-1">
@@ -1570,7 +1619,7 @@ export const KaryawanManagement: React.FC<{
                       onChange={(e) => setAddForm({ ...addForm, nik: e.target.value })}
                       required
                       placeholder="EMP-XXXX"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                     />
                   </div>
                 </div>
@@ -1585,7 +1634,7 @@ export const KaryawanManagement: React.FC<{
                       required
                       maxLength={16}
                       placeholder="16 digit NIK KTP"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                     />
                   </div>
                   <div className="space-y-1">
@@ -1596,10 +1645,73 @@ export const KaryawanManagement: React.FC<{
                       onChange={(e) => setAddForm({ ...addForm, hp: e.target.value.replace(/[^0-9]/g, '') })}
                       maxLength={13}
                       placeholder="08xxxxxxxxxx"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-801/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Jenis Kelamin *</label>
+                    <select
+                      value={addForm.gender}
+                      onChange={(e) => setAddForm({ ...addForm, gender: e.target.value as any, isPregnant: e.target.value === 'Perempuan' ? addForm.isPregnant : false })}
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="Laki-laki">Laki-laki</option>
+                      <option value="Perempuan">Perempuan</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tempat Lahir</label>
+                    <input
+                      type="text"
+                      value={addForm.birthPlace}
+                      onChange={(e) => setAddForm({ ...addForm, birthPlace: e.target.value })}
+                      placeholder="Contoh: Jakarta"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Lahir</label>
+                      {addForm.birthDate && (
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                          (() => {
+                            const age = Math.floor((new Date().getTime() - new Date(addForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000));
+                            return age < 17 ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400' : 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400';
+                          })()
+                        }`}>
+                          {Math.floor((new Date().getTime() - new Date(addForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000))} thn
+                        </span>
+                      )}
+                    </div>
+                    <CustomDatePicker
+                      value={addForm.birthDate}
+                      onChange={(val) => setAddForm({ ...addForm, birthDate: val })}
+                      placeholder="Pilih tgl lahir"
+                      size="sm"
+                    />
+                  </div>
+                </div>
+
+                {addForm.gender === 'Perempuan' && (
+                  <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50">
+                    <input
+                      type="checkbox"
+                      id="add_is_pregnant"
+                      checked={addForm.isPregnant}
+                      onChange={(e) => setAddForm({ ...addForm, isPregnant: e.target.checked })}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <label htmlFor="add_is_pregnant" className="text-xs text-slate-700 dark:text-slate-200 cursor-pointer select-none">
+                      <span className="font-semibold text-amber-800 dark:text-amber-300">Karyawan Sedang Hamil</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 ml-1.5 block sm:inline">
+                        (Otomatis dilindungi dari penugasan shift malam sesuai UU No. 13/2003 Pasal 76)
+                      </span>
+                    </label>
+                  </div>
+                )}
 
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
@@ -1611,11 +1723,11 @@ export const KaryawanManagement: React.FC<{
                     onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
                     required
                     placeholder="nama@perusahaan.co.id"
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-808/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
                 </div>
 
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Ketentuan Tanggal & Kontrak ({addForm.employmentType})
                 </span>
 
@@ -1689,7 +1801,7 @@ export const KaryawanManagement: React.FC<{
                 )}
 
 
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Penempatan & Akses Sistem
                 </span>
 
@@ -1700,7 +1812,7 @@ export const KaryawanManagement: React.FC<{
                       value={addForm.dept}
                       onChange={(e) => setAddForm({ ...addForm, dept: e.target.value })}
                       required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="">Pilih dept</option>
                       {departments.map(d => (
@@ -1715,7 +1827,7 @@ export const KaryawanManagement: React.FC<{
                       value={addForm.jabatan}
                       onChange={(e) => setAddForm({ ...addForm, jabatan: e.target.value })}
                       placeholder="Staff / Officer / Manager"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-803/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
                 </div>
@@ -1726,7 +1838,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={addForm.officeId}
                       onChange={(e) => setAddForm({ ...addForm, officeId: e.target.value === '' ? '' : Number(e.target.value) })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="">Belum ditentukan (Kantor Pusat)</option>
                       {offices.map(o => (
@@ -1741,7 +1853,7 @@ export const KaryawanManagement: React.FC<{
                       value={addForm.role}
                       onChange={(e) => setAddForm({ ...addForm, role: e.target.value })}
                       required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="employee">Employee (Karyawan - Mobile App)</option>
                       <option value="finance">Finance (Web + Mobile)</option>
@@ -1771,7 +1883,7 @@ export const KaryawanManagement: React.FC<{
             {/* KOLOM KANAN: FINANSIAL PAYROLL, REKENING BANK, PAJAK, BPJS & KEAMANAN */}
             <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
               <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-bold text-slate-850 dark:text-slate-100 flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                   <Wallet className="w-4 h-4 text-emerald-600" />
                   2. Finansial Payroll, Pajak & BPJS
                 </span>
@@ -1782,7 +1894,7 @@ export const KaryawanManagement: React.FC<{
 
               <div className="space-y-3.5">
                 {/* A. REKENING BANK PAYROLL */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 mb-3">
                   Informasi Rekening Payroll
                 </span>
 
@@ -1792,7 +1904,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={addForm.bankName}
                       onChange={(e) => setAddForm({ ...addForm, bankName: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="BCA">Bank BCA</option>
                       <option value="Mandiri">Bank Mandiri</option>
@@ -1812,7 +1924,7 @@ export const KaryawanManagement: React.FC<{
                       value={addForm.bankAccountNo}
                       onChange={(e) => setAddForm({ ...addForm, bankAccountNo: e.target.value.replace(/[^0-9]/g, '') })}
                       placeholder="Nomor rekening transfer"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                     />
                   </div>
                 </div>
@@ -1824,7 +1936,7 @@ export const KaryawanManagement: React.FC<{
                     value={addForm.bankAccountHolder || addForm.nama}
                     onChange={(e) => setAddForm({ ...addForm, bankAccountHolder: e.target.value })}
                     placeholder="Nama sesuai buku tabungan"
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                   />
                 </div>
 
@@ -1835,7 +1947,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={addForm.salaryType}
                       onChange={(e) => setAddForm({ ...addForm, salaryType: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="monthly">Gaji Bulanan (Monthly)</option>
                       <option value="daily">Harian / Uang Saku (Daily)</option>
@@ -1853,14 +1965,14 @@ export const KaryawanManagement: React.FC<{
                         value={addForm.basicSalary === null ? '' : addForm.basicSalary}
                         onChange={(e) => setAddForm({ ...addForm, basicSalary: e.target.value === '' ? '' : Number(e.target.value) })}
                         placeholder="Contoh: 5000000"
-                        className="w-full text-xs p-2.5 pl-9 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                        className="w-full text-xs p-2.5 pl-9 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                       />
                     </div>
                   </div>
                 </div>
 
                 {/* C. DATA PERPAJAKAN PPH 21 TER 2024 */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Pajak Penghasilan (PPh 21 TER 2024)
                 </span>
 
@@ -1884,7 +1996,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={addForm.ptkpStatus}
                       onChange={(e) => setAddForm({ ...addForm, ptkpStatus: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <optgroup label="TER Kategori A (PTKP Rp 54jt - 58.5jt)">
                         <option value="TK/0">TK/0 — Tidak Kawin, 0 Tanggungan (TER A)</option>
@@ -1914,7 +2026,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={addForm.taxMethod}
                       onChange={(e) => setAddForm({ ...addForm, taxMethod: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="gross">Gross (PPh 21 Potong Gaji Karyawan)</option>
                       <option value="gross_up">Gross-Up (Diberi Tunjangan Pajak)</option>
@@ -1939,7 +2051,7 @@ export const KaryawanManagement: React.FC<{
                 </div>
 
                 {/* D. KEPESERTAAN BPJS */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Keikutsertaan BPJS Kesehatan & Ketenagakerjaan
                 </span>
 
@@ -2017,7 +2129,7 @@ export const KaryawanManagement: React.FC<{
                 </div>
 
                 {/* E. PASSWORD AWAL AKUN */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Sandi Awal Akun Mobile App
                 </span>
 
@@ -2030,12 +2142,12 @@ export const KaryawanManagement: React.FC<{
                         value={addForm.password}
                         onChange={(e) => setAddForm({ ...addForm, password: e.target.value })}
                         required
-                        className="w-full text-xs p-2.5 pr-10 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                        className="w-full text-xs p-2.5 pr-10 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                       />
                       <button
                         type="button"
                         onClick={() => setAddForm({ ...addForm, showPassword: !addForm.showPassword })}
-                        className="absolute right-3 top-2.5 text-slate-400 dark:text-slate-500 hover:text-slate-650 transition"
+                        className="absolute right-3 top-2.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition"
                       >
                         {addForm.showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                       </button>
@@ -2049,7 +2161,7 @@ export const KaryawanManagement: React.FC<{
                       value={addForm.confirmPassword}
                       onChange={(e) => setAddForm({ ...addForm, confirmPassword: e.target.value })}
                       required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
                     />
                   </div>
                 </div>
@@ -2060,7 +2172,7 @@ export const KaryawanManagement: React.FC<{
                     <span>Password terkonfirmasi cocok.</span>
                   </div>
                 ) : (
-                  <div className="p-2.5 px-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded-xl text-rose-600 dark:text-rose-450 text-xs flex items-center gap-1.5">
+                  <div className="p-2.5 px-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded-xl text-rose-600 dark:text-rose-400 text-xs flex items-center gap-1.5">
                     <X className="w-4 h-4 shrink-0" />
                     <span>Password tidak cocok.</span>
                   </div>
@@ -2071,7 +2183,7 @@ export const KaryawanManagement: React.FC<{
                   <button
                     type="button"
                     onClick={() => setViewMode('list')}
-                    className="flex-1 py-3 border border-slate-200 dark:border-slate-800 dark:hover:bg-slate-805 text-slate-600 dark:text-slate-350 rounded-xl text-xs font-semibold transition cursor-pointer"
+                    className="flex-1 py-3 border border-slate-200 dark:border-slate-700 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
                   >
                     Batal
                   </button>
@@ -2315,10 +2427,73 @@ export const KaryawanManagement: React.FC<{
                       onChange={(e) => setEditForm({ ...editForm, hp: e.target.value.replace(/[^0-9]/g, '') })}
                       maxLength={13}
                       placeholder="08xxxxxxxxxx"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-801/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
                 </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Jenis Kelamin *</label>
+                    <select
+                      value={editForm.gender}
+                      onChange={(e) => setEditForm({ ...editForm, gender: e.target.value as any, isPregnant: e.target.value === 'Perempuan' ? editForm.isPregnant : false })}
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    >
+                      <option value="Laki-laki">Laki-laki</option>
+                      <option value="Perempuan">Perempuan</option>
+                    </select>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tempat Lahir</label>
+                    <input
+                      type="text"
+                      value={editForm.birthPlace}
+                      onChange={(e) => setEditForm({ ...editForm, birthPlace: e.target.value })}
+                      placeholder="Contoh: Jakarta"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                    />
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Lahir</label>
+                      {editForm.birthDate && (
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                          (() => {
+                            const age = Math.floor((new Date().getTime() - new Date(editForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000));
+                            return age < 17 ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400' : 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400';
+                          })()
+                        }`}>
+                          {Math.floor((new Date().getTime() - new Date(editForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000))} thn
+                        </span>
+                      )}
+                    </div>
+                    <CustomDatePicker
+                      value={editForm.birthDate}
+                      onChange={(val) => setEditForm({ ...editForm, birthDate: val })}
+                      placeholder="Pilih tgl lahir"
+                      size="sm"
+                    />
+                  </div>
+                </div>
+
+                {editForm.gender === 'Perempuan' && (
+                  <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50">
+                    <input
+                      type="checkbox"
+                      id="edit_is_pregnant"
+                      checked={editForm.isPregnant}
+                      onChange={(e) => setEditForm({ ...editForm, isPregnant: e.target.checked })}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                    />
+                    <label htmlFor="edit_is_pregnant" className="text-xs text-slate-700 dark:text-slate-200 cursor-pointer select-none">
+                      <span className="font-semibold text-amber-800 dark:text-amber-300">Karyawan Sedang Hamil</span>
+                      <span className="text-[11px] text-slate-500 dark:text-slate-400 ml-1.5 block sm:inline">
+                        (Otomatis dilindungi dari penugasan shift malam sesuai UU No. 13/2003 Pasal 76)
+                      </span>
+                    </label>
+                  </div>
+                )}
 
                 <div className="space-y-1">
                   <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
@@ -2405,7 +2580,7 @@ export const KaryawanManagement: React.FC<{
                 )}
 
 
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Penempatan & Akses Sistem
                 </span>
 
@@ -2415,7 +2590,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={editForm.dept}
                       onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="">Pilih dept</option>
                       {departments.map(d => (
@@ -2430,7 +2605,7 @@ export const KaryawanManagement: React.FC<{
                       value={editForm.jabatan}
                       onChange={(e) => setEditForm({ ...editForm, jabatan: e.target.value })}
                       placeholder="Staff / Officer / Manager"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-803/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
                     />
                   </div>
                 </div>
@@ -2441,7 +2616,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={editForm.officeId}
                       onChange={(e) => setEditForm({ ...editForm, officeId: e.target.value === '' ? '' : Number(e.target.value) })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="">Belum ditentukan (Kantor Pusat)</option>
                       {offices.map(o => (
@@ -2456,7 +2631,7 @@ export const KaryawanManagement: React.FC<{
                       value={editForm.role}
                       onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
                       required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="employee">Employee (Karyawan - Mobile App)</option>
                       <option value="finance">Finance (Web + Mobile)</option>
@@ -2486,7 +2661,7 @@ export const KaryawanManagement: React.FC<{
             {/* KOLOM KANAN: FINANSIAL PAYROLL, REKENING BANK, PAJAK, BPJS */}
             <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
               <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-bold text-slate-850 dark:text-slate-100 flex items-center gap-2">
+                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                   <Wallet className="w-4 h-4 text-emerald-600" />
                   2. Finansial Payroll, Pajak & BPJS
                 </span>
@@ -2497,7 +2672,7 @@ export const KaryawanManagement: React.FC<{
 
               <div className="space-y-3.5">
                 {/* A. REKENING BANK PAYROLL */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 mb-3">
                   Informasi Rekening Payroll
                 </span>
 
@@ -2507,7 +2682,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={editForm.bankName}
                       onChange={(e) => setEditForm({ ...editForm, bankName: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="BCA">Bank BCA</option>
                       <option value="Mandiri">Bank Mandiri</option>
@@ -2550,7 +2725,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={editForm.salaryType}
                       onChange={(e) => setEditForm({ ...editForm, salaryType: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="monthly">Gaji Bulanan (Monthly)</option>
                       <option value="daily">Harian / Uang Saku (Daily)</option>
@@ -2575,7 +2750,7 @@ export const KaryawanManagement: React.FC<{
                 </div>
 
                 {/* C. DATA PERPAJAKAN PPH 21 TER 2024 */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Pajak Penghasilan (PPh 21 TER 2024)
                 </span>
 
@@ -2599,7 +2774,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={editForm.ptkpStatus}
                       onChange={(e) => setEditForm({ ...editForm, ptkpStatus: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <optgroup label="TER Kategori A (PTKP Rp 54jt - 58.5jt)">
                         <option value="TK/0">TK/0 — Tidak Kawin, 0 Tanggungan (TER A)</option>
@@ -2629,7 +2804,7 @@ export const KaryawanManagement: React.FC<{
                     <select
                       value={editForm.taxMethod}
                       onChange={(e) => setEditForm({ ...editForm, taxMethod: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-802/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
                     >
                       <option value="gross">Gross (PPh 21 Potong Gaji Karyawan)</option>
                       <option value="gross_up">Gross-Up (Diberi Tunjangan Pajak)</option>
@@ -2654,7 +2829,7 @@ export const KaryawanManagement: React.FC<{
                 </div>
 
                 {/* D. KEPESERTAAN BPJS */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
+                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
                   Keikutsertaan BPJS Kesehatan & Ketenagakerjaan
                 </span>
 
@@ -2739,7 +2914,7 @@ export const KaryawanManagement: React.FC<{
                       setViewMode('list');
                       setEditEmployee(null);
                     }}
-                    className="flex-1 py-3 border border-slate-200 dark:border-slate-800 dark:hover:bg-slate-805 text-slate-600 dark:text-slate-350 rounded-xl text-xs font-semibold transition cursor-pointer"
+                    className="flex-1 py-3 border border-slate-200 dark:border-slate-700 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
                   >
                     Batal
                   </button>
@@ -2765,12 +2940,12 @@ export const KaryawanManagement: React.FC<{
           <div onClick={() => setNonaktifEmployee(null)} className="fixed inset-0 bg-slate-900/60 dark:bg-slate-950/80 backdrop-blur-sm" />
 
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 w-full max-w-md p-6 shadow-2xl relative z-10 leading-relaxed overflow-hidden">
-            <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-805">
-              <h3 className="text-sm font-bold text-rose-600 dark:text-rose-450 flex items-center gap-1.5 font-sans">
+            <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
+              <h3 className="text-sm font-bold text-rose-600 dark:text-rose-400 flex items-center gap-1.5 font-sans">
                 <Ban className="w-4.5 h-4.5 text-rose-600 shrink-0 animate-pulse" />
                 Nonaktifkan Akun Karyawan
               </h3>
-              <button onClick={() => setNonaktifEmployee(null)} className="p-1 hover:bg-slate-50 dark:hover:bg-slate-850 rounded-full text-slate-400">
+              <button onClick={() => setNonaktifEmployee(null)} className="p-1 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-full text-slate-400">
                 <X className="w-4.5 h-4.5" />
               </button>
             </div>
@@ -2781,20 +2956,20 @@ export const KaryawanManagement: React.FC<{
                   {nonaktifEmployee.initials}
                 </span>
                 <div className="min-w-0">
-                  <p className="text-xs font-bold text-slate-850 dark:text-slate-100 truncate">{nonaktifEmployee.nama}</p>
-                  <p className="text-[10px] text-slate-400 dark:text-slate-505 truncate mt-0.5">{nonaktifEmployee.email} · {nonaktifEmployee.id}</p>
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">{nonaktifEmployee.nama}</p>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-400 truncate mt-0.5">{nonaktifEmployee.email} · {nonaktifEmployee.id}</p>
                 </div>
               </div>
 
-              <div className="p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded-xl text-[11px] text-rose-750 dark:text-rose-400 flex items-start gap-1.5 leading-relaxed">
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded-xl text-[11px] text-rose-700 dark:text-rose-400 flex items-start gap-1.5 leading-relaxed">
                 <AlertTriangle className="w-5 h-5 shrink-0 text-rose-600 mt-0.5" />
                 <span>Karyawan ini tidak akan bisa login ke aplikasi mobile setelah akun dinonaktifkan. Pengajuan klaim struk yang sudah terunggah sebelumnya akan tetap tersimpan dan dapat diproses HR/Finance.</span>
               </div>
 
               <div className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-[10.5px] leading-relaxed space-y-1 text-slate-600 dark:text-slate-400">
-                <p className="font-bold text-slate-700 dark:text-slate-350 mb-1">Dampak deaktifasi akun:</p>
-                <div className="flex items-center gap-1.5 text-rose-550/70"><X className="w-3.5 h-3.5 text-rose-500 shrink-0" /> <span>Login aplikasi mobile diblokir total</span></div>
-                <div className="flex items-center gap-1.5 text-rose-550/70"><X className="w-3.5 h-3.5 text-rose-500 shrink-0" /> <span>Semua token aktif otomatis dibatalkan</span></div>
+                <p className="font-bold text-slate-700 dark:text-slate-300 mb-1">Dampak deaktifasi akun:</p>
+                <div className="flex items-center gap-1.5 text-rose-500/70"><X className="w-3.5 h-3.5 text-rose-500 shrink-0" /> <span>Login aplikasi mobile diblokir total</span></div>
+                <div className="flex items-center gap-1.5 text-rose-500/70"><X className="w-3.5 h-3.5 text-rose-500 shrink-0" /> <span>Semua token aktif otomatis dibatalkan</span></div>
                 <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> <span>Data & histori reimbursement aman</span></div>
                 <div className="flex items-center gap-1.5"><Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" /> <span>Akun dapat diaktifkan kembali kapan saja</span></div>
               </div>
@@ -2806,7 +2981,7 @@ export const KaryawanManagement: React.FC<{
                     value={nonaktifForm.alasan}
                     onChange={(e) => setNonaktifForm({ ...nonaktifForm, alasan: e.target.value })}
                     required
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-850 text-slate-800 dark:text-slate-100"
+                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
                   >
                     <option value="">Pilih Alasan</option>
                     <option value="Resign / keluar dari perusahaan">Resign / keluar dari perusahaan</option>
@@ -2823,7 +2998,7 @@ export const KaryawanManagement: React.FC<{
                     value={nonaktifForm.catatan}
                     onChange={(e) => setNonaktifForm({ ...nonaktifForm, catatan: e.target.value })}
                     placeholder="Tulis informasi detail tambahan..."
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-805/10 text-slate-800 dark:text-slate-100 focus:outline-none"
+                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/30 text-slate-800 dark:text-slate-100 focus:outline-none"
                   />
                 </div>
               </div>
@@ -2835,7 +3010,7 @@ export const KaryawanManagement: React.FC<{
               <button
                 type="button"
                 onClick={() => setNonaktifEmployee(null)}
-                className="flex-1 py-2.5 border border-slate-200 dark:border-slate-800 dark:hover:bg-slate-805 text-slate-600 dark:text-slate-400 rounded-xl text-xs font-semibold hover:bg-slate-50 cursor-pointer"
+                className="flex-1 py-2.5 border border-slate-200 dark:border-slate-700 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold hover:bg-slate-50 cursor-pointer"
               >
                 Batal
               </button>
@@ -2901,7 +3076,7 @@ export const KaryawanManagement: React.FC<{
               >
 
                 {/* 1. Header Profil Ringkas */}
-                <div className="p-6 bg-gradient-to-r from-slate-50 to-indigo-50/40 dark:from-slate-850 dark:to-indigo-950/20 border-b border-slate-100 dark:border-slate-800 shrink-0">
+                <div className="p-6 bg-gradient-to-r from-slate-50 to-indigo-50/40 dark:from-slate-900 dark:to-indigo-950/40 border-b border-slate-100 dark:border-slate-800 shrink-0">
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex items-center gap-3.5 min-w-0">
                       <div className={`w-13 h-13 rounded-2xl flex items-center justify-center font-extrabold text-base select-none shadow-sm ${fullData.avatarBg} ${fullData.avatarColor}`}>
@@ -2909,7 +3084,7 @@ export const KaryawanManagement: React.FC<{
                       </div>
                       <div className="min-w-0">
                         <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="text-base font-extrabold text-slate-850 dark:text-white truncate">
+                          <h3 className="text-base font-extrabold text-slate-900 dark:text-white truncate">
                             {fullData.nama}
                           </h3>
                           {fullData.status === 'Aktif' ? (
@@ -3044,7 +3219,7 @@ export const KaryawanManagement: React.FC<{
                       {detailTab === 'profile' && (
                         <div className="space-y-4">
                       {/* Identitas Karyawan Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                             <FileText className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -3061,11 +3236,50 @@ export const KaryawanManagement: React.FC<{
                               {fullData.nikKtp && (
                                 <button
                                   onClick={() => handleCopyText(fullData.nikKtp || '', 'nikKtp')}
-                                  className="text-slate-400 hover:text-indigo-600 transition p-1"
+                                  className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
                                   title="Salin NIK KTP"
                                 >
                                   {copiedField === 'nikKtp' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
                                 </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Jenis Kelamin</span>
+                            <div className="flex items-center bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                                {fullData.gender || '—'}
+                              </span>
+                              {fullData.gender === 'Perempuan' && fullData.isPregnant && (
+                                <span className="ml-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400">
+                                  Sedang Hamil (Proteksi K3)
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Tempat & Tanggal Lahir</span>
+                            <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs text-slate-800 dark:text-slate-200">
+                                {(() => {
+                                  const place = fullData.birthPlace
+                                    ? fullData.birthPlace.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')
+                                    : '';
+                                  const date = fullData.birthDate ? formatDateId(fullData.birthDate) : '';
+                                  if (place && date) return `${place}, ${date}`;
+                                  return place || date || '—';
+                                })()}
+                              </span>
+                              {fullData.age !== null && fullData.age !== undefined && (
+                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                                  fullData.age < 17
+                                    ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-400'
+                                    : 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400'
+                                }`}>
+                                  Usia {fullData.age} Tahun
+                                </span>
                               )}
                             </div>
                           </div>
@@ -3080,7 +3294,7 @@ export const KaryawanManagement: React.FC<{
                               {fullData.hp && fullData.hp !== '—' && (
                                 <button
                                   onClick={() => handleCopyText(fullData.hp, 'hp')}
-                                  className="text-slate-400 hover:text-indigo-600 transition p-1"
+                                  className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
                                   title="Salin Nomor HP"
                                 >
                                   {copiedField === 'hp' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -3098,7 +3312,7 @@ export const KaryawanManagement: React.FC<{
                               </span>
                               <button
                                 onClick={() => handleCopyText(fullData.email, 'email')}
-                                className="text-slate-400 hover:text-indigo-600 transition p-1"
+                                className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
                                 title="Salin Email"
                               >
                                 {copiedField === 'email' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -3109,7 +3323,7 @@ export const KaryawanManagement: React.FC<{
                       </div>
 
                       {/* Hubungan Kerja & Penempatan Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                             <Briefcase className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -3212,7 +3426,7 @@ export const KaryawanManagement: React.FC<{
                       </div>
 
                       {/* Rekening Bank Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                             <Landmark className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -3241,7 +3455,7 @@ export const KaryawanManagement: React.FC<{
                               </span>
                               <button
                                 onClick={() => handleCopyText(fullData.bankAccountNo || '', 'bankAccountNo')}
-                                className="text-slate-400 hover:text-indigo-600 transition p-1"
+                                className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
                                 title="Salin No Rekening"
                               >
                                 {copiedField === 'bankAccountNo' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -3259,7 +3473,7 @@ export const KaryawanManagement: React.FC<{
                       </div>
 
                       {/* Perpajakan PPh 21 TER 2024 Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                             <BadgePercent className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -3276,7 +3490,7 @@ export const KaryawanManagement: React.FC<{
                               {fullData.npwp && (
                                 <button
                                   onClick={() => handleCopyText(fullData.npwp || '', 'npwp')}
-                                  className="text-slate-400 hover:text-indigo-600 transition p-1"
+                                  className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
                                   title="Salin NPWP"
                                 >
                                   {copiedField === 'npwp' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -3312,7 +3526,7 @@ export const KaryawanManagement: React.FC<{
                   {detailTab === 'bpjs' && (
                     <div className="space-y-4 animate-in fade-in duration-150">
                       {/* BPJS Kesehatan Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <div className="flex items-center gap-2">
                             <div className="w-8 h-8 rounded-xl bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400 flex items-center justify-center font-bold">
@@ -3326,7 +3540,7 @@ export const KaryawanManagement: React.FC<{
                           <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${
                             fullData.bpjsKesehatanEnabled
                               ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/40'
-                              : 'bg-slate-100 text-slate-500 border-slate-200'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
                           }`}>
                             {fullData.bpjsKesehatanEnabled ? '✓ Keanggotaan Aktif' : 'Non-Aktif'}
                           </span>
@@ -3340,7 +3554,7 @@ export const KaryawanManagement: React.FC<{
                               {fullData.bpjsKesehatanNo && (
                                 <button
                                   onClick={() => handleCopyText(fullData.bpjsKesehatanNo || '', 'bpjsKes')}
-                                  className="text-slate-400 hover:text-indigo-600 transition p-1"
+                                  className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
                                   title="Salin No BPJS Kesehatan"
                                 >
                                   {copiedField === 'bpjsKes' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -3366,7 +3580,7 @@ export const KaryawanManagement: React.FC<{
                       </div>
 
                       {/* BPJS Ketenagakerjaan Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <div className="flex items-center gap-2">
                             <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold">
@@ -3380,7 +3594,7 @@ export const KaryawanManagement: React.FC<{
                           <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${
                             fullData.bpjsKetenagakerjaanEnabled
                               ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 border-blue-200 dark:border-blue-800/40'
-                              : 'bg-slate-100 text-slate-500 border-slate-200'
+                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
                           }`}>
                             {fullData.bpjsKetenagakerjaanEnabled ? '✓ Keanggotaan Aktif' : 'Non-Aktif'}
                           </span>
@@ -3393,7 +3607,7 @@ export const KaryawanManagement: React.FC<{
                             {fullData.bpjsKetenagakerjaanNo && (
                               <button
                                 onClick={() => handleCopyText(fullData.bpjsKetenagakerjaanNo || '', 'bpjsTk')}
-                                className="text-slate-400 hover:text-indigo-600 transition p-1"
+                                className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
                                 title="Salin No KPJ BPJS Ketenagakerjaan"
                               >
                                 {copiedField === 'bpjsTk' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
@@ -3404,28 +3618,28 @@ export const KaryawanManagement: React.FC<{
 
                         {/* 4 Program Badge Matrix */}
                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-750 text-center">
+                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
                             <span className="text-[10px] font-bold text-slate-400 block">JHT (Hari Tua)</span>
-                            <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJht ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}`}>
+                            <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJht ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
                               {fullData.hasJht ? '✓ 5.7% (3.7% + 2%)' : 'Non-Aktif'}
                             </span>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-750 text-center">
+                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
                             <span className="text-[10px] font-bold text-slate-400 block">JP (Pensiun)</span>
-                            <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJp ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}`}>
+                            <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJp ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
                               {fullData.hasJp ? '✓ 3.0% (2% + 1%)' : 'Non-Aktif'}
                             </span>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-750 text-center">
+                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
                             <span className="text-[10px] font-bold text-slate-400 block">JKK (Kecelakaan)</span>
                             <span className="inline-block mt-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-400">
                               ✓ 0.54% (Perusahaan)
                             </span>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-750 text-center">
+                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
                             <span className="text-[10px] font-bold text-slate-400 block">JKM (Kematian)</span>
                             <span className="inline-block mt-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-400">
                               ✓ 0.30% (Perusahaan)
@@ -3440,7 +3654,7 @@ export const KaryawanManagement: React.FC<{
                   {detailTab === 'access' && (
                     <div className="space-y-4 animate-in fade-in duration-150">
                       {/* Presensi & Lokasi Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                             <Smartphone className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -3450,7 +3664,7 @@ export const KaryawanManagement: React.FC<{
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-750 flex items-center justify-between">
+                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 flex items-center justify-between">
                             <div>
                               <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Izin WFH</span>
                               <span className="text-[10px] text-slate-400">Presensi dari rumah</span>
@@ -3458,13 +3672,13 @@ export const KaryawanManagement: React.FC<{
                             <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full ${
                               fullData.wfhEnabled
                                 ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
-                                : 'bg-slate-100 text-slate-500'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
                             }`}>
                               {fullData.wfhEnabled ? 'Diizinkan' : 'Dilarang'}
                             </span>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-750 flex items-center justify-between">
+                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 flex items-center justify-between">
                             <div>
                               <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Kunci Radius GPS</span>
                               <span className="text-[10px] text-slate-400">Wajib di kantor</span>
@@ -3478,7 +3692,7 @@ export const KaryawanManagement: React.FC<{
                             </span>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-750 flex items-center justify-between">
+                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 flex items-center justify-between">
                             <div>
                               <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Akses Presensi</span>
                               <span className="text-[10px] text-slate-400">Modul absensi</span>
@@ -3491,7 +3705,7 @@ export const KaryawanManagement: React.FC<{
                       </div>
 
                       {/* Device Binding & Kuota Card */}
-                      <div className="bg-white dark:bg-slate-850 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
                         <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
                           <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
                             <ShieldCheck className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -3534,6 +3748,18 @@ export const KaryawanManagement: React.FC<{
           );
         })()}
       </AnimatePresence>
+
+      {/* Modal Import Data Karyawan dari Excel / CSV */}
+      <ImportEmployeeModal
+        isOpen={showImportModal}
+        onClose={() => setShowImportModal(false)}
+        offices={offices}
+        onSuccess={() => {
+          loadEmployees(true);
+        }}
+        onAddAuditLog={onAddAuditLog}
+        onAddNotification={onAddNotification}
+      />
 
     </div>
   );

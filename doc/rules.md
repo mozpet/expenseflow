@@ -1965,3 +1965,71 @@ Di pengaturan kantor (`AttendanceSetting`), terdapat field **Batas Waktu Presens
    - **Hanya 1 tulisan/badge Alpha** di paling pojok kanan baris (hanya muncul jika user memang sudah berstatus Alpha setelah jam batas cutoff terlewati).
    - Jika karyawan **belum melewati batas waktu cutoff**, baris presensi tetap standar tanpa badge Alpha.
 
+---
+
+## 8. Aturan Wajib: Sinkronisasi Fitur Migrasi Data (Bulk Import Excel/CSV) Saat Menambah Field Karyawan Baru (2026-09-04)
+
+### A. Latar Belakang & Prinsip Utama
+Sistem ExpenseFlow memiliki fitur **Bulk Import Data Karyawan dari Excel / CSV dengan Smart Dynamic Column Mapping** yang memungkinkan onboarding massal data pegawai secara otomatis langsung dari antarmuka Web Dashboard.
+
+**ATURAN MUTLAK BAGI DEVELOPER & AI CODING ASSISTANT:**
+> **Setiap kali menambahkan kolom / field baru untuk data karyawan (`users`)** — baik berupa kolom identitas personal, payroll/finansial, kepegawaian, pajak/BPJS, maupun preferensi:
+> **DEVELOPER WAJIB MENAMBAHKAN FIELD TERSEBUT KE DALAM SISTEM MIGRASI / BULK IMPORT DATA!**
+> Jangan sampai ada field karyawan baru yang hanya bisa diisi lewat form manual satu per satu tetapi tidak dapat diimpor secara massal via file Excel/CSV.
+
+---
+
+### B. Checklist Berkas yang Wajib Diperbarui Saat Menambah Field Karyawan Baru:
+
+1. **Database Migration (`database/migrations/`) & Model (`app/Models/User.php`)**:
+   - Daftarkan kolom baru di migration file dan tambahkan nama atribut ke property `$fillable` pada model `User`.
+
+2. **Backend Controller Import (`app/Http/Controllers/API/UserController.php`)**:
+   - Buka method `bulkImport(Request $request)`:
+     - Tambahkan aturan validasi pada array `$validated` (misal: `'users.*.field_baru' => 'nullable|string'`).
+     - Normalisasi / sanitasi nilai dari `$row['field_baru']` (misal: pembersihan karakter, trim, casting tipe data).
+     - Masukkan ke dalam parameter array pembuatan user: `User::create([... 'field_baru' => $normalizedField ...])`.
+     - Jika field baru memiliki nilai default global, tambahkan juga parameter default-nya (misal: `'default_field_baru' => ...`).
+
+3. **Frontend API Payload Contract (`expenseflow-web/src/services/endpoints.ts`)**:
+   - Perbarui interface `BulkImportPayload`:
+     - Tambahkan field baru ke dalam interface objek `users: Array<{ ... field_baru?: string | number; ... }>`.
+
+4. **Frontend Modal Smart Column Mapping (`expenseflow-web/src/components/ImportEmployeeModal.tsx`)**:
+   - Daftarkan field ke dalam konstanta array `TARGET_FIELDS`:
+     ```typescript
+     {
+       key: 'field_baru',
+       label: 'Label Field Baru',
+       required: false, // atau true jika mandatory
+       description: 'Penjelasan singkat kegunaan field',
+       aliases: ['sinonim_1', 'sinonim_2', 'nama_kolom_excel_populer', 'istilah_inggris'],
+     }
+     ```
+   - **Kamus Sinonim (`aliases`)**: Wajib menyertakan variasi kata umum dalam bahasa Indonesia & Inggris agar auto-detection mengenali kolom file pengguna secara otomatis saat mengunggah spreadsheet.
+   - **Download Template (`downloadTemplate`)**: Tambahkan header kolom baru dan contoh nilainya pada fungsi pembuatan template Excel (`.xlsx`) dan CSV.
+   - **Live Preview (`previewRows` & Table)**: Jika field bersifat esensial/utama, tampilkan juga di tabel pratinjau agar pengguna dapat memverifikasi sebelum klik tombol impor.
+
+---
+
+## 9. Fitur Dark Mode pada Frontend Web (2026-09-04) ✅ SELESAI
+
+### A. Latar Belakang & Mekanisme
+Antarmuka web dashboard ExpenseFlow kini mendukung **Dark Mode (Mode Gelap)** penuh untuk kenyamanan mata pengguna dan efisiensi energi layar OLED/AMOLED.
+
+### B. Arsitektur Teknis
+1. **ThemeContext (`src/context/ThemeContext.tsx`)**:
+   - Mode: `'light' | 'dark' | 'system'`.
+   - Persistensi otomatis di `localStorage` dengan key `expenseflow_theme_mode`.
+   - Sinkronisasi otomatis class `.dark` dan `style.colorScheme` pada elemen root `<html>`.
+   - Listener `matchMedia('(prefers-color-scheme: dark)')` untuk deteksi preferensi tema sistem operasi secara dinamis.
+2. **Tailwind CSS v4 Integration (`src/index.css`)**:
+   - Konfigurasi `@custom-variant dark (&:where(.dark, .dark *));` memastikan seluruh utility class `dark:*` aktif seketika saat class `.dark` diterapkan pada `<html>`.
+3. **Tombol Toggle Tema di UI**:
+   - **Desktop Header**: Tombol toggle ikon Matahari/Bulan (`Sun` / `Moon`) di sebelah lonceng notifikasi.
+   - **Sidebar Desktop & Mobile**: Tombol menu *"Mode Gelap / Mode Terang"* yang interaktif.
+   - **Mobile Top Bar**: Tombol cepat toggle tema di bar atas mobile.
+4. **Cakupan Komponen**:
+   - Seluruh halaman, modal dialog (`ConfirmationDialog`, `ForgotPasswordModal`, `ImportEmployeeModal`), popover date/time picker (`CustomDatePicker`, `CustomTimePicker`), grafik Recharts (`AnalyticsCharts`), dan tabel data telah diselaraskan dengan kontras dark theme yang nyaman (`bg-slate-900`, `bg-slate-950`, border `slate-800`, text `slate-100`/`slate-300`).
+
+

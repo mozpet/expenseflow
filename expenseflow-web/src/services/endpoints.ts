@@ -1,7 +1,22 @@
 // Fungsi pemanggil API per-resource. Semua mengembalikan data mentah backend;
 // transformasi ke tipe frontend dilakukan di mappers.ts / komponen.
 
-import { apiGet, apiPost, apiPut, apiPatch, apiDelete, apiDownload, apiViewFile, setToken, setStoredUser, clearToken, getToken, setTokenExpiresAt, BASE_URL } from './api';
+import {
+  apiGet,
+  apiPost,
+  apiPut,
+  apiPatch,
+  apiDelete,
+  apiDownload,
+  apiViewFile,
+  setToken,
+  setStoredUser,
+  clearToken,
+  getToken,
+  setTokenExpiresAt,
+  BASE_URL,
+  invalidateCache,
+} from './api';
 
 
 // ─── Auth ───────────────────────────────────────────────────
@@ -44,10 +59,10 @@ export const authApi = {
 // ─── Receipts (struk) ───────────────────────────────────────
 export const receiptApi = {
   // Inbox: struk submitted yang menunggu approval (paginated)
-  inbox: () => apiGet('/dashboard/receipts'),
+  inbox: (forceRefresh = false) => apiGet('/dashboard/receipts', undefined, { forceRefresh }),
   // Semua struk dengan filter status + summary
-  all: (status?: 'submitted' | 'approved' | 'rejected' | 'paid') =>
-    apiGet('/dashboard/receipts/all', { status }),
+  all: (status?: 'submitted' | 'approved' | 'rejected' | 'paid', forceRefresh = false) =>
+    apiGet('/dashboard/receipts/all', { status }, { forceRefresh }),
   show: (id: number | string) => apiGet(`/dashboard/receipts/${id}`),
   approve: (id: number | string, notes: string, approvedAmount?: number) =>
     apiPost(`/dashboard/receipts/${id}/approve`, {
@@ -94,8 +109,8 @@ export const receiptApi = {
 
 // ─── Invoices ───────────────────────────────────────────────
 export const invoiceApi = {
-  list: (status?: 'pending' | 'approved' | 'rejected') =>
-    apiGet('/dashboard/invoices', { status }),
+  list: (status?: 'pending' | 'approved' | 'rejected', forceRefresh = false) =>
+    apiGet('/dashboard/invoices', { status }, { forceRefresh }),
   show: (id: number | string) => apiGet(`/dashboard/invoices/${id}`),
   create: (payload: {
     vendor_id: number;
@@ -115,28 +130,78 @@ export const invoiceApi = {
 
 // ─── Vendors ────────────────────────────────────────────────
 export const vendorApi = {
-  list: () => apiGet('/dashboard/vendors'),
+  list: (forceRefresh = false) => apiGet('/dashboard/vendors', undefined, { forceRefresh }),
   create: (payload: Record<string, unknown>) => apiPost('/dashboard/vendors', payload),
   update: (id: number | string, payload: Record<string, unknown>) =>
     apiPatch(`/dashboard/vendors/${id}`, payload),
   toggle: (id: number | string) => apiPost(`/dashboard/vendors/${id}/toggle`),
 };
 
+export interface BulkImportPayload {
+  users: Array<{
+    name: string;
+    email: string;
+    employee_code?: string;
+    identity_number?: string;
+    phone?: string;
+    gender?: string;
+    birth_place?: string;
+    birth_date?: string;
+    is_pregnant?: boolean;
+    department?: string;
+    role?: string;
+    attendance_setting_id?: number | null;
+    monthly_claim_limit?: number | null;
+    employment_type?: string;
+    joined_date?: string;
+    contract_start_date?: string;
+    contract_end_date?: string;
+    bank_name?: string;
+    bank_account_no?: string;
+    bank_account_holder?: string;
+    leave_balance?: number;
+  }>;
+  default_password?: string;
+  default_role?: string;
+  default_attendance_setting_id?: number | null;
+  default_employment_type?: string;
+  default_wfh_enabled?: boolean;
+  default_attendance_enabled?: boolean;
+  default_radius_enabled?: boolean;
+}
+
+export interface BulkImportResponse {
+  message: string;
+  total: number;
+  imported: number;
+  skipped: number;
+  errors: Array<{
+    row: number;
+    name: string;
+    email: string;
+    reason: string;
+  }>;
+  imported_users?: any[];
+}
+
 // ─── Users (karyawan) ───────────────────────────────────────
 export const userApi = {
-  list: (params?: { include_inactive?: boolean }) => apiGet('/admin/users', params),
+  list: (params?: { include_inactive?: boolean }, forceRefresh = false) =>
+    apiGet('/admin/users', params, { forceRefresh }),
   create: (payload: Record<string, unknown>) => apiPost('/admin/users', payload),
   update: (id: number | string, payload: Record<string, unknown>) =>
     apiPut(`/admin/users/${id}`, payload),
   deactivate: (id: number | string) => apiPatch(`/admin/users/${id}/deactivate`),
   activate: (id: number | string) => apiPatch(`/admin/users/${id}/activate`),
   destroy: (id: number | string) => apiDelete<{ message: string }>(`/admin/users/${id}`),
+  bulkImport: (payload: BulkImportPayload) =>
+    apiPost<BulkImportResponse>('/admin/users/bulk-import', payload),
 };
 
 // ─── Notifications ──────────────────────────────────────────
 export const notificationApi = {
-  list: (onlyUnread = false) =>
-    apiGet('/dashboard/notifications', { only_unread: onlyUnread ? 1 : undefined }),
+  list: (onlyUnread = false, forceRefresh = false) =>
+    apiGet('/dashboard/notifications', { only_unread: onlyUnread ? 1 : undefined }, { forceRefresh }),
   markAllRead: () => apiPost('/dashboard/notifications/read-all'),
   markRead: (id: string) => apiPost(`/dashboard/notifications/${id}/read`),
   destroy: (id: string) => apiDelete(`/dashboard/notifications/${id}`),
@@ -154,7 +219,7 @@ export const activityLogApi = {
     end_date?: string;
     page?: number;
     per_page?: number;
-  }) => apiGet<{ data: any[]; current_page: number; last_page: number; total: number }>('/dashboard/activity-logs', filters as Record<string, string | number>),
+  }, forceRefresh = false) => apiGet<{ data: any[]; current_page: number; last_page: number; total: number }>('/dashboard/activity-logs', filters as Record<string, string | number>, { forceRefresh }),
 
   exportCsv: (filters?: {
     search?: string;
@@ -173,30 +238,15 @@ export const activityLogApi = {
 // ─── Attendance (presensi) — HRD/Admin dashboard ────────────
 export const attendanceApi = {
   // Dashboard presensi hari ini
-  today: () => apiGet('/dashboard/attendance/today'),
+  today: (forceRefresh = false) => apiGet('/dashboard/attendance/today', undefined, { forceRefresh }),
 
   // Daftar karyawan + status attendance/WFH
-  users: (params?: { filter?: 'enabled' | 'disabled'; per_page?: number | string } | 'enabled' | 'disabled') =>
-    apiGet('/dashboard/attendance/users', typeof params === 'string' ? { filter: params } : (params as Record<string, string | number | boolean>)),
+  users: (params?: { filter?: 'enabled' | 'disabled'; per_page?: number | string } | 'enabled' | 'disabled', forceRefresh = false) =>
+    apiGet('/dashboard/attendance/users', typeof params === 'string' ? { filter: params } : (params as Record<string, string | number | boolean>), { forceRefresh }),
   // Semua karyawan aktif (tanpa pagination) — untuk dropdown pengecualian libur
-  // Cache 5 menit + request deduplication: request ke-2 sebelum request ke-1 selesai
-  // akan mendapatkan promise yang sama (1 HTTP request saja).
-  allUsers: (() => {
-    let _promise: Promise<any> | null = null;
-    let _ts = 0;
-    const TTL = 5 * 60 * 1000; // 5 menit
-    return (forceRefresh = false) => {
-      const now = Date.now();
-      if (!forceRefresh && _promise && (now - _ts < TTL)) return _promise;
-      _ts = now;
-      _promise = apiGet('/dashboard/attendance/users/all').catch((err) => {
-        _promise = null;
-        _ts = 0;
-        throw err;
-      });
-      return _promise;
-    };
-  })(),
+  // Didukung in-memory smart cache (5 menit) + request deduplication terpusat
+  allUsers: (forceRefresh = false) =>
+    apiGet('/dashboard/attendance/users/all', undefined, { forceRefresh }),
   toggleWfh: (id: number | string) =>
     apiPost(`/dashboard/attendance/users/${id}/toggle-wfh`),
   toggleRadius: (id: number | string) =>
@@ -209,7 +259,7 @@ export const attendanceApi = {
     user_id?: number;
     page?: number;
     per_page?: number;
-  }) => apiGet('/dashboard/attendance/leaves', filters),
+  }, forceRefresh = false) => apiGet('/dashboard/attendance/leaves', filters, { forceRefresh }),
   approveLeave: (id: number | string) =>
     apiPost(`/dashboard/attendance/leaves/${id}/approve`),
   rejectLeave: (id: number | string, rejection_reason: string) =>
@@ -235,10 +285,10 @@ export const attendanceApi = {
   },
 
   // Saldo / kuota cuti
-  leaveBalances: (filters?: { user_id?: number; year?: number }) =>
-    apiGet('/dashboard/attendance/leave-balances', filters),
-  leaveBalanceHistories: (filters?: { office_id?: string; year?: number; search?: string }) =>
-    apiGet('/dashboard/attendance/leave-balance-history', filters),
+  leaveBalances: (filters?: { user_id?: number; year?: number }, forceRefresh = false) =>
+    apiGet('/dashboard/attendance/leave-balances', filters, { forceRefresh }),
+  leaveBalanceHistories: (filters?: { office_id?: string; year?: number; search?: string }, forceRefresh = false) =>
+    apiGet('/dashboard/attendance/leave-balance-history', filters, { forceRefresh }),
   resetOfficeLeaveBalances: (officeId: number | string) =>
     apiPost(`/dashboard/attendance/settings/${officeId}/reset-leave-balances`),
   setLeaveBalance: (payload: {
@@ -258,7 +308,7 @@ export const attendanceApi = {
     search?: string;
     office_id?: number | string;
     page?: number;
-  }) => apiGet('/dashboard/attendance/report', filters as Record<string, string | number | boolean>),
+  }, forceRefresh = false) => apiGet('/dashboard/attendance/report', filters as Record<string, string | number | boolean>, { forceRefresh }),
   exportReport: (filters?: {
     start_date?: string;
     end_date?: string;
@@ -273,54 +323,28 @@ export const attendanceApi = {
       `laporan-presensi-${new Date().toISOString().slice(0, 10)}.csv`,
       filters as Record<string, string | number | boolean>,
     ),
-  monthlySummary: (filters: { user_id: number; month?: number; year?: number }) =>
-    apiGet('/dashboard/attendance/summary', filters),
+  monthlySummary: (filters: { user_id: number; month?: number; year?: number }, forceRefresh = false) =>
+    apiGet('/dashboard/attendance/summary', filters, { forceRefresh }),
 
-  // CRUD pengaturan kantor (lokasi & radius presensi) — dengan in-memory cache & deduplikasi request
-  settings: (() => {
-    let cachedPromise: Promise<unknown> | null = null;
-    let lastFetchTime = 0;
-    const TTL = 60 * 1000; // Cache valid selama 60 detik
-
-    return {
-      list: (forceRefresh = false) => {
-        const now = Date.now();
-        if (!forceRefresh && cachedPromise && (now - lastFetchTime < TTL)) {
-          return cachedPromise;
-        }
-        lastFetchTime = now;
-        cachedPromise = apiGet('/dashboard/attendance/settings').catch((err) => {
-          cachedPromise = null;
-          throw err;
-        });
-        return cachedPromise;
-      },
-      clearCache: () => {
-        cachedPromise = null;
-        lastFetchTime = 0;
-      },
-      create: async (payload: Record<string, unknown>) => {
-        cachedPromise = null;
-        lastFetchTime = 0;
-        return apiPost('/dashboard/attendance/settings', payload);
-      },
-      update: async (id: number | string, payload: Record<string, unknown>) => {
-        cachedPromise = null;
-        lastFetchTime = 0;
-        return apiPut(`/dashboard/attendance/settings/${id}`, payload);
-      },
-      destroy: async (id: number | string) => {
-        cachedPromise = null;
-        lastFetchTime = 0;
-        return apiDelete(`/dashboard/attendance/settings/${id}`);
-      },
-    };
-  })(),
+  // CRUD pengaturan kantor (lokasi & radius presensi) — didukung Smart in-memory cache & deduplikasi request
+  settings: {
+    list: (forceRefresh = false) =>
+      apiGet('/dashboard/attendance/settings', undefined, { forceRefresh }),
+    clearCache: () => {
+      invalidateCache('/dashboard/attendance/settings');
+    },
+    create: (payload: Record<string, unknown>) =>
+      apiPost('/dashboard/attendance/settings', payload),
+    update: (id: number | string, payload: Record<string, unknown>) =>
+      apiPut(`/dashboard/attendance/settings/${id}`, payload),
+    destroy: (id: number | string) =>
+      apiDelete(`/dashboard/attendance/settings/${id}`),
+  },
 
   // Kalender libur nasional / cuti bersama perusahaan
   holidays: {
-    list: (year?: number) =>
-      apiGet('/dashboard/attendance/holidays', { year }),
+    list: (year?: number, forceRefresh = false) =>
+      apiGet('/dashboard/attendance/holidays', { year }, { forceRefresh }),
     previewNational: (year?: number) =>
       apiGet('/dashboard/attendance/holidays/preview-national', { year }),
     syncNational: (payload: { year: number; holidays: any[]; collective_treatment?: 'nasional' | 'collective'; overwrite_existing?: boolean }) =>
@@ -351,10 +375,56 @@ export interface ShiftScheduleInput {
   work_end_time?: string | null;    // "H:i"
 }
 
+// ── Pola Rotasi Shift (Recurring Rolling Cycles) ──
+export interface ShiftPatternItemInput {
+  day_order: number;
+  shift_id?: number | null;
+  is_off: boolean;
+  work_start_time?: string | null;
+  work_end_time?: string | null;
+  break_minutes?: number;
+  is_cross_day?: boolean;
+}
+
+export interface ShiftPatternItem {
+  id: number;
+  shift_pattern_id: number;
+  day_order: number;
+  shift_id: number | null;
+  is_off: boolean;
+  work_start_time: string | null;
+  work_end_time: string | null;
+  break_minutes: number;
+  is_cross_day: boolean;
+  shift?: {
+    id: number;
+    name: string;
+    color?: string;
+  } | null;
+}
+
+export interface ShiftPattern {
+  id: number;
+  company_id: number;
+  attendance_setting_id?: number | null;
+  office?: {
+    id: number;
+    office_name: string;
+  } | null;
+  name: string;
+  description?: string | null;
+  cycle_days: number;
+  is_active: boolean;
+  active_users_count?: number;
+  created_at?: string;
+  updated_at?: string;
+  items: ShiftPatternItem[];
+}
+
 export const shiftApi = {
   // ── Template shift ──
-  list: (filters?: { is_active?: boolean; attendance_setting_id?: number }) =>
-    apiGet('/dashboard/attendance/shifts', filters as Record<string, string | number | boolean>),
+  list: (filters?: { is_active?: boolean; attendance_setting_id?: number }, forceRefresh = false) =>
+    apiGet('/dashboard/attendance/shifts', filters as Record<string, string | number | boolean>, { forceRefresh }),
   create: (payload: {
     name: string;
     description?: string;
@@ -377,35 +447,46 @@ export const shiftApi = {
   destroy: (id: number | string) => apiDelete(`/dashboard/attendance/shifts/${id}`),
 
   // ── Daftar karyawan yang terkait sebuah template shift ──
-  users: (id: number | string) =>
-    apiGet(`/dashboard/attendance/shifts/${id}/users`),
+  users: (id: number | string, forceRefresh = false) =>
+    apiGet(`/dashboard/attendance/shifts/${id}/users`, undefined, { forceRefresh }),
 
   // ── Roster harian (siapa masuk shift apa pada tanggal tertentu) ──
-  roster: (filters?: { date?: string; attendance_setting_id?: number; search?: string }) =>
-    apiGet('/dashboard/attendance/shifts/roster', filters as Record<string, string | number>),
+  roster: (filters?: { date?: string; attendance_setting_id?: number; search?: string }, forceRefresh = false) =>
+    apiGet('/dashboard/attendance/shifts/roster', filters as Record<string, string | number>, { forceRefresh }),
 
   // ── Riwayat assignment shift seorang karyawan ──
-  history: (userId: number | string) =>
-    apiGet(`/dashboard/attendance/users/${userId}/shift-history`),
+  history: (userId: number | string, forceRefresh = false) =>
+    apiGet(`/dashboard/attendance/users/${userId}/shift-history`, undefined, { forceRefresh }),
 
   // ── Assignment ──
   assign: (payload: {
     user_id: number;
-    shift_id: number | null;   // null = kembali ke default kantor
+    shift_id?: number | null;          // null = kembali ke default kantor atau penugasan pola rotasi
+    shift_pattern_id?: number | null;  // penugasan pola rotasi siklus
+    anchor_day_order?: number;         // hari ke berapa dalam siklus pada start_date
     start_date: string;
-    end_date?: string;         // opsional — tanggal berakhir shift, setelahnya kembali ke jam default
+    end_date?: string;                 // opsional — tanggal berakhir shift, setelahnya kembali ke jam default
     notes?: string;
   }) => apiPost('/dashboard/attendance/assign-shift', payload),
   bulkAssign: (payload: {
     user_ids: number[];
-    shift_id: number | null;
+    shift_id?: number | null;
+    shift_pattern_id?: number | null;
+    anchor_day_order?: number;
     start_date: string;
-    end_date?: string;         // opsional — tanggal berakhir shift untuk semua karyawan
+    end_date?: string;                 // opsional — tanggal berakhir shift untuk semua karyawan
     notes?: string;
   }) => apiPost('/dashboard/attendance/bulk-assign', payload),
   updateAssignment: (
     id: number | string,
-    payload: { shift_id?: number | null; start_date?: string; end_date?: string | null; notes?: string },
+    payload: {
+      shift_id?: number | null;
+      shift_pattern_id?: number | null;
+      anchor_day_order?: number;
+      start_date?: string;
+      end_date?: string | null;
+      notes?: string;
+    },
   ) => apiPut(`/dashboard/attendance/assignments/${id}`, payload),
   destroyAssignment: (id: number | string) =>
     apiDelete(`/dashboard/attendance/assignments/${id}`),
@@ -415,12 +496,41 @@ export const shiftApi = {
     apiGet('/dashboard/attendance/effective-schedule', { user_id: userId, date }),
 
   // ── Kalender shift bulanan ──
-  calendar: (month: number, year: number, attendanceSettingId?: number) =>
+  calendar: (month: number, year: number, attendanceSettingId?: number, forceRefresh = false) =>
     apiGet('/dashboard/attendance/shifts/calendar', {
       month,
       year,
       ...(attendanceSettingId ? { attendance_setting_id: attendanceSettingId } : {}),
-    }),
+    }, { forceRefresh }),
+
+  // ── Pola Rotasi Shift (Recurring Rolling Cycles) ──
+  patterns: {
+    list: (filters?: { is_active?: boolean; attendance_setting_id?: number }, forceRefresh = false) =>
+      apiGet('/dashboard/attendance/shift-patterns', filters as Record<string, string | number | boolean>, { forceRefresh }),
+    get: (id: number | string, forceRefresh = false) =>
+      apiGet(`/dashboard/attendance/shift-patterns/${id}`, undefined, { forceRefresh }),
+    create: (payload: {
+      name: string;
+      description?: string;
+      attendance_setting_id?: number | null;
+      cycle_days: number;
+      is_active?: boolean;
+      items: ShiftPatternItemInput[];
+    }) => apiPost('/dashboard/attendance/shift-patterns', payload),
+    update: (
+      id: number | string,
+      payload: {
+        name?: string;
+        description?: string;
+        attendance_setting_id?: number | null;
+        cycle_days?: number;
+        is_active?: boolean;
+        items?: ShiftPatternItemInput[];
+      },
+    ) => apiPut(`/dashboard/attendance/shift-patterns/${id}`, payload),
+    destroy: (id: number | string) =>
+      apiDelete(`/dashboard/attendance/shift-patterns/${id}`),
+  },
 };
 
 // ─── Overtime approvals — HRD ───────────────────────────────
@@ -432,7 +542,7 @@ export const overtimeApi = {
     end_date?: string;
     page?: number;
     per_page?: number;
-  }) => apiGet('/dashboard/attendance/overtime-approvals', filters as Record<string, string | number>),
+  }, forceRefresh = false) => apiGet('/dashboard/attendance/overtime-approvals', filters as Record<string, string | number>, { forceRefresh }),
 
   approve: (id: number | string, notes?: string) =>
     apiPost(`/dashboard/attendance/overtime-approvals/${id}/approve`, { notes }),
@@ -447,7 +557,7 @@ export const deviceChangeApi = {
     status?: 'pending' | 'approved' | 'rejected';
     page?: number;
     per_page?: number;
-  }) => apiGet('/dashboard/attendance/device-changes', filters as Record<string, string | number>),
+  }, forceRefresh = false) => apiGet('/dashboard/attendance/device-changes', filters as Record<string, string | number>, { forceRefresh }),
 
   approve: (id: number | string, notes?: string) =>
     apiPost(`/dashboard/attendance/device-changes/${id}/approve`, { notes }),
@@ -457,46 +567,25 @@ export const deviceChangeApi = {
 };
 
 // ─── Settings ───────────────────────────────────────────────
-export const settingsApi = (() => {
-  let cachedPromise: Promise<{ settings: any }> | null = null;
-  let lastFetchTime = 0;
-  const TTL = 60 * 1000;
-
-  return {
-    get: (forceRefresh = false) => {
-      const now = Date.now();
-      if (!forceRefresh && cachedPromise && (now - lastFetchTime < TTL)) {
-        return cachedPromise;
-      }
-      lastFetchTime = now;
-      cachedPromise = apiGet<{ settings: any }>('/dashboard/settings').catch((err) => {
-        cachedPromise = null;
-        throw err;
-      });
-      return cachedPromise;
-    },
-    clearCache: () => {
-      cachedPromise = null;
-      lastFetchTime = 0;
-    },
-    update: async (payload: {
-      variance_limit: number;
-      max_claim_limit: number;
-      threshold_single: string;
-      threshold_two: string;
-      threshold_three: string;
-    }) => {
-      cachedPromise = null;
-      lastFetchTime = 0;
-      return apiPut<{ settings: any }>('/dashboard/settings', payload);
-    },
-  };
-})();
+export const settingsApi = {
+  get: (forceRefresh = false) =>
+    apiGet<{ settings: any }>('/dashboard/settings', undefined, { forceRefresh }),
+  clearCache: () => {
+    invalidateCache('/dashboard/settings');
+  },
+  update: (payload: {
+    variance_limit: number;
+    max_claim_limit: number;
+    threshold_single: string;
+    threshold_two: string;
+    threshold_three: string;
+  }) => apiPut<{ settings: any }>('/dashboard/settings', payload),
+};
 
 // ─── Recruitment — HRD & Admin ──────────────────────────────
 export const recruitmentApi = {
-  listPostings: (filters?: { status?: string; search?: string; page?: number; per_page?: number }) =>
-    apiGet<{ data: any[]; meta: any; summary: any }>('/recruitment/postings', filters as Record<string, string | number>),
+  listPostings: (filters?: { status?: string; search?: string; page?: number; per_page?: number }, forceRefresh = false) =>
+    apiGet<{ data: any[]; meta: any; summary: any }>('/recruitment/postings', filters as Record<string, string | number>, { forceRefresh }),
 
   createPosting: (payload: any) =>
     apiPost<{ message: string; data: any }>('/recruitment/postings', payload),
@@ -516,9 +605,9 @@ export const recruitmentApi = {
   closePosting: (id: number | string) =>
     apiPatch<{ message: string; data: any }>(`/recruitment/postings/${id}/close`),
 
-  listApplications: (postingId?: number | string, filters?: { status?: string; search?: string; page?: number; per_page?: number }) => {
+  listApplications: (postingId?: number | string, filters?: { status?: string; search?: string; page?: number; per_page?: number }, forceRefresh = false) => {
     const url = postingId ? `/recruitment/postings/${postingId}/applications` : '/recruitment/applications';
-    return apiGet<{ posting?: any; data: any[]; meta: any; summary?: any }>(url, filters as Record<string, string | number>);
+    return apiGet<{ posting?: any; data: any[]; meta: any; summary?: any }>(url, filters as Record<string, string | number>, { forceRefresh });
   },
 
   getApplication: (id: number | string) =>

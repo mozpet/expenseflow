@@ -5,7 +5,7 @@ import {
   BadgeCheck, Hourglass, Search,
 } from 'lucide-react';
 import { overtimeApi } from '../services/endpoints';
-import { ApiError } from '../services/api';
+import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
 
@@ -113,58 +113,58 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm px-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md p-6 animate-in fade-in slide-in-from-bottom-4 duration-200">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-200">
         {/* Header */}
-        <div className={`flex items-center gap-3 mb-4 pb-4 border-b ${isReject ? 'border-rose-100' : 'border-emerald-100'}`}>
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isReject ? 'bg-rose-100' : 'bg-emerald-100'}`}>
+        <div className={`flex items-center gap-3 mb-4 pb-4 border-b ${isReject ? 'border-rose-100 dark:border-rose-900/40' : 'border-emerald-100 dark:border-emerald-900/40'}`}>
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isReject ? 'bg-rose-100 dark:bg-rose-950/70' : 'bg-emerald-100 dark:bg-emerald-950/70'}`}>
             {isReject
-              ? <XCircle className="w-5 h-5 text-rose-600" />
-              : <CheckCircle2 className="w-5 h-5 text-emerald-600" />}
+              ? <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
+              : <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
           </div>
           <div>
-            <p className={`font-bold text-sm ${isReject ? 'text-rose-700' : 'text-emerald-700'}`}>
+            <p className={`font-bold text-sm ${isReject ? 'text-rose-700 dark:text-rose-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
               {isReject ? 'Tolak Lembur' : 'Setujui Lembur'}
             </p>
-            <p className="text-xs text-slate-500">{record.user_name}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{record.user_name}</p>
           </div>
         </div>
 
         {/* Info lembur */}
-        <div className="bg-slate-50 rounded-xl p-3 mb-4 space-y-1.5 text-xs">
+        <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mb-4 space-y-1.5 text-xs border border-slate-100 dark:border-slate-750">
           <div className="flex justify-between">
-            <span className="text-slate-500">Tanggal</span>
-            <span className="font-semibold text-slate-700">{fmtDate(record.attendance_date)}</span>
+            <span className="text-slate-500 dark:text-slate-400">Tanggal</span>
+            <span className="font-semibold text-slate-700 dark:text-slate-200">{fmtDate(record.attendance_date)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-500">Durasi lembur</span>
-            <span className="font-bold text-orange-600">{record.overtime_formatted || fmtMinutes(record.overtime_minutes)}</span>
+            <span className="text-slate-500 dark:text-slate-400">Durasi lembur</span>
+            <span className="font-bold text-orange-600 dark:text-orange-400">{record.overtime_formatted || fmtMinutes(record.overtime_minutes)}</span>
           </div>
           <div className="flex justify-between">
-            <span className="text-slate-500">Check-in / out</span>
-            <span className="font-semibold text-slate-700">
+            <span className="text-slate-500 dark:text-slate-400">Check-in / out</span>
+            <span className="font-semibold text-slate-700 dark:text-slate-200">
               {fmtTime(record.check_in_time)} – {fmtTime(record.check_out_time)}
             </span>
           </div>
           {record.is_auto_checkout && (
             <div className="flex justify-between">
-              <span className="text-slate-500">Tipe checkout</span>
-              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-100 text-purple-700">Auto-Checkout</span>
+              <span className="text-slate-500 dark:text-slate-400">Tipe checkout</span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300">Auto-Checkout</span>
             </div>
           )}
           {record.overtime_reason && (
             <div className="flex justify-between">
-              <span className="text-slate-500">Keterangan</span>
-              <span className="font-semibold text-slate-700">{record.overtime_reason}</span>
+              <span className="text-slate-500 dark:text-slate-400">Keterangan</span>
+              <span className="font-semibold text-slate-700 dark:text-slate-200">{record.overtime_reason}</span>
             </div>
           )}
         </div>
 
         {/* Peringatan jika reject */}
         {isReject && (
-          <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-lg p-3 mb-4 text-xs text-rose-700">
+          <div className="flex items-start gap-2 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-lg p-3 mb-4 text-xs text-rose-700 dark:text-rose-400">
             <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
             <span>Jam lembur karyawan akan di-reset ke <strong>0 jam</strong> dan tidak masuk hitungan payroll.</span>
           </div>
@@ -173,7 +173,7 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
         {/* Form */}
         <form onSubmit={handleSubmit} className="space-y-3">
           <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1.5">
+            <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">
               {isReject ? 'Alasan penolakan *' : 'Catatan (opsional)'}
             </label>
             <textarea
@@ -181,25 +181,25 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
               onChange={(e) => setNotes(e.target.value)}
               placeholder={isReject ? 'Jelaskan alasan penolakan lembur...' : 'Tambahkan catatan approval (boleh kosong)...'}
               rows={3}
-              className="w-full text-xs p-2.5 border border-slate-200 rounded-lg resize-none focus:ring-1 focus:ring-indigo-400 focus:outline-none focus:border-indigo-400 placeholder:text-slate-300"
+              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-lg resize-none focus:ring-1 focus:ring-indigo-400 focus:outline-none focus:border-indigo-400 placeholder:text-slate-300 dark:placeholder:text-slate-500"
             />
-            {err && <p className="text-[11px] text-rose-600 mt-1">{err}</p>}
+            {err && <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1">{err}</p>}
           </div>
 
           <div className="flex gap-2 pt-1">
             <button
               type="button"
               onClick={onClose}
-              className="flex-1 py-2 text-xs font-semibold border border-slate-200 rounded-lg hover:bg-slate-50 text-slate-600 transition"
+              className="flex-1 py-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition cursor-pointer"
             >
               Batal
             </button>
             <button
               type="submit"
               disabled={busy}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg text-white transition flex items-center justify-center gap-1.5 ${isReject
-                  ? 'bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300'
-                  : 'bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300'
+              className={`flex-1 py-2 text-xs font-bold rounded-lg text-white transition flex items-center justify-center gap-1.5 cursor-pointer ${isReject
+                  ? 'bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300 dark:disabled:bg-rose-900/50'
+                  : 'bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 dark:disabled:bg-emerald-900/50'
                 }`}
             >
               {busy && <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
@@ -220,14 +220,14 @@ function SummaryCard({
   icon: React.ReactNode; color: string;
 }) {
   return (
-    <div className="bg-white rounded-2xl border border-slate-100 p-4 flex items-center gap-3 shadow-sm">
+    <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 p-4 flex items-center gap-3 shadow-sm">
       <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${color}`}>
         {icon}
       </div>
       <div>
-        <p className="text-[11px] text-slate-500 font-medium">{label}</p>
-        <p className="text-xl font-bold text-slate-800 leading-tight">{value}</p>
-        {sub && <p className="text-[10px] text-slate-400 mt-0.5">{sub}</p>}
+        <p className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">{label}</p>
+        <p className="text-xl font-bold text-slate-800 dark:text-slate-100 leading-tight">{value}</p>
+        {sub && <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{sub}</p>}
       </div>
     </div>
   );
@@ -238,19 +238,19 @@ function StatusBadge({ status }: { status: string }) {
   switch (status) {
     case 'approved':
       return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400">
           <BadgeCheck className="w-3 h-3" /> Disetujui
         </span>
       );
     case 'rejected':
       return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400">
           <XCircle className="w-3 h-3" /> Ditolak
         </span>
       );
     default:
       return (
-        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 animate-pulse">
+        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 animate-pulse">
           <Hourglass className="w-3 h-3" /> Menunggu
         </span>
       );
@@ -278,16 +278,17 @@ export function OvertimeApprovalView() {
   // Modal state
   const [modal, setModal] = useState<{ mode: 'approve' | 'reject'; record: OvertimeRecord } | null>(null);
 
-  const loadRecords = useCallback(async (pg = 1) => {
+  const loadRecords = useCallback(async (pg = 1, forceRefresh = false) => {
     setLoading(true);
     setError('');
     try {
+      if (forceRefresh) invalidateCache('/dashboard/attendance/overtime-approvals');
       const params: Record<string, string | number> = { page: pg };
       if (filterStatus !== 'all') params.status = filterStatus;
       if (filterStart) params.start_date = filterStart;
       if (filterEnd) params.end_date = filterEnd;
 
-      const res = await overtimeApi.list(params as Parameters<typeof overtimeApi.list>[0]);
+      const res = await overtimeApi.list(params as Parameters<typeof overtimeApi.list>[0], forceRefresh);
       const data: OvertimeRecord[] = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
       setRecords(data);
       if (res?.summary) {
@@ -349,10 +350,11 @@ export function OvertimeApprovalView() {
       {/* ── Header ── */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <button
-          onClick={() => loadRecords(page)}
-          className="ml-auto self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 border border-indigo-200 bg-white px-3 py-1.5 rounded-lg hover:bg-indigo-50 transition"
+          onClick={() => loadRecords(page, true)}
+          disabled={loading}
+          className="ml-auto self-start sm:self-auto flex items-center gap-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-slate-800 px-3 py-1.5 rounded-lg hover:bg-indigo-50 dark:hover:bg-indigo-950/40 transition disabled:opacity-50 cursor-pointer"
         >
-          <RefreshCw className="w-3.5 h-3.5" /> Refresh
+          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} /> Refresh
         </button>
       </div>
 
@@ -360,38 +362,38 @@ export function OvertimeApprovalView() {
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <button
           onClick={() => { setFilterStatus('pending'); setPage(1); }}
-          className="text-left transition hover:scale-[1.01]"
+          className="text-left transition hover:scale-[1.01] cursor-pointer"
         >
           <SummaryCard
             label="Menunggu Persetujuan"
             value={countPending}
             sub="klik untuk filter"
-            icon={<Hourglass className="w-5 h-5 text-amber-600" />}
-            color="bg-amber-50"
+            icon={<Hourglass className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+            color="bg-amber-50 dark:bg-amber-950/40"
           />
         </button>
         <button
           onClick={() => { setFilterStatus('approved'); setPage(1); }}
-          className="text-left transition hover:scale-[1.01]"
+          className="text-left transition hover:scale-[1.01] cursor-pointer"
         >
           <SummaryCard
             label="Disetujui"
             value={countApproved}
             sub="klik untuk filter"
-            icon={<CheckCircle2 className="w-5 h-5 text-emerald-600" />}
-            color="bg-emerald-50"
+            icon={<CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
+            color="bg-emerald-50 dark:bg-emerald-950/40"
           />
         </button>
         <button
           onClick={() => { setFilterStatus('rejected'); setPage(1); }}
-          className="text-left transition hover:scale-[1.01]"
+          className="text-left transition hover:scale-[1.01] cursor-pointer"
         >
           <SummaryCard
             label="Ditolak"
             value={countRejected}
             sub="klik untuk filter"
-            icon={<XCircle className="w-5 h-5 text-rose-600" />}
-            color="bg-rose-50"
+            icon={<XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />}
+            color="bg-rose-50 dark:bg-rose-950/40"
           />
         </button>
       </div>
@@ -429,11 +431,11 @@ export function OvertimeApprovalView() {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
           {/* Status */}
           <div>
-            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Status</label>
+            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Status</label>
             <select
               value={filterStatus}
               onChange={(e) => setFilterStatus(e.target.value as FilterStatus)}
-              className="w-full text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white"
+              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
             >
               <option value="all">Semua status</option>
               <option value="pending">Menunggu</option>
@@ -444,7 +446,7 @@ export function OvertimeApprovalView() {
 
           {/* Tanggal mulai */}
           <div>
-            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Dari Tanggal</label>
+            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Dari Tanggal</label>
             <CustomDatePicker
               value={filterStart}
               onChange={setFilterStart}
@@ -455,7 +457,7 @@ export function OvertimeApprovalView() {
 
           {/* Tanggal akhir */}
           <div>
-            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Sampai Tanggal</label>
+            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Sampai Tanggal</label>
             <CustomDatePicker
               value={filterEnd}
               onChange={setFilterEnd}
@@ -464,10 +466,9 @@ export function OvertimeApprovalView() {
             />
           </div>
 
-
           {/* Search nama */}
           <div>
-            <label className="block text-[10px] font-semibold text-slate-500 uppercase mb-1">Cari Karyawan</label>
+            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Cari Karyawan</label>
             <div className="relative">
               <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
               <input
@@ -475,7 +476,7 @@ export function OvertimeApprovalView() {
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
                 placeholder="Nama / departemen..."
-                className="w-full pl-8 text-xs p-2.5 border border-slate-200 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                className="w-full pl-8 text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
               />
             </div>
           </div>
@@ -484,13 +485,13 @@ export function OvertimeApprovalView() {
         <div className="flex gap-2 pt-1">
           <button
             onClick={handleApply}
-            className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition"
+            className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition cursor-pointer"
           >
             Terapkan Filter
           </button>
           <button
             onClick={handleReset}
-            className="px-4 py-2 text-xs font-semibold border border-slate-200 bg-white hover:bg-slate-50 text-slate-600 rounded-lg transition"
+            className="px-4 py-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-lg transition cursor-pointer"
           >
             Reset
           </button>
@@ -499,27 +500,27 @@ export function OvertimeApprovalView() {
 
       {/* ── Error ── */}
       {error && (
-        <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl px-4 py-3 text-xs">
+        <div className="flex items-start gap-2 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-400 rounded-xl px-4 py-3 text-xs">
           <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
           <div className="flex-1">
             <p className="font-semibold">Gagal memuat data</p>
             <p>{error}</p>
           </div>
-          <button onClick={() => loadRecords(page)} className="font-semibold underline shrink-0">
+          <button onClick={() => loadRecords(page)} className="font-semibold underline shrink-0 cursor-pointer">
             Coba lagi
           </button>
         </div>
       )}
 
       {/* ── Tabel ── */}
-      <div className="bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-sm overflow-hidden">
         {/* Table header info */}
-        <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-          <p className="text-xs font-semibold text-slate-600 flex items-center gap-1.5">
+        <div className="px-4 py-3 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+          <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
             <UserCheck className="w-3.5 h-3.5 text-indigo-500" />
             {meta ? `${meta.total} pengajuan` : `${displayed.length} pengajuan`}
             {filterStatus !== 'all' && (
-              <span className="ml-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">
+              <span className="ml-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-400">
                 {filterStatus === 'pending' ? 'Menunggu' : filterStatus === 'approved' ? 'Disetujui' : 'Ditolak'}
               </span>
             )}
@@ -532,24 +533,24 @@ export function OvertimeApprovalView() {
         {/* Desktop table */}
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
-            <thead className="border-b border-slate-100 bg-slate-50/60">
+            <thead className="border-b border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/50">
               <tr>
-                <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Karyawan</th>
-                <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Tanggal</th>
-                <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Masuk</th>
-                <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Pulang</th>
-                <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Lembur</th>
-                <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Tipe</th>
-                <th className="py-2.5 px-3 font-semibold text-left text-slate-500">Keterangan</th>
-                <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Status</th>
-                <th className="py-2.5 px-3 font-semibold text-center text-slate-500">Aksi</th>
+                <th className="py-2.5 px-3 font-semibold text-left text-slate-500 dark:text-slate-400">Karyawan</th>
+                <th className="py-2.5 px-3 font-semibold text-left text-slate-500 dark:text-slate-400">Tanggal</th>
+                <th className="py-2.5 px-3 font-semibold text-center text-slate-500 dark:text-slate-400">Masuk</th>
+                <th className="py-2.5 px-3 font-semibold text-center text-slate-500 dark:text-slate-400">Pulang</th>
+                <th className="py-2.5 px-3 font-semibold text-center text-slate-500 dark:text-slate-400">Lembur</th>
+                <th className="py-2.5 px-3 font-semibold text-center text-slate-500 dark:text-slate-400">Tipe</th>
+                <th className="py-2.5 px-3 font-semibold text-left text-slate-500 dark:text-slate-400">Keterangan</th>
+                <th className="py-2.5 px-3 font-semibold text-center text-slate-500 dark:text-slate-400">Status</th>
+                <th className="py-2.5 px-3 font-semibold text-center text-slate-500 dark:text-slate-400">Aksi</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-50">
+            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
               {!loading && displayed.length === 0 && (
                 <tr>
                   <td colSpan={9} className="py-16 text-center">
-                    <div className="flex flex-col items-center gap-2 text-slate-400">
+                    <div className="flex flex-col items-center gap-2 text-slate-400 dark:text-slate-500">
                       <Clock className="w-10 h-10 opacity-30" />
                       <p className="font-semibold text-sm">Tidak ada data lembur</p>
                       <p className="text-xs">
@@ -565,7 +566,7 @@ export function OvertimeApprovalView() {
                 const av = avatarFor(r.user_name);
                 const isPending = r.status === 'pending';
                 return (
-                  <tr key={r.id} className="hover:bg-slate-50/60 transition-colors">
+                  <tr key={r.id} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40 transition-colors">
                     {/* Karyawan */}
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-2.5">
@@ -573,9 +574,9 @@ export function OvertimeApprovalView() {
                           {initialsOf(r.user_name)}
                         </div>
                         <div>
-                          <p className="font-semibold text-slate-800">{r.user_name}</p>
+                          <p className="font-semibold text-slate-800 dark:text-slate-100">{r.user_name}</p>
                           {r.department && (
-                            <p className="text-[10px] text-slate-400">{r.department}</p>
+                            <p className="text-[10px] text-slate-400 dark:text-slate-500">{r.department}</p>
                           )}
                         </div>
                       </div>
@@ -583,25 +584,25 @@ export function OvertimeApprovalView() {
 
                     {/* Tanggal */}
                     <td className="py-3 px-3">
-                      <div className="flex items-center gap-1 text-slate-700">
-                        <CalendarDays className="w-3 h-3 text-slate-400 shrink-0" />
+                      <div className="flex items-center gap-1 text-slate-700 dark:text-slate-200">
+                        <CalendarDays className="w-3 h-3 text-slate-400 dark:text-slate-500 shrink-0" />
                         {fmtDate(r.attendance_date)}
                       </div>
                     </td>
 
                     {/* Check-in */}
-                    <td className="py-3 px-3 text-center font-mono text-slate-700">
+                    <td className="py-3 px-3 text-center font-mono text-slate-700 dark:text-slate-300">
                       {fmtTime(r.check_in_time)}
                     </td>
 
                     {/* Check-out */}
-                    <td className="py-3 px-3 text-center font-mono text-slate-700">
+                    <td className="py-3 px-3 text-center font-mono text-slate-700 dark:text-slate-300">
                       {fmtTime(r.check_out_time)}
                     </td>
 
                     {/* Durasi lembur */}
                     <td className="py-3 px-3 text-center">
-                      <span className="font-bold text-orange-600">
+                      <span className="font-bold text-orange-600 dark:text-orange-400">
                         {r.overtime_formatted || fmtMinutes(r.overtime_minutes)}
                       </span>
                     </td>
@@ -609,11 +610,11 @@ export function OvertimeApprovalView() {
                     {/* Auto-checkout badge */}
                     <td className="py-3 px-3 text-center">
                       {r.is_auto_checkout ? (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300">
                           Auto
                         </span>
                       ) : (
-                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">
+                        <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
                           Manual
                         </span>
                       )}
@@ -622,11 +623,11 @@ export function OvertimeApprovalView() {
                     {/* Keterangan lembur */}
                     <td className="py-3 px-3">
                       {r.overtime_reason ? (
-                        <span className="text-[11px] text-amber-700 bg-amber-50 px-2 py-1 rounded-lg">
+                        <span className="text-[11px] text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 px-2 py-1 rounded-lg">
                           {r.overtime_reason}
                         </span>
                       ) : (
-                        <span className="text-[10px] text-slate-300">—</span>
+                        <span className="text-[10px] text-slate-300 dark:text-slate-600">—</span>
                       )}
                     </td>
 
@@ -634,7 +635,7 @@ export function OvertimeApprovalView() {
                     <td className="py-3 px-3 text-center">
                       <StatusBadge status={r.status} />
                       {r.reviewed_at && !isPending && (
-                        <p className="text-[10px] text-slate-400 mt-0.5">{fmtDate(r.reviewed_at)}</p>
+                        <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{fmtDate(r.reviewed_at)}</p>
                       )}
                     </td>
 
@@ -644,13 +645,13 @@ export function OvertimeApprovalView() {
                         <div className="flex items-center justify-center gap-1.5">
                           <button
                             onClick={() => setModal({ mode: 'approve', record: r })}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition"
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition cursor-pointer"
                           >
                             <CheckCircle2 className="w-3 h-3" /> Setujui
                           </button>
                           <button
                             onClick={() => setModal({ mode: 'reject', record: r })}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-rose-500 hover:bg-rose-600 text-white rounded-lg transition"
+                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-rose-500 hover:bg-rose-600 text-white rounded-lg transition cursor-pointer"
                           >
                             <XCircle className="w-3 h-3" /> Tolak
                           </button>
@@ -658,11 +659,11 @@ export function OvertimeApprovalView() {
                       ) : (
                         <div className="text-center">
                           {r.notes ? (
-                            <p className="text-[10px] text-slate-500 italic max-w-[120px] truncate" title={r.notes}>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 italic max-w-[120px] truncate" title={r.notes}>
                               "{r.notes}"
                             </p>
                           ) : (
-                            <span className="text-[10px] text-slate-300">—</span>
+                            <span className="text-[10px] text-slate-300 dark:text-slate-600">—</span>
                           )}
                         </div>
                       )}
@@ -676,17 +677,17 @@ export function OvertimeApprovalView() {
 
         {/* ── Pagination ── */}
         {meta && meta.last_page > 1 && (
-          <div className="px-4 py-3 border-t border-slate-100 flex items-center justify-between text-xs text-slate-500">
+          <div className="px-4 py-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
             <span>
-              Halaman <span className="font-bold text-slate-700">{meta.current_page}</span> dari{' '}
-              <span className="font-bold text-slate-700">{meta.last_page}</span>
+              Halaman <span className="font-bold text-slate-700 dark:text-slate-200">{meta.current_page}</span> dari{' '}
+              <span className="font-bold text-slate-700 dark:text-slate-200">{meta.last_page}</span>
               {' '}· Total {meta.total} data
             </span>
             <div className="flex items-center gap-1">
               <button
                 disabled={meta.current_page <= 1}
                 onClick={() => loadRecords(meta.current_page - 1)}
-                className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
               >
                 <ChevronLeft className="w-3.5 h-3.5" />
               </button>
@@ -699,9 +700,9 @@ export function OvertimeApprovalView() {
                   <button
                     key={pg}
                     onClick={() => loadRecords(pg)}
-                    className={`w-7 h-7 rounded-lg text-xs font-semibold transition ${pg === meta.current_page
+                    className={`w-7 h-7 rounded-lg text-xs font-semibold transition cursor-pointer ${pg === meta.current_page
                         ? 'bg-indigo-600 text-white'
-                        : 'border border-slate-200 hover:bg-slate-50 text-slate-600'
+                        : 'border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300'
                       }`}
                   >
                     {pg}
@@ -711,7 +712,7 @@ export function OvertimeApprovalView() {
               <button
                 disabled={meta.current_page >= meta.last_page}
                 onClick={() => loadRecords(meta.current_page + 1)}
-                className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                className="p-1.5 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition cursor-pointer"
               >
                 <ChevronRight className="w-3.5 h-3.5" />
               </button>

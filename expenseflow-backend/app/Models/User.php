@@ -12,7 +12,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['company_id', 'employee_code', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date'])]
+#[Fillable(['company_id', 'employee_code', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -35,10 +35,20 @@ class User extends Authenticatable
             'radius_enabled'       => 'boolean',
             'monthly_claim_limit'  => 'decimal:2',
             'device_bound_at'      => 'datetime',
-            'joined_date'          => 'date',
-            'contract_start_date'  => 'date',
-            'contract_end_date'    => 'date',
+            'birth_date'           => 'date:Y-m-d',
+            'is_pregnant'          => 'boolean',
+            'joined_date'          => 'date:Y-m-d',
+            'contract_start_date'  => 'date:Y-m-d',
+            'contract_end_date'    => 'date:Y-m-d',
         ];
+    }
+
+    /**
+     * Hitung umur saat ini (tahun) berdasarkan birth_date.
+     */
+    public function getAgeAttribute(): ?int
+    {
+        return $this->birth_date ? \Illuminate\Support\Carbon::parse($this->birth_date)->age : null;
     }
 
     public function canAccessReceipts(): bool

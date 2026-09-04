@@ -250,6 +250,12 @@ class AutoCheckoutCommand extends Command
         $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate);
         $workMinutes = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta')));
 
+        // Potong jam istirahat jika bekerja >= 5 jam (300 menit) sesuai UU 13/2003
+        $breakMinutes = (int) ($schedule['break_minutes'] ?? 60);
+        if ($workMinutes >= 300 && $breakMinutes > 0) {
+            $workMinutes = max(240, $workMinutes - $breakMinutes);
+        }
+
         // Tentukan hari libur/weekend menurut kalender (libur nasional/weekend).
         // Dipakai untuk field is_holiday — samakan persis dengan checkOut() manual.
         // Pass user_id agar cuti bersama yang di-decline tidak dianggap hari libur.

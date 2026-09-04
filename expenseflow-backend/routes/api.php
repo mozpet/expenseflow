@@ -159,6 +159,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/users', [UserController::class, 'index']);
             Route::middleware('role:admin,super_admin')->group(function () {
                 Route::post('/users', [UserController::class, 'store']);
+                Route::post('/users/bulk-import', [UserController::class, 'bulkImport']);
                 Route::put('/users/{user}', [UserController::class, 'update']);
                 Route::patch('/users/{user}/deactivate', [UserController::class, 'deactivate']);
                 Route::patch('/users/{user}/activate', [UserController::class, 'activate']);
@@ -250,6 +251,13 @@ Route::prefix('v1')->group(function () {
 
             // Preview jadwal efektif user pada tanggal tertentu (untuk UI HRD)
             Route::get('/effective-schedule', [ShiftController::class, 'effectiveSchedule']);
+
+            // ── Pola Rotasi Shift (Shift Patterns / Recurring Rolling Cycles) ──
+            Route::get('/shift-patterns', [ShiftController::class, 'patternIndex']);
+            Route::post('/shift-patterns', [ShiftController::class, 'patternStore']);
+            Route::get('/shift-patterns/{id}', [ShiftController::class, 'patternShow']);
+            Route::match(['put', 'patch'], '/shift-patterns/{id}', [ShiftController::class, 'patternUpdate']);
+            Route::delete('/shift-patterns/{id}', [ShiftController::class, 'patternDestroy']);
         });
 
     // Presensi check-in/out — hanya karyawan yang attendance_enabled = true (gerbang WFH)

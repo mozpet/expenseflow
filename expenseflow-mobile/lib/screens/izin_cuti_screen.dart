@@ -103,9 +103,13 @@ class _RiwayatIzinTab extends StatelessWidget {
     }
 
     return RefreshIndicator(
-      onRefresh: () =>
-          Provider.of<PresensiProvider>(context, listen: false)
-              .fetchLeaveRequests(),
+      onRefresh: () async {
+        final prov = Provider.of<PresensiProvider>(context, listen: false);
+        await Future.wait([
+          prov.fetchLeaveRequests(forceRefresh: true),
+          prov.fetchLeaveBalance(forceRefresh: true),
+        ]);
+      },
       child: leaves.isEmpty
           ? ListView(
               physics: const AlwaysScrollableScrollPhysics(),

@@ -319,10 +319,10 @@ class PresensiProvider extends ChangeNotifier {
   // ─── Cek status backend untuk deteksi auto-checkout & status WFH ────────
   /// Dipanggil saat app dibuka (resume), tab presensi dibuka, atau saat soft reload.
   /// Memperbarui flag wfh_enabled, status check-in/out hari ini, dan auto-checkout.
-  Future<void> syncStatusFromBackend() async {
+  Future<void> syncStatusFromBackend({bool forceRefresh = false}) async {
     await loadOfflineQueue();
     final notifSvc = NotificationService();
-    final status = await notifSvc.checkAttendanceStatus();
+    final status = await notifSvc.checkAttendanceStatus(forceRefresh: forceRefresh);
     if (status == null) return;
 
     if (hasPendingOfflineSync && !_isSyncingOffline) {
@@ -471,14 +471,14 @@ class PresensiProvider extends ChangeNotifier {
   }
 
   // ─── Fetch riwayat presensi (termasuk sinkronisasi status WFH live) ────
-  Future<void> fetchMyAttendance() async {
+  Future<void> fetchMyAttendance({bool forceRefresh = false}) async {
     _loadingHistory = true;
     notifyListeners();
     try {
       // Jalankan pemuatan riwayat presensi dan sinkronisasi status WFH secara bersamaan
       await Future.wait([
-        _loadMyAttendanceData(),
-        syncStatusFromBackend(),
+        _loadMyAttendanceData(forceRefresh: forceRefresh),
+        syncStatusFromBackend(forceRefresh: forceRefresh),
       ]);
     } catch (e, st) {
       debugPrint('[PresensiProvider] fetchMyAttendance error: $e');
@@ -489,8 +489,8 @@ class PresensiProvider extends ChangeNotifier {
     }
   }
 
-  Future<void> _loadMyAttendanceData() async {
-    final res = await ApiService.myAttendance();
+  Future<void> _loadMyAttendanceData({bool forceRefresh = false}) async {
+    final res = await ApiService.myAttendance(forceRefresh: forceRefresh);
     if (res.containsKey('wfh_enabled')) {
       final newWfhEnabled = res['wfh_enabled'] == true;
       if (newWfhEnabled != wfhEnabled) {
@@ -564,9 +564,10 @@ class PresensiProvider extends ChangeNotifier {
   /// method ini hanya dipakai jika ada halaman dedicated riwayat lembur.
   Future<List<Map<String, dynamic>>> fetchOvertimeApprovals({
     int page = 1,
+    bool forceRefresh = false,
   }) async {
     try {
-      final res = await ApiService.myOvertimeApprovals(page: page);
+      final res = await ApiService.myOvertimeApprovals(page: page, forceRefresh: forceRefresh);
       return (res['data'] as List? ?? []).cast<Map<String, dynamic>>();
     } catch (e, st) {
       debugPrint('[PresensiProvider] fetchOvertimeApprovals error: $e');
@@ -576,11 +577,11 @@ class PresensiProvider extends ChangeNotifier {
   }
 
   // ─── Fetch saldo cuti ─────────────────────────────────────
-  Future<void> fetchLeaveBalance() async {
+  Future<void> fetchLeaveBalance({bool forceRefresh = false}) async {
     _loadingBalance = true;
     notifyListeners();
     try {
-      final res = await ApiService.leaveBalance();
+      final res = await ApiService.leaveBalance(forceRefresh: forceRefresh);
       final list = (res['balances'] as List?) ?? [];
       _leaveResetInfo = res['reset_info'] as Map<String, dynamic>?;
       _leaveBalances
@@ -601,11 +602,11 @@ class PresensiProvider extends ChangeNotifier {
   }
 
   // ─── Fetch riwayat izin/cuti ──────────────────────────────
-  Future<void> fetchLeaveRequests() async {
+  Future<void> fetchLeaveRequests({bool forceRefresh = false}) async {
     _loadingLeaves = true;
     notifyListeners();
     try {
-      final res = await ApiService.myLeaves();
+      final res = await ApiService.myLeaves(forceRefresh: forceRefresh);
       final list = (res['leaves'] as List?) ?? [];
       _leaveRequests
         ..clear()
@@ -688,11 +689,11 @@ class PresensiProvider extends ChangeNotifier {
 
 
   // ─── Fetch cuti bersama mendatang & pesan pembatalan ─────────
-  Future<void> fetchCollectiveLeaves() async {
+  Future<void> fetchCollectiveLeaves({bool forceRefresh = false}) async {
     _loadingCollectiveLeaves = true;
     notifyListeners();
     try {
-      final res = await ApiService.collectiveLeaves();
+      final res = await ApiService.collectiveLeaves(forceRefresh: forceRefresh);
       final list = (res['collective_leaves'] as List?) ?? [];
       final canList = (res['cancellations'] as List?) ?? [];
 

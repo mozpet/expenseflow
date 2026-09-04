@@ -240,11 +240,11 @@ class ReceiptProvider extends ChangeNotifier {
   int get approvedCount =>
       _receipts.where((r) => r.status == 'approved').length;
 
-  Future<void> fetchMyReceipts() async {
+  Future<void> fetchMyReceipts({bool forceRefresh = false}) async {
     _loading = true;
     notifyListeners();
     try {
-      final res = await ApiService.myReceipts();
+      final res = await ApiService.myReceipts(forceRefresh: forceRefresh);
       final list = (res['data'] as List?) ?? [];
       _receipts
         ..clear()
@@ -274,14 +274,14 @@ class ReceiptProvider extends ChangeNotifier {
     for (int i = 0; i < 30; i++) {
       await Future.delayed(const Duration(seconds: 2));
       try {
-        final res = await ApiService.getReceipt(id);
+        final res = await ApiService.getReceipt(id, forceRefresh: true);
         final r = res['receipt'] as Map<String, dynamic>;
         final s = (r['ocr_status'] ?? 'pending').toString();
         if (s != 'pending' && s != 'processing') return r;
       } catch (_) {}
     }
     // Fallback: kembalikan state terakhir
-    final res = await ApiService.getReceipt(id);
+    final res = await ApiService.getReceipt(id, forceRefresh: true);
     return res['receipt'] as Map<String, dynamic>;
   }
 
@@ -313,11 +313,11 @@ class ReceiptProvider extends ChangeNotifier {
       vendorName: vendorName,
     );
     await ApiService.submitReceipt(id);
-    final res = await ApiService.getReceipt(id);
+    final res = await ApiService.getReceipt(id, forceRefresh: true);
     final record =
         ReceiptRecord.fromJson(res['receipt'] as Map<String, dynamic>);
     // Refresh list di background
-    fetchMyReceipts();
+    fetchMyReceipts(forceRefresh: true);
     return record;
   }
 }

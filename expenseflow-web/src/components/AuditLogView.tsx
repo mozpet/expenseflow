@@ -20,6 +20,7 @@ import {
 } from 'lucide-react';
 import CustomDatePicker from './CustomDatePicker';
 import { activityLogApi } from '../services/endpoints';
+import { invalidateCache } from '../services/api';
 import { mapAuditLog } from '../services/mappers';
 
 export const AuditLogView: React.FC = () => {
@@ -42,13 +43,14 @@ export const AuditLogView: React.FC = () => {
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(25);
 
-  const fetchLogs = async () => {
+  const fetchLogs = async (forceRefresh = false) => {
     setLoading(true);
     setFetchError(null);
     try {
+      if (forceRefresh) invalidateCache('/dashboard/activity-logs');
       const res = await activityLogApi.list({
         per_page: 100,
-      });
+      }, forceRefresh);
       const arr = Array.isArray(res) ? res : Array.isArray((res as any)?.data) ? (res as any).data : [];
       setLogs(arr.map(mapAuditLog));
     } catch (e: any) {
@@ -234,9 +236,9 @@ export const AuditLogView: React.FC = () => {
 
           <div className="flex items-center gap-2">
             <button
-              onClick={fetchLogs}
+              onClick={() => fetchLogs(true)}
               disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 transition cursor-pointer"
+              className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 transition cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
               <span>Refresh</span>
@@ -577,7 +579,7 @@ export const AuditLogView: React.FC = () => {
             </div>
 
             {/* Modal Context Info */}
-            <div className="px-5 py-3 bg-slate-100/60 dark:bg-slate-850 border-b border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+            <div className="px-5 py-3 bg-slate-100/60 dark:bg-slate-800/80 border-b border-slate-100 dark:border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
               <div>
                 <span className="text-slate-400 text-[10.5px] block">Pelaku:</span>
                 <span className="font-semibold text-slate-800 dark:text-slate-200">

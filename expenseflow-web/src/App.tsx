@@ -8,6 +8,7 @@ import {
   AppSettings
 } from './types';
 import { useAuth } from './auth/AuthContext';
+import { useTheme } from './context/ThemeContext';
 import { LoginPage } from './components/LoginPage';
 import {
   receiptApi,
@@ -17,6 +18,7 @@ import {
   overtimeApi,
   deviceChangeApi,
 } from './services/endpoints';
+import { invalidateCache } from './services/api';
 import {
   mapReceipt,
   mapReceiptToApproval,
@@ -67,11 +69,15 @@ import {
   CalendarCheck,
   CalendarClock,
   Smartphone,
-  Briefcase
+  Briefcase,
+  Sun,
+  Moon,
+  Laptop
 } from 'lucide-react';
 
 export default function App() {
   const { user, isAuthenticated, loading: authLoading, logout } = useAuth();
+  const { theme, isDark, setTheme, toggleTheme } = useTheme();
 
   // HRD tidak punya akses seluruh fitur finance (struk, invoice, vendor, setting) → disembunyikan.
   const isHrd = user?.role === 'hrd';
@@ -114,66 +120,66 @@ export default function App() {
     return [];
   };
 
-  // ─── Loaders per resource (dipakai ulang setelah aksi) ─────
-  const loadReceipts = useCallback(async () => {
-    const res = await receiptApi.inbox();
+  // ─── Loaders per resource (dipakai ulang setelah aksi / refresh) ─────
+  const loadReceipts = useCallback(async (forceRefresh = false) => {
+    const res = await receiptApi.inbox(forceRefresh);
     setReceipts(rows(res).map(mapReceipt));
   }, []);
 
-  const loadReceiptHistory = useCallback(async () => {
-    const res = await receiptApi.all();
+  const loadReceiptHistory = useCallback(async (forceRefresh = false) => {
+    const res = await receiptApi.all(undefined, forceRefresh);
     const list = rows(res.receipts ?? res);
     setReceiptHistory(
       list.filter((r: any) => r.status === 'approved' || r.status === 'paid' || r.status === 'rejected').map(mapReceiptToApproval),
     );
   }, []);
 
-  const loadInvoices = useCallback(async () => {
-    const res = await invoiceApi.list();
+  const loadInvoices = useCallback(async (forceRefresh = false) => {
+    const res = await invoiceApi.list(undefined, forceRefresh);
     const list = rows(res.invoices ?? res).map(mapInvoice);
     setInvoices(list.filter((i) => i.status === 'Pending' || i.status === 'Due'));
     setInvoiceHistory(list.filter((i) => i.status === 'Dibayar' || i.status === 'Ditolak'));
   }, []);
 
-  const loadNotifications = useCallback(async () => {
-    const res = await notificationApi.list();
+  const loadNotifications = useCallback(async (forceRefresh = false) => {
+    const res = await notificationApi.list(false, forceRefresh);
     setNotifications(rows(res.notifications ?? res).map(mapNotification));
   }, []);
 
   // loadAuditLogs dipindahkan ke AuditLogView — data audit hanya dibutuhkan saat halaman Audit Log dibuka
 
-  const loadSettings = useCallback(async () => {
-    const res = await settingsApi.get();
+  const loadSettings = useCallback(async (forceRefresh = false) => {
+    const res = await settingsApi.get(forceRefresh);
     setSettings(mapSettings(res.settings));
   }, []);
 
   // Muat semua data awal saat user terautentikasi.
-  const loadPendingOvertime = useCallback(async () => {
+  const loadPendingOvertime = useCallback(async (forceRefresh = false) => {
     if (user?.role === 'finance') return; // finance tidak punya akses
     try {
-      const res = await overtimeApi.list({ status: 'pending', page: 1 });
+      const res = await overtimeApi.list({ status: 'pending', page: 1 }, forceRefresh);
       const total = res?.total ?? res?.meta?.total ?? (res?.data?.length ?? 0);
       setPendingOvertimeCount(total);
     } catch { /* diam */ }
   }, [user?.role]);
 
-  const loadPendingDevice = useCallback(async () => {
+  const loadPendingDevice = useCallback(async (forceRefresh = false) => {
     if (user?.role === 'finance') return; // finance tidak punya akses
     try {
-      const res = await deviceChangeApi.list({ status: 'pending', page: 1 });
+      const res = await deviceChangeApi.list({ status: 'pending', page: 1 }, forceRefresh);
       const total = res?.total ?? res?.meta?.total ?? (res?.data?.length ?? 0);
       setPendingDeviceCount(total);
     } catch { /* diam */ }
   }, [user?.role]);
 
-  const loadAll = useCallback(async () => {
+  const loadAll = useCallback(async (forceRefresh = false) => {
     setDataLoading(true);
     setDataError(null);
     try {
       // HRD tidak punya akses finance → jangan panggil endpoint receipt, invoice, atau settings (akan 403).
-      const tasks = [loadNotifications(), loadPendingOvertime(), loadPendingDevice()];
+      const tasks = [loadNotifications(forceRefresh), loadPendingOvertime(forceRefresh), loadPendingDevice(forceRefresh)];
       if (user?.role !== 'hrd') {
-        tasks.push(loadInvoices(), loadReceipts(), loadReceiptHistory(), loadSettings());
+        tasks.push(loadInvoices(forceRefresh), loadReceipts(forceRefresh), loadReceiptHistory(forceRefresh), loadSettings(forceRefresh));
       }
       await Promise.all(tasks);
     } catch (e: any) {
@@ -337,7 +343,9 @@ export default function App() {
   const refreshReceipts = async () => {
     setRefreshing(true);
     try {
-      await Promise.all([loadReceipts(), loadReceiptHistory(), loadNotifications()]);
+      invalidateCache('/dashboard/receipts');
+      invalidateCache('/dashboard/notifications');
+      await Promise.all([loadReceipts(true), loadReceiptHistory(true), loadNotifications(true)]);
     } catch (e: any) {
       setDataError(e?.message ?? 'Gagal memuat data dari server.');
     } finally {
@@ -349,7 +357,9 @@ export default function App() {
   const refreshReceiptHistory = async () => {
     setRefreshing(true);
     try {
-      await Promise.all([loadReceiptHistory(), loadNotifications()]);
+      invalidateCache('/dashboard/receipts');
+      invalidateCache('/dashboard/notifications');
+      await Promise.all([loadReceiptHistory(true), loadNotifications(true)]);
     } catch (e: any) {
       setDataError(e?.message ?? 'Gagal memuat data dari server.');
     } finally {
@@ -578,18 +588,18 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen overflow-hidden bg-slate-50/50 text-slate-805 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans antialiased">
-      
+    <div className="h-screen overflow-hidden bg-slate-50/50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 flex flex-col font-sans antialiased">
+
       {/* Mobile Top Header navbar */}
       <header className="lg:hidden h-14 bg-[#0f172a] text-slate-300 border-b border-slate-800 px-4 flex items-center justify-between sticky top-0 z-40 select-none shadow-sm">
         <div className="flex items-center gap-2">
-          <button 
+          <button
             onClick={() => setIsSidebarOpen(true)}
-            className="p-1.5 hover:bg-slate-805 hover:bg-slate-800 rounded-lg text-slate-300 transition"
+            className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
           >
             <Menu className="w-5 h-5" />
           </button>
-          
+
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 bg-indigo-500 rounded flex items-center justify-center shrink-0">
               <div className="w-3.5 h-3.5 border border-white rounded-xs"></div>
@@ -598,9 +608,18 @@ export default function App() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2">
+          {/* Mobile Theme Toggle Button */}
+          <button
+            onClick={toggleTheme}
+            className="p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition cursor-pointer"
+            title={isDark ? 'Ganti ke Mode Terang' : 'Ganti ke Mode Gelap'}
+          >
+            {isDark ? <Sun className="w-4.5 h-4.5 text-amber-400" /> : <Moon className="w-4.5 h-4.5 text-slate-300" />}
+          </button>
+
           {/* Mobile notification shortcut */}
-          <button 
+          <button
             onClick={() => navigateTo('notif')}
             className="relative p-1.5 hover:bg-slate-800 rounded-lg text-slate-300 transition"
           >
@@ -609,10 +628,10 @@ export default function App() {
               <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-rose-500 animate-ping" />
             )}
           </button>
-          
-          {/* Mobile Profile logo mockup */}
+
+          {/* Mobile Profile logo */}
           <span className="w-7 h-7 rounded-full bg-indigo-500/20 text-indigo-300 font-semibold text-[10px] flex items-center justify-center font-mono">
-            SR
+            {userInitials}
           </span>
         </div>
       </header>
@@ -1068,7 +1087,7 @@ export default function App() {
 
           {/* Fixed bottom footer with avatar */}
           <div className={`p-4 border-t border-slate-800 shrink-0 ${isSidebarCollapsed ? 'lg:flex lg:flex-col lg:items-center lg:gap-2 lg:px-2 space-y-2' : 'space-y-2'}`}>
-            <div className={`flex items-center gap-3 bg-slate-900/60 p-2 rounded-xl border border-slate-850 ${isSidebarCollapsed ? 'lg:justify-center lg:p-1.5' : ''}`}>
+            <div className={`flex items-center gap-3 bg-slate-900/60 p-2 rounded-xl border border-slate-800 ${isSidebarCollapsed ? 'lg:justify-center lg:p-1.5' : ''}`}>
               <span className="w-8 h-8 rounded-full bg-indigo-600/20 border border-indigo-500/30 text-indigo-300 font-bold text-xs flex items-center justify-center shrink-0 font-mono" title={userName}>
                 {userInitials}
               </span>
@@ -1106,27 +1125,28 @@ export default function App() {
           {/* Main Top Header Navbar (Desktop Only) */}
           <header className="hidden lg:flex h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 px-6 items-center justify-between sticky top-0 z-20 select-none">
             <div className="flex items-center gap-3">
-              {/* Burger Button next to Logo / Title in Desktop Header */}
-              <button
-                onClick={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
-                className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-800 dark:hover:text-white transition cursor-pointer"
-                title={isSidebarCollapsed ? 'Perluas Sidebar' : 'Ciutkan Sidebar'}
-              >
-                <Menu className="w-5 h-5" />
-              </button>
-
               <div className="flex items-center gap-2">
                 <h2 className="font-bold text-slate-800 dark:text-white text-sm tracking-tight font-sans uppercase">System Portal</h2>
-                <span className="text-slate-300">/</span>
-                <span className="text-xs font-semibold text-slate-500 font-sans">
+                <span className="text-slate-300 dark:text-slate-700">/</span>
+                <span className="text-xs font-semibold text-slate-500 dark:text-slate-400 font-sans">
                   {pageTitles[activePage] || 'Portal'}
                 </span>
               </div>
             </div>
 
             <div className="flex items-center gap-3">
+              {/* Theme Toggle Button Desktop */}
+              <button
+                onClick={toggleTheme}
+                className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-amber-400 transition cursor-pointer"
+                title={isDark ? 'Ganti ke Mode Terang' : 'Ganti ke Mode Gelap'}
+                aria-label="Toggle Theme"
+              >
+                {isDark ? <Sun className="w-5 h-5 text-amber-400" /> : <Moon className="w-5 h-5" />}
+              </button>
+
               {/* Desktop Notification Bell with Unread Dot */}
-              <button 
+              <button
                 onClick={() => navigateTo('notif')}
                 className="relative p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-slate-500 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-white transition cursor-pointer"
                 title={`Notifikasi Sistem (${unreadNotifCount} Baru)`}
@@ -1141,16 +1161,16 @@ export default function App() {
               </button>
 
               {/* Shortcut buttons */}
-              <button 
+              <button
                 onClick={() => alert('Exporting global ledger reports...')}
-                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-750 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-350 transition cursor-pointer"
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 transition cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5 text-indigo-500" />
                 <span>Export Gabungan</span>
               </button>
 
               <div className="flex items-center gap-2.5">
-                <span className="w-8 h-8 rounded-full bg-indigo-50 text-indigo-600 font-bold text-xs flex items-center justify-center font-mono shrink-0 border border-indigo-100">{userInitials}</span>
+                <span className="w-8 h-8 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-bold text-xs flex items-center justify-center font-mono shrink-0 border border-indigo-100 dark:border-indigo-800/60">{userInitials}</span>
                 <div className="text-left leading-none">
                   <span className="text-[11px] font-bold text-slate-800 dark:text-white block">{userName}</span>
                   <span className="text-[9px] text-slate-400 block mt-1">{roleLabel[userRole] ?? userRole}</span>

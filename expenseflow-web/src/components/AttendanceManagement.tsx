@@ -40,7 +40,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
-import { ApiError } from '../services/api';
+import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../auth/AuthContext';
 import CustomDatePicker from './CustomDatePicker';
@@ -690,11 +690,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   };
 
   // ─── Loaders ──────────────────────────────────────────────
-  const loadToday = useCallback(async () => {
+  const loadToday = useCallback(async (forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      setToday(await attendanceApi.today());
+      if (forceRefresh) invalidateCache('/dashboard/attendance/today');
+      setToday(await attendanceApi.today(forceRefresh));
     } catch (e) {
       reportApiError(e, 'Gagal memuat data presensi hari ini.');
     } finally {
@@ -702,13 +703,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
   }, []);
 
-  const loadLeaves = useCallback(async () => {
+  const loadLeaves = useCallback(async (forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
       // per_page: 500 — cukup untuk perusahaan UKM. Tidak bisa server-side pagination
       // karena conflict detection (deteksi bentrok cuti) butuh semua data leaves (semua status).
-      const res: any = await attendanceApi.leaves({ per_page: 500 });
+      if (forceRefresh) invalidateCache('/dashboard/attendance/leaves');
+      const res: any = await attendanceApi.leaves({ per_page: 500 }, forceRefresh);
       setLeaves(rows(res));
     } catch (e) {
       reportApiError(e, 'Gagal memuat pengajuan izin/cuti.');
@@ -717,13 +719,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
   }, []);
 
-  const loadUsers = useCallback(async () => {
+  const loadUsers = useCallback(async (forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
       // per_page: 300 — cukup untuk perusahaan UKM (≤ 300 karyawan aktif).
       // Filter office/search dilakukan client-side karena backend belum support filter tersebut.
-      const res: any = await attendanceApi.users({ per_page: 300 });
+      if (forceRefresh) invalidateCache('/dashboard/attendance/users');
+      const res: any = await attendanceApi.users({ per_page: 300 }, forceRefresh);
       setUsers(rows(res));
     } catch (e) {
       reportApiError(e, 'Gagal memuat daftar karyawan.');
@@ -732,11 +735,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
   }, []);
 
-  const loadBalances = useCallback(async () => {
+  const loadBalances = useCallback(async (forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res: any = await attendanceApi.leaveBalances();
+      if (forceRefresh) invalidateCache('/dashboard/attendance/leave-balances');
+      const res: any = await attendanceApi.leaveBalances(undefined, forceRefresh);
       setBalances(res?.balances ?? []);
     } catch (e) {
       reportApiError(e, 'Gagal memuat saldo cuti.');
@@ -745,14 +749,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
   }, []);
 
-  const loadBalanceHistories = useCallback(async () => {
+  const loadBalanceHistories = useCallback(async (forceRefresh = false) => {
     setBalanceHistoryLoading(true);
     try {
+      if (forceRefresh) invalidateCache('/dashboard/attendance/leave-balance-history');
       const params: any = {};
       if (balanceHistoryOfficeFilter) params.office_id = balanceHistoryOfficeFilter;
       if (balanceHistoryYearFilter) params.year = Number(balanceHistoryYearFilter);
       if (debouncedBalanceHistorySearch) params.search = debouncedBalanceHistorySearch;
-      const res: any = await attendanceApi.leaveBalanceHistories(params);
+      const res: any = await attendanceApi.leaveBalanceHistories(params, forceRefresh);
       setBalanceHistories(res?.histories ?? []);
       setBalanceHistoryStats(res?.stats ?? null);
     } catch (e) {
@@ -777,10 +782,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
   };
 
-  const loadReport = useCallback(async (page = reportPage) => {
+  const loadReport = useCallback(async (page = reportPage, forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
+      if (forceRefresh) invalidateCache('/dashboard/attendance/report');
       const f: any = { page };
       if (reportFilter.start_date) f.start_date = reportFilter.start_date;
       if (reportFilter.end_date) f.end_date = reportFilter.end_date;
@@ -788,7 +794,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       if (reportFilter.type) f.type = reportFilter.type;
       if (reportFilter.search) f.search = reportFilter.search;
       if (reportFilter.office_id) f.office_id = reportFilter.office_id;
-      setReport(await attendanceApi.report(f));
+      setReport(await attendanceApi.report(f, forceRefresh));
     } catch (e) {
       reportApiError(e, 'Gagal memuat laporan presensi.');
     } finally {
@@ -797,11 +803,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportFilter, reportPage]);
 
-  const loadHolidays = useCallback(async () => {
+  const loadHolidays = useCallback(async (forceRefresh = false) => {
     setLoading(true);
     setError(null);
     try {
-      const res: any = await attendanceApi.holidays.list(holidayYear);
+      if (forceRefresh) invalidateCache('/dashboard/attendance/holidays');
+      const res: any = await attendanceApi.holidays.list(holidayYear, forceRefresh);
       setHolidays(res?.holidays ?? []);
     } catch (e) {
       reportApiError(e, 'Gagal memuat kalender libur.');
@@ -1017,18 +1024,21 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           )}
           <button
             onClick={() => {
-              if (tab === 'today') loadToday();
-              else if (tab === 'leaves') loadLeaves();
-              else if (tab === 'users') loadUsers();
-              else if (tab === 'balances') loadBalances();
-              else if (tab === 'report') loadReport(reportPage);
-              else if (tab === 'holidays') loadHolidays();
+              if (tab === 'today') loadToday(true);
+              else if (tab === 'leaves') loadLeaves(true);
+              else if (tab === 'users') loadUsers(true);
+              else if (tab === 'balances') {
+                if (balanceSubTab === 'active') loadBalances(true);
+                else loadBalanceHistories(true);
+              }
+              else if (tab === 'report') loadReport(reportPage, true);
+              else if (tab === 'holidays') loadHolidays(true);
             }}
-            disabled={loading}
+            disabled={loading || balanceHistoryLoading}
             className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-xl text-xs font-bold transition shrink-0 disabled:opacity-50"
             title="Refresh Data"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${(loading || balanceHistoryLoading) ? 'animate-spin' : ''}`} />
             <span className="hidden sm:inline">Refresh</span>
           </button>
         </div>
@@ -2004,7 +2014,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         />
                       </div>
                       <button
-                        onClick={loadBalances}
+                        onClick={() => loadBalances(true)}
                         className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
                         title="Segarkan Saldo"
                       >
@@ -2309,7 +2319,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     />
                   </div>
                   <button
-                    onClick={loadBalanceHistories}
+                    onClick={() => loadBalanceHistories(true)}
                     disabled={balanceHistoryLoading}
                     className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition disabled:opacity-50"
                     title="Segarkan Riwayat"

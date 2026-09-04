@@ -343,7 +343,7 @@ export const InvoiceScan: React.FC<InvoiceScanProps> = ({ onAddInvoice }) => {
             <FileText className="w-4 h-4 text-indigo-600" />
             Preview Dokumen Terlampir
           </h4>
-          <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-850 rounded-xl flex flex-col items-center justify-center p-8 h-64 text-slate-400 select-none">
+          <div className="bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-xl flex flex-col items-center justify-center p-8 h-64 text-slate-400 select-none">
             <Scan className="w-12 h-12 text-slate-300 dark:text-slate-800 animate-pulse mb-2" />
             <p className="text-xs font-bold text-slate-700 dark:text-slate-300">invoice_PT_MajuJaya_042.pdf</p>
             <span className="text-[10px] text-slate-400 mt-0.5">Halaman 1 dari 2 · PDF Terlindungi sandi SHA256</span>

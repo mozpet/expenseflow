@@ -276,10 +276,14 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
 
           // Refresh: muat ulang info shift + kalender bulan yang sedang dilihat
           Future<void> refresh() async {
-            await prov.fetchMySchedule();
+            await prov.fetchMySchedule(forceRefresh: true);
             // Force reload bulan yang sedang ditampilkan
             prov.clearCalendarCache();
-            await prov.fetchScheduleCalendar(_displayedMonth.year, _displayedMonth.month);
+            await prov.fetchScheduleCalendar(
+              _displayedMonth.year,
+              _displayedMonth.month,
+              forceRefresh: true,
+            );
           }
 
           return SafeArea(

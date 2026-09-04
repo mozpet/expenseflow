@@ -39,11 +39,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final presensiProv = Provider.of<PresensiProvider>(context, listen: false);
 
       await Future.wait([
-        receiptProv.fetchMyReceipts(),
-        shiftProv.fetchMySchedule(),
-        shiftProv.checkShiftUpdates(),
-        presensiProv.syncStatusFromBackend(),
-        presensiProv.fetchCollectiveLeaves(),
+        receiptProv.fetchMyReceipts(forceRefresh: true),
+        shiftProv.fetchMySchedule(forceRefresh: true),
+        shiftProv.checkShiftUpdates(forceRefresh: true),
+        presensiProv.syncStatusFromBackend(forceRefresh: true),
+        presensiProv.fetchCollectiveLeaves(forceRefresh: true),
       ]);
 
       if (mounted) {

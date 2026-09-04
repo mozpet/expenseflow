@@ -8,11 +8,12 @@ import {
   Search,
   Edit2,
   Download,
-  AlertCircle
+  AlertCircle,
+  RefreshCw
 } from 'lucide-react';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { vendorApi } from '../services/endpoints';
-import { ApiError } from '../services/api';
+import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 
 interface Vendor {
@@ -51,11 +52,12 @@ export const MasterVendor: React.FC<{
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   // Muat daftar vendor dari backend.
-  const loadVendors = async () => {
+  const loadVendors = async (forceRefresh = false) => {
     setLoading(true);
     setErrorMsg(null);
     try {
-      const res: any = await vendorApi.list();
+      if (forceRefresh) invalidateCache('/dashboard/vendors');
+      const res: any = await vendorApi.list(forceRefresh);
       const list = Array.isArray(res?.data) ? res.data : Array.isArray(res) ? res : [];
       setVendors(list.map(mapVendor));
     } catch (e: any) {
@@ -242,9 +244,19 @@ export const MasterVendor: React.FC<{
         </div>
         
         <div className="flex gap-2 w-full sm:w-auto shrink-0 select-none">
-          <button 
+          <button
+            onClick={() => loadVendors(true)}
+            disabled={loading}
+            className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition duration-150 cursor-pointer disabled:opacity-50"
+            title="Refresh Data"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Refresh</span>
+          </button>
+
+          <button
             onClick={handleExport}
-            className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-350 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-750 transition duration-150 cursor-pointer"
+            className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 border border-slate-200 dark:border-slate-700 transition duration-150 cursor-pointer"
           >
             <Download className="w-4 h-4 text-slate-500" />
             <span>Export</span>
@@ -254,24 +266,24 @@ export const MasterVendor: React.FC<{
 
       {/* Main Vendor register lists matching image.png card design */}
       <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-5">
-        
+
         <div className="flex flex-col sm:flex-row justify-between items-stretch sm:items-center gap-3">
           <div>
             <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 uppercase tracking-wider">
               Master data vendor terdaftar
             </h4>
           </div>
-          
+
           <div className="flex items-center gap-2.5">
             {/* Simple search overlay */}
             <div className="relative">
               <Search className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
-              <input 
-                type="text" 
+              <input
+                type="text"
                 placeholder="Cari vendor / bank..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-9 pr-4 py-1.5 border border-slate-200 dark:border-slate-700 rounded-xl text-xs bg-slate-50/50 dark:bg-slate-800/40 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-505 transition w-full sm:w-56"
+                className="pl-9 pr-4 py-1.5 border border-slate-200 dark:border-slate-700 rounded-xl text-xs bg-slate-50/50 dark:bg-slate-800/40 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition w-full sm:w-56"
               />
             </div>
 

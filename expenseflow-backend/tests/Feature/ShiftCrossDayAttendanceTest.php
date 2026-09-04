@@ -143,8 +143,8 @@ class ShiftCrossDayAttendanceTest extends TestCase
         $res->assertOk();
         $att = Attendance::where('user_id', $emp->id)->whereDate('date', '2026-08-28')->first();
         $this->assertNotNull($att->check_out_time);
-        // Durasi 22:00 s/d 06:00 = 8 jam = 480 menit
-        $this->assertEquals(480, $att->work_minutes);
+        // Durasi 22:00 s/d 06:00 = 8 jam = 480 menit (dipotong istirahat 60 menit = 420 menit)
+        $this->assertEquals(420, $att->work_minutes);
     }
 
     // ── 3. Cegah check-in baru jika shift malam kemarin belum checkout ──

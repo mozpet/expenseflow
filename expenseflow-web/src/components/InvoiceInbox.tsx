@@ -517,8 +517,8 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
 
             {/* Simulated PDF doc area */}
             <div className="bg-slate-50 dark:bg-slate-950/50 rounded-xl p-4 flex flex-col items-center justify-center border border-dashed border-slate-200 dark:border-slate-800 mb-4">
-              <div className="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-850 flex items-center justify-center text-slate-400 dark:text-slate-500 mb-1">
-                <FileText className="w-5 h-5 text-indigo-600" />
+              <div className="w-10 h-10 rounded-full bg-slate-200 dark:bg-slate-800 flex items-center justify-center text-slate-400 dark:text-slate-500 mb-1">
+                <FileText className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
               </div>
               <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
                 {selectedInvoice.sumber === 'Scan' ? `invoice_${selectedInvoice.vendor.replace(/\s+/g, '_')}_ocred.pdf` : 'manual_invoice_doc.pdf'}
@@ -531,7 +531,7 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
             {/* Alert Box for Due Dates */}
             {selectedInvoice.status === 'Due' && (
               <div className="bg-rose-50/50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/50 rounded-xl p-3 mb-4 text-xs text-rose-700 dark:text-rose-400 flex items-start gap-2.5">
-                <Clock className="w-4 h-4 text-rose-600 mt-0.5 shrink-0" />
+                <Clock className="w-4 h-4 text-rose-600 dark:text-rose-400 mt-0.5 shrink-0" />
                 <div>
                   <span className="font-bold">URGENT: Jatuh Tempo Hari Ini</span>
                   <p className="text-[10px] opacity-90 mt-0.5">Invoice ini harus dibayar hari ini untuk menghindari suspensi akun software korporat.</p>
@@ -540,7 +540,7 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
             )}
 
             {/* Detailed Metadata Grid */}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3.5 mb-5 text-xs text-slate-650 bg-slate-50/50 dark:bg-slate-850/40 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3.5 mb-5 text-xs text-slate-600 dark:text-slate-300 bg-slate-50/50 dark:bg-slate-800/40 p-4 rounded-xl border border-slate-100 dark:border-slate-800">
               <div>
                 <span className="text-slate-400 dark:text-slate-500 block text-[10px]">No. Invoice</span>
                 <span className="font-semibold text-slate-800 dark:text-slate-200 font-mono">{selectedInvoice.id}</span>
@@ -588,7 +588,7 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
                     <tbody>
                       {selectedInvoice.items.map((it) => (
                         <tr key={it.id} className="border-b border-slate-100 dark:border-slate-800 last:border-b-0">
-                          <td className="py-2 px-3 text-slate-700 dark:text-slate-350">{it.deskripsi}</td>
+                          <td className="py-2 px-3 text-slate-700 dark:text-slate-300">{it.deskripsi}</td>
                           <td className="py-2 px-3 text-center">{it.qty}</td>
                           <td className="py-2 px-3 text-right font-mono">{formatCurrency(it.harga)}</td>
                           <td className="py-2 px-3 text-right font-semibold font-mono">{formatCurrency(it.subtotal)}</td>
@@ -599,12 +599,12 @@ export const InvoiceInbox: React.FC<InvoiceInboxProps> = ({
                 </div>
                 {/* Total breakdowns */}
                 <div className="mt-3 pl-20 space-y-1.5 text-xs">
-                  <div className="flex justify-between text-slate-505">
+                  <div className="flex justify-between text-slate-500 dark:text-slate-400">
                     <span>Subtotal</span>
                     <span className="font-mono">{formatCurrency(selectedInvoice.total - (selectedInvoice.ppn ?? 0))}</span>
                   </div>
                   {selectedInvoice.ppn && (
-                    <div className="flex justify-between text-slate-505">
+                    <div className="flex justify-between text-slate-500 dark:text-slate-400">
                       <span>PPN 11%</span>
                       <span className="font-mono">{formatCurrency(selectedInvoice.ppn)}</span>
                     </div>

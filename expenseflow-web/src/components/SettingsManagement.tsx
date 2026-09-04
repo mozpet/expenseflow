@@ -226,6 +226,7 @@ const OfficesTab: React.FC<{
     radius_meters: 100,
     work_start_time: '08:00',
     work_end_time: '17:00',
+    break_minutes: 60,
     work_days: [1, 2, 3, 4, 5] as number[],
     late_tolerance_minutes: 15,
     late_checkin_cutoff_minutes: '' as number | '',
@@ -275,6 +276,7 @@ const OfficesTab: React.FC<{
   const DANGEROUS_LABELS: Record<string, string> = {
     work_start_time: 'Jam Masuk',
     work_end_time: 'Jam Pulang',
+    break_minutes: 'Durasi Istirahat',
     work_days: 'Hari Kerja',
     custom_schedules: 'Jam Kerja Khusus per Hari',
     office_latitude: 'Lokasi Kantor (Latitude)',
@@ -312,6 +314,7 @@ const OfficesTab: React.FC<{
       radius_meters: o.radius_meters ?? 100,
       work_start_time: (o.work_start_time ?? '08:00').slice(0, 5),
       work_end_time: (o.work_end_time ?? '17:00').slice(0, 5),
+      break_minutes: o.break_minutes ?? 60,
       work_days: o.work_days ?? [1, 2, 3, 4, 5],
       late_tolerance_minutes: o.late_tolerance_minutes ?? 15,
       late_checkin_cutoff_minutes: o.late_checkin_cutoff_minutes != null ? o.late_checkin_cutoff_minutes : '',
@@ -353,6 +356,7 @@ const OfficesTab: React.FC<{
 
   const calculatedWeeklyHours = useMemo(() => {
     let totalMinutes = 0;
+    const breakMins = Number(form.break_minutes ?? 60);
     for (const day of (form.work_days as number[])) {
       const startStr = form.custom_schedules[day]?.start ?? form.work_start_time;
       const endStr = form.custom_schedules[day]?.end ?? form.work_end_time;
@@ -362,19 +366,101 @@ const OfficesTab: React.FC<{
         let startMins = sH * 60 + sM;
         let endMins = eH * 60 + eM;
         if (endMins <= startMins) endMins += 24 * 60;
-        totalMinutes += (endMins - startMins);
+        const gross = endMins - startMins;
+        totalMinutes += Math.max(0, gross - breakMins);
       }
     }
     return totalMinutes / 60;
-  }, [form.work_days, form.work_start_time, form.work_end_time, form.custom_schedules]);
+  }, [form.work_days, form.work_start_time, form.work_end_time, form.break_minutes, form.custom_schedules]);
 
   // ─── Validasi form (dipanggil submit & sebelum konfirmasi reset) ──
   const validate = (): string | null => {
-    if (!form.office_name || form.office_latitude === '' || form.office_longitude === '') {
-      return 'Nama kantor, latitude, dan longitude wajib diisi.';
+    // 1. Nama Kantor
+    const trimmedName = String(form.office_name ?? '').trim();
+    if (!trimmedName) {
+      return 'Nama kantor wajib diisi.';
     }
-    if (Array.isArray(form.work_days) && form.work_days.length > 6) {
-      return 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur.';
+    if (trimmedName.length < 3) {
+      return 'Nama kantor minimal 3 karakter.';
+    }
+    if (trimmedName.length > 100) {
+      return 'Nama kantor maksimal 100 karakter.';
+    }
+
+    // 2. Titik Koordinat GPS
+    if (
+      form.office_latitude === '' ||
+      form.office_latitude === null ||
+      form.office_latitude === undefined ||
+      form.office_longitude === '' ||
+      form.office_longitude === null ||
+      form.office_longitude === undefined
+    ) {
+      return 'Titik koordinat kantor (Latitude & Longitude) wajib diisi.';
+    }
+    const lat = Number(form.office_latitude);
+    const lng = Number(form.office_longitude);
+    if (isNaN(lat) || lat < -90 || lat > 90) {
+      return 'Latitude kantor tidak valid (harus berada dalam rentang -90 s.d. 90 derajat).';
+    }
+    if (isNaN(lng) || lng < -180 || lng > 180) {
+      return 'Longitude kantor tidak valid (harus berada dalam rentang -180 s.d. 180 derajat).';
+    }
+    if (lat === 0 && lng === 0) {
+      return 'Titik koordinat kantor tidak boleh (0, 0). Silakan tentukan lokasi kantor pada peta.';
+    }
+
+    // 3. Radius Presensi
+    if (
+      form.radius_meters === '' ||
+      form.radius_meters === null ||
+      form.radius_meters === undefined
+    ) {
+      return 'Radius presensi wajib diisi.';
+    }
+    const radius = Number(form.radius_meters);
+    if (isNaN(radius) || radius < 10) {
+      return 'Radius presensi minimal 10 meter untuk menjamin akurasi sinyal GPS.';
+    }
+    if (radius > 5000) {
+      return 'Radius presensi maksimal 5.000 meter (5 km).';
+    }
+
+    // 4. Jam Masuk Default
+    if (!form.work_start_time) {
+      return 'Jam masuk default wajib diisi (format 24 jam HH:mm).';
+    }
+
+    // 5. Jam Pulang Default
+    if (!form.work_end_time) {
+      return 'Jam pulang default wajib diisi (format 24 jam HH:mm).';
+    }
+    if (form.work_start_time.slice(0, 5) === form.work_end_time.slice(0, 5)) {
+      return 'Jam pulang default tidak boleh sama persis dengan jam masuk default.';
+    }
+
+    // 6. Hari Kerja
+    if (!Array.isArray(form.work_days) || form.work_days.length === 0) {
+      return 'Hari kerja wajib dipilih minimal 1 hari per minggu.';
+    }
+    if (form.work_days.length > 6) {
+      return 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).';
+    }
+
+    // 7. Saldo Cuti Default
+    if (
+      form.default_leave_quota === '' ||
+      form.default_leave_quota === null ||
+      form.default_leave_quota === undefined
+    ) {
+      return 'Saldo cuti default wajib diisi.';
+    }
+    const leaveQuota = Number(form.default_leave_quota);
+    if (isNaN(leaveQuota) || leaveQuota < 0) {
+      return 'Saldo cuti default minimal 0 hari.';
+    }
+    if (leaveQuota > 365) {
+      return 'Saldo cuti default maksimal 365 hari.';
     }
 
     // Validasi typo AM/PM
@@ -422,11 +508,6 @@ const OfficesTab: React.FC<{
       }
     }
 
-    // Saldo cuti: kuota wajib angka ≥ 0
-    const leaveQuota = Number(form.default_leave_quota);
-    if (isNaN(leaveQuota) || leaveQuota < 0) {
-      return 'Saldo cuti default wajib berupa angka minimal 0.';
-    }
     return null;
   };
 
@@ -467,6 +548,7 @@ const OfficesTab: React.FC<{
         radius_meters: Number(form.radius_meters),
         work_start_time: form.work_start_time,
         work_end_time: form.work_end_time,
+        break_minutes: Number(form.break_minutes ?? 60),
         work_days: form.work_days,
         late_tolerance_minutes: Number(form.late_tolerance_minutes),
         late_checkin_cutoff_minutes: form.late_checkin_cutoff_minutes === '' || form.late_checkin_cutoff_minutes === null ? null : Number(form.late_checkin_cutoff_minutes),
@@ -678,6 +760,26 @@ const OfficesTab: React.FC<{
               </div>
             </div>
 
+            {/* Alert Validasi Form */}
+            {validationError && (
+              <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800/60 flex items-start gap-3 animate-in fade-in duration-200">
+                <div className="p-1 bg-rose-100 dark:bg-rose-900/50 text-rose-600 dark:text-rose-400 rounded-lg shrink-0 mt-0.5">
+                  <AlertTriangle className="w-4 h-4" />
+                </div>
+                <div className="flex-1 text-xs">
+                  <p className="font-bold text-rose-800 dark:text-rose-300">Harap periksa isian formulir:</p>
+                  <p className="text-rose-700 dark:text-rose-300/90 mt-0.5 leading-relaxed">{validationError}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setValidationError(null)}
+                  className="text-rose-400 hover:text-rose-600 dark:hover:text-rose-200 p-1"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
             {/* TAB 1: Presensi & Lokasi */}
             {modalTab === 'attendance' && (
               <div className="space-y-4 text-xs">
@@ -685,30 +787,97 @@ const OfficesTab: React.FC<{
                 <div className="p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 space-y-3">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
                     <div className="md:col-span-2 space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Nama Kantor *</label>
-                      <input type="text" value={form.office_name} onChange={(e) => setForm({ ...form, office_name: e.target.value })} required className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none" placeholder="cth: Kantor Pusat / Cabang Jakarta" />
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                        Nama Kantor <span className="text-rose-500 font-bold">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={form.office_name}
+                        onChange={(e) => {
+                          setForm({ ...form, office_name: e.target.value });
+                          if (validationError) setValidationError(null);
+                        }}
+                        required
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                        placeholder="cth: Kantor Pusat / Cabang Jakarta"
+                      />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Radius Presensi (m)</label>
-                      <input type="number" value={form.radius_meters} onChange={(e) => setForm({ ...form, radius_meters: e.target.value })} className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none" />
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                        Radius Presensi (m) <span className="text-rose-500 font-bold">*</span>
+                      </label>
+                      <input
+                        type="number"
+                        min={10}
+                        max={5000}
+                        value={form.radius_meters}
+                        onChange={(e) => {
+                          setForm({ ...form, radius_meters: e.target.value });
+                          if (validationError) setValidationError(null);
+                        }}
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                        placeholder="100"
+                      />
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Titik Koordinat Kantor (GPS) *</label>
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                      Titik Koordinat Kantor (GPS) <span className="text-rose-500 font-bold">*</span>
+                    </label>
                     <LocationPicker
                       lat={form.office_latitude}
                       lng={form.office_longitude}
-                      onChange={(lat, lng) => setForm({ ...form, office_latitude: lat, office_longitude: lng })}
+                      onChange={(lat, lng) => {
+                        setForm({ ...form, office_latitude: lat, office_longitude: lng });
+                        if (validationError) setValidationError(null);
+                      }}
                     />
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Jam Masuk Default</label>
-                      <input type="time" value={form.work_start_time} onChange={(e) => setForm({ ...form, work_start_time: e.target.value })} className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none" />
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                        Jam Masuk Default <span className="text-rose-500 font-bold">*</span>
+                      </label>
+                      <input
+                        type="time"
+                        value={form.work_start_time}
+                        onChange={(e) => {
+                          setForm({ ...form, work_start_time: e.target.value });
+                          if (validationError) setValidationError(null);
+                        }}
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                      />
                     </div>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Jam Pulang Default</label>
-                      <input type="time" value={form.work_end_time} onChange={(e) => setForm({ ...form, work_end_time: e.target.value })} className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none" />
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                        Jam Pulang Default <span className="text-rose-500 font-bold">*</span>
+                      </label>
+                      <input
+                        type="time"
+                        value={form.work_end_time}
+                        onChange={(e) => {
+                          setForm({ ...form, work_end_time: e.target.value });
+                          if (validationError) setValidationError(null);
+                        }}
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block" title="Durasi istirahat (contoh 60 menit)">
+                        Durasi Istirahat (Menit) <span className="text-slate-400 font-normal">(Std 60)</span>
+                      </label>
+                      <input
+                        type="number"
+                        min={0}
+                        max={240}
+                        placeholder="60"
+                        value={form.break_minutes ?? 60}
+                        onChange={(e) => {
+                          setForm({ ...form, break_minutes: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0) });
+                          if (validationError) setValidationError(null);
+                        }}
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                      />
                     </div>
                   </div>
                 </div>
@@ -718,7 +887,7 @@ const OfficesTab: React.FC<{
                   <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between mb-1">
                     <span className="flex items-center gap-2">
                       <CalendarDays className="w-4 h-4 text-indigo-500" />
-                      Hari Kerja & Jam per Hari
+                      Hari Kerja & Jam per Hari <span className="text-rose-500 font-bold">*</span>
                       <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-semibold ${
                         form.enforce_weekly_hours && calculatedWeeklyHours > Number(form.max_weekly_hours)
                           ? 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400'
@@ -1104,7 +1273,9 @@ const OfficesTab: React.FC<{
                       <CalendarDays className="w-3.5 h-3.5 text-teal-500" /> Saldo Cuti & Reset Tahunan
                     </span>
                     <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 block">Saldo cuti default (hari/tahun)</label>
+                      <label className="text-[10px] font-bold text-slate-400 block">
+                        Saldo cuti default (hari/tahun) <span className="text-rose-500 font-bold">*</span>
+                      </label>
                       <input
                         type="number"
                         min={0}
@@ -1113,6 +1284,7 @@ const OfficesTab: React.FC<{
                         onChange={(e) => {
                           const val = parseInt(e.target.value);
                           setForm({ ...form, default_leave_quota: isNaN(val) ? '' : Math.max(0, val) });
+                          if (validationError) setValidationError(null);
                         }}
                         className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
                       />

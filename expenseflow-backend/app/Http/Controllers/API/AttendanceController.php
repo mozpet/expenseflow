@@ -2215,17 +2215,18 @@ class AttendanceController extends Controller
     // ─── Aturan validasi setting (dipakai store & update) ──────
     private function settingRules(bool $forUpdate = false): array
     {
-        $req = $forUpdate ? 'sometimes' : 'required';
+        $req = $forUpdate ? 'sometimes|required' : 'required';
 
         return [
-            'office_name'            => "{$req}|string|max:255",
+            'office_name'            => "{$req}|string|min:3|max:100",
             'office_latitude'        => "{$req}|numeric|between:-90,90",
             'office_longitude'       => "{$req}|numeric|between:-180,180",
-            'radius_meters'          => 'sometimes|integer|min:1',
-            'work_start_time'        => 'sometimes|date_format:H:i:s,H:i',
-            'work_end_time'          => 'sometimes|date_format:H:i:s,H:i',
+            'radius_meters'          => "{$req}|integer|min:10|max:5000",
+            'work_start_time'        => "{$req}|date_format:H:i:s,H:i",
+            'work_end_time'          => "{$req}|date_format:H:i:s,H:i",
+            'break_minutes'          => 'sometimes|integer|min:0|max:240',
             // Maks 6 hari kerja — karyawan wajib mendapat min 1 hari libur/minggu (UU 13/2003 Pasal 79)
-            'work_days'              => 'sometimes|array|min:1|max:6',
+            'work_days'              => "{$req}|array|min:1|max:6",
             'work_days.*'            => 'integer|between:0,6|distinct',
             'late_tolerance_minutes'         => 'sometimes|integer|min:0',
             'late_checkin_cutoff_minutes'     => 'sometimes|nullable|integer|min:0|max:1440',
@@ -2258,14 +2259,31 @@ class AttendanceController extends Controller
     private function settingMessages(): array
     {
         return [
-            'work_days.max'        => 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).',
-            'work_days.min'        => 'Hari kerja minimal 1 hari per minggu.',
-            'work_days.*.distinct' => 'Setiap hari kerja hanya boleh dipilih satu kali.',
-            'work_days.*.between'  => 'Nilai hari kerja tidak valid (0=Minggu hingga 6=Sabtu).',
+            'office_name.required'        => 'Nama kantor wajib diisi.',
+            'office_name.min'             => 'Nama kantor minimal 3 karakter.',
+            'office_name.max'             => 'Nama kantor maksimal 100 karakter.',
+            'office_latitude.required'    => 'Titik koordinat latitude kantor wajib diisi.',
+            'office_latitude.between'     => 'Latitude harus berada dalam rentang -90 hingga 90 derajat.',
+            'office_longitude.required'   => 'Titik koordinat longitude kantor wajib diisi.',
+            'office_longitude.between'    => 'Longitude harus berada dalam rentang -180 hingga 180 derajat.',
+            'radius_meters.required'      => 'Radius presensi wajib diisi.',
+            'radius_meters.min'           => 'Radius presensi minimal 10 meter untuk menjamin akurasi sinyal GPS.',
+            'radius_meters.max'           => 'Radius presensi maksimal 5.000 meter (5 km).',
+            'work_start_time.required'    => 'Jam masuk default wajib diisi.',
+            'work_start_time.date_format' => 'Format jam masuk default harus HH:MM.',
+            'work_end_time.required'      => 'Jam pulang default wajib diisi.',
+            'work_end_time.date_format'   => 'Format jam pulang default harus HH:MM.',
+            'work_days.required'          => 'Hari kerja wajib dipilih minimal 1 hari.',
+            'work_days.min'               => 'Hari kerja minimal 1 hari per minggu.',
+            'work_days.max'               => 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).',
+            'work_days.*.distinct'        => 'Setiap hari kerja hanya boleh dipilih satu kali.',
+            'work_days.*.between'         => 'Nilai hari kerja tidak valid (0=Minggu hingga 6=Sabtu).',
             'custom_schedules.*.start.date_format' => 'Format jam masuk khusus harus HH:MM.',
             'custom_schedules.*.end.date_format'   => 'Format jam pulang khusus harus HH:MM.',
-            'default_leave_quota.max' => 'Saldo cuti default maksimal 365 hari.',
-            'leave_reset_date.date_format' => 'Format tanggal reset saldo cuti harus MM-DD (contoh: 01-01).',
+            'default_leave_quota.required'=> 'Saldo cuti default wajib diisi.',
+            'default_leave_quota.min'     => 'Saldo cuti default minimal 0 hari.',
+            'default_leave_quota.max'     => 'Saldo cuti default maksimal 365 hari.',
+            'leave_reset_date.date_format'=> 'Format tanggal reset saldo cuti harus MM-DD (contoh: 01-01).',
         ];
     }
 
@@ -2286,6 +2304,22 @@ class AttendanceController extends Controller
     public function storeSettings(Request $request): JsonResponse
     {
         $validated = $request->validate($this->settingRules(), $this->settingMessages());
+
+        // Validasi koordinat tidak boleh (0, 0)
+        if (array_key_exists('office_latitude', $validated) && array_key_exists('office_longitude', $validated)) {
+            if ((float) $validated['office_latitude'] == 0.0 && (float) $validated['office_longitude'] == 0.0) {
+                return response()->json([
+                    'message' => 'Titik koordinat kantor tidak boleh (0, 0). Silakan tentukan lokasi kantor pada peta.',
+                ], 422);
+            }
+        }
+
+        // Validasi jam masuk dan pulang tidak boleh sama persis
+        if (substr($validated['work_start_time'] ?? '', 0, 5) === substr($validated['work_end_time'] ?? '', 0, 5)) {
+            return response()->json([
+                'message' => 'Jam pulang default tidak boleh sama persis dengan jam masuk default.',
+            ], 422);
+        }
 
         // Aturan Emas: grace > reminder (sama seperti updateSettings)
         $effReminder = $validated['checkout_reminder_minutes'] ?? 30;
@@ -2414,6 +2448,32 @@ class AttendanceController extends Controller
             ], 422);
         }
 
+        // Validasi koordinat tidak boleh (0, 0)
+        $effLat = array_key_exists('office_latitude', $validated)
+            ? $validated['office_latitude']
+            : $attendanceSetting->office_latitude;
+        $effLng = array_key_exists('office_longitude', $validated)
+            ? $validated['office_longitude']
+            : $attendanceSetting->office_longitude;
+        if ((float) $effLat == 0.0 && (float) $effLng == 0.0) {
+            return response()->json([
+                'message' => 'Titik koordinat kantor tidak boleh (0, 0). Silakan tentukan lokasi kantor pada peta.',
+            ], 422);
+        }
+
+        // Validasi jam masuk dan pulang tidak boleh sama persis
+        $effStart = array_key_exists('work_start_time', $validated)
+            ? $validated['work_start_time']
+            : $attendanceSetting->work_start_time;
+        $effEnd   = array_key_exists('work_end_time', $validated)
+            ? $validated['work_end_time']
+            : $attendanceSetting->work_end_time;
+        if ($effStart && $effEnd && substr($effStart, 0, 5) === substr($effEnd, 0, 5)) {
+            return response()->json([
+                'message' => 'Jam pulang default tidak boleh sama persis dengan jam masuk default.',
+            ], 422);
+        }
+
         $attendanceSetting->update($data);
 
         $this->logActivity(
@@ -2461,6 +2521,7 @@ class AttendanceController extends Controller
         return [
             'work_start_time',
             'work_end_time',
+            'break_minutes',
             'work_days',
             'custom_schedules',
             'office_latitude',
@@ -5008,7 +5069,13 @@ class AttendanceController extends Controller
         // agar edit setting HRD di siang hari tidak mengubah hasil checkout.
         $schedule       = $attendance->snapshotSchedule() ?? $this->getWorkSchedule($user, $scheduleDate);
         $workStart      = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate);
-        $workMinutes    = (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta'));
+        $workMinutes    = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta')));
+
+        // Potong jam istirahat jika bekerja >= 5 jam (300 menit) sesuai UU 13/2003
+        $breakMinutes   = (int) ($schedule['break_minutes'] ?? 60);
+        if ($workMinutes >= 300 && $breakMinutes > 0) {
+            $workMinutes = max(240, $workMinutes - $breakMinutes);
+        }
 
         // isNonWorkingDay: apakah tanggal shift libur nasional/weekend secara kalender.
         // Pass $user->id agar cuti bersama yang di-decline tidak dianggap hari libur karyawan ini.
@@ -5449,9 +5516,10 @@ class AttendanceController extends Controller
                 $graceMinutes = (int) ($office->auto_checkout_grace_minutes ?? 60);
                 // Shift lintas hari: jam pulang berada di hari BERIKUTNYA setelah tanggal check-in.
                 $isCrossDay  = ! empty($jadwalAcuan['is_cross_day']);
+                $scheduleDateStr = Carbon::parse($scheduleDate)->toDateString();
                 $workEndDate = $isCrossDay
-                    ? Carbon::parse($scheduleDate, 'Asia/Jakarta')->addDay()->toDateString()
-                    : $scheduleDate;
+                    ? Carbon::parse($scheduleDateStr, 'Asia/Jakarta')->addDay()->toDateString()
+                    : $scheduleDateStr;
                 $workEnd               = Carbon::parse($workEndDate . ' ' . $jamPulang, 'Asia/Jakarta');
                 $scheduledAutoCheckout = $workEnd->copy()->addMinutes($graceMinutes)->toIso8601String();
             }
@@ -5464,6 +5532,12 @@ class AttendanceController extends Controller
         // Toggle WFH yang dimatikan hanya berlaku untuk MENCEGAH check-in baru, bukan memblokir checkout.
         $isActiveSession = $attendance->check_in_time && ! $attendance->check_out_time;
         $wfhEnabledForResponse = $isActiveSession ? true : (bool) ($user->wfh_enabled || $isWfhApproved);
+
+        // Jadwal shift aktif hari ini (untuk tampilan di Flutter).
+        // SNAPSHOT: jika karyawan sedang dalam sesi aktif (sudah check-in tapi belum checkout),
+        // prioritaskan jadwal dari snapshot saat check-in agar tampilan shift aktif tidak
+        // mendadak berubah jika HRD mengubah/menghapus assignment shift di tengah jam kerja.
+        $jadwalTampilan = ($isActiveSession && $jadwalSnapshot) ? $jadwalSnapshot : $jadwalHariIni;
 
         return response()->json([
             'checked_in'  => true,
@@ -5481,13 +5555,13 @@ class AttendanceController extends Controller
             'is_wfh_approved' => $isWfhApproved,
             'office'         => $officeData,
             'offices'        => $userOffices,
-            // Jadwal shift aktif hari ini (untuk tampilan di Flutter)
-            'active_shift' => $jadwalHariIni['source'] === 'shift' ? [
-                'shift_id'        => $jadwalHariIni['shift_id'],
-                'shift_name'      => $jadwalHariIni['shift_name'],
-                'work_start_time' => $jadwalHariIni['work_start_time'],
-                'work_end_time'   => $jadwalHariIni['work_end_time'],
+            'active_shift' => $jadwalTampilan['source'] === 'shift' ? [
+                'shift_id'        => $jadwalTampilan['shift_id'],
+                'shift_name'      => $jadwalTampilan['shift_name'],
+                'work_start_time' => $jadwalTampilan['work_start_time'],
+                'work_end_time'   => $jadwalTampilan['work_end_time'],
             ] : null,
+            'is_snapshot_session' => (bool) ($isActiveSession && $jadwalSnapshot),
             'scheduled_auto_checkout_at' => $scheduledAutoCheckout,
             'overtime_approval' => $overtimeApproval ? $overtimeApproval->only([
                 'id', 'overtime_minutes', 'status', 'reviewed_at', 'notes',

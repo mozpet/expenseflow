@@ -315,7 +315,7 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                 }
                 final items = _filtered(prov.receipts);
                 return RefreshIndicator(
-                  onRefresh: prov.fetchMyReceipts,
+                  onRefresh: () => prov.fetchMyReceipts(forceRefresh: true),
                   child: items.isEmpty
                       ? ListView(
                           physics: const AlwaysScrollableScrollPhysics(),

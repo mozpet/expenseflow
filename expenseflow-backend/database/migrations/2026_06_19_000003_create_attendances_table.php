@@ -31,7 +31,7 @@ return new class extends Migration
             $table->decimal('check_out_lng', 11, 8)->nullable();
             $table->enum('check_out_type', ['onsite', 'wfh', 'field'])->nullable();
 
-            $table->enum('status', ['present', 'late', 'absent', 'wfh'])->default('absent');
+            $table->enum('status', ['present', 'late', 'absent', 'wfh', 'early_leave'])->default('absent');
             $table->text('notes')->nullable();
             $table->timestamps();
 

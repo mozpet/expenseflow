@@ -38,3 +38,12 @@ Schedule::command('attendance:sync-shift-wfh')
     ->dailyAt('00:01')
     ->withoutOverlapping()
     ->runInBackground();
+
+// Rotasi & arsip otomatis audit log lama ke file kompresi .json.gz agar database tetap cepat & ringan.
+// Berjalan setiap tanggal 1 awal bulan jam 02:30 dini hari.
+// Log rutin/info diarsipkan setelah 90 hari, log warning & critical diarsipkan setelah 365 hari.
+Schedule::command('logs:archive-and-prune --days-info=90 --days-critical=365')
+    ->monthlyOn(1, '02:30')
+    ->withoutOverlapping()
+    ->runInBackground();
+
