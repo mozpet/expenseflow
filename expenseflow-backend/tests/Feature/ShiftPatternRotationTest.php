@@ -538,4 +538,167 @@ class ShiftPatternRotationTest extends TestCase
         $assigned = collect($bulkRes->json('assigned'));
         $this->assertTrue($assigned->pluck('user_id')->contains($employeeSurabaya2->id));
     }
+
+    /**
+     * Uji validasi template shift lintas cabang:
+     * Pola rotasi cabang Surabaya tidak boleh memakai template shift cabang Pabrik Utama.
+     */
+    public function test_pola_rotasi_menolak_shift_dari_cabang_lain(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $officeSurabaya = AttendanceSetting::create([
+            'company_id'                  => $this->company->id,
+            'office_name'                 => 'Cabang Surabaya Barat',
+            'office_latitude'             => -7.25000000,
+            'office_longitude'            => 112.75000000,
+            'radius_meters'               => 100,
+            'work_start_time'             => '08:00:00',
+            'work_end_time'               => '17:00:00',
+            'break_minutes'               => 60,
+            'late_tolerance_minutes'      => 15,
+            'checkout_reminder_minutes'   => 30,
+            'auto_checkout_grace_minutes' => 60,
+        ]);
+
+        // Shift Pabrik Utama ($this->office)
+        $shiftPabrik = Shift::create([
+            'company_id'            => $this->company->id,
+            'attendance_setting_id' => $this->office->id,
+            'name'                  => 'Shift Khusus Pabrik',
+            'is_active'             => true,
+        ]);
+
+        // Coba buat Pola Rotasi untuk Surabaya, tapi menggunakan shift dari Pabrik
+        $res = $this->postJson('/api/v1/dashboard/attendance/shift-patterns', [
+            'name'                  => 'Pola Rotasi Surabaya',
+            'attendance_setting_id' => $officeSurabaya->id,
+            'cycle_days'            => 2,
+            'items'                 => [
+                ['day_order' => 1, 'is_off' => false, 'shift_id' => $shiftPabrik->id, 'work_start_time' => '08:00', 'work_end_time' => '17:00'],
+                ['day_order' => 2, 'is_off' => true],
+            ],
+        ]);
+
+        $res->assertStatus(422)
+            ->assertJsonFragment([
+                'message' => "Shift '{$shiftPabrik->name}' berasal dari cabang lain dan tidak dapat digunakan pada pola rotasi cabang ini.",
+            ]);
+    }
+
+    /**
+     * Uji validasi kewajiban minimal 1 hari libur dalam siklus (UU No. 13/2003).
+     */
+    public function test_pola_rotasi_wajib_memiliki_minimal_satu_hari_libur(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $res = $this->postJson('/api/v1/dashboard/attendance/shift-patterns', [
+            'name'       => 'Pola Tanpa Libur',
+            'cycle_days' => 3,
+            'items'      => [
+                ['day_order' => 1, 'is_off' => false, 'work_start_time' => '08:00', 'work_end_time' => '16:00'],
+                ['day_order' => 2, 'is_off' => false, 'work_start_time' => '08:00', 'work_end_time' => '16:00'],
+                ['day_order' => 3, 'is_off' => false, 'work_start_time' => '08:00', 'work_end_time' => '16:00'],
+            ],
+        ]);
+
+        $res->assertStatus(422)
+            ->assertJsonFragment([
+                'message' => 'Pola rotasi wajib memiliki minimal 1 hari libur dalam siklus (UU No. 13/2003 Pasal 79).',
+            ]);
+    }
+
+    /**
+     * Uji batas maksimal 6 hari kerja berturut-turut tanpa libur (UU No. 13/2003 Pasal 79).
+     */
+    public function test_pola_rotasi_menolak_lebih_dari_enam_hari_kerja_berturut_turut(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        // Siklus 8 hari: 7 hari kerja berturut-turut, 1 hari libur
+        $items = [];
+        for ($i = 1; $i <= 7; $i++) {
+            $items[] = ['day_order' => $i, 'is_off' => false, 'work_start_time' => '08:00', 'work_end_time' => '16:00'];
+        }
+        $items[] = ['day_order' => 8, 'is_off' => true];
+
+        $res = $this->postJson('/api/v1/dashboard/attendance/shift-patterns', [
+            'name'       => 'Pola Kerja 7 Hari Berturut-turut',
+            'cycle_days' => 8,
+            'items'      => $items,
+        ]);
+
+        $res->assertStatus(422)
+            ->assertJsonFragment([
+                'message' => 'Pola rotasi tidak boleh memiliki lebih dari 6 hari kerja berturut-turut tanpa hari libur (UU No. 13/2003 Pasal 79).',
+            ]);
+    }
+
+    /**
+     * Uji validasi jam masuk dan pulang wajib diisi untuk hari kerja.
+     */
+    public function test_pola_rotasi_wajib_mengisi_jam_kerja(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        $res = $this->postJson('/api/v1/dashboard/attendance/shift-patterns', [
+            'name'       => 'Pola Tanpa Jam',
+            'cycle_days' => 2,
+            'items'      => [
+                ['day_order' => 1, 'is_off' => false, 'work_start_time' => null, 'work_end_time' => null],
+                ['day_order' => 2, 'is_off' => true],
+            ],
+        ]);
+
+        $res->assertStatus(422)
+            ->assertJsonFragment([
+                'message' => 'Hari ke-1: jam masuk & pulang wajib diisi (atau tandai libur).',
+            ]);
+    }
+
+    /**
+     * Uji validasi jeda K3 kritis (< 8 jam) ditolak.
+     */
+    public function test_pola_rotasi_menolak_jeda_k3_kurang_dari_delapan_jam(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        // H1 pulang jam 23:00, H2 masuk jam 06:00 -> jeda hanya 7 jam (< 8 jam K3)
+        $res = $this->postJson('/api/v1/dashboard/attendance/shift-patterns', [
+            'name'       => 'Pola Bahaya K3',
+            'cycle_days' => 3,
+            'items'      => [
+                ['day_order' => 1, 'is_off' => false, 'work_start_time' => '15:00', 'work_end_time' => '23:00'],
+                ['day_order' => 2, 'is_off' => false, 'work_start_time' => '06:00', 'work_end_time' => '14:00'],
+                ['day_order' => 3, 'is_off' => true],
+            ],
+        ]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('minimum wajib 8 jam K3', $res->json('message'));
+    }
+
+    /**
+     * Uji peringatan jeda K3 antara 8-11 jam berhasil disimpan dengan warnings.
+     */
+    public function test_pola_rotasi_memberikan_warning_jeda_k3_delapan_sampai_sebelas_jam(): void
+    {
+        Sanctum::actingAs($this->admin);
+
+        // H1 pulang 22:00, H2 masuk 07:00 -> jeda 9 jam (warning 8-11 jam)
+        $res = $this->postJson('/api/v1/dashboard/attendance/shift-patterns', [
+            'name'       => 'Pola Warning K3',
+            'cycle_days' => 3,
+            'items'      => [
+                ['day_order' => 1, 'is_off' => false, 'work_start_time' => '14:00', 'work_end_time' => '22:00'],
+                ['day_order' => 2, 'is_off' => false, 'work_start_time' => '07:00', 'work_end_time' => '15:00'],
+                ['day_order' => 3, 'is_off' => true],
+            ],
+        ]);
+
+        $res->assertStatus(201);
+        $this->assertNotEmpty($res->json('warnings'));
+        $this->assertStringContainsString('disarankan minimal 11 jam', $res->json('warnings.0'));
+    }
 }

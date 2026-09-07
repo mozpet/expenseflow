@@ -385,6 +385,13 @@ class InvoiceController extends Controller
 
         // Kirim notifikasi
         if ($isFinal) {
+            // Hapus semua notifikasi menunggu approval untuk invoice ini karena sudah disetujui penuh
+            DB::table('notifications')
+                ->where('entity_type', 'invoice')
+                ->where('entity_id', $invoice->id)
+                ->where('type', 'invoice_awaiting_approval')
+                ->delete();
+
             // Notifikasi ke pembuat invoice — sudah approved final
             $this->notifyUser($invoice->user_id, 'invoice_approved_final', [
                 'message'        => "Invoice {$invoice->invoice_number} telah disetujui sepenuhnya.",
@@ -393,6 +400,14 @@ class InvoiceController extends Controller
                 'status'         => 'approved',
             ], 'invoice', $invoice->id);
         } else {
+            // Hapus notifikasi menunggu approval untuk user yang telah menyetujui level ini
+            DB::table('notifications')
+                ->where('entity_type', 'invoice')
+                ->where('entity_id', $invoice->id)
+                ->where('type', 'invoice_awaiting_approval')
+                ->where('user_id', $user->id)
+                ->delete();
+
             // Notifikasi ke approver level berikutnya
             $nextLevelRoles = $this->allowedRolesForLevel($newLevel);
             $nextApprovers = DB::table('users')
@@ -465,6 +480,13 @@ class InvoiceController extends Controller
             "Reject invoice {$invoice->invoice_number}: {$request->rejection_reason}",
             'invoice', $invoice->id
         );
+
+        // Hapus semua notifikasi menunggu approval untuk invoice ini karena sudah ditolak
+        DB::table('notifications')
+            ->where('entity_type', 'invoice')
+            ->where('entity_id', $invoice->id)
+            ->where('type', 'invoice_awaiting_approval')
+            ->delete();
 
         // Kirim notifikasi ke pembuat invoice
         $this->notifyUser($invoice->user_id, 'invoice_rejected', [

@@ -12,9 +12,22 @@ import {
   clearInFlight,
   notifyCacheUpdate,
   onCacheUpdate,
+  syncDataVersions,
+  onDataVersionChange,
+  resetDataVersions,
+  SYNC_MODULE_TARGETS,
 } from './apiCache';
 
-export { invalidateCache, invalidateCacheByTag, clearAllCache, onCacheUpdate };
+export {
+  invalidateCache,
+  invalidateCacheByTag,
+  clearAllCache,
+  onCacheUpdate,
+  syncDataVersions,
+  onDataVersionChange,
+  resetDataVersions,
+  SYNC_MODULE_TARGETS,
+};
 
 // Lapisan dasar HTTP untuk komunikasi dengan backend Laravel.
 // Menangani: base URL, header Authorization (Bearer) + X-Platform, smart in-memory caching, dan error 401.

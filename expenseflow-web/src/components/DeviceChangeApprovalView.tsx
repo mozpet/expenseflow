@@ -134,7 +134,7 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
         </div>
 
         {/* Info perangkat */}
-        <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mb-4 space-y-2 text-xs border border-slate-100 dark:border-slate-750">
+        <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mb-4 space-y-2 text-xs border border-slate-100 dark:border-slate-700">
           <div className="flex items-center justify-between gap-2">
             <div className="flex-1 min-w-0">
               <p className="text-[10px] text-slate-400 dark:text-slate-500 uppercase font-semibold">Perangkat lama</p>
@@ -150,7 +150,7 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
               </p>
             </div>
           </div>
-          <div className="flex justify-between pt-1 border-t border-slate-100 dark:border-slate-750">
+          <div className="flex justify-between pt-1 border-t border-slate-100 dark:border-slate-700">
             <span className="text-slate-500 dark:text-slate-400">Diajukan</span>
             <span className="font-semibold text-slate-700 dark:text-slate-200">{fmtDateTime(record.created_at)}</span>
           </div>
@@ -257,7 +257,11 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // ─── Main component ───────────────────────────────────────────
-export function DeviceChangeApprovalView() {
+interface DeviceChangeApprovalViewProps {
+  onActionSuccess?: () => void;
+}
+
+export function DeviceChangeApprovalView({ onActionSuccess }: DeviceChangeApprovalViewProps = {}) {
   const [records, setRecords] = useState<DeviceChangeRecord[]>([]);
   const [meta, setMeta] = useState<PaginationMeta | null>(null);
   const [loading, setLoading] = useState(false);
@@ -311,13 +315,19 @@ export function DeviceChangeApprovalView() {
   const doApprove = async (notes: string) => {
     if (!modal) return;
     await deviceChangeApi.approve(modal.record.id, notes);
-    await loadRecords(page);
+    invalidateCache('/dashboard/attendance/device-changes');
+    invalidateCache('/dashboard/notifications');
+    await loadRecords(page, true);
+    onActionSuccess?.();
   };
 
   const doReject = async (notes: string) => {
     if (!modal) return;
     await deviceChangeApi.reject(modal.record.id, notes);
-    await loadRecords(page);
+    invalidateCache('/dashboard/attendance/device-changes');
+    invalidateCache('/dashboard/notifications');
+    await loadRecords(page, true);
+    onActionSuccess?.();
   };
 
   const debouncedSearch = useDebounce(search, 500);

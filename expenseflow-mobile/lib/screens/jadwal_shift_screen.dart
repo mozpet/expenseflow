@@ -1139,7 +1139,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 const SizedBox(height: 3),
                 Text(
                   calDay?.source == 'shift'
-                      ? 'Jadwal Libur Shift'
+                      ? (calDay?.shiftName != null && calDay!.shiftName!.isNotEmpty ? calDay.shiftName! : 'Jadwal Libur Shift')
                       : 'Libur Akhir Pekan Kantor',
                   style: const TextStyle(
                     fontSize: 12,

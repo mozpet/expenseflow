@@ -133,7 +133,7 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
         </div>
 
         {/* Info lembur */}
-        <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mb-4 space-y-1.5 text-xs border border-slate-100 dark:border-slate-750">
+        <div className="bg-slate-50 dark:bg-slate-800/60 rounded-xl p-3 mb-4 space-y-1.5 text-xs border border-slate-100 dark:border-slate-700">
           <div className="flex justify-between">
             <span className="text-slate-500 dark:text-slate-400">Tanggal</span>
             <span className="font-semibold text-slate-700 dark:text-slate-200">{fmtDate(record.attendance_date)}</span>
@@ -258,7 +258,11 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // ─── Main component ───────────────────────────────────────────
-export function OvertimeApprovalView() {
+interface OvertimeApprovalViewProps {
+  onActionSuccess?: () => void;
+}
+
+export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewProps = {}) {
   const [records, setRecords] = useState<OvertimeRecord[]>([]);
   const [meta, setMeta] = useState<PaginationMeta | null>(null);
   const [loading, setLoading] = useState(false);
@@ -327,13 +331,19 @@ export function OvertimeApprovalView() {
   const doApprove = async (notes: string) => {
     if (!modal) return;
     await overtimeApi.approve(modal.record.id, notes);
-    await loadRecords(page);
+    invalidateCache('/dashboard/attendance/overtime-approvals');
+    invalidateCache('/dashboard/notifications');
+    await loadRecords(page, true);
+    onActionSuccess?.();
   };
 
   const doReject = async (notes: string) => {
     if (!modal) return;
     await overtimeApi.reject(modal.record.id, notes);
-    await loadRecords(page);
+    invalidateCache('/dashboard/attendance/overtime-approvals');
+    invalidateCache('/dashboard/notifications');
+    await loadRecords(page, true);
+    onActionSuccess?.();
   };
 
   const debouncedSearch = useDebounce(search, 500);

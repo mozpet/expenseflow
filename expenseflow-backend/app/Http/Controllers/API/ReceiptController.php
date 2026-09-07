@@ -370,6 +370,13 @@ class ReceiptController extends Controller
             'receipt', $receipt->id
         );
 
+        // Hapus notifikasi pending struk untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'receipt')
+            ->where('entity_id', $receipt->id)
+            ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
+            ->delete();
+
         // Kirim notifikasi ke user yang submit struk
         $this->notifyUser($receipt->user_id, 'receipt_approved', [
             'message'         => 'Struk Anda telah diapprove: ' . $receipt->receipt_number . ($approvedAmount < $claimed ? ' dengan nominal disesuaikan Rp ' . number_format($approvedAmount, 0, ',', '.') : ''),
@@ -419,6 +426,13 @@ class ReceiptController extends Controller
         $approvedCount = 0;
 
         DB::transaction(function () use ($receipts, $user, $request, &$approvedCount) {
+            // Hapus notifikasi pending struk untuk para approver
+            DB::table('notifications')
+                ->where('entity_type', 'receipt')
+                ->whereIn('entity_id', $receipts->pluck('id'))
+                ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
+                ->delete();
+
             foreach ($receipts as $receipt) {
                 $claimed = (float) ($receipt->claimed_amount ?: $receipt->total_amount);
 
@@ -674,6 +688,13 @@ class ReceiptController extends Controller
         ]);
 
         $this->logActivity($user->id, $receipt->company_id, 'receipt_rejected', 'Reject struk ' . $receipt->receipt_number, $receipt->id, 'receipt', $receipt->id);
+
+        // Hapus notifikasi pending struk untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'receipt')
+            ->where('entity_id', $receipt->id)
+            ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
+            ->delete();
 
         // Kirim notifikasi ke user yang submit struk
         $this->notifyUser($receipt->user_id, 'receipt_rejected', [

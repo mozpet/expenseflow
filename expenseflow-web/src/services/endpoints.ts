@@ -451,7 +451,7 @@ export const shiftApi = {
     apiGet(`/dashboard/attendance/shifts/${id}/users`, undefined, { forceRefresh }),
 
   // ── Roster harian (siapa masuk shift apa pada tanggal tertentu) ──
-  roster: (filters?: { date?: string; attendance_setting_id?: number; search?: string }, forceRefresh = false) =>
+  roster: (filters?: { date?: string; attendance_setting_id?: number; search?: string; department?: string }, forceRefresh = false) =>
     apiGet('/dashboard/attendance/shifts/roster', filters as Record<string, string | number>, { forceRefresh }),
 
   // ── Riwayat assignment shift seorang karyawan ──
@@ -496,11 +496,12 @@ export const shiftApi = {
     apiGet('/dashboard/attendance/effective-schedule', { user_id: userId, date }),
 
   // ── Kalender shift bulanan ──
-  calendar: (month: number, year: number, attendanceSettingId?: number, forceRefresh = false) =>
+  calendar: (month: number, year: number, attendanceSettingId?: number, department?: string, forceRefresh = false) =>
     apiGet('/dashboard/attendance/shifts/calendar', {
       month,
       year,
       ...(attendanceSettingId ? { attendance_setting_id: attendanceSettingId } : {}),
+      ...(department ? { department } : {}),
     }, { forceRefresh }),
 
   // ── Pola Rotasi Shift (Recurring Rolling Cycles) ──
@@ -626,6 +627,17 @@ export const recruitmentApi = {
   downloadResume: async (id: number | string, fullName: string) =>
     apiDownload(`/recruitment/applications/${id}/resume`, `CV_${fullName.replace(/\s+/g, '_')}.pdf`),
 };
+
+// ─── Data Version Sync (Ketentuan 3) ────────────────────────
+export const syncApi = {
+  getVersions: () =>
+    apiGet<Record<string, string>>(
+      '/dashboard/sync-versions',
+      undefined,
+      { cache: false },
+    ),
+};
+
 
 
 

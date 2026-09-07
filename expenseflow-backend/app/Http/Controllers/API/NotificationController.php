@@ -17,6 +17,65 @@ class NotificationController extends Controller
     {
         $userId = $request->user()->id;
 
+        // Self-healing: bersihkan notifikasi permohonan approval yang sudah disetujui / ditolak / tidak valid
+        // 1. Pindah perangkat yang sudah tidak pending (atau sudah dihapus)
+        DB::table('notifications')
+            ->where('user_id', $userId)
+            ->where('entity_type', 'device_change_request')
+            ->where('type', 'device_change_pending')
+            ->whereNotIn('entity_id', function ($q) {
+                $q->select('id')->from('device_change_requests')->where('status', 'pending');
+            })
+            ->delete();
+
+        // 2. Lembur yang sudah tidak pending (atau sudah dihapus)
+        DB::table('notifications')
+            ->where('user_id', $userId)
+            ->where('entity_type', 'overtime_approval')
+            ->where('type', 'overtime_pending')
+            ->whereNotIn('entity_id', function ($q) {
+                $q->select('id')->from('overtime_approvals')->where('status', 'pending');
+            })
+            ->delete();
+
+        // 3. Cuti / izin yang sudah tidak pending (atau sudah dihapus)
+        DB::table('notifications')
+            ->where('user_id', $userId)
+            ->where('entity_type', 'leave_request')
+            ->where('type', 'leave_requested')
+            ->whereNotIn('entity_id', function ($q) {
+                $q->select('id')->from('leave_requests')->where('status', 'pending');
+            })
+            ->delete();
+
+        // 4. Invoice yang sudah tidak pending (atau sudah dihapus) atau invoice yang sudah disetujui oleh user ini
+        DB::table('notifications')
+            ->where('user_id', $userId)
+            ->where('entity_type', 'invoice')
+            ->where('type', 'invoice_awaiting_approval')
+            ->where(function ($q) use ($userId) {
+                $q->whereNotIn('entity_id', function ($sub) {
+                    $sub->select('id')->from('invoices')->whereIn('status', ['pending', 'Pending']);
+                })
+                ->orWhereExists(function ($sub) use ($userId) {
+                    $sub->select(DB::raw(1))
+                        ->from('invoice_approvals')
+                        ->whereColumn('invoice_approvals.invoice_id', 'notifications.entity_id')
+                        ->where('invoice_approvals.user_id', $userId);
+                });
+            })
+            ->delete();
+
+        // 5. Struk yang sudah tidak berstatus submitted/pending (atau sudah dihapus)
+        DB::table('notifications')
+            ->where('user_id', $userId)
+            ->where('entity_type', 'receipt')
+            ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
+            ->whereNotIn('entity_id', function ($q) {
+                $q->select('id')->from('receipts')->whereIn('status', ['submitted', 'pending']);
+            })
+            ->delete();
+
         $query = DB::table('notifications')
             ->where('user_id', $userId)
             ->orderByDesc('created_at');

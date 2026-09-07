@@ -83,9 +83,10 @@ interface CalDayEntry {
   shift_name: string;
   color: string;
   user_count: number;
+  is_off?: boolean;
   /** true jika shift ini lintas tengah malam pada hari kalender yang bersangkutan */
   is_cross_day?: boolean;
-  users: { user_id: number; name: string; department: string | null }[];
+  users: { user_id: number; name: string; department: string | null; reason?: string }[];
 }
 
 interface AssignmentRow {
@@ -745,7 +746,7 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
               {schedules.map((s) => (
                 <div
                   key={s.day_of_week}
-                  className={`flex items-center gap-2 sm:gap-3 p-2 rounded-lg border ${s.is_off ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-100 dark:border-rose-900/40' : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-750'
+                  className={`flex items-center gap-2 sm:gap-3 p-2 rounded-lg border ${s.is_off ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-100 dark:border-rose-900/40' : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700'
                     }`}
                 >
                   <span className="w-14 sm:w-16 text-xs font-bold text-slate-700 dark:text-slate-200 shrink-0">
@@ -1022,6 +1023,68 @@ interface PatternDayItemState {
   is_cross_day: boolean;
 }
 
+/**
+ * Hitung jeda istirahat K3 antar hari berurutan dalam siklus pola rotasi + wrap-around (HN -> H1).
+ * Return: map day_order -> { status, hours, nextDayOrder }
+ */
+function computePatternGaps(
+  days: PatternDayItemState[],
+): Record<number, { status: 'error' | 'warning'; hours: number; nextDayOrder: number }> {
+  const result: Record<number, { status: 'error' | 'warning'; hours: number; nextDayOrder: number }> = {};
+  const total = days.length;
+  if (total < 2) return result;
+
+  for (let i = 0; i < total; i++) {
+    const today = days[i];
+    const tomorrow = days[(i + 1) % total];
+
+    if (!today || today.is_off || !today.work_end_time || !today.work_start_time) continue;
+    if (!tomorrow || tomorrow.is_off || !tomorrow.work_start_time) continue;
+
+    const endMins = timeToMins(today.work_end_time);
+    const isCrossDay = today.work_end_time <= today.work_start_time;
+    const adjEndMins = isCrossDay ? endMins + 1440 : endMins;
+    const nextStartMins = 1440 + timeToMins(tomorrow.work_start_time);
+
+    const gapMins = nextStartMins - adjEndMins;
+    const gapHours = gapMins / 60;
+
+    if (gapHours < K3_MIN_REST_HOURS) {
+      result[today.day_order] = {
+        status: 'error',
+        hours: Math.max(0, Math.round(gapHours * 10) / 10),
+        nextDayOrder: tomorrow.day_order,
+      };
+    } else if (gapHours < K3_REC_REST_HOURS) {
+      result[today.day_order] = {
+        status: 'warning',
+        hours: Math.round(gapHours * 10) / 10,
+        nextDayOrder: tomorrow.day_order,
+      };
+    }
+  }
+
+  return result;
+}
+
+/** Hitung estimasi rata-rata jam kerja mingguan dari array pola rotasi */
+function computePatternWeeklyHours(days: PatternDayItemState[]): number {
+  if (!days.length) return 0;
+  let totalMins = 0;
+  for (const d of days) {
+    if (d.is_off || !d.work_start_time || !d.work_end_time) continue;
+    const start = timeToMins(d.work_start_time);
+    const end = timeToMins(d.work_end_time);
+    const isCross = end <= start;
+    const gross = isCross ? (1440 - start + end) : (end - start);
+    const breakMins = d.break_minutes ?? 60;
+    totalMins += Math.max(0, gross - breakMins);
+  }
+  const avgMinsPerDay = totalMins / days.length;
+  const avgWeeklyMins = avgMinsPerDay * 7;
+  return Math.round((avgWeeklyMins / 60) * 10) / 10;
+}
+
 function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: ShiftPatternFormProps) {
   const [name, setName] = useState(editing?.name ?? '');
   const [description, setDescription] = useState(editing?.description ?? '');
@@ -1032,10 +1095,27 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
   const [isActive, setIsActive] = useState<boolean>(editing?.is_active ?? true);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [k3Warnings, setK3Warnings] = useState<string[]>([]);
+  const [showK3Confirm, setShowK3Confirm] = useState(false);
 
-  // Default shift aktif untuk preset autofill
-  const activeShifts = useMemo(() => shifts.filter((s) => s.is_active), [shifts]);
-  const defaultShift = activeShifts[0] ?? null;
+  // Shift aktif yang relevan sesuai cabang pola rotasi ini
+  const availableShifts = useMemo(() => {
+    return shifts.filter((s) => {
+      if (!s.is_active) return false;
+      if (attendanceSettingId) {
+        return !s.attendance_setting_id || s.attendance_setting_id === Number(attendanceSettingId);
+      }
+      return !s.attendance_setting_id;
+    });
+  }, [shifts, attendanceSettingId]);
+
+  const defaultShift = availableShifts[0] ?? null;
+
+  // Setting kantor yang dipilih untuk mengecek batasan jam kerja mingguan
+  const selectedOffice = useMemo(
+    () => offices.find((o) => String(o.id) === String(attendanceSettingId)) ?? null,
+    [offices, attendanceSettingId],
+  );
 
   const [days, setDays] = useState<PatternDayItemState[]>(() => {
     if (editing?.items?.length) {
@@ -1068,6 +1148,21 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
       };
     });
   });
+
+  // Real-time K3 gaps
+  const k3Gaps = useMemo(() => computePatternGaps(days), [days]);
+
+  // Real-time estimasi rata-rata jam kerja per minggu
+  const weeklyHours = useMemo(() => computePatternWeeklyHours(days), [days]);
+
+  // Status indikator jam/minggu
+  const weeklyStatus = useMemo(() => {
+    if (!selectedOffice?.enforce_weekly_hours) return 'info';
+    const max = selectedOffice.max_weekly_hours ?? 40;
+    if (weeklyHours > max) return 'error';
+    if (weeklyHours > max * 0.9) return 'warning';
+    return 'safe';
+  }, [weeklyHours, selectedOffice]);
 
   const handleCycleDaysChange = (newLen: number) => {
     const val = Math.max(2, Math.min(30, newLen || 2));
@@ -1108,7 +1203,7 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
         shift_id: isOff ? null : (defaultShift?.id ?? null),
         work_start_time: isOff ? null : defStart,
         work_end_time: isOff ? null : defEnd,
-        break_minutes: 60,
+        break_minutes: isOff ? 0 : 60,
         is_cross_day: false,
       };
     });
@@ -1132,19 +1227,88 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
           }
         }
       }
+      // Deteksi cross-day otomatis jika jam masuk & pulang diubah
+      if (updated.work_start_time && updated.work_end_time) {
+        updated.is_cross_day = updated.work_end_time <= updated.work_start_time;
+      }
       copy[index] = updated;
       return copy;
     });
   };
 
+  const validate = (): string | null => {
+    if (!name.trim()) return 'Nama pola rotasi wajib diisi.';
+    if (cycleDays < 2 || cycleDays > 30) return 'Panjang siklus harus antara 2 hingga 30 hari.';
+
+    // P0 #2 — Kewajiban minimal 1 hari libur (UU No. 13/2003 Pasal 79)
+    const offDays = days.filter((d) => d.is_off).length;
+    if (offDays === 0) {
+      return 'Pola rotasi wajib memiliki minimal 1 hari libur dalam siklus (UU No. 13/2003 Pasal 79).';
+    }
+
+    // Batas maksimal 6 hari kerja berturut-turut (termasuk perputaran siklus / wrap-around)
+    const doubled = [...days, ...days];
+    let consecutive = 0;
+    let maxConsecutive = 0;
+    for (const d of doubled) {
+      if (!d.is_off) {
+        consecutive++;
+        if (consecutive > maxConsecutive) maxConsecutive = consecutive;
+      } else {
+        consecutive = 0;
+      }
+    }
+    if (maxConsecutive > 6) {
+      return 'Pola rotasi tidak boleh memiliki lebih dari 6 hari kerja berturut-turut tanpa hari libur (UU No. 13/2003 Pasal 79).';
+    }
+
+    // Validasi jam kerja & durasi istirahat per hari kerja
+    for (const d of days) {
+      if (d.is_off) continue;
+      if (!d.work_start_time || !d.work_end_time) {
+        return `Hari ke-${d.day_order}: jam masuk & pulang wajib diisi (atau tandai libur).`;
+      }
+
+      const startMins = timeToMins(d.work_start_time);
+      const endMins = timeToMins(d.work_end_time);
+      const isCross = endMins <= startMins;
+      const gross = isCross ? (1440 - startMins + endMins) : (endMins - startMins);
+      const brk = d.break_minutes ?? 60;
+      if (brk >= gross) {
+        return `Hari ke-${d.day_order}: durasi istirahat (${brk} menit) tidak boleh melebihi atau sama dengan total jam kerja (${gross} menit).`;
+      }
+    }
+
+    // Validasi jeda K3 kritis (< 8 jam)
+    const k3Err = Object.entries(k3Gaps).find(([, g]) => g.status === 'error');
+    if (k3Err) {
+      const [dayOrd, g] = k3Err;
+      return `Hari ke-${dayOrd} → Hari ke-${g.nextDayOrder}: jeda istirahat hanya ${g.hours} jam (minimum wajib 8 jam K3). Sesuaikan jam kerja atau berikan hari libur.`;
+    }
+
+    // Validasi: pastikan template shift yang dipilih tidak berasal dari cabang lain
+    const invalidBranchItem = days.find((d) => {
+      if (d.is_off || !d.shift_id) return false;
+      const sh = shifts.find((s) => s.id === d.shift_id);
+      if (!sh) return false;
+      if (attendanceSettingId) {
+        return Boolean(sh.attendance_setting_id && sh.attendance_setting_id !== Number(attendanceSettingId));
+      }
+      return Boolean(sh.attendance_setting_id);
+    });
+    if (invalidBranchItem) {
+      const sh = shifts.find((s) => s.id === invalidBranchItem.shift_id);
+      return `Template shift '${sh?.name}' berasal dari cabang lain dan tidak dapat digunakan pada pola rotasi ini.`;
+    }
+
+    return null;
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) {
-      setErr('Nama pola rotasi wajib diisi.');
-      return;
-    }
-    if (cycleDays < 2 || cycleDays > 30) {
-      setErr('Panjang siklus harus antara 2 hingga 30 hari.');
+    const v = validate();
+    if (v) {
+      setErr(v);
       return;
     }
 
@@ -1157,22 +1321,34 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
         attendance_setting_id: attendanceSettingId ? Number(attendanceSettingId) : null,
         cycle_days: cycleDays,
         is_active: isActive,
-        items: days.map((d) => ({
-          day_order: d.day_order,
-          is_off: d.is_off,
-          shift_id: d.is_off ? null : d.shift_id,
-          work_start_time: d.is_off ? null : (d.work_start_time || '07:00'),
-          work_end_time: d.is_off ? null : (d.work_end_time || '15:00'),
-          break_minutes: d.break_minutes ?? 60,
-          is_cross_day: d.is_cross_day,
-        })),
+        items: days.map((d) => {
+          const isOff = Boolean(d.is_off);
+          const start = isOff ? null : (d.work_start_time || '07:00');
+          const end = isOff ? null : (d.work_end_time || '15:00');
+          const isCross = Boolean(start && end && end <= start);
+          return {
+            day_order: d.day_order,
+            is_off: isOff,
+            shift_id: isOff ? null : d.shift_id,
+            work_start_time: start,
+            work_end_time: end,
+            break_minutes: isOff ? 0 : (d.break_minutes ?? 60),
+            is_cross_day: isCross,
+          };
+        }),
       };
 
-      if (editing) {
-        await shiftApi.patterns.update(editing.id, payload);
-      } else {
-        await shiftApi.patterns.create(payload);
+      const res: any = editing
+        ? await shiftApi.patterns.update(editing.id, payload)
+        : await shiftApi.patterns.create(payload);
+
+      if (res?.warnings?.length) {
+        setK3Warnings(res.warnings);
+        setShowK3Confirm(true);
+        setBusy(false);
+        return;
       }
+
       onSaved();
       onClose();
     } catch (ex: unknown) {
@@ -1301,7 +1477,21 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
             <div className="relative">
               <select
                 value={attendanceSettingId}
-                onChange={(e) => setAttendanceSettingId(e.target.value ? Number(e.target.value) : '')}
+                onChange={(e) => {
+                  const nextId = e.target.value ? Number(e.target.value) : '';
+                  setAttendanceSettingId(nextId);
+                  setDays((prev) =>
+                    prev.map((d) => {
+                      if (!d.shift_id) return d;
+                      const sh = shifts.find((s) => s.id === d.shift_id);
+                      if (!sh) return { ...d, shift_id: null };
+                      const isValid = nextId
+                        ? !sh.attendance_setting_id || sh.attendance_setting_id === Number(nextId)
+                        : !sh.attendance_setting_id;
+                      return isValid ? d : { ...d, shift_id: null };
+                    })
+                  );
+                }}
                 className="w-full text-xs p-2.5 pl-8 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none cursor-pointer"
               >
                 <option value="">— Berlaku untuk Semua Cabang (Company-wide) —</option>
@@ -1343,28 +1533,60 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
 
           {/* Sequence Preview Strip */}
           <div className="p-3.5 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 space-y-2">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between flex-wrap gap-2">
               <p className="text-xs font-bold text-indigo-950 dark:text-indigo-200 flex items-center gap-1.5">
                 <CalendarClock className="w-3.5 h-3.5 text-indigo-500" />
                 Urutan Siklus ({cycleDays} Hari)
               </p>
-              <span className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-400">
-                {workDaysCount} Hari Kerja · {offDaysCount} Hari Libur
-              </span>
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-400">
+                  {workDaysCount} Hari Kerja · {offDaysCount} Hari Libur
+                </span>
+                {/* Chip indikator jam kerja per minggu */}
+                <div className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                  weeklyStatus === 'error' ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-400' :
+                  weeklyStatus === 'warning' ? 'bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400' :
+                  weeklyStatus === 'safe' ? 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-400' :
+                  'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                }`}>
+                  <Clock className="w-3 h-3" />
+                  Rata-rata {weeklyHours}j/minggu
+                  {selectedOffice?.enforce_weekly_hours && (
+                    <span className="opacity-70">/ maks {selectedOffice.max_weekly_hours ?? 40}j</span>
+                  )}
+                </div>
+              </div>
             </div>
             <div className="flex flex-wrap gap-1.5 pt-1">
-              {days.map((d) => (
-                <div
-                  key={d.day_order}
-                  className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition ${
-                    d.is_off
-                      ? 'bg-amber-100/70 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-300/60 dark:border-amber-800'
-                      : 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
-                  }`}
-                >
-                  H{d.day_order}: {d.is_off ? 'Libur' : (d.work_start_time ? `${d.work_start_time}-${d.work_end_time}` : 'Kerja')}
-                </div>
-              ))}
+              {days.map((d) => {
+                const isCross = d.work_start_time && d.work_end_time && d.work_end_time <= d.work_start_time;
+                const gap = k3Gaps[d.day_order];
+                return (
+                  <div
+                    key={d.day_order}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1.5 ${
+                      d.is_off
+                        ? 'bg-amber-100/70 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-300/60 dark:border-amber-800'
+                        : 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
+                    }`}
+                  >
+                    <span>H{d.day_order}: {d.is_off ? 'Libur' : (d.work_start_time ? `${d.work_start_time}-${d.work_end_time}` : 'Kerja')}</span>
+                    {!d.is_off && isCross && (
+                      <span title="Shift berakhir keesokan harinya" className="text-violet-200">
+                        <Moon className="w-3 h-3" />
+                      </span>
+                    )}
+                    {!d.is_off && gap && (
+                      <span
+                        title={`Jeda ke H${gap.nextDayOrder}: ${gap.hours}j (${gap.status === 'error' ? 'Dilarang K3 < 8j' : 'Peringatan K3 8-11j'})`}
+                        className={gap.status === 'error' ? 'text-rose-300' : 'text-amber-300'}
+                      >
+                        ⚠️ {gap.hours}j
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
 
@@ -1377,22 +1599,22 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
               {days.map((day, idx) => (
                 <div
                   key={day.day_order}
-                  className={`p-3 rounded-xl border transition ${
+                  className={`p-3.5 rounded-xl border transition ${
                     day.is_off
-                      ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/40'
-                      : 'bg-white dark:bg-slate-850 border-slate-200 dark:border-slate-700/80 shadow-xs'
+                      ? 'bg-amber-50/50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800/60'
+                      : 'bg-slate-50/80 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700/80 shadow-xs'
                   }`}
                 >
                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <span className="w-7 h-7 rounded-lg bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold text-xs flex items-center justify-center shrink-0">
+                      <span className="w-7 h-7 rounded-lg bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/60 font-bold text-xs flex items-center justify-center shrink-0">
                         H{day.day_order}
                       </span>
                       <div>
                         <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
                           Hari ke-{day.day_order} Siklus
                         </p>
-                        <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
                           {day.is_off ? 'Karyawan dijadwalkan LIBUR pada hari ini' : 'Karyawan dijadwalkan MASUK KERJA'}
                         </p>
                       </div>
@@ -1403,10 +1625,10 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
                       <button
                         type="button"
                         onClick={() => updateDay(idx, { is_off: false })}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                           !day.is_off
                             ? 'bg-indigo-600 text-white shadow-xs'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700'
+                            : 'bg-white dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700'
                         }`}
                       >
                         Kerja
@@ -1414,10 +1636,10 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
                       <button
                         type="button"
                         onClick={() => updateDay(idx, { is_off: true })}
-                        className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                        className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                           day.is_off
                             ? 'bg-amber-500 text-white shadow-xs'
-                            : 'bg-slate-100 dark:bg-slate-800 text-slate-500 hover:text-slate-700'
+                            : 'bg-white dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700'
                         }`}
                       >
                         Libur (OFF)
@@ -1427,47 +1649,95 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
 
                   {/* Konfigurasi jam jika hari kerja */}
                   {!day.is_off && (
-                    <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 grid grid-cols-1 sm:grid-cols-3 gap-2.5">
-                      <div>
-                        <label className="text-[10px] font-semibold text-slate-400 uppercase block mb-1">
+                    <div className="mt-3 pt-3 border-t border-slate-200/70 dark:border-slate-700/60 grid grid-cols-1 sm:grid-cols-4 gap-2.5 items-end">
+                      <div className="sm:col-span-1">
+                        <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
                           Template Shift Terkait
                         </label>
                         <select
                           value={day.shift_id ?? ''}
                           onChange={(e) => updateDay(idx, { shift_id: e.target.value ? Number(e.target.value) : null })}
-                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                         >
                           <option value="">— Jam Custom —</option>
-                          {activeShifts.map((s) => (
-                            <option key={s.id} value={s.id}>
-                              {s.name}
+                          {availableShifts.map((s) => (
+                            <option key={s.id} value={s.id} className="dark:bg-slate-900 text-slate-800 dark:text-slate-100">
+                              {s.name}{!s.attendance_setting_id ? ' (Semua Cabang)' : ''}
                             </option>
                           ))}
+                          {day.shift_id && !availableShifts.some((s) => s.id === day.shift_id) && (() => {
+                            const otherShift = shifts.find((s) => s.id === day.shift_id);
+                            return otherShift ? (
+                              <option key={otherShift.id} value={otherShift.id} disabled className="dark:bg-slate-900 text-slate-400">
+                                {otherShift.name} (⚠️ Cabang Lain)
+                              </option>
+                            ) : null;
+                          })()}
                         </select>
                       </div>
 
                       <div>
-                        <label className="text-[10px] font-semibold text-slate-400 uppercase block mb-1">
+                        <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
                           Jam Masuk
                         </label>
                         <input
                           type="time"
                           value={day.work_start_time ?? '07:00'}
                           onChange={(e) => updateDay(idx, { work_start_time: e.target.value })}
-                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none dark:[color-scheme:dark]"
                         />
                       </div>
 
                       <div>
-                        <label className="text-[10px] font-semibold text-slate-400 uppercase block mb-1">
-                          Jam Pulang
-                        </label>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase">
+                            Jam Pulang
+                          </label>
+                          {day.work_start_time && day.work_end_time && day.work_end_time <= day.work_start_time && (
+                            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-violet-600 dark:text-violet-400" title="Shift berakhir keesokan harinya">
+                              <Moon className="w-2.5 h-2.5" /> +1 hari
+                            </span>
+                          )}
+                        </div>
                         <input
                           type="time"
                           value={day.work_end_time ?? '15:00'}
                           onChange={(e) => updateDay(idx, { work_end_time: e.target.value })}
-                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none dark:[color-scheme:dark]"
                         />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase">
+                            Istirahat (m)
+                          </label>
+                          {/* Badge K3 jeda istirahat ke hari berikutnya */}
+                          {k3Gaps[day.day_order] && (
+                            <span
+                              className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1 py-0.2 rounded-full shrink-0 ${
+                                k3Gaps[day.day_order].status === 'error'
+                                  ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400'
+                                  : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400'
+                              }`}
+                              title={`Jeda ke Hari ke-${k3Gaps[day.day_order].nextDayOrder}: ${k3Gaps[day.day_order].hours}j`}
+                            >
+                              <AlertCircle className="w-2.5 h-2.5" />
+                              {k3Gaps[day.day_order].hours}j → H{k3Gaps[day.day_order].nextDayOrder}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min={0}
+                            max={240}
+                            value={day.break_minutes ?? 60}
+                            onChange={(e) => updateDay(idx, { break_minutes: e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value) || 0) })}
+                            className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                            placeholder="60"
+                          />
+                        </div>
                       </div>
                     </div>
                   )}
@@ -1510,6 +1780,59 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
           </div>
         </form>
       </div>
+
+      {/* ── Modal konfirmasi K3 Pola Rotasi — muncul jika jeda istirahat 8–11 jam ── */}
+      {showK3Confirm && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm px-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl shadow-2xl w-full max-w-md animate-in fade-in zoom-in-95 duration-200 overflow-hidden">
+            <div className="flex items-center gap-3 px-6 py-4 bg-amber-50 dark:bg-amber-950/40 border-b border-amber-100 dark:border-amber-900/40">
+              <div className="w-10 h-10 rounded-full bg-amber-100 dark:bg-amber-900/50 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+              </div>
+              <div>
+                <p className="text-sm font-bold text-amber-800 dark:text-amber-300">Peringatan K3 — Jeda Istirahat Pendek</p>
+                <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Pola rotasi berhasil disimpan, namun ada jeda istirahat yang perlu diperhatikan</p>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 space-y-2.5">
+              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Hari dengan jeda istirahat di bawah rekomendasi:</p>
+              <ul className="space-y-2 max-h-48 overflow-y-auto">
+                {k3Warnings.map((w, i) => (
+                  <li key={i} className="flex items-start gap-2.5 bg-amber-50 dark:bg-amber-950/30 border border-amber-100 dark:border-amber-900/30 rounded-lg px-3 py-2">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
+                    <span className="text-xs text-amber-800 dark:text-amber-300">{w}</span>
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 pt-1">
+                Apakah Anda ingin tetap menggunakan pola rotasi ini, atau kembali memperbaiki jadwal?
+              </p>
+            </div>
+
+            <div className="flex gap-3 px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40">
+              <button
+                type="button"
+                onClick={() => setShowK3Confirm(false)}
+                className="flex-1 py-2.5 text-xs font-bold rounded-xl border-2 border-amber-400 text-amber-700 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/50 transition cursor-pointer"
+              >
+                Tidak, Perbaiki Jadwal
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowK3Confirm(false);
+                  onSaved();
+                  onClose();
+                }}
+                className="flex-1 py-2.5 text-xs font-bold rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white transition cursor-pointer"
+              >
+                Ya, Gunakan Pola Ini
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1616,10 +1939,13 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
     return adv;
   }, [isNight, k3BlockReason, user]);
 
-  const loadHistory = useCallback(async () => {
+  const loadHistory = useCallback(async (forceRefresh = false) => {
     setLoadingHist(true);
     try {
-      const res = await shiftApi.history(user.user_id);
+      if (forceRefresh) {
+        invalidateCache(`/dashboard/attendance/users/${user.user_id}/shift-history`);
+      }
+      const res = await shiftApi.history(user.user_id, forceRefresh);
       setHistory(rows(res) as AssignmentRow[]);
     } catch { /* diam */ } finally {
       setLoadingHist(false);
@@ -1658,7 +1984,7 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
       if (res?.warnings?.length) {
         setK3Warnings(res.warnings);
       }
-      await loadHistory();
+      await loadHistory(true);
       onSaved();
       setShiftId('');
       setPatternId('');
@@ -1712,12 +2038,21 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
       cancelText: 'Batal',
       type: isAct ? 'warning' : 'danger',
       onConfirm: async () => {
+        setErr('');
         try {
           await shiftApi.destroyAssignment(h.id);
-          await loadHistory();
+          invalidateCache(`/dashboard/attendance/users/${user.user_id}/shift-history`);
+          await loadHistory(true);
           onSaved();
         } catch (ex: unknown) {
-          setErr(ex instanceof ApiError ? ex.message : 'Gagal menghapus assignment.');
+          invalidateCache(`/dashboard/attendance/users/${user.user_id}/shift-history`);
+          await loadHistory(true);
+          onSaved();
+          if (ex instanceof ApiError && ex.status === 404) {
+            setErr('');
+          } else {
+            setErr(ex instanceof ApiError ? ex.message : 'Gagal menghapus assignment.');
+          }
         }
       },
     });
@@ -1970,7 +2305,7 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
             ) : (
               <div className="space-y-1.5">
                 {history.map((h) => (
-                  <div key={h.id} className="flex items-start justify-between gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-750">
+                  <div key={h.id} className="flex items-start justify-between gap-2 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5">
                         <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">
@@ -2538,7 +2873,7 @@ function ShiftUsersModal({ shift, onClose }: ShiftUsersModalProps) {
               {rows.map((r) => {
                 const av = avatarFor(r.name);
                 return (
-                  <div key={r.assignment_id} className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-805 bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-750">
+                  <div key={r.assignment_id} className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700">
                     <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${av.bg} ${av.text}`}>
                       {initialsOf(r.name)}
                     </div>
@@ -2599,9 +2934,12 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [roster, setRoster] = useState<RosterRow[]>([]);
   const [rosterDate, setRosterDate] = useState(todayStr());
   const [rosterBranch, setRosterBranch] = useState<string>('');
+  const [rosterDepartment, setRosterDepartment] = useState<string>('');
+  const [rosterStatusFilter, setRosterStatusFilter] = useState<'ALL' | 'ASSIGNED' | 'UNASSIGNED'>('ALL');
   const [rosterSearch, setRosterSearch] = useState('');
   const [rosterDayName, setRosterDayName] = useState('');
   const [rosterShiftName, setRosterShiftName] = useState('');
+  const [departments, setDepartments] = useState<string[]>([]);
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
@@ -2611,7 +2949,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
 
   useEffect(() => {
     setRosterPage(1);
-  }, [rosterSearch, rosterBranch, rosterShiftName, rosterDate]);
+  }, [rosterSearch, rosterBranch, rosterDepartment, rosterStatusFilter, rosterShiftName, rosterDate]);
 
   // ── Template state ──
   const [loadingShifts, setLoadingShifts] = useState(false);
@@ -2633,6 +2971,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [calMonth, setCalMonth] = useState(() => new Date().getMonth() + 1); // 1-12
   const [calYear, setCalYear] = useState(() => new Date().getFullYear());
   const [calBranch, setCalBranch] = useState<string>('');
+  const [calDepartment, setCalDepartment] = useState<string>('');
   const [calData, setCalData] = useState<Record<string, CalDayEntry[]>>({});
   const [loadingCal, setLoadingCal] = useState(false);
   const [calDetail, setCalDetail] = useState<{ date: string; entries: CalDayEntry[] } | null>(null);
@@ -2697,19 +3036,23 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     setError('');
     try {
       if (forceRefresh) invalidateCache('/dashboard/attendance/shifts/roster');
-      const filters: { date?: string; attendance_setting_id?: number; search?: string } = { date: rosterDate };
+      const filters: { date?: string; attendance_setting_id?: number; search?: string; department?: string } = { date: rosterDate };
       if (rosterBranch) filters.attendance_setting_id = Number(rosterBranch);
+      if (rosterDepartment) filters.department = rosterDepartment;
       if (debouncedRosterSearch.trim()) filters.search = debouncedRosterSearch.trim();
       const res: any = await shiftApi.roster(filters, forceRefresh);
       setRoster((res?.data ?? []) as RosterRow[]);
       setRosterDayName(res?.day_name ?? '');
+      if (Array.isArray(res?.departments) && res.departments.length > 0) {
+        setDepartments(res.departments);
+      }
       setSelected(new Set());
     } catch (e: unknown) {
       setError(e instanceof ApiError ? e.message : 'Gagal memuat roster.');
     } finally {
       setLoadingRoster(false);
     }
-  }, [rosterDate, rosterBranch, debouncedRosterSearch]);
+  }, [rosterDate, rosterBranch, rosterDepartment, debouncedRosterSearch]);
 
   const loadCalendar = useCallback(async (forceRefresh = false) => {
     setLoadingCal(true);
@@ -2718,15 +3061,19 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       const res: any = await shiftApi.calendar(
         calMonth, calYear,
         calBranch ? Number(calBranch) : undefined,
+        calDepartment || undefined,
         forceRefresh,
       );
       setCalData((res?.days ?? {}) as Record<string, CalDayEntry[]>);
+      if (Array.isArray(res?.departments) && res.departments.length > 0) {
+        setDepartments(res.departments);
+      }
     } catch (e: unknown) {
       setError(e instanceof ApiError ? e.message : 'Gagal memuat kalender shift.');
     } finally {
       setLoadingCal(false);
     }
-  }, [calMonth, calYear, calBranch]);
+  }, [calMonth, calYear, calBranch, calDepartment]);
 
   useEffect(() => { loadOffices(); loadShifts(); loadPatterns(); }, [loadOffices, loadShifts, loadPatterns]);
   useEffect(() => { if (tab === 'roster') loadRoster(); }, [tab, loadRoster]);
@@ -2790,10 +3137,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         setError('');
         try {
           await shiftApi.destroy(s.id);
-          await loadShifts();
+          await loadShifts(true);
           onAddAuditLog?.('Shift dihapus', s.name, 'bg-rose-500');
         } catch (e: unknown) {
-          if (e instanceof ApiError) {
+          if (e instanceof ApiError && e.status === 404) {
+            await loadShifts(true);
+            setError('');
+          } else if (e instanceof ApiError) {
             const affected = e.data?.affected_names as string | undefined;
             setError(
               affected
@@ -2881,11 +3231,15 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         if (r.attendance_setting_id == null) return false;
         if (!selectedBranchIds.has(r.attendance_setting_id)) return false;
       }
+      // Filter status jadwal (Item 12: Terjadwal Shift vs Belum Terjadwal / Default Kantor)
+      if (rosterStatusFilter === 'ASSIGNED' && r.source !== 'shift') return false;
+      if (rosterStatusFilter === 'UNASSIGNED' && r.source === 'shift') return false;
+
       if (!rosterShiftName) return true;
       if (rosterShiftName === 'DEFAULT') return r.source === 'office';
       return r.shift_name === rosterShiftName;
     });
-  }, [roster, rosterShiftName, selectedBranchIds]);
+  }, [roster, rosterShiftName, rosterStatusFilter, selectedBranchIds]);
 
   const toggleSelectAll = () =>
     setSelected((prev) =>
@@ -2986,6 +3340,19 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 </select>
               </div>
               <div>
+                <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Departemen</label>
+                <select
+                  value={rosterDepartment}
+                  onChange={(e) => setRosterDepartment(e.target.value)}
+                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                >
+                  <option value="">Semua departemen</option>
+                  {departments.map((d) => (
+                    <option key={d} value={d}>{d}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
                 <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Shift</label>
                 <select
                   value={rosterShiftName}
@@ -2999,7 +3366,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   ))}
                 </select>
               </div>
-              <div className="sm:col-span-2">
+              <div>
                 <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Cari Karyawan</label>
                 <div className="flex gap-2">
                   <div className="relative flex-1">
@@ -3014,13 +3381,60 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     />
                   </div>
                   <button
-                    onClick={loadRoster}
-                    className="px-4 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition shrink-0 cursor-pointer"
+                    onClick={() => loadRoster()}
+                    className="px-3 py-2 text-xs font-bold bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition shrink-0 cursor-pointer"
                   >
                     Terapkan
                   </button>
                 </div>
               </div>
+            </div>
+
+            {/* Quick Status Filter Pills (Item 12: Karyawan Belum Terjadwal vs Terjadwal) */}
+            <div className="flex flex-wrap items-center gap-2 pt-3 mt-3 border-t border-slate-100 dark:border-slate-800">
+              <span className="text-[10px] font-bold text-slate-400 dark:text-slate-500 uppercase tracking-wider">Status Jadwal:</span>
+              <button
+                type="button"
+                onClick={() => setRosterStatusFilter('ALL')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                  rosterStatusFilter === 'ALL'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                }`}
+              >
+                <span>Semua Karyawan</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${rosterStatusFilter === 'ALL' ? 'bg-indigo-700 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}`}>
+                  {roster.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRosterStatusFilter('ASSIGNED')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                  rosterStatusFilter === 'ASSIGNED'
+                    ? 'bg-emerald-600 text-white shadow-xs'
+                    : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60'
+                }`}
+              >
+                <span>Terjadwal Shift / Rotasi</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${rosterStatusFilter === 'ASSIGNED' ? 'bg-emerald-700 text-white' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300'}`}>
+                  {roster.filter((r) => r.source === 'shift').length}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRosterStatusFilter('UNASSIGNED')}
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+                  rosterStatusFilter === 'UNASSIGNED'
+                    ? 'bg-amber-600 text-white shadow-xs'
+                    : 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60'
+                }`}
+              >
+                <span>Belum Terjadwal (Default Kantor)</span>
+                <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${rosterStatusFilter === 'UNASSIGNED' ? 'bg-amber-700 text-white' : 'bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300'}`}>
+                  {roster.filter((r) => r.source !== 'shift').length}
+                </span>
+              </button>
             </div>
 
           </div>
@@ -3163,9 +3577,14 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                                 r.upcoming_shift
                                   ? null // ada shift coming soon → jangan tampilkan strip
                                   : r.source === 'office' ? (
-                                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
-                                        <Building2 className="w-3 h-3" /> Jam Kantor
-                                      </span>
+                                      <div className="space-y-0.5">
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                                          <Building2 className="w-3 h-3" /> Jam Kantor (Default)
+                                        </span>
+                                        <p className="text-[9px] text-amber-600 dark:text-amber-400 font-medium">
+                                          Belum ada shift custom
+                                        </p>
+                                      </div>
                                     ) : (
                                       <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400">
                                         <AlertCircle className="w-3 h-3" /> Belum Diatur
@@ -3219,9 +3638,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                           <td className="py-3 px-3 text-center">
                             <button
                               onClick={() => setAssignUser(r)}
-                              className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-lg transition cursor-pointer"
+                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold rounded-lg transition cursor-pointer ${
+                                r.source === 'shift'
+                                  ? 'text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40'
+                                  : 'text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 hover:bg-amber-100 dark:hover:bg-amber-900/60'
+                              }`}
                             >
-                              <UserCog className="w-3 h-3" /> Kelola
+                              <UserCog className="w-3 h-3" /> {r.source === 'shift' ? 'Kelola' : '+ Assign Shift'}
                             </button>
                           </td>
                         </tr>
@@ -3780,15 +4203,23 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 Bulan Ini
               </button>
             </div>
-            {/* Filter cabang */}
-            <div className="flex-1 flex items-center gap-2">
+            {/* Filter cabang & departemen */}
+            <div className="flex-1 flex flex-wrap items-center gap-2">
               <select
                 value={calBranch}
                 onChange={(e) => setCalBranch(e.target.value)}
-                className="flex-1 max-w-xs text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                className="flex-1 min-w-[130px] max-w-xs text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
               >
                 <option value="">Semua cabang</option>
                 {offices.map((o) => <option key={o.id} value={o.id}>{o.office_name}</option>)}
+              </select>
+              <select
+                value={calDepartment}
+                onChange={(e) => setCalDepartment(e.target.value)}
+                className="flex-1 min-w-[130px] max-w-xs text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+              >
+                <option value="">Semua departemen</option>
+                {departments.map((d) => <option key={d} value={d}>{d}</option>)}
               </select>
               <button
                 onClick={() => loadCalendar(true)}
@@ -3882,9 +4313,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         dayEntries.slice(0, 3).map((entry) => {
                           // Cek libur & lintas hari pada tanggal tersebut
                           const dayOfWeek = dateStr ? new Date(dateStr + 'T00:00:00').getDay() : -1;
-                          const isOff = dayOfWeek >= 0 && isOffOnDate(entry.shift_id, dayOfWeek, shifts);
+                          const isOff = entry.is_off || (dayOfWeek >= 0 && isOffOnDate(entry.shift_id, dayOfWeek, shifts));
                           const crossDay = entry.is_cross_day ?? (dayOfWeek >= 0 && isCrossDayOnDate(entry.shift_id, dayOfWeek, shifts));
-                          const entryColor = isOff ? '#718096' : (entry.color || '#6366f1');
+                          const entryColor = isOff ? '#64748b' : (entry.color || '#6366f1');
 
                           return (
                             <button
@@ -3958,7 +4389,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     weekday: 'long', day: '2-digit', month: 'long', year: 'numeric',
                   })}
                 </p>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{calDetail.entries.length} shift aktif</p>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{calDetail.entries.length} kategori shift / status</p>
               </div>
               <button onClick={() => setCalDetail(null)} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 transition cursor-pointer">
                 <X className="w-4 h-4" />
@@ -3968,9 +4399,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
             <div className="p-4 space-y-3">
               {calDetail.entries.map((entry) => {
                 const detailDayOfWeek = new Date(calDetail.date + 'T00:00:00').getDay();
-                const isOff = isOffOnDate(entry.shift_id, detailDayOfWeek, shifts);
+                const isOff = entry.is_off || isOffOnDate(entry.shift_id, detailDayOfWeek, shifts);
                 const crossDay = entry.is_cross_day ?? isCrossDayOnDate(entry.shift_id, detailDayOfWeek, shifts);
-                const entryColor = isOff ? '#718096' : (entry.color || '#6366f1');
+                const entryColor = isOff ? '#64748b' : (entry.color || '#6366f1');
                 const tmpl = shifts.find((s) => s.id === entry.shift_id);
                 const sch = tmpl?.schedules?.find((s) => s.day_of_week === detailDayOfWeek);
                 const jamKerja = sch && !sch.is_off && sch.work_start_time && sch.work_end_time
@@ -3986,9 +4417,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                       {isOff ? (
                         <span
                           className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full border shrink-0"
-                          style={{ backgroundColor: '#71809618', color: '#718096', borderColor: '#71809640' }}
+                          style={{ backgroundColor: '#64748b18', color: '#64748b', borderColor: '#64748b40' }}
                         >
-                          Libur / Off (#718096)
+                          Libur / Off
                         </span>
                       ) : crossDay && (
                         <span
@@ -4023,9 +4454,16 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                             <div className={`w-6 h-6 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${av.bg} ${av.text}`}>
                               {initialsOf(u.name)}
                             </div>
-                            <div className="min-w-0">
+                            <div className="min-w-0 flex-1">
                               <p className="text-xs font-semibold text-slate-700 dark:text-slate-200 truncate">{u.name}</p>
-                              {u.department && <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">{u.department}</p>}
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                {u.department && <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">{u.department}</p>}
+                                {u.reason && (
+                                  <span className="text-[9px] font-medium text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                                    {u.reason}
+                                  </span>
+                                )}
+                              </div>
                             </div>
                           </div>
                         );

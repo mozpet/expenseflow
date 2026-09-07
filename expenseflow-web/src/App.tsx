@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, Suspense, lazy } from 'react';
 import { defaultSettings } from './data';
 import {
   Receipt,
@@ -17,8 +17,9 @@ import {
   settingsApi,
   overtimeApi,
   deviceChangeApi,
+  syncApi,
 } from './services/endpoints';
-import { invalidateCache } from './services/api';
+import { invalidateCache, syncDataVersions } from './services/api';
 import {
   mapReceipt,
   mapReceiptToApproval,
@@ -26,6 +27,14 @@ import {
   mapNotification,
   mapSettings,
 } from './services/mappers';
+
+// Helper perizinan role untuk approval level invoice (selaras dengan InvoiceInbox & backend)
+function roleAllowedForInvoiceLevel(role: string, currentLevel: number): boolean {
+  if (currentLevel === 0) return ['finance', 'admin', 'super_admin'].includes(role);
+  if (currentLevel === 1) return ['admin', 'super_admin'].includes(role);
+  if (currentLevel === 2) return ['super_admin'].includes(role);
+  return false;
+}
 
 // Lazy-loaded route components for code splitting
 const ReceiptInbox = lazy(() => import('./components/ReceiptInbox').then(m => ({ default: m.ReceiptInbox })));
@@ -135,6 +144,7 @@ export default function App() {
   }, []);
 
   const loadInvoices = useCallback(async (forceRefresh = false) => {
+    if (forceRefresh) invalidateCache('/dashboard/invoices');
     const res = await invoiceApi.list(undefined, forceRefresh);
     const list = rows(res.invoices ?? res).map(mapInvoice);
     setInvoices(list.filter((i) => i.status === 'Pending' || i.status === 'Due'));
@@ -142,6 +152,7 @@ export default function App() {
   }, []);
 
   const loadNotifications = useCallback(async (forceRefresh = false) => {
+    if (forceRefresh) invalidateCache('/dashboard/notifications');
     const res = await notificationApi.list(false, forceRefresh);
     setNotifications(rows(res.notifications ?? res).map(mapNotification));
   }, []);
@@ -157,6 +168,7 @@ export default function App() {
   const loadPendingOvertime = useCallback(async (forceRefresh = false) => {
     if (user?.role === 'finance') return; // finance tidak punya akses
     try {
+      if (forceRefresh) invalidateCache('/dashboard/attendance/overtime-approvals');
       const res = await overtimeApi.list({ status: 'pending', page: 1 }, forceRefresh);
       const total = res?.total ?? res?.meta?.total ?? (res?.data?.length ?? 0);
       setPendingOvertimeCount(total);
@@ -166,6 +178,7 @@ export default function App() {
   const loadPendingDevice = useCallback(async (forceRefresh = false) => {
     if (user?.role === 'finance') return; // finance tidak punya akses
     try {
+      if (forceRefresh) invalidateCache('/dashboard/attendance/device-changes');
       const res = await deviceChangeApi.list({ status: 'pending', page: 1 }, forceRefresh);
       const total = res?.total ?? res?.meta?.total ?? (res?.data?.length ?? 0);
       setPendingDeviceCount(total);
@@ -222,6 +235,63 @@ export default function App() {
       );
     }
   }, [activePage, notifications]);
+
+  // ─── Ketentuan 3: Smart Sync Data-Driven Invalidation ────────
+  // Sinkronisasi status data server secara ringan (< 2ms query).
+  // - Jika TIDAK ada data baru: cache RAM tetap utuh, user gonta-ganti tab tetap instan 0ms.
+  // - Jika ADA data baru masuk: cache modul terkait otomatis di-invalidate sehingga data terefresh.
+  const checkDataSync = useCallback(async () => {
+    if (!isAuthenticated) return;
+    try {
+      const versions = await syncApi.getVersions();
+      if (versions) {
+        const changed = syncDataVersions(versions);
+        if (changed.length > 0) {
+          if (changed.includes('notifications')) {
+            loadNotifications(true);
+          }
+          if (changed.includes('overtime')) {
+            loadPendingOvertime(true);
+          }
+          if (changed.includes('device_changes')) {
+            loadPendingDevice(true);
+          }
+          if (changed.includes('receipts') && user?.role !== 'hrd') {
+            loadReceipts(true);
+            loadReceiptHistory(true);
+          }
+          if (changed.includes('invoices') && user?.role !== 'hrd') {
+            loadInvoices(true);
+          }
+        }
+      }
+    } catch {
+      // Abaikan error sync background
+    }
+  }, [isAuthenticated, loadNotifications, loadPendingOvertime, loadPendingDevice, loadReceipts, loadReceiptHistory, loadInvoices, user?.role]);
+
+  // Cek data sync saat gonta-ganti tab / activePage
+  useEffect(() => {
+    if (isAuthenticated) {
+      checkDataSync();
+    }
+  }, [activePage, isAuthenticated, checkDataSync]);
+
+  // Cek data sync saat jendela browser kembali fokus atau heartbeat setiap 25 detik
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const handleFocus = () => {
+      checkDataSync();
+    };
+    window.addEventListener('focus', handleFocus);
+    const interval = setInterval(() => {
+      checkDataSync();
+    }, 25000);
+    return () => {
+      window.removeEventListener('focus', handleFocus);
+      clearInterval(interval);
+    };
+  }, [isAuthenticated, checkDataSync]);
 
   const formatCurrency = (val: number) => {
     return new Intl.NumberFormat('id-ID', {
@@ -521,9 +591,9 @@ export default function App() {
       case 'shift':
         return <ShiftManagement onAddAuditLog={handleAddAuditLogDirect} />;
       case 'overtime':
-        return <OvertimeApprovalView />;
+        return <OvertimeApprovalView onActionSuccess={() => { loadPendingOvertime(true); loadNotifications(true); }} />;
       case 'device-changes':
-        return <DeviceChangeApprovalView />;
+        return <DeviceChangeApprovalView onActionSuccess={() => { loadPendingDevice(true); loadNotifications(true); }} />;
       case 'rekrutmen':
         return <RecruitmentManagement />;
       default:
@@ -542,17 +612,6 @@ export default function App() {
     }
   };
 
-  const unreadNotifCount = notifications.filter(n => !n.read).length;
-  const unreadLeavesCount = notifications.filter(n => !n.read && n.targetPage === 'presensi').length;
-  const unreadOvertimeCount = notifications.filter(n => !n.read && n.targetPage === 'overtime').length;
-  const unreadReceiptCount = notifications.filter(n => !n.read && n.targetPage === 'inbox').length;
-  const unreadInvoiceCount = notifications.filter(n => !n.read && n.targetPage === 'invoice-inbox').length;
-  const unreadDeviceCount = notifications.filter(n => !n.read && n.targetPage === 'device-changes').length;
-  const unreadRecruitmentCount = notifications.filter(n => !n.read && n.targetPage === 'rekrutmen').length;
-
-  const pendingReceiptCount = receipts.length;
-  const pendingInvoiceCount = invoices.length;
-
   // Inisial & nama untuk avatar header (dari user login).
   const userName = user?.name ?? 'Pengguna';
   const userRole = user?.role ?? '';
@@ -568,6 +627,29 @@ export default function App() {
     admin: 'Admin',
     super_admin: 'Super Admin',
   };
+
+  const unreadNotifCount = notifications.filter(n => !n.read).length;
+  const unreadLeavesCount = notifications.filter(n => !n.read && n.targetPage === 'presensi').length;
+  const unreadOvertimeCount = notifications.filter(n => !n.read && n.targetPage === 'overtime').length;
+  const unreadReceiptCount = notifications.filter(n => !n.read && n.targetPage === 'inbox').length;
+  const unreadInvoiceCount = notifications.filter(n => !n.read && n.targetPage === 'invoice-inbox').length;
+  const unreadDeviceCount = notifications.filter(n => !n.read && n.targetPage === 'device-changes').length;
+  const unreadRecruitmentCount = notifications.filter(n => !n.read && n.targetPage === 'rekrutmen').length;
+
+  const pendingReceiptCount = receipts.length;
+  // Hitung hanya invoice yang benar-benar menunggu approval dari user yang sedang login
+  const pendingInvoiceCount = useMemo(() => {
+    return invoices.filter((inv) => {
+      if (inv.status !== 'Pending') return false;
+      const cur = inv.currentApprovalLevel ?? 0;
+      const max = inv.maxApprovalLevel ?? 1;
+      if (cur >= max) return false;
+      if (!roleAllowedForInvoiceLevel(userRole, cur)) return false;
+      if (user?.id != null && (inv.approverUserIds ?? []).includes(user.id)) return false;
+      if (userRole === 'super_admin' && cur + 1 < max) return false;
+      return true;
+    }).length;
+  }, [invoices, userRole, user?.id]);
 
   // ─── Gerbang autentikasi ───────────────────────────────────
   // Selama verifikasi token awal, tampilkan loader.

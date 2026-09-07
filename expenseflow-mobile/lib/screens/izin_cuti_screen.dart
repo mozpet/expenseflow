@@ -204,12 +204,15 @@ class _LeaveCard extends StatelessWidget {
                 const Icon(Icons.calendar_today_outlined,
                     size: 14, color: Color(0xFF546E7A)),
                 const SizedBox(width: 6),
-                Text(
-                  formatDateIndonesianRange(leave.startDate, leave.endDate),
-                  style: const TextStyle(
-                    color: Color(0xFF455A64),
-                    fontSize: 12,
-                    fontWeight: FontWeight.w500,
+                Flexible(
+                  child: Text(
+                    formatDateIndonesianRange(leave.startDate, leave.endDate),
+                    style: const TextStyle(
+                      color: Color(0xFF455A64),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
                 const SizedBox(width: 8),

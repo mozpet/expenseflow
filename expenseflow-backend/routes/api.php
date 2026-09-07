@@ -11,6 +11,7 @@ use App\Http\Controllers\API\ReceiptController;
 use App\Http\Controllers\API\RecruitmentController;
 use App\Http\Controllers\API\SettingsController;
 use App\Http\Controllers\API\ShiftController;
+use App\Http\Controllers\API\SyncVersionController;
 use App\Http\Controllers\API\UserController;
 use App\Http\Controllers\API\VendorController;
 use Illuminate\Cache\RateLimiting\Limit;
@@ -148,6 +149,9 @@ Route::prefix('v1')->group(function () {
 
             // Audit log (activity logs)
             Route::get('/activity-logs', [ActivityLogController::class, 'index']);
+
+            // Sinkronisasi status/versi data untuk Smart Cache
+            Route::get('/sync-versions', [SyncVersionController::class, 'index']);
         });
 
     // Super Admin / HRD / Admin routes — akses penuh

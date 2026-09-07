@@ -313,7 +313,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
                     onTap: () => _pickDate(isStart: true),
                   ),
                 ),
-                const SizedBox(width: 12),
+                const SizedBox(width: 10),
                 Expanded(
                   child: _DateButton(
                     label: 'Selesai',
@@ -673,7 +673,7 @@ class _DateButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
         decoration: BoxDecoration(
           border: Border.all(color: Colors.grey.shade300),
           borderRadius: BorderRadius.circular(8),
@@ -683,16 +683,30 @@ class _DateButton extends StatelessWidget {
             const Icon(Icons.calendar_month_outlined,
                 size: 18, color: Colors.blueGrey),
             const SizedBox(width: 8),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label,
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
                     style: const TextStyle(
-                        fontSize: 10, color: Colors.grey)),
-                Text(value,
-                    style: const TextStyle(
-                        fontSize: 13, fontWeight: FontWeight.bold)),
-              ],
+                        fontSize: 10, color: Colors.grey),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      value,
+                      style: const TextStyle(
+                          fontSize: 13, fontWeight: FontWeight.bold),
+                      maxLines: 1,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ],
         ),

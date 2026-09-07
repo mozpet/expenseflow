@@ -438,23 +438,47 @@ if ($startStr === $today) {
 
 ---
 
-#### 10. SEDANG: Ketiadaan Filter Departemen / Divisi di Tab Roster dan Kalender
-- **Kondisi Saat Ini:** Di tab Roster dan Kalender hanya terdapat filter Kantor/Cabang (`rosterBranch` / `calBranch`) dan pencarian nama.
-- **Dampak Operasional:** Jika satu kantor cabang memiliki ratusan karyawan dari berbagai divisi (misal: Security, Front Office, Housekeeping, IT, F&B), daftar roster bercampur baur dan supervisor departemen kesulitan mengawasi jadwal timnya sendiri.
-- **Rekomendasi Solusi:** Tambahkan dropdown filter `Departemen` di sebelah filter kantor pada tab Roster dan Kalender.
+#### 10. [SELESAI ✅ 2026-09-04] Filter Departemen / Divisi di Tab Roster dan Kalender
+- **Lokasi Kode:**
+  - Backend: `ShiftController::roster()` & `ShiftController::calendar()`
+  - Frontend Service: `endpoints.ts` (`shiftApi.roster(filters)` & `shiftApi.calendar(...)`)
+  - Frontend UI: `ShiftManagement.tsx` (`rosterDepartment`, `calDepartment`, `departments` list)
+  - Automated Tests: `tests/Feature/ShiftManagementCategoryCTest.php` (`test_roster_endpoint_supports_department_filter`, `test_calendar_endpoint_supports_department_filter`)
+- **Implementasi Fitur:**
+  1. Backend `ShiftController::roster()` dan `ShiftController::calendar()` menerima parameter `department` opsional, melakukan filter query pada `users.department`, dan mengembalikan daftar `departments` unik perusahaan/cabang untuk mengisi opsi dropdown.
+  2. Frontend `endpoints.ts` memperluas interface `RosterFilter` dan fungsi `calendar` dengan argumen `department?: string`.
+  3. Frontend `ShiftManagement.tsx` menambahkan dropdown **"Semua Departemen"** yang reaktif di bilah filter toolbar Tab Roster Harian dan Tab Kalender.
 
 ---
 
-#### 11. SEDANG: Tampilan Kalender Belum Menampilkan Jumlah Total Karyawan Libur (OFF) per Hari
-- **Kondisi Saat Ini:** Pada sel kalender bulanan (`calData`), hanya ditampilkan badge shift yang masuk (misal: *Shift Pagi: 8 org, Shift Malam: 4 org*).
-- **Dampak Operasional:** HRD tidak dapat melihat berapa jumlah total karyawan yang sedang **LIBUR (OFF)** pada tanggal tersebut, sehingga sulit mendeteksi potensi kekurangan tenaga kerja (*understaffing*) pada hari tertentu.
-- **Rekomendasi Solusi:** Tambahkan indikator ringkas di sel kalender: misal `Libur (OFF): 5 org`.
+#### 11. [SELESAI ✅ 2026-09-04] Tampilan Kalender Menampilkan Jumlah & Daftar Karyawan Libur (OFF) per Hari
+- **Lokasi Kode:**
+  - Backend: `ShiftController::calendar()`
+  - Frontend: `ShiftManagement.tsx` (`CalDayEntry`, sel kalender bulanan, legend, & modal detail hari)
+  - Automated Tests: `tests/Feature/ShiftManagementCategoryCTest.php` (`test_calendar_endpoint_reports_off_employees`)
+- **Implementasi Fitur:**
+  1. Backend `ShiftController::calendar()` mengevaluasi setiap karyawan per tanggal:
+     - Jika karyawan ditugaskan **Pola Rotasi (Cycle)** dan tanggal tersebut berada pada siklus `is_off`, sistem menandai alasan `Pola Rotasi {name} H{day} (Libur Siklus)`.
+     - Jika karyawan ditugaskan **Template Shift**, mengevaluasi apakah hari tersebut merupakan hari `is_off` pada shift schedule.
+     - Jika tidak memiliki penugasan shift custom (default kantor), mengevaluasi apakah hari tersebut adalah weekend/hari non-aktif kantor (`attendance_settings`).
+  2. Karyawan yang libur digabungkan ke dalam entri khusus `shift_id: 0`, `shift_name: 'Libur (OFF)'`, `is_off: true`, dan `color: '#64748b'`.
+  3. Sel Kalender menampilkan badge slate `Libur (OFF) (X org) (Off)` dan legenda `Libur / Off`.
+  4. Ketika sel diklik, modal detail menampilkan daftar nama karyawan yang libur beserta alasan spesifiknya (`Pola Rotasi H4 (Libur Siklus)`, `Libur Shift`, atau `Libur Kantor (Weekend/Non-aktif)`).
 
 ---
 
-#### 12. RENDAH: Ketiadaan Tab / Filter Khusus "Karyawan Belum Terjadwal" (Unassigned Floating Staff)
-- **Kondisi Saat Ini:** Karyawan yang tidak memiliki shift custom diberi label `source: office` (mengikuti jadwal default kantor).
-- **Dampak Operasional:** HRD kesulitan melacak karyawan operasional mana saja yang belum memiliki penugasan shift untuk bulan depan, rawan ada karyawan yang terlewat tidak dijadwalkan.
+#### 12. [SELESAI ✅ 2026-09-04] Quick Filter & Indikator Khusus "Karyawan Belum Terjadwal" (Unassigned Floating Staff)
+- **Lokasi Kode:**
+  - Frontend: `ShiftManagement.tsx` (`rosterStatusFilter`: `'ALL' | 'ASSIGNED' | 'UNASSIGNED'`, pill counter, badge & action button)
+  - Backend: `ShiftController::roster()` (`source: 'office' | 'rotation' | 'user'`)
+  - Automated Tests: `tests/Feature/ShiftManagementCategoryCTest.php` (`test_roster_assignment_source_integrity`)
+- **Implementasi Fitur:**
+  1. Tab Roster Harian menyediakan bilah filter status cepat (*quick counter pills*):
+     - **Semua Karyawan (N)**
+     - **Terjadwal Shift / Rotasi (N)** — Menampilkan karyawan dengan jadwal template atau rotasi aktif
+     - **Belum Terjadwal (Default Kantor) (N)** — Menyaring staf floating yang belum memiliki shift custom
+  2. Baris tabel karyawan yang belum terjadwal ditandai secara visual dengan ikon gedung `🏢 Jam Kantor (Default)` dan keterangan `Belum ada shift custom`.
+  3. Disediakan tombol aksi langsung berwarna amber **`+ Assign Shift`** untuk mempermudah HRD langsung membuka modal penugasan jadwal bagi karyawan yang bersangkutan tanpa harus mencari satu per satu.
 
 ---
 

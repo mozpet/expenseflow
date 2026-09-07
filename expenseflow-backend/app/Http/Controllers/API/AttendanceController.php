@@ -92,16 +92,16 @@ class AttendanceController extends Controller
         }
 
         return match ($type) {
-            'collective_leave_announced' => '🏖️ Pengumuman Cuti Bersama',
-            'collective_leave_cancelled' => '❌ Cuti Bersama Dibatalkan',
-            'overtime_pending'           => '⏰ Pengajuan Lembur Masuk',
-            'overtime_approved'          => '✅ Lembur Disetujui',
-            'overtime_rejected'          => '❌ Lembur Ditolak',
-            'leave_approved'             => '✅ Pengajuan Cuti Disetujui',
-            'leave_rejected'             => '❌ Pengajuan Cuti Ditolak',
-            'device_change_approved'     => '📱 Pindah Perangkat Disetujui',
-            'device_change_rejected'     => '❌ Pindah Perangkat Ditolak',
-            default                      => '🔔 Pemberitahuan',
+            'collective_leave_announced' => 'Pengumuman Cuti Bersama',
+            'collective_leave_cancelled' => 'Cuti Bersama Dibatalkan',
+            'overtime_pending'           => 'Pengajuan Lembur Masuk',
+            'overtime_approved'          => 'Lembur Disetujui',
+            'overtime_rejected'          => 'Lembur Ditolak',
+            'leave_approved'             => 'Pengajuan Cuti Disetujui',
+            'leave_rejected'             => 'Pengajuan Cuti Ditolak',
+            'device_change_approved'     => 'Pindah Perangkat Disetujui',
+            'device_change_rejected'     => 'Pindah Perangkat Ditolak',
+            default                      => 'Pemberitahuan',
         };
     }
 
@@ -781,6 +781,13 @@ class AttendanceController extends Controller
             $leave->id
         );
 
+        // Hapus notifikasi permohonan cuti/izin untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'leave_request')
+            ->where('entity_id', $leave->id)
+            ->where('type', 'leave_requested')
+            ->delete();
+
         $this->notifyUser($leave->user_id, 'leave_approved', [
             'message'         => "Permintaan {$leave->leave_type} Anda telah disetujui.",
             'leave_id'        => $leave->id,
@@ -856,6 +863,13 @@ class AttendanceController extends Controller
             'leave_request',
             $leave->id
         );
+
+        // Hapus notifikasi permohonan cuti/izin untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'leave_request')
+            ->where('entity_id', $leave->id)
+            ->where('type', 'leave_requested')
+            ->delete();
 
         $leaveTypeLabel = match ($leave->leave_type) {
             'cuti'  => 'Cuti Tahunan',
@@ -3751,7 +3765,7 @@ class AttendanceController extends Controller
 
         // Semua assignment user (termasuk yang sudah berakhir) — filter aktif di PHP
         // agar setara dengan query "start_date <= tanggal" + end_date check.
-        $userShifts = UserShift::with('shift:id,name,is_active')
+        $userShifts = UserShift::with(['shift:id,name,is_active', 'shiftPattern.items'])
             ->where('user_id', $user->id)
             ->orderBy('start_date')
             ->get();
@@ -3791,6 +3805,21 @@ class AttendanceController extends Controller
             });
             $userShift = $candidates->sortByDesc(fn ($us) => $us->start_date->toDateString())->first();
 
+            // a) Cek pola rotasi
+            if ($userShift && $userShift->shift_pattern_id && optional($userShift->shiftPattern)->is_active) {
+                $pattern   = $userShift->shiftPattern;
+                $cycleDays = max(1, (int) $pattern->cycle_days);
+                $anchor    = max(1, (int) ($userShift->anchor_day_order ?? 1));
+                $startDate = Carbon::parse($userShift->start_date)->startOfDay();
+                $targetDate = Carbon::parse($date)->startOfDay();
+                $diffDays  = $startDate->diffInDays($targetDate);
+                $dayOrder  = (($anchor - 1 + $diffDays) % $cycleDays) + 1;
+                $pItem     = $pattern->items->firstWhere('day_order', $dayOrder);
+                $result[$date] = (bool) ($pItem ? ($pItem->is_off || (! $pItem->shift_id && ! $pItem->work_start_time)) : true);
+                continue;
+            }
+
+            // b) Cek template shift biasa
             if ($userShift && $userShift->shift_id && ($activeShifts[$userShift->shift_id] ?? false)) {
                 $versions = $schedulesByShift[$userShift->shift_id][$dayOfWeek] ?? [];
                 $schedule = null;
@@ -5690,6 +5719,13 @@ class AttendanceController extends Controller
             $approval->id
         );
 
+        // Hapus notifikasi pending lembur untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'overtime_approval')
+            ->where('entity_id', $approval->id)
+            ->where('type', 'overtime_pending')
+            ->delete();
+
         // Notifikasi ke karyawan
         $employee = User::find($approval->user_id);
         $tanggal  = Carbon::parse($approval->attendance->date)->format('d/m/Y');
@@ -5757,6 +5793,13 @@ class AttendanceController extends Controller
             'overtime_approval',
             $approval->id
         );
+
+        // Hapus notifikasi pending lembur untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'overtime_approval')
+            ->where('entity_id', $approval->id)
+            ->where('type', 'overtime_pending')
+            ->delete();
 
         // Notifikasi ke karyawan
         $employee = User::find($approval->user_id);
@@ -5880,6 +5923,13 @@ class AttendanceController extends Controller
             $req->id
         );
 
+        // Hapus notifikasi pending pindah perangkat untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'device_change_request')
+            ->where('entity_id', $req->id)
+            ->where('type', 'device_change_pending')
+            ->delete();
+
         // Notifikasi ke karyawan.
         $this->notifyUser($req->user_id, 'device_change_approved', [
             'message'    => 'Permintaan pindah perangkat Anda telah disetujui. '
@@ -5931,6 +5981,13 @@ class AttendanceController extends Controller
             'device_change_request',
             $req->id
         );
+
+        // Hapus notifikasi pending pindah perangkat untuk para approver
+        DB::table('notifications')
+            ->where('entity_type', 'device_change_request')
+            ->where('entity_id', $req->id)
+            ->where('type', 'device_change_pending')
+            ->delete();
 
         // Notifikasi ke karyawan.
         $this->notifyUser($req->user_id, 'device_change_rejected', [

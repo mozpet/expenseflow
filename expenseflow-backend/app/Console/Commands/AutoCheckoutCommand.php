@@ -49,8 +49,8 @@ class AutoCheckoutCommand extends Command
 
     public function handle(): int
     {
-        $today  = now('Asia/Jakarta')->toDateString();
-        $nowUtc = now(); // waktu UTC untuk perbandingan dengan datetime di DB
+        $today  = now()->toDateString();
+        $nowWib = now(); // waktu WIB (app.timezone = Asia/Jakarta) untuk perbandingan
 
         // CATCH-UP: proses SEMUA presensi terbuka tanpa batas tanggal.
         // Sebelumnya hanya melihat hari ini + kemarin dan melewatkan record kemarin
@@ -132,7 +132,7 @@ class AutoCheckoutCommand extends Command
                 ? Carbon::parse($attDate, 'Asia/Jakarta')->addDay()->toDateString()
                 : $attDate;
 
-            $workEnd         = Carbon::parse($jamPulangDate . ' ' . substr($jamPulang, 0, 5), 'Asia/Jakarta')->utc();
+            $workEnd         = Carbon::parse($jamPulangDate . ' ' . substr($jamPulang, 0, 5), 'Asia/Jakarta');
             $reminderTime    = $workEnd->copy()->addMinutes($reminderMins);
             $autoCheckoutTime = $workEnd->copy()->addMinutes($graceMins);
 
@@ -140,9 +140,9 @@ class AutoCheckoutCommand extends Command
             // Jam checkout di-clamp ke JADWAL TARGET (jam pulang + grace), bukan jam eksekusi,
             // agar presensi basi (server sempat mati) tidak mencatat kerja/lembur palsu
             // selama rentang server mati.
-            if ($nowUtc->gte($autoCheckoutTime)) {
-                $effectiveCheckOut = $nowUtc->lt($autoCheckoutTime->copy()->addMinutes(5))
-                    ? $nowUtc   // masih dalam interval cek normal → pakai waktu nyata
+            if ($nowWib->gte($autoCheckoutTime)) {
+                $effectiveCheckOut = $nowWib->lt($autoCheckoutTime->copy()->addMinutes(5))
+                    ? $nowWib   // masih dalam interval cek normal → pakai waktu nyata
                     : $autoCheckoutTime; // presensi basi / catch-up → pakai jadwal target
 
                 // Kasus patologis: check-in terjadi SETELAH batas auto-checkout jadwal
@@ -151,10 +151,10 @@ class AutoCheckoutCommand extends Command
                 // SEBELUM check-in (menit kerja negatif); memakai jam eksekusi untuk
                 // record basi justru menciptakan lembur ribuan menit. Solusi: tutup tepat
                 // di jam check-in tanpa lembur — data tetap tertutup, tanpa angka fiktif.
-                $checkInUtc = Carbon::parse($attendance->check_in_time)->utc();
+                $checkInWib = Carbon::parse($attendance->check_in_time);
                 $skipOvertime = false;
-                if ($effectiveCheckOut->lessThan($checkInUtc)) {
-                    $effectiveCheckOut = $checkInUtc;
+                if ($effectiveCheckOut->lessThan($checkInWib)) {
+                    $effectiveCheckOut = $checkInWib;
                     $skipOvertime      = true;
                 }
 
@@ -166,7 +166,7 @@ class AutoCheckoutCommand extends Command
             // Sudah lewat batas reminder (tapi belum waktunya auto-checkout) → kirim reminder.
             // Reminder untuk record basi tidak relevan lagi (batas sudah lewat) — hanya kirim
             // bila auto-checkout memang masih di depan.
-            if ($nowUtc->gte($reminderTime)) {
+            if ($nowWib->gte($reminderTime)) {
                 $this->sendCheckoutReminder($attendance, $autoCheckoutTime, $graceMins);
                 $totalReminder++;
             }
@@ -423,7 +423,7 @@ class AutoCheckoutCommand extends Command
             ? Carbon::parse($date, 'Asia/Jakarta')->addDay()->toDateString()
             : $date;
 
-        $jamPulang = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta')->utc();
+        $jamPulang = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta');
         $lewat     = $checkOutTime->greaterThan($jamPulang)
             ? (int) $jamPulang->diffInMinutes($checkOutTime)
             : 0;

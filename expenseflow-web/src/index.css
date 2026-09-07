@@ -5,6 +5,8 @@
 @theme {
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+  --color-slate-750: #243049;
+  --color-slate-850: #151d2e;
 }
 
 /* Hilangkan spin button (panah atas/bawah) pada semua input angka */

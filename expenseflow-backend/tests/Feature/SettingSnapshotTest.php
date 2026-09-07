@@ -144,7 +144,7 @@ class SettingSnapshotTest extends TestCase
         $this->assertDatabaseHas('attendances', [
             'user_id'          => $emp->id,
             'overtime_minutes' => 30,
-            'work_minutes'     => 570, // 08:00 → 17:30
+            'work_minutes'     => 510, // 08:00 → 17:30 minus 60m istirahat
         ]);
     }
 

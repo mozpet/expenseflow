@@ -17,6 +17,7 @@ export interface EndpointCacheRule {
 }
 
 // ─── Default Caching Strategy Rules (17 Halaman / Fitur) ─────────────
+// ─── Default Caching Strategy Rules (17 Halaman / Fitur) ─────────────
 // Sesuai Matriks Evaluasi Caching pada doc/11-FRONTEND-CACHING-STRATEGY-AUDIT.md
 export const ENDPOINT_CACHE_RULES: EndpointCacheRule[] = [
   // KELOMPOK 1: 🟢 SANGAT AMAN DI-CACHE (Data Master & Referensi)
@@ -33,22 +34,9 @@ export const ENDPOINT_CACHE_RULES: EndpointCacheRule[] = [
     swr: false,
     tags: ['finance-settings', 'settings'],
   },
-  // 2. Shift & Jadwal Kerja (TTL 5 Menit, SWR: false)
-  // Catatan: /roster didefinisikan terpisah di Kelompok 2 karena antrean harian
-  {
-    pattern: /^\/dashboard\/attendance\/shifts\/calendar/,
-    ttl: 5 * 60 * 1000,
-    swr: false,
-    tags: ['shifts', 'calendar'],
-  },
+  // 2. Shift Master Templates (TTL 5 Menit, SWR: false)
   {
     pattern: /^\/dashboard\/attendance\/shifts(\/\d+(\/users)?)?$/,
-    ttl: 5 * 60 * 1000,
-    swr: false,
-    tags: ['shifts'],
-  },
-  {
-    pattern: /^\/dashboard\/attendance\/users\/\d+\/shift-history/,
     ttl: 5 * 60 * 1000,
     swr: false,
     tags: ['shifts'],
@@ -60,17 +48,17 @@ export const ENDPOINT_CACHE_RULES: EndpointCacheRule[] = [
     swr: false,
     tags: ['vendors'],
   },
-  // 4. Manajemen Karyawan (TTL 3 Menit, SWR: false)
+  // 4. Manajemen Karyawan (TTL 2 Menit, SWR: true agar navigasi instan namun background revalidasi)
   {
     pattern: /^\/admin\/users(\/\d+)?$/,
-    ttl: 3 * 60 * 1000,
-    swr: false,
+    ttl: 2 * 60 * 1000,
+    swr: true,
     tags: ['users', 'karyawan'],
   },
   {
     pattern: /^\/dashboard\/attendance\/users\/all$/,
-    ttl: 5 * 60 * 1000,
-    swr: false,
+    ttl: 3 * 60 * 1000,
+    swr: true,
     tags: ['users', 'attendance-users-all'],
   },
   // 5. Rekrutmen & Lowongan (TTL 3 Menit, SWR: false)
@@ -86,21 +74,14 @@ export const ENDPOINT_CACHE_RULES: EndpointCacheRule[] = [
     swr: false,
     tags: ['recruitment', 'applications'],
   },
-  // 6. Laporan & Rekap Bulanan (TTL 5 Menit, SWR: false)
-  {
-    pattern: /^\/dashboard\/attendance\/summary/,
-    ttl: 5 * 60 * 1000,
-    swr: false,
-    tags: ['reports', 'summary'],
-  },
-  // 7. Riwayat Struk (Arsip / Historis: TTL 3 Menit, SWR: false)
+  // 6. Riwayat Struk (Arsip / Historis: TTL 3 Menit, SWR: false)
   {
     pattern: /^\/dashboard\/receipts\/all$/,
     ttl: 3 * 60 * 1000,
     swr: false,
     tags: ['receipts', 'receipt-history'],
   },
-  // 9. Audit Log Sistem (TTL 2 Menit, SWR: false)
+  // 7. Audit Log Sistem (TTL 2 Menit, SWR: false)
   {
     pattern: /^\/dashboard\/activity-logs$/,
     ttl: 2 * 60 * 1000,
@@ -116,6 +97,26 @@ export const ENDPOINT_CACHE_RULES: EndpointCacheRule[] = [
   },
 
   // KELOMPOK 2: 🟡 AMAN BERSYARAT (Wajib Pola SWR / TTL Pendek)
+  // 8. Kalender & Roster Shift (TTL 30–60 Detik, SWR: true)
+  {
+    pattern: /^\/dashboard\/attendance\/shifts\/calendar/,
+    ttl: 60 * 1000,
+    swr: true,
+    tags: ['shifts', 'calendar'],
+  },
+  {
+    pattern: /^\/dashboard\/attendance\/shifts\/roster$/,
+    ttl: 30 * 1000,
+    swr: true,
+    tags: ['shifts', 'roster'],
+  },
+  // 9. Riwayat Shift per Karyawan (TTL 30 Detik, SWR: true agar popup assignment selalu fresh)
+  {
+    pattern: /^\/dashboard\/attendance\/users\/\d+\/shift-history/,
+    ttl: 30 * 1000,
+    swr: true,
+    tags: ['shifts'],
+  },
   // 10. Presensi & Cuti Karyawan (TTL 30–60 Detik, SWR: true)
   {
     pattern: /^\/dashboard\/attendance\/today$/,
@@ -154,10 +155,10 @@ export const ENDPOINT_CACHE_RULES: EndpointCacheRule[] = [
     tags: ['attendance', 'report'],
   },
   {
-    pattern: /^\/dashboard\/attendance\/shifts\/roster$/,
-    ttl: 30 * 1000,
+    pattern: /^\/dashboard\/attendance\/summary/,
+    ttl: 60 * 1000,
     swr: true,
-    tags: ['shifts', 'roster'],
+    tags: ['reports', 'summary'],
   },
   {
     pattern: /^\/dashboard\/attendance\/holidays(\/preview-national)?$/,
@@ -214,17 +215,28 @@ export const MUTATION_INVALIDATIONS: MutationInvalidationRule[] = [
   // Settings Kantor & Presensi
   {
     pattern: /^\/dashboard\/attendance\/settings/,
-    invalidates: ['/dashboard/attendance/settings', '/dashboard/attendance/shifts', '/admin/users', '/dashboard/attendance/today'],
+    invalidates: [
+      '/dashboard/attendance/settings',
+      '/dashboard/attendance/shifts',
+      '/admin/users',
+      '/dashboard/attendance/users',
+      '/dashboard/attendance/today',
+    ],
   },
   // Settings Finance
   {
     pattern: /^\/dashboard\/settings/,
     invalidates: ['/dashboard/settings'],
   },
-  // Shifts, Roster, dan Assignment
+  // Shifts, Pola Rotasi, Roster, dan Assignment
   {
-    pattern: /^\/dashboard\/attendance\/(shifts|assign-shift|bulk-assign|assignments)/,
-    invalidates: ['/dashboard/attendance/shifts', '/dashboard/attendance/today'],
+    pattern: /^\/dashboard\/attendance\/(shifts|shift-patterns|assign-shift|bulk-assign|assignments)/,
+    invalidates: [
+      '/dashboard/attendance/shifts',
+      '/dashboard/attendance/shift-patterns',
+      '/dashboard/attendance/today',
+      '/dashboard/attendance/users',
+    ],
   },
   // Master Vendor
   {
@@ -234,7 +246,12 @@ export const MUTATION_INVALIDATIONS: MutationInvalidationRule[] = [
   // Users / Manajemen Karyawan
   {
     pattern: /^\/admin\/users/,
-    invalidates: ['/admin/users', '/dashboard/attendance/users'],
+    invalidates: [
+      '/admin/users',
+      '/dashboard/attendance/users',
+      '/dashboard/attendance/today',
+      '/dashboard/attendance/shifts',
+    ],
   },
   // Rekrutmen
   {
@@ -259,14 +276,15 @@ export const MUTATION_INVALIDATIONS: MutationInvalidationRule[] = [
       '/dashboard/attendance/today',
       '/dashboard/attendance/leave-balances',
       '/dashboard/attendance/report',
+      '/dashboard/attendance/shifts',
     ],
   },
-  // Kalender Libur
+  // Kalender Libur (Libur Nasional & Cuti Bersama)
   {
     pattern: /^\/dashboard\/attendance\/holidays/,
     invalidates: [
       '/dashboard/attendance/holidays',
-      '/dashboard/attendance/shifts/calendar',
+      '/dashboard/attendance/shifts',
       '/dashboard/attendance/today',
       '/dashboard/attendance/report',
     ],
@@ -309,7 +327,9 @@ export const MUTATION_INVALIDATIONS: MutationInvalidationRule[] = [
     pattern: /^\/dashboard\/attendance\/leave-balances/,
     invalidates: [
       '/dashboard/attendance/leave-balances',
+      '/dashboard/attendance/leave-balance-history',
       '/dashboard/attendance/today',
+      '/dashboard/attendance/users',
     ],
   },
   {
@@ -317,6 +337,8 @@ export const MUTATION_INVALIDATIONS: MutationInvalidationRule[] = [
     invalidates: [
       '/dashboard/attendance/leave-balances',
       '/dashboard/attendance/leave-balance-history',
+      '/dashboard/attendance/today',
+      '/dashboard/attendance/users',
     ],
   },
 ];
@@ -451,6 +473,7 @@ export function handleMutationInvalidation(mutationPath: string): void {
 export function clearAllCache(): void {
   cacheStore.clear();
   inFlightRequests.clear();
+  lastKnownVersions.clear();
 }
 
 /**
@@ -503,3 +526,81 @@ export function notifyCacheUpdate(key: string, path: string, data: any): void {
 export function getCacheStoreSize(): number {
   return cacheStore.size;
 }
+
+// ─── Ketentuan 3: Data-Driven Invalidation via Version Sync ──────────
+// Menyimpan versi / timestamp terakhir yang diketahui dari server per modul
+const lastKnownVersions = new Map<string, string>();
+
+export const SYNC_MODULE_TARGETS: Record<string, string[]> = {
+  attendance: ['/dashboard/attendance/today', '/dashboard/attendance/summary'],
+  leaves: ['/dashboard/attendance/leaves', '/dashboard/attendance/leave-balances'],
+  overtime: ['/dashboard/attendance/overtime-approvals'],
+  device_changes: ['/dashboard/attendance/device-changes'],
+  receipts: ['/dashboard/receipts'],
+  invoices: ['/dashboard/invoices'],
+  notifications: ['/dashboard/notifications'],
+};
+
+export type DataVersionListener = (changedModules: string[]) => void;
+const dataVersionListeners = new Set<DataVersionListener>();
+
+/**
+ * Daftarkan listener saat ada data modul baru masuk dari server.
+ */
+export function onDataVersionChange(listener: DataVersionListener): () => void {
+  dataVersionListeners.add(listener);
+  return () => {
+    dataVersionListeners.delete(listener);
+  };
+}
+
+/**
+ * Sinkronisasi versi data dari server.
+ * Membandingkan versi server dengan versi lokal di RAM:
+ * - Jika versi berbeda (ada data baru masuk dari mobile/backend):
+ *   -> otomatis memanggil invalidateCache() untuk modul tersebut
+ *   -> memicu listener onDataVersionChange agar UI yang sedang aktif me-refresh data
+ * - Jika versi sama (TIDAK ada data baru):
+ *   -> cache tetap utuh 100%, user gonta-ganti tab tetap melihat data instan dari RAM.
+ */
+export function syncDataVersions(serverVersions: Record<string, string>): string[] {
+  const changedModules: string[] = [];
+  const isFirstSync = lastKnownVersions.size === 0;
+
+  for (const [moduleName, serverVersion] of Object.entries(serverVersions)) {
+    if (moduleName === 'synced_at' || !serverVersion) continue;
+    const localVersion = lastKnownVersions.get(moduleName);
+
+    if (localVersion !== undefined && localVersion !== serverVersion) {
+      // Data telah berubah di server!
+      changedModules.push(moduleName);
+      const targets = SYNC_MODULE_TARGETS[moduleName] || [];
+      for (const prefix of targets) {
+        invalidateCache(prefix);
+      }
+    }
+
+    lastKnownVersions.set(moduleName, serverVersion);
+  }
+
+  // Jika bukan sync pertama kali dan ada data baru yang masuk, beri tahu UI listener
+  if (!isFirstSync && changedModules.length > 0) {
+    dataVersionListeners.forEach((fn) => {
+      try {
+        fn(changedModules);
+      } catch {
+        /* abaikan error listener */
+      }
+    });
+  }
+
+  return changedModules;
+}
+
+/**
+ * Reset seluruh versi data lokal (mis. saat logout).
+ */
+export function resetDataVersions(): void {
+  lastKnownVersions.clear();
+}
+

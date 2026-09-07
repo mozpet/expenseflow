@@ -40,7 +40,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
-import { ApiError, invalidateCache } from '../services/api';
+import { ApiError, invalidateCache, onDataVersionChange } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../auth/AuthContext';
 import CustomDatePicker from './CustomDatePicker';
@@ -846,10 +846,24 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, balanceSubTab, reportFilter, reportPage, holidayYear, loadBalanceHistories]);
 
+  // Ketentuan 3: Auto-refresh data jika server mendeteksi data baru masuk dari mobile/backend
+  useEffect(() => {
+    const unsubscribe = onDataVersionChange((changedModules) => {
+      if (changedModules.includes('leaves') && tab === 'leaves') {
+        loadLeaves(true);
+      } else if (changedModules.includes('attendance') && tab === 'today') {
+        loadToday(true);
+      }
+    });
+    return unsubscribe;
+  }, [tab, loadLeaves, loadToday]);
+
   // ─── Aksi ─────────────────────────────────────────────────
   const handleApproveLeave = async (id: number, name: string) => {
     try {
       await attendanceApi.approveLeave(id);
+      invalidateCache('/dashboard/attendance/leaves');
+      invalidateCache('/dashboard/notifications');
       onAddAuditLog('Izin/Cuti Disetujui', `Pengajuan #${id} (${name}) disetujui`, 'bg-emerald-600');
       onAddNotification('success', 'Pengajuan Disetujui', `Pengajuan ${name} telah disetujui.`);
       await loadLeaves();
@@ -867,6 +881,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
     try {
       await attendanceApi.rejectLeave(id, reason.trim());
+      invalidateCache('/dashboard/attendance/leaves');
+      invalidateCache('/dashboard/notifications');
       onAddAuditLog('Izin/Cuti Ditolak', `Pengajuan #${id} (${name}) ditolak: ${reason}`, 'bg-rose-600');
       onAddNotification('flag', 'Pengajuan Ditolak', `Pengajuan ${name} ditolak.`);
       await loadLeaves();
@@ -2755,7 +2771,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             holidays={holidays}
             offices={offices}
             users={users}
-            reload={loadHolidays}
+            reload={() => loadHolidays(true)}
             onAddAuditLog={onAddAuditLog}
             onError={reportApiError}
             year={holidayYear}
