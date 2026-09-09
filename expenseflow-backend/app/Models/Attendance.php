@@ -166,6 +166,15 @@ class Attendance extends Model
             return null;
         }
 
+        $office = $this->snapshotOffice();
+        $breakMinutes = (int) ($office?->break_minutes ?? 60);
+        if ($this->date && ! empty($office?->custom_schedules)) {
+            $dayOfWeek = \Illuminate\Support\Carbon::parse($this->date)->dayOfWeek;
+            if (isset($office->custom_schedules[$dayOfWeek]['break_minutes'])) {
+                $breakMinutes = (int) $office->custom_schedules[$dayOfWeek]['break_minutes'];
+            }
+        }
+
         return [
             'source'          => $this->snap_source,
             'shift_id'        => $this->snap_shift_id ? (int) $this->snap_shift_id : null,
@@ -176,8 +185,8 @@ class Attendance extends Model
             'is_wfh'          => false,
             'is_field'        => false,
             'is_cross_day'    => (bool) $this->snap_is_cross_day,
-            'break_minutes'   => (int) ($this->snapshotOffice()?->break_minutes ?? 60),
-            'office'          => $this->snapshotOffice(),
+            'break_minutes'   => $breakMinutes,
+            'office'          => $office,
         ];
     }
 

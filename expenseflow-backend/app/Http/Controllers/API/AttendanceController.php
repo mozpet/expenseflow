@@ -165,8 +165,9 @@ class AttendanceController extends Controller
         }
 
         $tanggalWib = $checkInTime->copy()->setTimezone('Asia/Jakarta')->toDateString();
+        $lateTolerance = (int) ($schedule['late_tolerance_minutes'] ?? $office->late_tolerance_minutes ?? 15);
         $batasTelat = Carbon::parse($tanggalWib . ' ' . $workStartTime, 'Asia/Jakarta')
-            ->addMinutes((int) $office->late_tolerance_minutes);
+            ->addMinutes($lateTolerance);
 
         return $checkInTime->copy()->setTimezone('Asia/Jakarta')->greaterThan($batasTelat) ? 'late' : 'present';
     }
@@ -1716,11 +1717,17 @@ class AttendanceController extends Controller
 
         if ($users->isEmpty()) {
             return ($page !== null) ? [
-                'summary'   => ['present' => 0, 'late' => 0, 'absent' => 0, 'early_leave' => 0, 'cuti' => 0, 'izin' => 0, 'sakit' => 0, 'total_working_minutes' => 0, 'total_overtime_minutes' => 0],
-                'by_type'   => ['onsite' => 0, 'wfh' => 0, 'field' => 0],
-                'data'      => [],
-                'total'     => 0,
-                'last_page' => 1,
+                'summary'          => ['present' => 0, 'late' => 0, 'absent' => 0, 'early_leave' => 0, 'cuti' => 0, 'izin' => 0, 'sakit' => 0, 'total_working_minutes' => 0, 'total_overtime_minutes' => 0],
+                'by_type'          => ['onsite' => 0, 'wfh' => 0, 'field' => 0],
+                'by_shift'         => [],
+                'available_shifts' => [],
+                'data'             => [],
+                'total'            => 0,
+                'from'             => 0,
+                'to'               => 0,
+                'current_page'     => $page,
+                'per_page'         => $perPage ?? 25,
+                'last_page'        => 1,
             ] : [];
         }
 
@@ -1737,7 +1744,8 @@ class AttendanceController extends Controller
             })
             ->when($department, fn ($q) => $q->where('users.department', $department))
             ->when($officeId, fn ($q) => $q->where('users.attendance_setting_id', $officeId))
-            ->whereBetween('attendances.date', [$startDate, $endDate])
+            ->whereDate('attendances.date', '>=', $startDate)
+            ->whereDate('attendances.date', '<=', $endDate)
             ->select([
                 'attendances.id', 'attendances.user_id',
                 'users.name as user_name', 'users.department', 'users.employee_code',
@@ -1746,6 +1754,8 @@ class AttendanceController extends Controller
                 'attendances.overtime_minutes', 'attendances.is_holiday',
                 'attendances.check_in_lat', 'attendances.check_in_lng',
                 'attendances.work_minutes as working_minutes',
+                'attendances.snap_shift_id', 'attendances.snap_shift_name',
+                'attendances.snap_source', 'attendances.snap_work_start_time',
             ])
             ->get();
 
@@ -1820,6 +1830,24 @@ class AttendanceController extends Controller
         $fallbackOffice = $allOffices->first();
         $fallbackOffId = $fallbackOffice ? $fallbackOffice->id : 0;
 
+        // Pre-load semua template shift milik perusahaan untuk resolusi shift & color
+        $companyShifts = \App\Models\Shift::where(function ($q) use ($companyIds, $companyId) {
+                if ($companyId) $q->where('company_id', $companyId);
+                elseif ($companyIds->isNotEmpty()) $q->whereIn('company_id', $companyIds);
+            })
+            ->get()
+            ->keyBy('id');
+
+        $availableShifts = [];
+        foreach ($companyShifts as $cs) {
+            $availableShifts[] = [
+                'id'        => $cs->id,
+                'name'      => $cs->name,
+                'color'     => $cs->color ?? '#6366f1',
+                'is_active' => (bool) $cs->is_active,
+            ];
+        }
+
         // Precompute jadwal office per hari (0..6) agar O(1) array lookup tanpa array_map berulang
         $officeScheduleByDow = [];
         foreach ($allOffices as $offId => $off) {
@@ -1833,7 +1861,6 @@ class AttendanceController extends Controller
                 ];
             }
         }
-        $fallbackOffId = $fallbackOffice ? $fallbackOffice->id : 0;
 
         $shiftIds = $userShifts->flatten()->pluck('shift_id')->filter()->unique()->values()->all();
         $shiftScheduleCache = [];
@@ -1854,10 +1881,12 @@ class AttendanceController extends Controller
         foreach ($userShifts as $uId => $assignments) {
             foreach ($assignments as $a) {
                 $userShiftsArray[$uId][] = (object) [
-                    'shift_id'   => $a->shift_id,
-                    'is_active'  => (bool) optional($a->shift)->is_active,
-                    'start_date' => is_string($a->start_date) ? substr($a->start_date, 0, 10) : $a->start_date->toDateString(),
-                    'end_date'   => $a->end_date ? (is_string($a->end_date) ? substr($a->end_date, 0, 10) : $a->end_date->toDateString()) : null,
+                    'shift_id'    => $a->shift_id,
+                    'shift_name'  => optional($a->shift)->name,
+                    'shift_color' => optional($a->shift)->color ?? '#6366f1',
+                    'is_active'   => (bool) optional($a->shift)->is_active,
+                    'start_date'  => is_string($a->start_date) ? substr($a->start_date, 0, 10) : $a->start_date->toDateString(),
+                    'end_date'    => $a->end_date ? (is_string($a->end_date) ? substr($a->end_date, 0, 10) : $a->end_date->toDateString()) : null,
                 ];
             }
         }
@@ -1877,9 +1906,12 @@ class AttendanceController extends Controller
             $curDate->subDay();
         }
 
-        $filterStatus = $filters['status'] ?? null;
-        $filterType   = $filters['type'] ?? null;
-        $filterSearch = !empty($filters['search']) ? strtolower($filters['search']) : null;
+        $filterStatus  = $filters['status'] ?? null;
+        $filterType    = $filters['type'] ?? null;
+        $filterSearch  = !empty($filters['search']) ? strtolower($filters['search']) : null;
+        $filterShiftId = isset($filters['shift_id']) && $filters['shift_id'] !== '' && $filters['shift_id'] !== 'all'
+            ? (string) $filters['shift_id']
+            : null;
 
         $isPaginated   = ($page !== null && $perPage !== null);
         $offsetStart   = $isPaginated ? ($page - 1) * $perPage : 0;
@@ -1891,6 +1923,45 @@ class AttendanceController extends Controller
         $typeCounts           = [];
         $totalWorkingMinutes  = 0;
         $totalOvertimeMinutes = 0;
+
+        // Inisialisasi shiftStats agar semua shift template dan kantor default memiliki slot statistik
+        $shiftStats = [];
+        foreach ($companyShifts as $cs) {
+            $shiftStats[(string) $cs->id] = [
+                'shift_id'               => $cs->id,
+                'shift_name'             => $cs->name,
+                'color'                  => $cs->color ?? '#6366f1',
+                'total_records'          => 0,
+                'present'                => 0,
+                'late'                   => 0,
+                'early_leave'            => 0,
+                'absent'                 => 0,
+                'cuti'                   => 0,
+                'izin'                   => 0,
+                'sakit'                  => 0,
+                'libur'                  => 0,
+                'belum_hadir'            => 0,
+                'total_working_minutes'  => 0,
+                'total_overtime_minutes' => 0,
+            ];
+        }
+        $shiftStats['office'] = [
+            'shift_id'               => null,
+            'shift_name'             => 'Kantor (Default)',
+            'color'                  => '#64748b',
+            'total_records'          => 0,
+            'present'                => 0,
+            'late'                   => 0,
+            'early_leave'            => 0,
+            'absent'                 => 0,
+            'cuti'                   => 0,
+            'izin'                   => 0,
+            'sakit'                  => 0,
+            'libur'                  => 0,
+            'belum_hadir'            => 0,
+            'total_working_minutes'  => 0,
+            'total_overtime_minutes' => 0,
+        ];
 
         foreach ($dates as $dInfo) {
             $dateStr          = $dInfo['date'];
@@ -1910,6 +1981,16 @@ class AttendanceController extends Controller
                         }
                     }
                 }
+
+                $schedShiftId = ($shiftAssignment && $shiftAssignment->shift_id && $shiftAssignment->is_active)
+                    ? $shiftAssignment->shift_id
+                    : null;
+                $schedShiftName = $schedShiftId
+                    ? ($companyShifts[$schedShiftId]->name ?? $shiftAssignment->shift_name ?? 'Shift #' . $schedShiftId)
+                    : 'Kantor (Default)';
+                $schedShiftColor = $schedShiftId
+                    ? ($companyShifts[$schedShiftId]->color ?? $shiftAssignment->shift_color ?? '#6366f1')
+                    : '#64748b';
 
                 $workStartTime = null;
                 $isOff = false;
@@ -1946,11 +2027,35 @@ class AttendanceController extends Controller
                     $status = $att->status;
                     $type   = $att->check_in_type;
 
+                    // Tentukan shift baris presensi (prioritaskan snapshot check-in)
+                    if ($att->snap_source === 'office') {
+                        $rowShiftId    = null;
+                        $rowShiftName  = 'Kantor (Default)';
+                        $rowShiftColor = '#64748b';
+                    } elseif ($att->snap_shift_id) {
+                        $rowShiftId    = $att->snap_shift_id;
+                        $rowShiftName  = $att->snap_shift_name ?? ($companyShifts[$rowShiftId]->name ?? 'Shift #' . $rowShiftId);
+                        $rowShiftColor = $companyShifts[$rowShiftId]->color ?? '#6366f1';
+                    } else {
+                        $rowShiftId    = $schedShiftId;
+                        $rowShiftName  = $schedShiftName;
+                        $rowShiftColor = $schedShiftColor;
+                    }
+
                     if ($filterStatus && $status !== $filterStatus) continue;
                     if ($filterType && $type !== $filterType) continue;
                     if ($filterSearch) {
                         if (!str_contains($user->search_name, $filterSearch) && !str_contains($user->search_code, $filterSearch)) {
                             continue;
+                        }
+                    }
+
+                    // Filter shift jika ditentukan
+                    if ($filterShiftId !== null) {
+                        if ($filterShiftId === 'office' || $filterShiftId === 'default' || $filterShiftId === '0') {
+                            if ($rowShiftId !== null && $rowShiftId !== 0) continue;
+                        } else {
+                            if ((string) $rowShiftId !== $filterShiftId) continue;
                         }
                     }
 
@@ -1964,6 +2069,38 @@ class AttendanceController extends Controller
                     }
                     if ($att->overtime_minutes) {
                         $totalOvertimeMinutes += (int) $att->overtime_minutes;
+                    }
+
+                    // Hitung statistik per shift
+                    $shiftKey = $rowShiftId ? (string) $rowShiftId : 'office';
+                    if (!isset($shiftStats[$shiftKey])) {
+                        $shiftStats[$shiftKey] = [
+                            'shift_id'               => $rowShiftId,
+                            'shift_name'             => $rowShiftName,
+                            'color'                  => $rowShiftColor,
+                            'total_records'          => 0,
+                            'present'                => 0,
+                            'late'                   => 0,
+                            'early_leave'            => 0,
+                            'absent'                 => 0,
+                            'cuti'                   => 0,
+                            'izin'                   => 0,
+                            'sakit'                  => 0,
+                            'libur'                  => 0,
+                            'belum_hadir'            => 0,
+                            'total_working_minutes'  => 0,
+                            'total_overtime_minutes' => 0,
+                        ];
+                    }
+                    $shiftStats[$shiftKey]['total_records']++;
+                    if (isset($shiftStats[$shiftKey][$status])) {
+                        $shiftStats[$shiftKey][$status]++;
+                    }
+                    if ($att->working_minutes) {
+                        $shiftStats[$shiftKey]['total_working_minutes'] += (int) $att->working_minutes;
+                    }
+                    if ($att->overtime_minutes) {
+                        $shiftStats[$shiftKey]['total_overtime_minutes'] += (int) $att->overtime_minutes;
                     }
 
                     if (!$isPaginated || ($totalFiltered > $offsetStart && $totalFiltered <= $offsetEnd)) {
@@ -1986,6 +2123,9 @@ class AttendanceController extends Controller
                             'user_name'        => $att->user_name,
                             'employee_code'    => $att->employee_code,
                             'department'       => $att->department,
+                            'shift_id'         => $rowShiftId,
+                            'shift_name'       => $rowShiftName,
+                            'shift_color'      => $rowShiftColor,
                             'date'             => $dateStr,
                             'checkout_date'    => $checkoutDate,
                             'is_cross_day'     => $isCrossDay,
@@ -2035,6 +2175,10 @@ class AttendanceController extends Controller
                         $status = 'absent';
                     }
 
+                    $rowShiftId    = $schedShiftId;
+                    $rowShiftName  = $schedShiftName;
+                    $rowShiftColor = $schedShiftColor;
+
                     if ($filterStatus && $status !== $filterStatus) continue;
                     if ($filterType) continue;
                     if ($filterSearch) {
@@ -2043,8 +2187,43 @@ class AttendanceController extends Controller
                         }
                     }
 
+                    // Filter shift jika ditentukan
+                    if ($filterShiftId !== null) {
+                        if ($filterShiftId === 'office' || $filterShiftId === 'default' || $filterShiftId === '0') {
+                            if ($rowShiftId !== null && $rowShiftId !== 0) continue;
+                        } else {
+                            if ((string) $rowShiftId !== $filterShiftId) continue;
+                        }
+                    }
+
                     $totalFiltered++;
                     $statusCounts[$status] = ($statusCounts[$status] ?? 0) + 1;
+
+                    // Hitung statistik per shift
+                    $shiftKey = $rowShiftId ? (string) $rowShiftId : 'office';
+                    if (!isset($shiftStats[$shiftKey])) {
+                        $shiftStats[$shiftKey] = [
+                            'shift_id'               => $rowShiftId,
+                            'shift_name'             => $rowShiftName,
+                            'color'                  => $rowShiftColor,
+                            'total_records'          => 0,
+                            'present'                => 0,
+                            'late'                   => 0,
+                            'early_leave'            => 0,
+                            'absent'                 => 0,
+                            'cuti'                   => 0,
+                            'izin'                   => 0,
+                            'sakit'                  => 0,
+                            'libur'                  => 0,
+                            'belum_hadir'            => 0,
+                            'total_working_minutes'  => 0,
+                            'total_overtime_minutes' => 0,
+                        ];
+                    }
+                    $shiftStats[$shiftKey]['total_records']++;
+                    if (isset($shiftStats[$shiftKey][$status])) {
+                        $shiftStats[$shiftKey][$status]++;
+                    }
 
                     if (!$isPaginated || ($totalFiltered > $offsetStart && $totalFiltered <= $offsetEnd)) {
                         $pageItems[] = [
@@ -2053,6 +2232,9 @@ class AttendanceController extends Controller
                             'user_name'        => $user->name,
                             'employee_code'    => $user->employee_code,
                             'department'       => $user->department,
+                            'shift_id'         => $rowShiftId,
+                            'shift_name'       => $rowShiftName,
+                            'shift_color'      => $rowShiftColor,
                             'date'             => $dateStr,
                             'checkout_date'    => null,
                             'is_cross_day'     => false,
@@ -2073,6 +2255,9 @@ class AttendanceController extends Controller
         }
 
         if ($isPaginated) {
+            $from = $totalFiltered > 0 ? $offsetStart + 1 : 0;
+            $to   = min($totalFiltered, $offsetEnd);
+
             return [
                 'summary' => [
                     'present'                => $statusCounts['present']     ?? 0,
@@ -2090,11 +2275,15 @@ class AttendanceController extends Controller
                     'wfh'    => $typeCounts['wfh']    ?? 0,
                     'field'  => $typeCounts['field']  ?? 0,
                 ],
-                'data'         => $pageItems,
-                'total'        => $totalFiltered,
-                'current_page' => $page,
-                'per_page'     => $perPage,
-                'last_page'    => (int) ceil($totalFiltered / max(1, $perPage)),
+                'by_shift'         => array_values($shiftStats),
+                'available_shifts' => $availableShifts,
+                'data'             => $pageItems,
+                'total'            => $totalFiltered,
+                'from'             => $from,
+                'to'               => $to,
+                'current_page'     => $page,
+                'per_page'         => $perPage,
+                'last_page'        => (int) ceil($totalFiltered / max(1, $perPage)),
             ];
         }
 
@@ -2114,6 +2303,8 @@ class AttendanceController extends Controller
             'type'       => 'nullable|in:onsite,wfh,field',
             'search'     => 'nullable|string|max:100',
             'office_id'  => 'nullable|integer',
+            'shift_id'   => 'nullable|string|max:50',
+            'per_page'   => 'nullable|integer|min:5|max:200',
         ]);
 
         $companyId = $actor->role === 'super_admin' ? null : $actor->company_id;
@@ -2127,7 +2318,7 @@ class AttendanceController extends Controller
         }
 
         $page    = max(1, (int) $request->query('page', 1));
-        $perPage = 30;
+        $perPage = max(5, min(200, (int) ($validated['per_page'] ?? $request->query('per_page', 25))));
 
         $result = $this->buildFullRows(
             $companyId,
@@ -2141,13 +2332,17 @@ class AttendanceController extends Controller
         );
 
         return response()->json([
-            'summary' => $result['summary'],
-            'by_type' => $result['by_type'],
+            'summary'          => $result['summary'],
+            'by_type'          => $result['by_type'],
+            'by_shift'         => $result['by_shift'] ?? [],
+            'available_shifts' => $result['available_shifts'] ?? [],
             'report'  => [
                 'data'         => $result['data'],
                 'current_page' => $result['current_page'],
                 'per_page'     => $result['per_page'],
                 'total'        => $result['total'],
+                'from'         => $result['from'] ?? 0,
+                'to'           => $result['to'] ?? 0,
                 'last_page'    => $result['last_page'],
             ],
         ]);
@@ -2166,6 +2361,7 @@ class AttendanceController extends Controller
             'type'       => 'nullable|in:onsite,wfh,field',
             'search'     => 'nullable|string|max:100',
             'office_id'  => 'nullable|integer',
+            'shift_id'   => 'nullable|string|max:50',
         ]);
 
         $companyId  = $actor->role === 'super_admin' ? null : $actor->company_id;
@@ -2191,7 +2387,7 @@ class AttendanceController extends Controller
 
         return response()->streamDownload(function () use ($rows) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['NIK', 'Nama', 'Departemen', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
+            fputcsv($out, ['NIK', 'Nama', 'Departemen', 'Shift', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
             foreach ($rows as $r) {
                 $mins     = $r['working_minutes'];
                 $jamKerja = $mins !== null
@@ -2206,6 +2402,7 @@ class AttendanceController extends Controller
                     $r['employee_code'] ?? '-',
                     $r['user_name'],
                     $r['department'] ?? '-',
+                    $r['shift_name'] ?? 'Kantor (Default)',
                     $dateExport,
                     $r['check_in_time']  ? Carbon::parse($r['check_in_time'])->timezone('Asia/Jakarta')->format('H:i')  : '-',
                     $r['check_out_time'] ? Carbon::parse($r['check_out_time'])->timezone('Asia/Jakarta')->format('H:i') : '-',
@@ -2263,9 +2460,10 @@ class AttendanceController extends Controller
             'leave_reset_date'               => 'sometimes|nullable|date_format:m-d',
             // Kebijakan saldo cuti bersama TIDAK DIPAKAI lagi (di-hardcode 'block' sejak 2026-08-20)
             // Validasi custom_schedules (override per hari)
-            'custom_schedules'               => 'sometimes|nullable|array',
-            'custom_schedules.*.start'       => 'required_with:custom_schedules|date_format:H:i',
-            'custom_schedules.*.end'         => 'required_with:custom_schedules|date_format:H:i',
+            'custom_schedules'                 => 'sometimes|nullable|array',
+            'custom_schedules.*.start'         => 'required_with:custom_schedules|date_format:H:i',
+            'custom_schedules.*.end'           => 'required_with:custom_schedules|date_format:H:i',
+            'custom_schedules.*.break_minutes' => 'nullable|integer|min:0|max:240',
         ];
     }
 
@@ -2292,8 +2490,11 @@ class AttendanceController extends Controller
             'work_days.max'               => 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).',
             'work_days.*.distinct'        => 'Setiap hari kerja hanya boleh dipilih satu kali.',
             'work_days.*.between'         => 'Nilai hari kerja tidak valid (0=Minggu hingga 6=Sabtu).',
-            'custom_schedules.*.start.date_format' => 'Format jam masuk khusus harus HH:MM.',
-            'custom_schedules.*.end.date_format'   => 'Format jam pulang khusus harus HH:MM.',
+            'custom_schedules.*.start.date_format'          => 'Format jam masuk khusus harus HH:MM.',
+            'custom_schedules.*.end.date_format'            => 'Format jam pulang khusus harus HH:MM.',
+            'custom_schedules.*.break_minutes.integer'      => 'Durasi istirahat khusus harus berupa angka menit.',
+            'custom_schedules.*.break_minutes.min'          => 'Durasi istirahat khusus minimal 0 menit.',
+            'custom_schedules.*.break_minutes.max'          => 'Durasi istirahat khusus maksimal 240 menit (4 jam).',
             'default_leave_quota.required'=> 'Saldo cuti default wajib diisi.',
             'default_leave_quota.min'     => 'Saldo cuti default minimal 0 hari.',
             'default_leave_quota.max'     => 'Saldo cuti default maksimal 365 hari.',
@@ -4606,8 +4807,6 @@ class AttendanceController extends Controller
             'latitude'    => 'required|numeric|between:-90,90',
             'longitude'   => 'required|numeric|between:-180,180',
             'is_mocked'   => 'nullable|boolean',
-            'recorded_at' => 'nullable|date',
-            'is_offline_sync' => 'nullable|boolean',
         ]);
 
         if ($request->boolean('is_mocked')) {
@@ -4641,10 +4840,7 @@ class AttendanceController extends Controller
             }
         }
 
-        $isOfflineSync = $request->boolean('is_offline_sync') || $request->filled('recorded_at');
-        $checkInTime   = $request->filled('recorded_at')
-            ? Carbon::parse($request->input('recorded_at'), 'Asia/Jakarta')->setTimezone('Asia/Jakarta')
-            : now('Asia/Jakarta');
+        $checkInTime   = now('Asia/Jakarta');
 
         $today = $checkInTime->toDateString();
         $jadwalHariIni = $this->getWorkSchedule($user, $today);
@@ -4707,7 +4903,7 @@ class AttendanceController extends Controller
             && $officeForCutoff->late_checkin_cutoff_minutes !== null
             && $jamMasukCutoff
         ) {
-            $evalTimeWib     = $isOfflineSync ? $checkInTime : now('Asia/Jakarta');
+            $evalTimeWib     = $checkInTime;
             $tanggalWib      = $evalTimeWib->toDateString();
             $workStartCutoff = Carbon::parse("{$tanggalWib} {$jamMasukCutoff}", 'Asia/Jakarta');
             $cutoffTime      = $workStartCutoff->copy()->addMinutes($officeForCutoff->late_checkin_cutoff_minutes);
@@ -4757,7 +4953,7 @@ class AttendanceController extends Controller
                 && $officeRef->wfh_checkin_window_minutes !== null
                 && $jamMasuk
             ) {
-                $evalTimeWib = $isOfflineSync ? $checkInTime : now('Asia/Jakarta');
+                $evalTimeWib = $checkInTime;
                 $tanggalWib  = $evalTimeWib->toDateString();
                 $workStart   = Carbon::parse("{$tanggalWib} {$jamMasuk}", 'Asia/Jakarta');
                 $windowOpens = $workStart->copy()->subMinutes($officeRef->wfh_checkin_window_minutes);
@@ -4818,7 +5014,7 @@ class AttendanceController extends Controller
                 ], 403);
             }
 
-            $checkInType = $isFieldScheduled ? 'onsite' : 'field';
+            $checkInType = 'field';
         }
 
         // Ambil jadwal efektif untuk menentukan status (hadir/telat) & reminder
@@ -4843,8 +5039,6 @@ class AttendanceController extends Controller
                 'check_in_distance_meters' => $distanceMeters,
                 'check_in_type'            => $checkInType,
                 'status'                   => $status,
-                'is_offline_sync'          => $isOfflineSync,
-                'offline_recorded_at'      => $isOfflineSync ? $checkInTime : null,
                 // SNAPSHOT: bekukan aturan yang berlaku saat check-in (jam kerja,
                 // kantor acuan, lembur, toleransi, auto-checkout). Perubahan setting
                 // HRD di siang hari tidak lagi mempengaruhi record ini — lihat
@@ -4908,8 +5102,6 @@ class AttendanceController extends Controller
             'latitude'        => 'required|numeric|between:-90,90',
             'longitude'       => 'required|numeric|between:-180,180',
             'is_mocked'       => 'nullable|boolean',
-            'recorded_at'     => 'nullable|date',
-            'is_offline_sync' => 'nullable|boolean',
         ]);
 
         if ($request->boolean('is_mocked')) {
@@ -4934,10 +5126,7 @@ class AttendanceController extends Controller
             }
         }
 
-        $isOfflineSync = $request->boolean('is_offline_sync') || $request->filled('recorded_at');
-        $checkOutTime  = $request->filled('recorded_at')
-            ? Carbon::parse($request->input('recorded_at'), 'Asia/Jakarta')->setTimezone('Asia/Jakarta')
-            : now('Asia/Jakarta');
+        $checkOutTime  = now('Asia/Jakarta');
 
         $today = $checkOutTime->toDateString();
 
@@ -5121,8 +5310,6 @@ class AttendanceController extends Controller
             'work_minutes'        => $workMinutes,
             'overtime_minutes'    => $overtimeMinutes,
             'is_holiday'          => $nonWorking,
-            'is_offline_sync'     => $isOfflineSync || (bool) $attendance->is_offline_sync,
-            'offline_recorded_at' => $isOfflineSync ? $checkOutTime : $attendance->offline_recorded_at,
         ];
 
         // Tandai early leave — tidak berlaku di hari libur/weekend
@@ -5147,85 +5334,8 @@ class AttendanceController extends Controller
             'message'    => 'Check-out berhasil.',
             'attendance' => $attendance->only([
                 'id', 'date', 'check_in_time', 'check_out_time', 'check_in_type', 'check_out_type', 'status',
-                'work_minutes', 'overtime_minutes', 'is_holiday', 'is_offline_sync', 'offline_recorded_at',
+                'work_minutes', 'overtime_minutes', 'is_holiday',
             ]),
-        ]);
-    }
-
-    /**
-     * Batch sync antrean presensi offline dari aplikasi mobile.
-     */
-    public function syncOffline(Request $request): JsonResponse
-    {
-        $validated = $request->validate([
-            'items'               => 'required|array|min:1',
-            'items.*.id'          => 'nullable|string',
-            'items.*.type'        => 'required|in:check_in,check_out',
-            'items.*.latitude'    => 'required|numeric|between:-90,90',
-            'items.*.longitude'   => 'required|numeric|between:-180,180',
-            'items.*.recorded_at' => 'required|date',
-            'items.*.is_mocked'   => 'nullable|boolean',
-        ]);
-
-        $user = $request->user();
-        $results = [];
-
-        foreach ($validated['items'] as $item) {
-            $itemId = $item['id'] ?? (string) Str::uuid();
-            $type = $item['type'];
-
-            $subRequest = Request::create(
-                $type === 'check_in' ? '/api/attendance/check-in' : '/api/attendance/check-out',
-                'POST',
-                [
-                    'latitude'        => $item['latitude'],
-                    'longitude'       => $item['longitude'],
-                    'is_mocked'       => $item['is_mocked'] ?? false,
-                    'recorded_at'     => $item['recorded_at'],
-                    'is_offline_sync' => true,
-                ],
-                [],
-                [],
-                [
-                    'HTTP_ACCEPT'      => 'application/json',
-                    'HTTP_X_PLATFORM'  => $request->header('X-Platform', 'mobile'),
-                    'HTTP_X_DEVICE_ID' => $request->header('X-Device-Id'),
-                ]
-            );
-            $subRequest->setUserResolver(fn () => $user);
-
-            try {
-                $response = $type === 'check_in'
-                    ? $this->checkIn($subRequest)
-                    : $this->checkOut($subRequest);
-
-                $statusCode = $response->getStatusCode();
-                $data = $response->getData(true);
-
-                $results[] = [
-                    'id'          => $itemId,
-                    'type'        => $type,
-                    'status_code' => $statusCode,
-                    'success'     => $statusCode >= 200 && $statusCode < 300,
-                    'message'     => $data['message'] ?? 'Berhasil diproses.',
-                    'data'        => $data,
-                ];
-            } catch (\Exception $e) {
-                $results[] = [
-                    'id'          => $itemId,
-                    'type'        => $type,
-                    'status_code' => 500,
-                    'success'     => false,
-                    'message'     => $e->getMessage(),
-                ];
-            }
-        }
-
-        return response()->json([
-            'message' => 'Proses sinkronisasi presensi offline selesai.',
-            'synced'  => count(array_filter($results, fn ($r) => $r['success'])),
-            'failed'  => count(array_filter($results, fn ($r) => ! $r['success'])),
-            'results' => $results,
         ]);
     }
 
@@ -5496,7 +5606,9 @@ class AttendanceController extends Controller
             ->exists();
 
         if (! $attendance || ! $attendance->check_in_time) {
-            $jadwalHariIni = $this->getWorkSchedule($user, (string) $today);
+            $jadwalHariIni    = $this->getWorkSchedule($user, (string) $today);
+            $isWfhScheduled   = ! empty($jadwalHariIni['is_wfh']);
+            $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
 
             return response()->json([
                 'checked_in'          => false,
@@ -5506,8 +5618,8 @@ class AttendanceController extends Controller
                 'scheduled_auto_checkout_at' => null,
                 // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
                 // tombol "Catat Presensi" saat tombol Refresh ditekan.
-                'wfh_enabled'         => (bool) ($user->wfh_enabled || $isWfhApproved),
-                'radius_enabled'      => (bool) ($isWfhApproved ? false : $user->radius_enabled),
+                'wfh_enabled'         => (bool) ($user->wfh_enabled || $isWfhApproved || $isWfhScheduled || $isFieldScheduled),
+                'radius_enabled'      => (bool) ($isWfhApproved ? false : ($user->radius_enabled || $isFieldScheduled)),
                 'is_wfh_approved'     => $isWfhApproved,
                 'office'              => $officeData,
                 'offices'             => $userOffices,
@@ -5516,6 +5628,8 @@ class AttendanceController extends Controller
                     'shift_name'      => $jadwalHariIni['shift_name'],
                     'work_start_time' => $jadwalHariIni['work_start_time'],
                     'work_end_time'   => $jadwalHariIni['work_end_time'],
+                    'is_wfh'          => (bool) ($jadwalHariIni['is_wfh'] ?? false),
+                    'is_field'        => (bool) ($jadwalHariIni['is_field'] ?? false),
                 ] : null,
             ]);
         }
@@ -6007,15 +6121,23 @@ class AttendanceController extends Controller
     // 8. myAttendance() — riwayat presensi user yang login
     public function myAttendance(Request $request): JsonResponse
     {
-        $attendances = Attendance::where('user_id', $request->user()->id)
+        $query = Attendance::where('user_id', $request->user()->id)
             ->with(['overtimeApproval:id,attendance_id,status,overtime_minutes,notes,reviewed_at,is_auto_checkout,overtime_reason'])
             ->select([
                 'id', 'date', 'check_in_time', 'check_in_type', 'check_in_distance_meters',
                 'check_out_time', 'check_out_type', 'status', 'notes',
                 'work_minutes', 'overtime_minutes', 'is_holiday', 'is_auto_checkout',
-            ])
-            ->orderByDesc('date')
-            ->paginate(30);
+            ]);
+
+        if ($request->filled('start_date')) {
+            $query->whereDate('date', '>=', $request->start_date);
+        }
+        if ($request->filled('end_date')) {
+            $query->whereDate('date', '<=', $request->end_date);
+        }
+
+        $perPage = min((int) $request->input('per_page', 60), 100);
+        $attendances = $query->orderByDesc('date')->paginate($perPage);
 
         // Tambahkan field overtime_approval ke setiap record:
         //   - null  : tidak ada lembur (overtime_minutes = 0 atau belum checkout)

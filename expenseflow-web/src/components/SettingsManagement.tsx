@@ -243,7 +243,7 @@ const OfficesTab: React.FC<{
     auto_checkout_grace_minutes: 60,
     default_leave_quota: 12,
     leave_reset_date: '',
-    custom_schedules: {} as Record<number, { start: string; end: string }>,
+    custom_schedules: {} as Record<number, { start: string; end: string; break_minutes?: number | '' }>,
     // ─── Bidang Payroll Cabang (Roadmap Bagian C) ───
     umr_amount: 0,
     payroll_cutoff_date: 25,
@@ -356,10 +356,14 @@ const OfficesTab: React.FC<{
 
   const calculatedWeeklyHours = useMemo(() => {
     let totalMinutes = 0;
-    const breakMins = Number(form.break_minutes ?? 60);
+    const defaultBreakMins = Number(form.break_minutes ?? 60);
     for (const day of (form.work_days as number[])) {
       const startStr = form.custom_schedules[day]?.start ?? form.work_start_time;
       const endStr = form.custom_schedules[day]?.end ?? form.work_end_time;
+      const dayBreakRaw = form.custom_schedules[day]?.break_minutes;
+      const dayBreakMins = dayBreakRaw !== undefined && dayBreakRaw !== '' && !isNaN(Number(dayBreakRaw))
+        ? Number(dayBreakRaw)
+        : defaultBreakMins;
       if (startStr && endStr) {
         const [sH, sM] = startStr.split(':').map(Number);
         const [eH, eM] = endStr.split(':').map(Number);
@@ -367,7 +371,7 @@ const OfficesTab: React.FC<{
         let endMins = eH * 60 + eM;
         if (endMins <= startMins) endMins += 24 * 60;
         const gross = endMins - startMins;
-        totalMinutes += Math.max(0, gross - breakMins);
+        totalMinutes += Math.max(0, gross - dayBreakMins);
       }
     }
     return totalMinutes / 60;
@@ -569,7 +573,23 @@ const OfficesTab: React.FC<{
         default_leave_quota: Number(form.default_leave_quota ?? 12),
         leave_reset_date: form.leave_reset_date ? form.leave_reset_date : null,
         // collective_leave_policy: dihapus — hardcode 'block' sejak 2026-08-20
-        custom_schedules: form.custom_schedules,
+        custom_schedules: (() => {
+          const cleaned: Record<number, { start: string; end: string; break_minutes?: number }> = {};
+          const rawEntries = (form.custom_schedules || {}) as Record<string, { start?: string; end?: string; break_minutes?: number | string | null }>;
+          Object.entries(rawEntries).forEach(([d, s]) => {
+            if (s && s.start && s.end) {
+              const item: { start: string; end: string; break_minutes?: number } = {
+                start: s.start,
+                end: s.end,
+              };
+              if (s.break_minutes !== undefined && s.break_minutes !== '' && s.break_minutes !== null && !isNaN(Number(s.break_minutes))) {
+                item.break_minutes = Math.max(0, Number(s.break_minutes));
+              }
+              cleaned[Number(d)] = item;
+            }
+          });
+          return cleaned;
+        })(),
       };
       // Gerbang backend: perubahan field berbahaya wajib menyertakan frasa konfirmasi
       if (editId && confirmDangerous) payload.confirm_dangerous = 'SIMPAN';
@@ -933,87 +953,149 @@ const OfficesTab: React.FC<{
                               >
                                 <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${active ? 'left-5' : 'left-1'}`} />
                               </button>
-                              <div className="flex flex-col">
-                                <span className={`text-sm font-semibold ${active ? 'text-indigo-900 dark:text-indigo-300' : 'text-slate-500'}`}>{name}</span>
-                                {active && (
-                                  <span className={`text-[9px] px-1.5 py-0.5 rounded w-max mt-0.5 ${hasCustom ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'}`}>
-                                    {hasCustom ? 'Jam khusus' : 'Ikut default kantor'}
-                                  </span>
-                                )}
-                              </div>
-                            </div>
-                            
-                            {active && (
-                              <button
-                                type="button"
-                                onClick={() => setExpandedDays(prev => isExpanded ? prev.filter(d => d !== idx) : [...prev, idx])}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${isExpanded ? 'bg-indigo-100 border-indigo-200 text-indigo-700 dark:bg-indigo-900/40 dark:border-indigo-800 dark:text-indigo-300' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50'}`}
-                              >
-                                {isExpanded ? 'Tutup Atur Jam' : 'Atur Jam Khusus'}
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Accordion Custom Jam */}
-                          {active && isExpanded && (
-                            <div className="p-3.5 border-t border-indigo-100 dark:border-indigo-800/30 bg-white/70 dark:bg-slate-900/70 space-y-3">
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                <div className="space-y-1">
-                                  <label className="text-[10px] font-bold text-slate-500">Jam Masuk</label>
-                                  <input
-                                    type="time"
-                                    value={form.custom_schedules[idx]?.start ?? form.work_start_time}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      const curr = form.custom_schedules[idx] ?? { start: form.work_start_time, end: form.work_end_time };
-                                      setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { ...curr, start: val } } });
-                                    }}
-                                    className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                                  />
-                                </div>
-                                <div className="space-y-1">
-                                  <label className="text-[10px] font-bold text-slate-500">Jam Pulang</label>
-                                  <input
-                                    type="time"
-                                    value={form.custom_schedules[idx]?.end ?? form.work_end_time}
-                                    onChange={(e) => {
-                                      const val = e.target.value;
-                                      const curr = form.custom_schedules[idx] ?? { start: form.work_start_time, end: form.work_end_time };
-                                      setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { ...curr, end: val } } });
-                                    }}
-                                    className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                                  />
+                                  <div className="flex flex-col">
+                                  <span className={`text-sm font-semibold ${active ? 'text-indigo-900 dark:text-indigo-300' : 'text-slate-500'}`}>{name}</span>
+                                  {active && (
+                                    <div className="flex items-center gap-1.5 mt-0.5">
+                                      <span className={`text-[9px] px-1.5 py-0.5 rounded w-max ${hasCustom ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400' : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400'}`}>
+                                        {hasCustom ? 'Jam / istirahat khusus' : 'Ikut default kantor'}
+                                      </span>
+                                      {hasCustom && (
+                                        <span className="text-[10px] font-mono text-slate-500 dark:text-slate-400">
+                                          ({form.custom_schedules[idx]?.start ?? form.work_start_time} - {form.custom_schedules[idx]?.end ?? form.work_end_time} · Ist: {form.custom_schedules[idx]?.break_minutes !== undefined && form.custom_schedules[idx]?.break_minutes !== '' ? form.custom_schedules[idx]?.break_minutes : (form.break_minutes ?? 60)}m)
+                                        </span>
+                                      )}
+                                    </div>
+                                  )}
                                 </div>
                               </div>
                               
-                              <div className="flex gap-2">
+                              {active && (
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { start: '08:00', end: '13:00' } } });
-                                  }}
-                                  className="flex-1 px-3 py-1.5 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400 border border-amber-200 dark:border-amber-800 rounded-lg text-[10px] font-bold hover:bg-amber-100 transition"
+                                  onClick={() => setExpandedDays(prev => isExpanded ? prev.filter(d => d !== idx) : [...prev, idx])}
+                                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold border transition ${isExpanded ? 'bg-indigo-100 border-indigo-200 text-indigo-700 dark:bg-indigo-900/40 dark:border-indigo-800 dark:text-indigo-300' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50'}`}
                                 >
-                                  Set Setengah Hari (08:00-13:00)
+                                  {isExpanded ? 'Tutup Atur Jam' : 'Atur Jam Khusus'}
                                 </button>
+                              )}
+                            </div>
+
+                            {/* Accordion Custom Jam & Istirahat */}
+                            {active && isExpanded && (
+                              <div className="p-3.5 border-t border-indigo-100 dark:border-indigo-800/30 bg-white/70 dark:bg-slate-900/70 space-y-3">
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-500">Jam Masuk</label>
+                                    <input
+                                      type="time"
+                                      value={form.custom_schedules[idx]?.start ?? form.work_start_time}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        const curr = form.custom_schedules[idx] ?? {
+                                          start: form.work_start_time,
+                                          end: form.work_end_time,
+                                          break_minutes: form.break_minutes,
+                                        };
+                                        setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { ...curr, start: val } } });
+                                      }}
+                                      className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <label className="text-[10px] font-bold text-slate-500">Jam Pulang</label>
+                                    <input
+                                      type="time"
+                                      value={form.custom_schedules[idx]?.end ?? form.work_end_time}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        const curr = form.custom_schedules[idx] ?? {
+                                          start: form.work_start_time,
+                                          end: form.work_end_time,
+                                          break_minutes: form.break_minutes,
+                                        };
+                                        setForm({ ...form, custom_schedules: { ...form.custom_schedules, [idx]: { ...curr, end: val } } });
+                                      }}
+                                      className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                                    />
+                                  </div>
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between">
+                                      <label className="text-[10px] font-bold text-slate-500">Istirahat (Menit)</label>
+                                      {form.custom_schedules[idx]?.break_minutes == null && (
+                                        <span className="text-[9px] text-indigo-500 font-medium">Std {form.break_minutes ?? 60}m</span>
+                                      )}
+                                    </div>
+                                    <div className="relative">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        max={240}
+                                        placeholder={String(form.break_minutes ?? 60)}
+                                        value={form.custom_schedules[idx]?.break_minutes ?? ''}
+                                        onChange={(e) => {
+                                          const raw = e.target.value;
+                                          const val = raw === '' ? '' : Math.max(0, parseInt(raw) || 0);
+                                          const curr = form.custom_schedules[idx] ?? {
+                                            start: form.work_start_time,
+                                            end: form.work_end_time,
+                                            break_minutes: form.break_minutes,
+                                          };
+                                          setForm({
+                                            ...form,
+                                            custom_schedules: {
+                                              ...form.custom_schedules,
+                                              [idx]: { ...curr, break_minutes: val },
+                                            },
+                                          });
+                                        }}
+                                        className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg text-sm bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 pr-12 font-mono"
+                                      />
+                                      <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[11px] text-slate-400 pointer-events-none">
+                                        menit
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
                                 
-                                {hasCustom && (
+                                <div className="flex gap-2">
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      const newCustom = { ...form.custom_schedules };
-                                      delete newCustom[idx];
-                                      setForm({ ...form, custom_schedules: newCustom });
+                                      setForm({
+                                        ...form,
+                                        custom_schedules: {
+                                          ...form.custom_schedules,
+                                          [idx]: {
+                                            start: '08:00',
+                                            end: '13:00',
+                                            break_minutes: form.custom_schedules[idx]?.break_minutes !== undefined && form.custom_schedules[idx]?.break_minutes !== '' ? form.custom_schedules[idx]?.break_minutes : 0,
+                                          },
+                                        },
+                                      });
                                     }}
-                                    className="px-3 py-1.5 bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-bold hover:bg-slate-200 transition"
+                                    className="flex-1 px-3 py-1.5 bg-amber-50 text-amber-700 dark:bg-amber-900/20 dark:text-amber-400 border border-amber-200 dark:border-amber-800 rounded-lg text-[10px] font-bold hover:bg-amber-100 transition"
                                   >
-                                    Reset Default
+                                    Set Setengah Hari (08:00-13:00, Istirahat 0m)
                                   </button>
-                                )}
+                                  
+                                  {hasCustom && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newCustom = { ...form.custom_schedules };
+                                        delete newCustom[idx];
+                                        setForm({ ...form, custom_schedules: newCustom });
+                                      }}
+                                      className="px-3 py-1.5 bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400 border border-slate-200 dark:border-slate-700 rounded-lg text-[10px] font-bold hover:bg-slate-200 transition"
+                                    >
+                                      Reset Default
+                                    </button>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                          )}
-                        </div>
+                            )}
+                          </div>
                       );
                     })}
                   </div>

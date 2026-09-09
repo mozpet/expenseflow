@@ -266,20 +266,12 @@ class ApiService {
     double lat,
     double lng, {
     bool isMocked = false,
-    DateTime? recordedAt,
-    bool isOfflineSync = false,
   }) async {
     final body = <String, dynamic>{
       'latitude': lat,
       'longitude': lng,
       'is_mocked': isMocked,
     };
-    if (recordedAt != null) {
-      body['recorded_at'] = recordedAt.toIso8601String();
-    }
-    if (isOfflineSync) {
-      body['is_offline_sync'] = true;
-    }
     return _request('POST', '/attendance/check-in', body: body);
   }
 
@@ -287,27 +279,13 @@ class ApiService {
     double lat,
     double lng, {
     bool isMocked = false,
-    DateTime? recordedAt,
-    bool isOfflineSync = false,
   }) async {
     final body = <String, dynamic>{
       'latitude': lat,
       'longitude': lng,
       'is_mocked': isMocked,
     };
-    if (recordedAt != null) {
-      body['recorded_at'] = recordedAt.toIso8601String();
-    }
-    if (isOfflineSync) {
-      body['is_offline_sync'] = true;
-    }
     return _request('POST', '/attendance/check-out', body: body);
-  }
-
-  static Future<Map<String, dynamic>> syncOfflineAttendance(
-    List<Map<String, dynamic>> items,
-  ) async {
-    return _request('POST', '/attendance/sync-offline', body: {'items': items});
   }
 
   static Future<Map<String, dynamic>> myAttendance({bool forceRefresh = false}) async {

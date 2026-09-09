@@ -5,8 +5,11 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\Attendance;
 use App\Models\AttendanceSetting;
+use App\Models\Holiday;
+use App\Models\LeaveRequest;
 use App\Models\Shift;
 use App\Models\ShiftPattern;
+use App\Models\ShiftPatternDayOverride;
 use App\Models\ShiftPatternItem;
 use App\Models\ShiftSchedule;
 use App\Models\User;
@@ -120,35 +123,77 @@ class ShiftController extends Controller
     //
     //     Perbandingan warna case-insensitive (#E53E3E == #e53e3e).
     //
-    //     Return Shift pemilik warna bila sudah dipakai, null bila warna tersedia.
-    private function colorAlreadyUsed(User $actor, string $color, ?int $exceptShiftId = null, ?int $attendanceSettingId = null): ?Shift
-    {
-        $colorLower = strtolower($color);
+    /**
+     * Cek apakah warna sudah digunakan oleh Template Shift atau Pola Rotasi lain
+     * dalam cabang yang sama (atau company-wide).
+     *
+     * @return array|null ['type' => 'template shift'|'pola rotasi', 'name' => string, 'office_id' => int|null]
+     */
+    private function checkColorClash(
+        User $actor,
+        string $color,
+        ?int $attendanceSettingId,
+        ?int $exceptShiftId = null,
+        ?int $exceptPatternId = null
+    ): ?array {
+        $colorLower = strtolower(trim($color));
+        if (empty($colorLower)) {
+            return null;
+        }
 
-        $query = Shift::query()
-            ->when(
-                $actor->role !== 'super_admin',
-                fn ($q) => $q->where('company_id', $actor->company_id)
-            )
-            ->when(
-                $exceptShiftId !== null,
-                fn ($q) => $q->where('id', '!=', $exceptShiftId)
-            )
+        // 1. Cek di tabel Shift (Template Shift)
+        $shiftQuery = Shift::query()
+            ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
+            ->when($exceptShiftId !== null, fn ($q) => $q->where('id', '!=', $exceptShiftId))
             ->whereNotNull('color')
             ->whereRaw('LOWER(color) = ?', [$colorLower]);
 
-        // Shift company-wide → bentrok dengan semua shift lain
-        if ($attendanceSettingId === null) {
-            return $query->first();
+        if ($attendanceSettingId !== null) {
+            $shiftQuery->where(function ($q) use ($attendanceSettingId) {
+                $q->where('attendance_setting_id', $attendanceSettingId)
+                  ->orWhereNull('attendance_setting_id');
+            });
         }
 
-        // Shift cabang → bentrok dengan shift cabang yang sama + shift company-wide
-        return $query
-            ->where(function ($q) use ($attendanceSettingId) {
+        $shiftClash = $shiftQuery->first();
+        if ($shiftClash) {
+            return [
+                'type'      => 'template shift',
+                'name'      => $shiftClash->name,
+                'office_id' => $shiftClash->attendance_setting_id,
+            ];
+        }
+
+        // 2. Cek di tabel ShiftPattern (Pola Rotasi)
+        $patternQuery = ShiftPattern::query()
+            ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
+            ->when($exceptPatternId !== null, fn ($q) => $q->where('id', '!=', $exceptPatternId))
+            ->whereNotNull('color')
+            ->whereRaw('LOWER(color) = ?', [$colorLower]);
+
+        if ($attendanceSettingId !== null) {
+            $patternQuery->where(function ($q) use ($attendanceSettingId) {
                 $q->where('attendance_setting_id', $attendanceSettingId)
-                    ->orWhereNull('attendance_setting_id');
-            })
-            ->first();
+                  ->orWhereNull('attendance_setting_id');
+            });
+        }
+
+        $patternClash = $patternQuery->first();
+        if ($patternClash) {
+            return [
+                'type'      => 'pola rotasi',
+                'name'      => $patternClash->name,
+                'office_id' => $patternClash->attendance_setting_id,
+            ];
+        }
+
+        return null;
+    }
+
+    private function colorAlreadyUsed(User $actor, string $color, ?int $exceptShiftId = null, ?int $attendanceSettingId = null): ?object
+    {
+        $clash = $this->checkColorClash($actor, $color, $attendanceSettingId, $exceptShiftId, null);
+        return $clash ? (object) $clash : null;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -164,7 +209,7 @@ class ShiftController extends Controller
             'attendance_setting_id' => 'nullable|integer', // filter per cabang
         ]);
 
-        $shifts = Shift::with(['schedules', 'office:id,office_name'])
+        $shifts = Shift::with(['schedules', 'office:id,office_name,late_tolerance_minutes'])
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
@@ -219,6 +264,7 @@ class ShiftController extends Controller
             'schedules.*.is_cross_day'     => 'sometimes|boolean',
             'schedules.*.break_minutes'    => 'nullable|integer|min:0|max:240',
             'is_active'                    => 'sometimes|boolean',
+            'late_tolerance_minutes'       => 'nullable|integer|min:0|max:300',
         ]);
 
         // Validasi 7 hari unik + jam kerja terisi untuk hari non-libur + jeda K3
@@ -234,16 +280,16 @@ class ShiftController extends Controller
             return response()->json(['message' => 'Cabang tidak ditemukan di perusahaan Anda.'], 404);
         }
 
-        // Warna unik PER KANTOR — shift di kantor yang sama (atau company-wide)
+        // Warna unik PER CABANG — template shift atau pola rotasi di cabang yang sama (atau company-wide)
         // tidak boleh memakai warna yang sama. Dua kantor berbeda boleh sama.
         if (! empty($validated['color'])) {
             $owner = $this->colorAlreadyUsed($actor, $validated['color'], null, $branch->id);
             if ($owner) {
-                $scope = $owner->attendance_setting_id === null
+                $scope = $owner->office_id === null
                     ? ' (berlaku semua kantor)'
-                    : ' (kantor yang sama)';
+                    : ' (cabang yang sama)';
                 return response()->json([
-                    'message' => "Warna {$validated['color']} sudah dipakai oleh shift '{$owner->name}'{$scope}. Pilih warna yang berbeda dalam kantor ini.",
+                    'message' => "Warna {$validated['color']} sudah dipakai oleh {$owner->type} '{$owner->name}'{$scope}. Pilih warna yang berbeda dalam cabang ini.",
                 ], 422);
             }
         }
@@ -257,12 +303,13 @@ class ShiftController extends Controller
 
         $shift = DB::transaction(function () use ($validated, $actor, $branch) {
             $shift = Shift::create([
-                'company_id'            => $actor->company_id,
-                'attendance_setting_id' => $branch->id,
-                'name'                  => $validated['name'],
-                'description'           => $validated['description'] ?? null,
-                'is_active'             => $validated['is_active'] ?? true,
-                'color'                 => isset($validated['color']) ? strtolower($validated['color']) : null,
+                'company_id'             => $actor->company_id,
+                'attendance_setting_id'  => $branch->id,
+                'name'                   => $validated['name'],
+                'description'            => $validated['description'] ?? null,
+                'is_active'              => $validated['is_active'] ?? true,
+                'color'                  => isset($validated['color']) ? strtolower($validated['color']) : null,
+                'late_tolerance_minutes' => $validated['late_tolerance_minutes'] ?? null,
             ]);
 
             // Versi pertama: berlaku sejak hari ini
@@ -283,7 +330,7 @@ class ShiftController extends Controller
         return response()->json([
             'message'  => 'Shift berhasil dibuat.',
             'warnings' => $k3Warnings,
-            'data'     => $shift->load(['schedules', 'office:id,office_name']),
+            'data'     => $shift->load(['schedules', 'office:id,office_name,late_tolerance_minutes']),
         ], 201);
     }
 
@@ -364,6 +411,7 @@ class ShiftController extends Controller
             'schedules.*.is_field'         => 'sometimes|boolean',
             'schedules.*.is_cross_day'     => 'sometimes|boolean',
             'schedules.*.break_minutes'    => 'nullable|integer|min:0|max:240',
+            'late_tolerance_minutes'       => 'nullable|integer|min:0|max:300',
         ]);
 
         // Validasi jadwal jika dikirim
@@ -387,17 +435,17 @@ class ShiftController extends Controller
 
         $effectiveBranchId = $shift->attendance_setting_id; // cabang permanen shift
 
-        // Warna unik PER KANTOR. Shift itu sendiri dikecualikan (exceptShiftId).
+        // Warna unik PER CABANG. Shift itu sendiri dikecualikan (exceptShiftId).
         // Shift company-wide (null) bentrok dengan semua; shift cabang bentrok
         // dengan cabang yang sama + shift company-wide.
         if (! empty($validated['color'])) {
             $owner = $this->colorAlreadyUsed($actor, $validated['color'], $shift->id, $effectiveBranchId);
             if ($owner) {
-                $scope = $owner->attendance_setting_id === null
+                $scope = $owner->office_id === null
                     ? ' (berlaku semua kantor)'
-                    : ' (kantor yang sama)';
+                    : ' (cabang yang sama)';
                 return response()->json([
-                    'message' => "Warna {$validated['color']} sudah dipakai oleh shift '{$owner->name}'{$scope}. Pilih warna yang berbeda dalam kantor ini.",
+                    'message' => "Warna {$validated['color']} sudah dipakai oleh {$owner->type} '{$owner->name}'{$scope}. Pilih warna yang berbeda dalam cabang ini.",
                 ], 422);
             }
         }
@@ -477,10 +525,13 @@ class ShiftController extends Controller
         }
 
         DB::transaction(function () use ($shift, $validated, $scheduleEffectiveDate, $hasScheduleChanges) {
-            // Nama/deskripsi/warna → langsung (tidak memengaruhi jadwal)
+            // Nama/deskripsi/warna/toleransi → langsung (tidak memengaruhi jadwal)
             $data = collect($validated)->only(['name', 'description', 'color'])->toArray();
             if (isset($data['color'])) {
                 $data['color'] = strtolower($data['color']);
+            }
+            if (array_key_exists('late_tolerance_minutes', $validated)) {
+                $data['late_tolerance_minutes'] = $validated['late_tolerance_minutes'];
             }
             $shift->fill($data);
             $shift->save();
@@ -525,7 +576,7 @@ class ShiftController extends Controller
             'warnings'       => $k3Warnings,
             'effective_date' => $scheduleEffectiveDate,
             'notified_users' => $liveAssignments->count(),
-            'data'           => $shift->refresh()->load(['schedules', 'office:id,office_name']),
+            'data'           => $shift->refresh()->load(['schedules', 'office:id,office_name,late_tolerance_minutes']),
         ]);
     }
 
@@ -676,7 +727,7 @@ class ShiftController extends Controller
 
         return response()->json([
             'message' => "Shift '{$shift->name}' berhasil {$status}.",
-            'data'    => $shift->load(['schedules', 'office:id,office_name']),
+            'data'    => $shift->load(['schedules', 'office:id,office_name,late_tolerance_minutes']),
         ]);
     }
 
@@ -717,7 +768,7 @@ class ShiftController extends Controller
             return response()->json(['message' => 'Karyawan tidak ditemukan.'], 404);
         }
 
-        $history = UserShift::with(['shift.schedules', 'shiftPattern.items.shift'])
+        $history = UserShift::with(['shift.schedules', 'shiftPattern.items.shift', 'shiftPattern.dayOverrides'])
             ->where('user_id', $id)
             ->orderByDesc('start_date')
             ->paginate(20);
@@ -1026,7 +1077,7 @@ class ShiftController extends Controller
                 ? "{$shiftDisplayName} berhasil di-assign ke {$targetUser->name}."
                 : "Shift karyawan dikembalikan ke default kantor mulai {$validated['start_date']}.",
             'warnings' => $allWarnings,
-            'data'     => $userShift->load(['shift.schedules', 'shiftPattern.items.shift']),
+            'data'     => $userShift->load(['shift.schedules', 'shiftPattern.items.shift', 'shiftPattern.dayOverrides']),
         ], 201);
     }
 
@@ -1526,7 +1577,7 @@ class ShiftController extends Controller
         return response()->json([
             'message'  => 'Assignment berhasil diperbarui.',
             'warnings' => $k3Warnings,
-            'data'     => $userShift->fresh()->load(['shift.schedules', 'shiftPattern.items.shift']),
+            'data'     => $userShift->fresh()->load(['shift.schedules', 'shiftPattern.items.shift', 'shiftPattern.dayOverrides']),
         ]);
     }
 
@@ -2065,7 +2116,7 @@ class ShiftController extends Controller
 
         // Semua assignment hingga akhir bulan (bisa mulai bulan-bulan sebelumnya)
         // Diurutkan desc agar pencarian "shift terbaru ≤ tanggal" cukup ambil first()
-        $assignments = UserShift::with(['shift:id,name,color,is_active', 'shiftPattern.items.shift:id,name,color,is_active'])
+        $assignments = UserShift::with(['shift:id,name,color,is_active', 'shiftPattern.items.shift:id,name,color,is_active', 'shiftPattern.dayOverrides'])
             ->whereIn('user_id', $users->pluck('id'))
             ->where('start_date', '<=', $endOfMonth->toDateString())
             ->orderBy('user_id')
@@ -2150,15 +2201,33 @@ class ShiftController extends Controller
                         ];
                     } elseif ($pItem && ! $pItem->is_off && ($pItem->work_start_time || ($pItem->shift && $pItem->shift->is_active))) {
                         $sid = -(int) ($pItem->id ?: ($active->shift_pattern_id * 100 + $dayOrder));
-                        $timeStr = $pItem->work_start_time ? (' (' . substr($pItem->work_start_time, 0, 5) . '-' . substr($pItem->work_end_time ?? '', 0, 5) . ')') : '';
-                        $shiftName = optional($pItem->shift)->name ?? "{$active->shiftPattern->name} · H{$dayOrder}{$timeStr}";
+                        $wStart = $pItem->work_start_time;
+                        $wEnd   = $pItem->work_end_time;
+                        $isCross = (bool) $pItem->is_cross_day;
+
+                        if ($active->shiftPattern->dayOverrides) {
+                            $dayOverride = $active->shiftPattern->dayOverrides->firstWhere('day_of_week', $dayOfWeek);
+                            if ($dayOverride) {
+                                if ($dayOverride->work_start_time !== null) $wStart = $dayOverride->work_start_time;
+                                if ($dayOverride->work_end_time !== null)   $wEnd   = $dayOverride->work_end_time;
+                                if ($dayOverride->work_start_time !== null || $dayOverride->work_end_time !== null) {
+                                    $isCross = (substr((string) $wEnd, 0, 5) <= substr((string) $wStart, 0, 5));
+                                }
+                            }
+                        }
+
+                        $timeStr = $wStart ? (' (' . substr($wStart, 0, 5) . '-' . substr($wEnd ?? '', 0, 5) . ')') : '';
+                        $shiftName = $pItem->name ?: (optional($pItem->shift)->name ?? "{$active->shiftPattern->name} · H{$dayOrder}{$timeStr}");
+                        $shiftColor = $pItem->color ?: ($active->shiftPattern->color ?: (optional($pItem->shift)->color ?? '#8b5cf6'));
                         if (! isset($shiftMap[$sid])) {
                             $shiftMap[$sid] = [
                                 'shift_id'     => $sid,
                                 'shift_name'   => $shiftName,
-                                'color'        => optional($pItem->shift)->color ?? '#8b5cf6',
+                                'color'        => $shiftColor,
                                 'is_off'       => false,
-                                'is_cross_day' => (bool) $pItem->is_cross_day,
+                                'is_cross_day' => $isCross,
+                                'is_wfh'       => (bool) $pItem->is_wfh,
+                                'is_field'     => (bool) $pItem->is_field,
                                 'user_count'   => 0,
                                 'users'        => [],
                             ];
@@ -2272,6 +2341,10 @@ class ShiftController extends Controller
             'attendance_setting_id' => 'nullable|integer', // filter cabang
             'department'            => 'nullable|string|max:100', // filter departemen
             'search'                => 'nullable|string|max:100',
+            'status'                => 'nullable|string|in:ALL,all,ASSIGNED,assigned,UNASSIGNED,unassigned',
+            'shift_name'            => 'nullable|string|max:100',
+            'page'                  => 'nullable|integer|min:1',
+            'per_page'              => 'nullable',
         ]);
 
         $date = isset($validated['date'])
@@ -2286,7 +2359,23 @@ class ShiftController extends Controller
             ->orderBy('department')
             ->pluck('department');
 
-        $users = User::query()
+        // Subquery untuk mendeteksi penugasan shift aktif pada $date
+        $hasActiveShiftSubquery = function ($q) use ($date) {
+            $q->where('start_date', '<=', $date)
+                ->where(fn ($sub) => $sub->whereNull('end_date')->orWhere('end_date', '>=', $date))
+                ->where(function ($sub) {
+                    $sub->where(function ($s) {
+                        $s->whereNotNull('shift_id')
+                            ->whereHas('shift', fn ($sh) => $sh->where('is_active', true));
+                    })->orWhere(function ($p) {
+                        $p->whereNotNull('shift_pattern_id')
+                            ->whereHas('shiftPattern', fn ($sp) => $sp->where('is_active', true));
+                    });
+                });
+        };
+
+        // Query dasar karyawan (sesuai scope perusahaan, cabang, departemen, & search)
+        $baseUsersQuery = User::query()
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
@@ -2303,18 +2392,70 @@ class ShiftController extends Controller
                 isset($validated['search']),
                 fn ($q) => $q->where('name', 'like', '%' . $validated['search'] . '%')
             )
-            ->where('is_active', true)
-            ->with('office')
-            ->orderBy('name')
-            ->get();
+            ->where('is_active', true);
+
+        // Agregat counter status jadwal untuk seluruh karyawan yang cocok dengan scope dasar
+        $totalAll        = (clone $baseUsersQuery)->count();
+        $totalAssigned   = (clone $baseUsersQuery)->whereHas('userShifts', $hasActiveShiftSubquery)->count();
+        $totalUnassigned = max(0, $totalAll - $totalAssigned);
+
+        // Terapkan filter status penugasan (ALL | ASSIGNED | UNASSIGNED)
+        $usersQuery = clone $baseUsersQuery;
+        $statusFilter = strtolower($validated['status'] ?? 'all');
+        if ($statusFilter === 'assigned') {
+            $usersQuery->whereHas('userShifts', $hasActiveShiftSubquery);
+        } elseif ($statusFilter === 'unassigned') {
+            $usersQuery->whereDoesntHave('userShifts', $hasActiveShiftSubquery);
+        }
+
+        // Terapkan filter shift_name (spesifik atau DEFAULT)
+        if (! empty($validated['shift_name'])) {
+            if ($validated['shift_name'] === 'DEFAULT') {
+                $usersQuery->whereDoesntHave('userShifts', $hasActiveShiftSubquery);
+            } else {
+                $shiftNameFilter = $validated['shift_name'];
+                $usersQuery->whereHas('userShifts', function ($q) use ($date, $shiftNameFilter) {
+                    $q->where('start_date', '<=', $date)
+                        ->where(fn ($sub) => $sub->whereNull('end_date')->orWhere('end_date', '>=', $date))
+                        ->where(function ($sub) use ($shiftNameFilter) {
+                            $sub->whereHas('shift', fn ($s) => $s->where('name', $shiftNameFilter)->where('is_active', true))
+                                ->orWhereHas('shiftPattern', fn ($p) => $p->where('name', $shiftNameFilter)->where('is_active', true));
+                        });
+                });
+            }
+        }
+
+        // ── Paginasi SQL Server-Side (Skalabilitas Memori PHP) ────────────────
+        $perPageInput = $request->input('per_page');
+        $isAll = in_array(strtolower((string) $perPageInput), ['all', '-1', '0', 'false'], true);
+
+        if ($isAll) {
+            $users       = $usersQuery->with('office')->orderBy('name')->get();
+            $total       = $users->count();
+            $currentPage = 1;
+            $lastPage    = 1;
+            $perPageVal  = $total > 0 ? $total : 25;
+            $from        = $total > 0 ? 1 : 0;
+            $to          = $total;
+        } else {
+            $perPageVal  = max(1, min(200, (int) ($perPageInput ?? 25)));
+            $page        = max(1, (int) ($validated['page'] ?? 1));
+            $paginated   = $usersQuery->with('office')->orderBy('name')->paginate($perPageVal, ['*'], 'page', $page);
+            $users       = $paginated->getCollection();
+            $total       = $paginated->total();
+            $currentPage = $paginated->currentPage();
+            $lastPage    = $paginated->lastPage();
+            $from        = $paginated->firstItem() ?? 0;
+            $to          = $paginated->lastItem() ?? 0;
+        }
 
         $userIds   = $users->pluck('id');
         $dayOfWeek = Carbon::parse($date)->dayOfWeek; // 0=Minggu … 6=Sabtu
 
-        // ── PRE-LOAD BULK (hindari N+1 dari resolveSchedule per user) ────────
+        // ── PRE-LOAD BULK HANYA UNTUK KARYAWAN PADA HALAMAN INI ───────────────
         //
-        // 1. Semua assignment AKTIF pada tanggal roster (1 query + eager load shift & pattern)
-        $activeAssignments = UserShift::with(['shift:id,name,color,is_active', 'shiftPattern.items.shift:id,name,color,is_active'])
+        // 1. Semua assignment AKTIF pada tanggal roster
+        $activeAssignments = UserShift::with(['shift:id,name,color,is_active', 'shiftPattern.items.shift:id,name,color,is_active', 'shiftPattern.dayOverrides'])
             ->whereIn('user_id', $userIds)
             ->where('start_date', '<=', $date)
             ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date))
@@ -2329,8 +2470,7 @@ class ShiftController extends Controller
             ->unique()
             ->values();
 
-        // 3. Pre-load jadwal shift untuk day_of_week pada tanggal roster (1 query)
-        //    Ambil SEMUA versi lalu pilih versi terbaru yang effective_date <= date di memory
+        // 3. Pre-load jadwal shift untuk day_of_week pada tanggal roster
         $schedulesByShift = collect();
         if ($relevantShiftIds->isNotEmpty()) {
             $schedulesByShift = ShiftSchedule::whereIn('shift_id', $relevantShiftIds)
@@ -2339,9 +2479,7 @@ class ShiftController extends Controller
                 ->get()
                 ->groupBy('shift_id')
                 ->map(function ($schedules) use ($date) {
-                    // Versi terbaru yang sudah efektif (effective_date <= date)
                     $match = $schedules->first(fn ($s) => $s->effective_date->toDateString() <= $date);
-                    // Fallback: versi terbaru secara global (untuk tanggal sebelum versi pertama)
                     return $match ?? $schedules->first();
                 });
         }
@@ -2352,7 +2490,6 @@ class ShiftController extends Controller
             ->first();
 
         // 5. Pre-load assignment shift MASA DEPAN (start_date > tanggal roster)
-        //    — satu query untuk semua user (sudah benar sebelumnya)
         $upcomingShifts = UserShift::with(['shift:id,name,color,is_active', 'shiftPattern:id,name,is_active'])
             ->whereIn('user_id', $userIds)
             ->where('start_date', '>', $date)
@@ -2360,19 +2497,20 @@ class ShiftController extends Controller
             ->get()
             ->groupBy('user_id');
 
-        // ── RESOLVE JADWAL DI MEMORY (tanpa query tambahan per user) ─────────
+        // ── RESOLVE JADWAL DI MEMORY (HANYA DATA HALAMAN AKTIF) ───────────────
         $roster = $users->map(function (User $user) use ($date, $dayOfWeek, $activeAssignments, $schedulesByShift, $upcomingShifts, $fallbackOffice) {
-            // Cari assignment aktif dari data yang sudah di-preload
             $active = $activeAssignments->get($user->id, collect())->first();
 
-            $source    = 'office';
-            $shiftName = null;
-            $workStart = null;
-            $workEnd   = null;
-            $isOff     = false;
-            $isWfh     = false;
-            $isField   = false;
-            $isCrossDay = false;
+            $source      = 'office';
+            $shiftName   = null;
+            $patternName = null;
+            $cycleDay    = null;
+            $workStart   = null;
+            $workEnd     = null;
+            $isOff       = false;
+            $isWfh       = false;
+            $isField     = false;
+            $isCrossDay  = false;
 
             // Prioritas 0: Pola Rotasi Siklus (shift_pattern_id) jika ada dan aktif
             if ($active && $active->shift_pattern_id && optional($active->shiftPattern)->is_active) {
@@ -2384,25 +2522,40 @@ class ShiftController extends Controller
                 $pItem     = $pattern->items->firstWhere('day_order', $dayOrder);
 
                 if ($pItem) {
-                    $source    = 'shift';
-                    $shiftName = $pItem->is_off
+                    $source      = 'shift';
+                    $patternName = $pattern->name;
+                    $cycleDay    = $dayOrder;
+                    $isOff       = (bool) $pItem->is_off;
+                    $shiftName   = $isOff
                         ? "Libur Pola ({$pattern->name} - H{$dayOrder})"
-                        : (optional($pItem->shift)->name ?? "Shift Pola H{$dayOrder}");
-                    $isOff     = (bool) $pItem->is_off;
-                    $workStart = $isOff ? null : ($pItem->work_start_time ?? optional($pItem->shift?->schedules?->firstWhere('is_off', false))->work_start_time);
-                    $workEnd   = $isOff ? null : ($pItem->work_end_time ?? optional($pItem->shift?->schedules?->firstWhere('is_off', false))->work_end_time);
-                    $isCrossDay = (bool) ($pItem->is_cross_day ?? optional($pItem->shift?->schedules?->firstWhere('is_off', false))->is_cross_day);
+                        : ($pItem->name ?: (optional($pItem->shift)->name ?? "{$pattern->name} · H{$dayOrder}"));
+                    $workStart   = $isOff ? null : ($pItem->work_start_time ?? optional($pItem->shift?->schedules?->firstWhere('is_off', false))->work_start_time);
+                    $workEnd     = $isOff ? null : ($pItem->work_end_time ?? optional($pItem->shift?->schedules?->firstWhere('is_off', false))->work_end_time);
+                    $isWfh       = $isOff ? false : (bool) $pItem->is_wfh;
+                    $isField     = ($isOff || ! $isWfh) ? false : (bool) $pItem->is_field;
+                    $isCrossDay  = (bool) ($pItem->is_cross_day ?? optional($pItem->shift?->schedules?->firstWhere('is_off', false))->is_cross_day);
+
+                    if (! $isOff && $pattern->dayOverrides) {
+                        $dayOverride = $pattern->dayOverrides->firstWhere('day_of_week', $dayOfWeek);
+                        if ($dayOverride) {
+                            if ($dayOverride->work_start_time !== null) $workStart = substr((string) $dayOverride->work_start_time, 0, 5);
+                            if ($dayOverride->work_end_time !== null)   $workEnd   = substr((string) $dayOverride->work_end_time, 0, 5);
+                            if ($dayOverride->work_start_time !== null || $dayOverride->work_end_time !== null) {
+                                $isCrossDay = (substr((string) $workEnd, 0, 5) <= substr((string) $workStart, 0, 5));
+                            }
+                        }
+                    }
                 }
             } elseif ($active && $active->shift_id && optional($active->shift)->is_active) {
                 $schedule = $schedulesByShift->get($active->shift_id);
                 if ($schedule) {
-                    $source    = 'shift';
-                    $shiftName = $active->shift->name;
-                    $isOff     = (bool) $schedule->is_off;
-                    $workStart = $isOff ? null : $schedule->work_start_time;
-                    $workEnd   = $isOff ? null : $schedule->work_end_time;
-                    $isWfh     = $isOff ? false : (bool) $schedule->is_wfh;
-                    $isField   = ($isOff || ! $isWfh) ? false : (bool) $schedule->is_field;
+                    $source     = 'shift';
+                    $shiftName  = $active->shift->name;
+                    $isOff      = (bool) $schedule->is_off;
+                    $workStart  = $isOff ? null : $schedule->work_start_time;
+                    $workEnd    = $isOff ? null : $schedule->work_end_time;
+                    $isWfh      = $isOff ? false : (bool) $schedule->is_wfh;
+                    $isField    = ($isOff || ! $isWfh) ? false : (bool) $schedule->is_field;
                     $isCrossDay = (bool) $schedule->is_cross_day;
                 }
             }
@@ -2428,10 +2581,7 @@ class ShiftController extends Controller
                 }
             }
 
-            // Cari shift berikutnya yang belum aktif (coming soon):
-            // - shift_id terisi (bukan kembali ke default kantor)
-            // - template shift masih aktif
-            // - end_date (jika ada) masih >= start_date
+            // Cari shift berikutnya yang belum aktif (coming soon)
             $upcoming = null;
             foreach ($upcomingShifts->get($user->id, collect()) as $us) {
                 if (! $us->shift_id || ! optional($us->shift)->is_active) {
@@ -2461,6 +2611,8 @@ class ShiftController extends Controller
                 'branch'                 => optional($user->office)->office_name,
                 'source'                 => $source,
                 'shift_name'             => $shiftName,
+                'pattern_name'           => $patternName,
+                'cycle_day'              => $cycleDay,
                 'work_start_time'        => $workStart,
                 'work_end_time'          => $workEnd,
                 'is_off'                 => $isOff,
@@ -2472,11 +2624,21 @@ class ShiftController extends Controller
         });
 
         return response()->json([
-            'date'        => $date,
-            'day_name'    => Carbon::parse($date)->translatedFormat('l'),
-            'total'       => $roster->count(),
-            'departments' => $departments,
-            'data'        => $roster,
+            'date'         => $date,
+            'day_name'     => Carbon::parse($date)->translatedFormat('l'),
+            'total'        => $total,
+            'current_page' => $currentPage,
+            'last_page'    => $lastPage,
+            'per_page'     => $perPageVal,
+            'from'         => $from,
+            'to'           => $to,
+            'counts'       => [
+                'all'        => $totalAll,
+                'assigned'   => $totalAssigned,
+                'unassigned' => $totalUnassigned,
+            ],
+            'departments'  => $departments,
+            'data'         => $roster,
         ]);
     }
 
@@ -2540,7 +2702,11 @@ class ShiftController extends Controller
         $dayOfWeek = Carbon::parse($date)->dayOfWeek;
 
         // 1. Preload semua UserShift aktif pada tanggal $date (1 query)
-        $activeAssignments = UserShift::with('shift:id,name,color,is_active')
+        $activeAssignments = UserShift::with([
+                'shift:id,name,color,is_active,late_tolerance_minutes',
+                'shiftPattern.items.shift.schedules',
+                'shiftPattern.dayOverrides',
+            ])
             ->whereIn('user_id', $userIds)
             ->where('start_date', '<=', $date)
             ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $date))
@@ -2583,22 +2749,153 @@ class ShiftController extends Controller
                 ? $allOffices->get($user->attendance_setting_id)
                 : ($fallbackOffices->get($user->company_id) ?? (isset($user->office) ? $user->office : null));
 
-            // Jika ada shift aktif & template aktif
+            // Prioritas 1: Jika ada penugasan pola rotasi (shift_pattern_id) dan pola masih aktif
+            if ($userShift && $userShift->shift_pattern_id && optional($userShift->shiftPattern)->is_active) {
+                $pattern   = $userShift->shiftPattern;
+                $cycleDays = max(1, (int) $pattern->cycle_days);
+                $anchor    = max(1, (int) ($userShift->anchor_day_order ?? 1));
+
+                $startDate  = Carbon::parse($userShift->start_date)->startOfDay();
+                $targetDate = Carbon::parse($date)->startOfDay();
+                $diffDays   = $startDate->diffInDays($targetDate);
+
+                $dayIndex = ($anchor - 1 + $diffDays) % $cycleDays;
+                $dayOrder = $dayIndex + 1;
+
+                $patternItem = $pattern->items->firstWhere('day_order', $dayOrder);
+
+                if ($patternItem) {
+                    if ($patternItem->is_off) {
+                        $results[$user->id] = [
+                            'source'                 => 'shift',
+                            'pattern_id'             => $pattern->id,
+                            'pattern_name'           => $pattern->name,
+                            'cycle_day'              => $dayOrder,
+                            'cycle_days'             => $cycleDays,
+                            'shift_id'               => null,
+                            'shift_name'             => "Libur Pola ({$pattern->name} - H{$dayOrder})",
+                            'color'                  => '#64748b',
+                            'work_start_time'        => null,
+                            'work_end_time'          => null,
+                            'is_off'                 => true,
+                            'is_wfh'                 => false,
+                            'is_field'               => false,
+                            'is_cross_day'           => false,
+                            'break_minutes'          => (int) ($office?->break_minutes ?? 60),
+                            'late_tolerance_minutes' => (int) ($office?->late_tolerance_minutes ?? 15),
+                            'office'                 => $office,
+                        ];
+                        continue;
+                    }
+
+                    $startTime = $patternItem->work_start_time;
+                    $endTime   = $patternItem->work_end_time;
+                    $breakMin  = $patternItem->break_minutes ?? 60;
+                    $crossDay  = (bool) $patternItem->is_cross_day;
+
+                    if (! $startTime && $patternItem->shift) {
+                        $firstWorking = $patternItem->shift->schedules->firstWhere('is_off', false);
+                        if ($firstWorking) {
+                            $startTime = $firstWorking->work_start_time;
+                            $endTime   = $firstWorking->work_end_time;
+                            $breakMin  = $firstWorking->break_minutes ?? 60;
+                            $crossDay  = (bool) $firstWorking->is_cross_day;
+                        }
+                    }
+
+                    if (! $startTime) {
+                        $results[$user->id] = [
+                            'source'                 => 'shift',
+                            'pattern_id'             => $pattern->id,
+                            'pattern_name'           => $pattern->name,
+                            'cycle_day'              => $dayOrder,
+                            'cycle_days'             => $cycleDays,
+                            'shift_id'               => null,
+                            'shift_name'             => "Libur Pola ({$pattern->name} - H{$dayOrder})",
+                            'color'                  => '#64748b',
+                            'work_start_time'        => null,
+                            'work_end_time'          => null,
+                            'is_off'                 => true,
+                            'is_wfh'                 => false,
+                            'is_field'               => false,
+                            'is_cross_day'           => false,
+                            'break_minutes'          => (int) ($office?->break_minutes ?? 60),
+                            'late_tolerance_minutes' => (int) ($office?->late_tolerance_minutes ?? 15),
+                            'office'                 => $office,
+                        ];
+                        continue;
+                    }
+
+                    $itemName      = $patternItem->name ?? optional($patternItem->shift)->name ?? "{$pattern->name} · H{$dayOrder}";
+                    $itemColor     = $patternItem->color ?? $pattern->color ?? optional($patternItem->shift)->color ?? '#6366f1';
+                    $itemTolerance = $patternItem->late_tolerance_minutes
+                        ?? $pattern->late_tolerance_minutes
+                        ?? $patternItem->shift?->late_tolerance_minutes
+                        ?? (int) ($office?->late_tolerance_minutes ?? 15);
+                    $itemIsWfh     = (bool) $patternItem->is_wfh;
+                    $itemIsField   = $itemIsWfh ? (bool) $patternItem->is_field : false;
+
+                    // ── Calendar Day Override (Bulk) ──
+                    $calendarDow = Carbon::parse($date)->dayOfWeek;
+                    $dayOverride = $pattern->dayOverrides->firstWhere('day_of_week', $calendarDow);
+                    if ($dayOverride) {
+                        if ($dayOverride->work_start_time !== null) {
+                            $startTime = substr((string) $dayOverride->work_start_time, 0, 5);
+                        }
+                        if ($dayOverride->work_end_time !== null) {
+                            $endTime = substr((string) $dayOverride->work_end_time, 0, 5);
+                        }
+                        if ($dayOverride->break_minutes !== null) {
+                            $breakMin = (int) $dayOverride->break_minutes;
+                        }
+                        if ($dayOverride->late_tolerance_minutes !== null) {
+                            $itemTolerance = (int) $dayOverride->late_tolerance_minutes;
+                        }
+                        $st = substr((string) $startTime, 0, 5);
+                        $en = substr((string) $endTime, 0, 5);
+                        $crossDay = ($en <= $st);
+                    }
+
+                    $results[$user->id] = [
+                        'source'                 => 'shift',
+                        'pattern_id'             => $pattern->id,
+                        'pattern_name'           => $pattern->name,
+                        'cycle_day'              => $dayOrder,
+                        'cycle_days'             => $cycleDays,
+                        'shift_id'               => $patternItem->shift_id,
+                        'shift_name'             => $itemName,
+                        'color'                  => $itemColor,
+                        'work_start_time'        => substr((string) $startTime, 0, 5),
+                        'work_end_time'          => $endTime ? substr((string) $endTime, 0, 5) : null,
+                        'is_off'                 => false,
+                        'is_wfh'                 => $itemIsWfh,
+                        'is_field'               => $itemIsField,
+                        'is_cross_day'           => $crossDay,
+                        'break_minutes'          => (int) $breakMin,
+                        'late_tolerance_minutes' => (int) $itemTolerance,
+                        'office'                 => $office,
+                    ];
+                    continue;
+                }
+            }
+
+            // Prioritas 2: Jika ada shift aktif & template aktif
             if ($userShift && $userShift->shift_id && optional($userShift->shift)->is_active) {
                 $shiftSchedule = $schedulesByShift->get($userShift->shift_id);
                 if ($shiftSchedule) {
                     $results[$user->id] = [
-                        'source'          => 'shift',
-                        'shift_id'        => $userShift->shift_id,
-                        'shift_name'      => optional($userShift->shift)->name,
-                        'work_start_time' => $shiftSchedule->work_start_time,
-                        'work_end_time'   => $shiftSchedule->work_end_time,
-                        'is_off'          => (bool) $shiftSchedule->is_off,
-                        'is_wfh'          => (bool) $shiftSchedule->is_wfh,
-                        'is_field'        => (bool) $shiftSchedule->is_field,
-                        'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
-                        'break_minutes'   => (int) ($shiftSchedule->break_minutes ?? 60),
-                        'office'          => $office,
+                        'source'                 => 'shift',
+                        'shift_id'               => $userShift->shift_id,
+                        'shift_name'             => optional($userShift->shift)->name,
+                        'work_start_time'        => $shiftSchedule->work_start_time,
+                        'work_end_time'          => $shiftSchedule->work_end_time,
+                        'is_off'                 => (bool) $shiftSchedule->is_off,
+                        'is_wfh'                 => (bool) $shiftSchedule->is_wfh,
+                        'is_field'               => (bool) $shiftSchedule->is_field,
+                        'is_cross_day'           => (bool) $shiftSchedule->is_cross_day,
+                        'break_minutes'          => (int) ($shiftSchedule->break_minutes ?? 60),
+                        'late_tolerance_minutes' => $userShift->shift?->late_tolerance_minutes ?? (int) ($office?->late_tolerance_minutes ?? 15),
+                        'office'                 => $office,
                     ];
                     continue;
                 }
@@ -2611,40 +2908,44 @@ class ShiftController extends Controller
 
                 $customStart = null;
                 $customEnd = null;
+                $customBreak = null;
                 if (! $isOff && ! empty($office->custom_schedules[$dayOfWeek])) {
                     $customStart = $office->custom_schedules[$dayOfWeek]['start'] ?? null;
                     $customEnd = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
+                    $customBreak = $office->custom_schedules[$dayOfWeek]['break_minutes'] ?? null;
                 }
 
                 $results[$user->id] = [
-                    'source'          => 'office',
-                    'shift_id'        => null,
-                    'shift_name'      => null,
-                    'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
-                    'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
-                    'is_off'          => (bool) $isOff,
-                    'is_wfh'          => false,
-                    'is_field'        => false,
-                    'is_cross_day'    => false,
-                    'break_minutes'   => (int) ($office->break_minutes ?? 60),
-                    'office'          => $office,
+                    'source'                 => 'office',
+                    'shift_id'               => null,
+                    'shift_name'             => null,
+                    'work_start_time'        => $isOff ? null : ($customStart ?? $office->work_start_time),
+                    'work_end_time'          => $isOff ? null : ($customEnd ?? $office->work_end_time),
+                    'is_off'                 => (bool) $isOff,
+                    'is_wfh'                 => false,
+                    'is_field'               => false,
+                    'is_cross_day'           => false,
+                    'break_minutes'          => $customBreak !== null ? (int) $customBreak : (int) ($office->break_minutes ?? 60),
+                    'late_tolerance_minutes' => (int) ($office->late_tolerance_minutes ?? 15),
+                    'office'                 => $office,
                 ];
                 continue;
             }
 
             // Tidak ada setting
             $results[$user->id] = [
-                'source'          => 'none',
-                'shift_id'        => null,
-                'shift_name'      => null,
-                'work_start_time' => null,
-                'work_end_time'   => null,
-                'is_off'          => false,
-                'is_wfh'          => false,
-                'is_field'        => false,
-                'is_cross_day'    => false,
-                'break_minutes'   => 0,
-                'office'          => null,
+                'source'                 => 'none',
+                'shift_id'               => null,
+                'shift_name'             => null,
+                'work_start_time'        => null,
+                'work_end_time'          => null,
+                'is_off'                 => false,
+                'is_wfh'                 => false,
+                'is_field'               => false,
+                'is_cross_day'           => false,
+                'break_minutes'          => 0,
+                'late_tolerance_minutes' => 15,
+                'office'                 => null,
             ];
         }
 
@@ -2662,7 +2963,7 @@ class ShiftController extends Controller
         // - start_date <= $date (sudah mulai)
         // - DAN (end_date is null ATAU end_date >= $date) (belum berakhir)
         // Urutkan DESC start_date untuk mengambil assignment yang paling baru yang mencakup tanggal ini.
-        $userShift = UserShift::with(['shift', 'shiftPattern.items.shift.schedules'])
+        $userShift = UserShift::with(['shift', 'shiftPattern.items.shift.schedules', 'shiftPattern.dayOverrides'])
             ->where('user_id', $user->id)
             ->whereDate('start_date', '<=', $date)
             ->where(fn ($q) => $q->whereNull('end_date')->orWhereDate('end_date', '>=', $date))
@@ -2707,14 +3008,16 @@ class ShiftController extends Controller
                         'cycle_days'      => $cycleDays,
                         'shift_id'        => null,
                         'shift_name'      => "Libur Pola ({$pattern->name} - H{$dayOrder})",
+                        'color'                  => '#64748b',
                         'work_start_time' => null,
                         'work_end_time'   => null,
                         'is_off'          => true,
                         'is_wfh'          => false,
-                        'is_field'        => false,
-                        'is_cross_day'    => false,
-                        'break_minutes'   => (int) ($office?->break_minutes ?? 60),
-                        'office'          => $office,
+                        'is_field'               => false,
+                        'is_cross_day'           => false,
+                        'break_minutes'          => (int) ($office?->break_minutes ?? 60),
+                        'late_tolerance_minutes' => (int) ($office?->late_tolerance_minutes ?? 15),
+                        'office'                 => $office,
                     ];
                 }
 
@@ -2736,40 +3039,79 @@ class ShiftController extends Controller
 
                 if (! $startTime) {
                     return [
-                        'source'          => 'shift',
-                        'pattern_id'      => $pattern->id,
-                        'pattern_name'    => $pattern->name,
-                        'cycle_day'       => $dayOrder,
-                        'cycle_days'      => $cycleDays,
-                        'shift_id'        => null,
-                        'shift_name'      => "Libur Pola ({$pattern->name} - H{$dayOrder})",
-                        'work_start_time' => null,
-                        'work_end_time'   => null,
-                        'is_off'          => true,
-                        'is_wfh'          => false,
-                        'is_field'        => false,
-                        'is_cross_day'    => false,
-                        'break_minutes'   => (int) ($office?->break_minutes ?? 60),
-                        'office'          => $office,
+                        'source'                 => 'shift',
+                        'pattern_id'             => $pattern->id,
+                        'pattern_name'           => $pattern->name,
+                        'cycle_day'              => $dayOrder,
+                        'cycle_days'             => $cycleDays,
+                        'shift_id'               => null,
+                        'shift_name'             => "Libur Pola ({$pattern->name} - H{$dayOrder})",
+                        'color'                  => '#64748b',
+                        'work_start_time'        => null,
+                        'work_end_time'          => null,
+                        'is_off'                 => true,
+                        'is_wfh'                 => false,
+                        'is_field'               => false,
+                        'is_cross_day'           => false,
+                        'break_minutes'          => (int) ($office?->break_minutes ?? 60),
+                        'late_tolerance_minutes' => (int) ($office?->late_tolerance_minutes ?? 15),
+                        'office'                 => $office,
                     ];
                 }
 
+                // Self-contained: baca nama, warna, toleransi dari kolom mandiri patternItem
+                // Fallback chain: patternItem->kolom → pattern->kolom → shift template → default
+                $itemName      = $patternItem->name ?? optional($patternItem->shift)->name ?? "{$pattern->name} · H{$dayOrder}";
+                $itemColor     = $patternItem->color ?? $pattern->color ?? optional($patternItem->shift)->color ?? '#6366f1';
+                $itemTolerance = $patternItem->late_tolerance_minutes
+                    ?? $pattern->late_tolerance_minutes
+                    ?? $patternItem->shift?->late_tolerance_minutes
+                    ?? (int) ($office?->late_tolerance_minutes ?? 15);
+                $itemIsWfh     = (bool) $patternItem->is_wfh;
+                $itemIsField   = $itemIsWfh ? (bool) $patternItem->is_field : false;
+
+                // ── Calendar Day Override ──────────────────────────────────────
+                // Jika pola rotasi memiliki override untuk hari kalender ini
+                // (misal: Jumat istirahat lebih panjang), timpa field yang terisi.
+                $calendarDow = Carbon::parse($date)->dayOfWeek;
+                $dayOverride = $pattern->dayOverrides->firstWhere('day_of_week', $calendarDow);
+                if ($dayOverride) {
+                    if ($dayOverride->work_start_time !== null) {
+                        $startTime = substr((string) $dayOverride->work_start_time, 0, 5);
+                    }
+                    if ($dayOverride->work_end_time !== null) {
+                        $endTime = substr((string) $dayOverride->work_end_time, 0, 5);
+                    }
+                    if ($dayOverride->break_minutes !== null) {
+                        $breakMin = (int) $dayOverride->break_minutes;
+                    }
+                    if ($dayOverride->late_tolerance_minutes !== null) {
+                        $itemTolerance = (int) $dayOverride->late_tolerance_minutes;
+                    }
+                    // Recalculate cross-day berdasarkan jam yang sudah di-override
+                    $st = substr((string) $startTime, 0, 5);
+                    $en = substr((string) $endTime, 0, 5);
+                    $crossDay = ($en <= $st);
+                }
+
                 return [
-                    'source'          => 'shift', // Gunakan 'shift' agar downstream mengenali active_shift
-                    'pattern_id'      => $pattern->id,
-                    'pattern_name'    => $pattern->name,
-                    'cycle_day'       => $dayOrder,
-                    'cycle_days'      => $cycleDays,
-                    'shift_id'        => $patternItem->shift_id,
-                    'shift_name'      => optional($patternItem->shift)->name ?? "{$pattern->name} · H{$dayOrder}",
-                    'work_start_time' => substr((string) $startTime, 0, 5),
-                    'work_end_time'   => $endTime ? substr((string) $endTime, 0, 5) : null,
-                    'is_off'          => false,
-                    'is_wfh'          => false,
-                    'is_field'        => false,
-                    'is_cross_day'    => $crossDay,
-                    'break_minutes'   => (int) $breakMin,
-                    'office'          => $office,
+                    'source'                 => 'shift', // Gunakan 'shift' agar downstream mengenali active_shift
+                    'pattern_id'             => $pattern->id,
+                    'pattern_name'           => $pattern->name,
+                    'cycle_day'              => $dayOrder,
+                    'cycle_days'             => $cycleDays,
+                    'shift_id'               => $patternItem->shift_id,
+                    'shift_name'             => $itemName,
+                    'color'                  => $itemColor,
+                    'work_start_time'        => substr((string) $startTime, 0, 5),
+                    'work_end_time'          => $endTime ? substr((string) $endTime, 0, 5) : null,
+                    'is_off'                 => false,
+                    'is_wfh'                 => $itemIsWfh,
+                    'is_field'               => $itemIsField,
+                    'is_cross_day'           => $crossDay,
+                    'break_minutes'          => (int) $breakMin,
+                    'late_tolerance_minutes' => (int) $itemTolerance,
+                    'office'                 => $office,
                 ];
             }
         }
@@ -2781,17 +3123,18 @@ class ShiftController extends Controller
 
             if ($shiftSchedule) {
                 return [
-                    'source'          => 'shift',
-                    'shift_id'        => $userShift->shift_id,
-                    'shift_name'      => optional($userShift->shift)->name,
-                    'work_start_time' => $shiftSchedule->work_start_time,
-                    'work_end_time'   => $shiftSchedule->work_end_time,
-                    'is_off'          => $shiftSchedule->is_off,
-                    'is_wfh'          => (bool) $shiftSchedule->is_wfh,
-                    'is_field'        => (bool) $shiftSchedule->is_field,
-                    'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
-                    'break_minutes'   => (int) ($shiftSchedule->break_minutes ?? 60),
-                    'office'          => $office,
+                    'source'                 => 'shift',
+                    'shift_id'               => $userShift->shift_id,
+                    'shift_name'             => optional($userShift->shift)->name,
+                    'work_start_time'        => $shiftSchedule->work_start_time,
+                    'work_end_time'          => $shiftSchedule->work_end_time,
+                    'is_off'                 => $shiftSchedule->is_off,
+                    'is_wfh'                 => (bool) $shiftSchedule->is_wfh,
+                    'is_field'               => (bool) $shiftSchedule->is_field,
+                    'is_cross_day'           => (bool) $shiftSchedule->is_cross_day,
+                    'break_minutes'          => (int) ($shiftSchedule->break_minutes ?? 60),
+                    'late_tolerance_minutes' => $userShift->shift?->late_tolerance_minutes ?? (int) ($office?->late_tolerance_minutes ?? 15),
+                    'office'                 => $office,
                 ];
             }
         }
@@ -2803,39 +3146,43 @@ class ShiftController extends Controller
 
             $customStart = null;
             $customEnd = null;
+            $customBreak = null;
             if (! $isOff && ! empty($office->custom_schedules[$dayOfWeek])) {
                 $customStart = $office->custom_schedules[$dayOfWeek]['start'] ?? null;
                 $customEnd = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
+                $customBreak = $office->custom_schedules[$dayOfWeek]['break_minutes'] ?? null;
             }
 
             return [
-                'source'          => 'office',
-                'shift_id'        => null,
-                'shift_name'      => null,
-                'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
-                'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
-                'is_off'          => $isOff,
-                'is_wfh'          => false,
-                'is_field'        => false,
-                'is_cross_day'    => false,
-                'break_minutes'   => (int) ($office->break_minutes ?? 60),
-                'office'          => $office,
+                'source'                 => 'office',
+                'shift_id'               => null,
+                'shift_name'             => null,
+                'work_start_time'        => $isOff ? null : ($customStart ?? $office->work_start_time),
+                'work_end_time'          => $isOff ? null : ($customEnd ?? $office->work_end_time),
+                'is_off'                 => $isOff,
+                'is_wfh'                 => false,
+                'is_field'               => false,
+                'is_cross_day'           => false,
+                'break_minutes'          => $customBreak !== null ? (int) $customBreak : (int) ($office->break_minutes ?? 60),
+                'late_tolerance_minutes' => (int) ($office->late_tolerance_minutes ?? 15),
+                'office'                 => $office,
             ];
         }
 
         // Tidak ada pengaturan sama sekali
         return [
-            'source'          => 'none',
-            'shift_id'        => null,
-            'shift_name'      => null,
-            'work_start_time' => null,
-            'work_end_time'   => null,
-            'is_off'          => false,
-            'is_wfh'          => false,
-            'is_field'        => false,
-            'is_cross_day'    => false,
-            'break_minutes'   => 0,
-            'office'          => null,
+            'source'                 => 'none',
+            'shift_id'               => null,
+            'shift_name'             => null,
+            'work_start_time'        => null,
+            'work_end_time'          => null,
+            'is_off'                 => false,
+            'is_wfh'                 => false,
+            'is_field'               => false,
+            'is_cross_day'           => false,
+            'break_minutes'          => 0,
+            'late_tolerance_minutes' => 15,
+            'office'                 => null,
         ];
     }
 
@@ -2891,6 +3238,129 @@ class ShiftController extends Controller
                 ->orderBy('id')
                 ->first();
 
+        // Resolve kondisi jadwal & status spesifik HARI INI ($today) untuk Card Jadwal Shift di Beranda:
+        $todayLeave = \App\Models\LeaveRequest::where('user_id', $user->id)
+            ->whereNull('holiday_id')
+            ->whereIn('leave_type', ['cuti', 'izin', 'sakit'])
+            ->where('status', 'approved')
+            ->where('start_date', '<=', $today)
+            ->where('end_date', '>=', $today)
+            ->first();
+
+        $todayHoliday = Holiday::whereDate('date', $today)
+            ->where(function ($q) use ($user) {
+                $q->where('is_national', true)
+                  ->orWhere(function ($q2) use ($user) {
+                      $q2->where('company_id', $user->company_id)
+                         ->where(function ($q3) use ($user) {
+                             $q3->whereNull('attendance_setting_id')
+                                ->orWhere('attendance_setting_id', $user->attendance_setting_id);
+                         });
+                  });
+            })
+            ->first();
+
+        if ($todayHoliday && $todayHoliday->is_collective) {
+            $isCollectiveAccepted = \App\Models\LeaveRequest::where('user_id', $user->id)
+                ->where('holiday_id', $todayHoliday->id)
+                ->where('collective_status', 'accepted')
+                ->exists();
+            if (! $isCollectiveAccepted) {
+                $todayHoliday = null; // Cuti bersama yang tidak diikuti bukan hari libur
+            }
+        }
+
+        $todayWfh = \App\Models\LeaveRequest::where('user_id', $user->id)
+            ->where('leave_type', 'wfh')
+            ->where('status', 'approved')
+            ->where('start_date', '<=', $today)
+            ->where('end_date', '>=', $today)
+            ->first();
+
+        $resolvedToday = self::resolveSchedule($user, $today);
+
+        $todayType = 'work';
+        $todayTitle = '';
+        $todaySubTitle = '';
+        $todayColor = '#1E88E5';
+        $todayIsOff = false;
+
+        if ($todayLeave) {
+            $todayType = 'leave';
+            $todayIsOff = true;
+            $leaveType = $todayLeave->leave_type;
+            if ($leaveType === 'izin') {
+                $todayTitle = 'Izin';
+                $todaySubTitle = 'Libur';
+                $todayColor = '#A855F7';
+            } elseif ($leaveType === 'sakit') {
+                $todayTitle = 'Sakit';
+                $todaySubTitle = 'Libur';
+                $todayColor = '#EA580C';
+            } else {
+                $todayTitle = 'Cuti Tahunan';
+                $todaySubTitle = 'Libur';
+                $todayColor = '#D97706';
+            }
+        } elseif ($todayHoliday) {
+            $todayType = 'holiday';
+            $todayIsOff = true;
+            $todayTitle = $todayHoliday->name;
+            $todaySubTitle = 'Libur';
+            $todayColor = $todayHoliday->is_collective ? '#D97706' : ($todayHoliday->is_national ? '#EF4444' : '#3B82F6');
+        } elseif ($resolvedToday['is_off']) {
+            $todayType = 'off';
+            $todayIsOff = true;
+            if ($resolvedToday['source'] === 'shift') {
+                $todayTitle = $resolvedToday['shift_name'] ?? 'Shift Kerja';
+                $todaySubTitle = 'Libur';
+                $todayColor = '#EF4444';
+            } else {
+                $todayTitle = 'Jam Kantor Default';
+                $todaySubTitle = 'Libur';
+                $todayColor = '#64748B';
+            }
+        } else {
+            // Hari kerja aktif
+            $todayType = 'work';
+            $todayIsOff = false;
+            $startTime = $resolvedToday['work_start_time'] ? substr((string) $resolvedToday['work_start_time'], 0, 5) : '08:00';
+            $endTime = $resolvedToday['work_end_time'] ? substr((string) $resolvedToday['work_end_time'], 0, 5) : '17:00';
+            $todaySubTitle = "{$startTime} — {$endTime} WIB";
+
+            if ($resolvedToday['source'] === 'shift') {
+                $todayTitle = $resolvedToday['shift_name'] ?? 'Shift Kerja';
+                $todayColor = $resolvedToday['color'] ?? ($userShift?->shift?->color ?? '#6366F1');
+            } else {
+                $todayTitle = 'Jam Kantor Default';
+                $todayColor = '#64748B';
+            }
+        }
+
+        $todayInfo = [
+            'date'            => $today,
+            'source'          => $resolvedToday['source'] ?? 'office',
+            'type'            => $todayType, // 'work' | 'holiday' | 'leave' | 'off'
+            'title'           => $todayTitle,
+            'sub_title'       => $todaySubTitle,
+            'shift_name'      => $resolvedToday['shift_name'] ?? null,
+            'work_start_time' => $resolvedToday['work_start_time'] ? substr((string) $resolvedToday['work_start_time'], 0, 5) : null,
+            'work_end_time'   => $resolvedToday['work_end_time'] ? substr((string) $resolvedToday['work_end_time'], 0, 5) : null,
+            'is_off'          => $todayIsOff,
+            'is_wfh'          => ((bool) $todayWfh || ! empty($resolvedToday['is_wfh'])) && ! $todayIsOff,
+            'is_field'        => ! empty($resolvedToday['is_field']) && ! $todayIsOff,
+            'color'           => $todayColor,
+            'holiday'         => $todayHoliday ? [
+                'name'          => $todayHoliday->name,
+                'is_national'   => (bool) $todayHoliday->is_national,
+                'is_collective' => (bool) $todayHoliday->is_collective,
+            ] : null,
+            'leave'           => $todayLeave ? [
+                'leave_type' => $todayLeave->leave_type,
+                'reason'     => $todayLeave->reason,
+            ] : null,
+        ];
+
         // 1. Jika ada penugasan Pola Rotasi (Cycle) dan pola masih aktif
         if ($userShift && $userShift->shift_pattern_id && optional($userShift->shiftPattern)->is_active) {
             $pattern    = $userShift->shiftPattern;
@@ -2900,15 +3370,16 @@ class ShiftController extends Controller
                 $isTodayItem = ($item->day_order == ($todaySched['cycle_day'] ?? null));
                 $startTime = $item->work_start_time ?? optional($item->shift?->schedules->firstWhere('is_off', false))->work_start_time;
                 $endTime   = $item->work_end_time ?? optional($item->shift?->schedules->firstWhere('is_off', false))->work_end_time;
+                $itemName  = $item->name ?? optional($item->shift)->name ?? null;
 
                 return [
                     'day_of_week'     => $item->day_order,
-                    'day_name'        => "H{$item->day_order}" . ($isTodayItem ? ' (Hari Ini)' : ''),
+                    'day_name'        => ($itemName ? "{$itemName} (H{$item->day_order})" : "H{$item->day_order}") . ($isTodayItem ? ' (Hari Ini)' : ''),
                     'work_start_time' => $item->is_off ? null : ($startTime ? substr((string) $startTime, 0, 5) : null),
                     'work_end_time'   => $item->is_off ? null : ($endTime ? substr((string) $endTime, 0, 5) : null),
                     'is_off'          => (bool) $item->is_off,
-                    'is_wfh'          => false,
-                    'is_field'        => false,
+                    'is_wfh'          => $item->is_off ? false : (bool) $item->is_wfh,
+                    'is_field'        => ($item->is_off || ! $item->is_wfh) ? false : (bool) $item->is_field,
                     'is_cross_day'    => (bool) $item->is_cross_day,
                 ];
             })->sortBy('day_of_week')->values();
@@ -2919,13 +3390,16 @@ class ShiftController extends Controller
                 'pattern_name' => $pattern->name,
                 'cycle_day'    => $todaySched['cycle_day'] ?? 1,
                 'shift'        => [
-                    'name'        => $todaySched['pattern_name'] . ' · H' . ($todaySched['cycle_day'] ?? 1) . ' (' . ($todaySched['is_off'] ? 'Libur' : $todaySched['shift_name']) . ')',
-                    'color'       => $todaySched['is_off'] ? '#64748b' : '#6366f1',
-                    'start_date'  => $userShift->start_date->toDateString(),
-                    'end_date'    => $userShift->end_date?->toDateString(),
-                    'office_name' => optional($user->office)->office_name ?? optional($office)->office_name,
+                    'name'                   => $todaySched['pattern_name'] . ' · H' . ($todaySched['cycle_day'] ?? 1) . ' (' . ($todaySched['is_off'] ? 'Libur' : $todaySched['shift_name']) . ')',
+                    'color'                  => $todaySched['color'] ?? ($todaySched['is_off'] ? '#64748b' : '#6366f1'),
+                    'start_date'             => $userShift->start_date->toDateString(),
+                    'end_date'               => $userShift->end_date?->toDateString(),
+                    'office_name'            => optional($user->office)->office_name ?? optional($office)->office_name,
+                    'late_tolerance_minutes' => (int) ($todaySched['late_tolerance_minutes'] ?? $office?->late_tolerance_minutes ?? 15),
+                    'is_custom_tolerance'    => ! empty($todaySched['late_tolerance_minutes']),
                 ],
                 'schedules'    => $schedules,
+                'today'        => $todayInfo,
             ]);
         }
 
@@ -2948,13 +3422,16 @@ class ShiftController extends Controller
             return response()->json([
                 'source' => 'shift',
                 'shift'  => [
-                    'name'        => $shift->name,
-                    'color'       => $shift->color ?? '#6366f1',
-                    'start_date'  => $userShift->start_date->toDateString(),
-                    'end_date'    => $userShift->end_date?->toDateString(),
-                    'office_name' => optional($shift->office)->office_name ?? optional($office)->office_name,
+                    'name'                   => $shift->name,
+                    'color'                  => $shift->color ?? '#6366f1',
+                    'start_date'             => $userShift->start_date->toDateString(),
+                    'end_date'               => $userShift->end_date?->toDateString(),
+                    'office_name'            => optional($shift->office)->office_name ?? optional($office)->office_name,
+                    'late_tolerance_minutes' => $shift->late_tolerance_minutes ?? (int) ($office?->late_tolerance_minutes ?? 15),
+                    'is_custom_tolerance'    => $shift->late_tolerance_minutes !== null,
                 ],
                 'schedules' => $schedules,
+                'today'     => $todayInfo,
             ]);
         }
 
@@ -2966,9 +3443,11 @@ class ShiftController extends Controller
                 $isOff = ! in_array($d, $workDays);
                 $customStart = null;
                 $customEnd = null;
+                $customBreak = null;
                 if (! $isOff && ! empty($office->custom_schedules[$d])) {
                     $customStart = $office->custom_schedules[$d]['start'] ?? null;
                     $customEnd = $office->custom_schedules[$d]['end'] ?? null;
+                    $customBreak = $office->custom_schedules[$d]['break_minutes'] ?? null;
                 }
 
                 return [
@@ -2976,6 +3455,7 @@ class ShiftController extends Controller
                     'day_name'        => $hari[$d],
                     'work_start_time' => $isOff ? null : ($customStart ?? $office->work_start_time),
                     'work_end_time'   => $isOff ? null : ($customEnd ?? $office->work_end_time),
+                    'break_minutes'   => $isOff ? 0 : ($customBreak !== null ? (int) $customBreak : (int) ($office->break_minutes ?? 60)),
                     'is_off'          => $isOff,
                     'is_wfh'          => false,
                     'is_field'        => false,
@@ -2986,13 +3466,16 @@ class ShiftController extends Controller
             return response()->json([
                 'source'    => 'office',
                 'shift'     => [
-                    'name'        => 'Jam Kantor Default',
-                    'color'       => '#9CA3AF',
-                    'start_date'  => null,
-                    'end_date'    => null,
-                    'office_name' => $office->office_name,
+                    'name'                   => 'Jam Kantor Default',
+                    'color'                  => '#9CA3AF',
+                    'start_date'             => null,
+                    'end_date'               => null,
+                    'office_name'            => $office->office_name,
+                    'late_tolerance_minutes' => (int) ($office->late_tolerance_minutes ?? 15),
+                    'is_custom_tolerance'    => false,
                 ],
                 'schedules' => $schedules,
+                'today'     => $todayInfo,
             ]);
         }
 
@@ -3000,6 +3483,7 @@ class ShiftController extends Controller
             'source'    => 'none',
             'shift'     => null,
             'schedules' => [],
+            'today'     => $todayInfo,
         ]);
     }
 
@@ -3055,6 +3539,7 @@ class ShiftController extends Controller
             'shift.schedules',
             'shiftPattern.items.shift:id,name,color,is_active',
             'shiftPattern.items.shift.schedules',
+            'shiftPattern.dayOverrides',
         ])
             ->where('user_id', $user->id)
             ->where('start_date', '<=', $endOfMonth->toDateString())
@@ -3108,9 +3593,9 @@ class ShiftController extends Controller
             ->map(fn ($d) => \Carbon\Carbon::parse($d)->toDateString())
             ->flip();
 
-        // CUTI MANDIRI (pribadi) yang sudah di-approve & memotong bulan ini.
-        // Ditandai per-tanggal agar kalender mobile bisa menampilkan "CUTI MANDIRI"
-        // (warna sama dgn cuti bersama, hanya label berbeda).
+        // CUTI MANDIRI / IZIN / SAKIT (pribadi) yang sudah di-approve & memotong bulan ini.
+        // Ditandai per-tanggal agar kalender mobile bisa membedakan jenis pengajuan (cuti, izin, sakit)
+        // dengan warna & label yang sesuai (izin = ungu, sakit = orange, cuti = kuning/amber).
         $personalLeaveDates = [];
         $personalLeaves = \App\Models\LeaveRequest::where('user_id', $user->id)
             ->whereNull('holiday_id')          // bukan cuti bersama
@@ -3118,12 +3603,15 @@ class ShiftController extends Controller
             ->where('status', 'approved')      // hanya yang sudah disetujui HRD
             ->where('start_date', '<=', $endOfMonth->toDateString())
             ->where('end_date', '>=', $startOfMonth->toDateString())
-            ->get(['start_date', 'end_date']);
+            ->get(['start_date', 'end_date', 'leave_type', 'reason']);
         foreach ($personalLeaves as $pl) {
             for ($d = \Carbon\Carbon::parse($pl->start_date); $d->lte(\Carbon\Carbon::parse($pl->end_date)); $d->addDay()) {
                 $ds = $d->toDateString();
                 if ($ds >= $startOfMonth->toDateString() && $ds <= $endOfMonth->toDateString()) {
-                    $personalLeaveDates[$ds] = true;
+                    $personalLeaveDates[$ds] = [
+                        'leave_type' => $pl->leave_type,
+                        'reason'     => $pl->reason,
+                    ];
                 }
             }
         }
@@ -3158,6 +3646,14 @@ class ShiftController extends Controller
             $isCollectiveLeave = $collectiveLeaves->has($dateStr);
             $isPersonalLeave   = ! $isCollectiveLeave && isset($personalLeaveDates[$dateStr]);
             $isWfhApprovedDay  = isset($wfhApprovedDates[$dateStr]);
+
+            $leaveType   = $isPersonalLeave ? ($personalLeaveDates[$dateStr]['leave_type'] ?? 'cuti') : null;
+            $leaveReason = $isPersonalLeave ? ($personalLeaveDates[$dateStr]['reason'] ?? null) : null;
+            $personalLeaveColor = match ($leaveType) {
+                'izin'  => '#A855F7', // ungu
+                'sakit' => '#EA580C', // orange
+                default => '#FACC15', // kuning (cuti)
+            };
 
             // Cek apakah tanggal ini merupakan hari libur yang BERLAKU untuk user ini.
             $holidayObj = $holidayByDate->get($dateStr);
@@ -3218,18 +3714,32 @@ class ShiftController extends Controller
                         }
                     }
 
+                    if ($pattern->dayOverrides) {
+                        $calendarDow = Carbon::parse($dateStr)->dayOfWeek;
+                        $dayOverride = $pattern->dayOverrides->firstWhere('day_of_week', $calendarDow);
+                        if ($dayOverride) {
+                            if ($dayOverride->work_start_time !== null) $startTime = substr((string) $dayOverride->work_start_time, 0, 5);
+                            if ($dayOverride->work_end_time !== null)   $endTime   = substr((string) $dayOverride->work_end_time, 0, 5);
+                            if ($dayOverride->work_start_time !== null || $dayOverride->work_end_time !== null) {
+                                $crossDay = (substr((string) $endTime, 0, 5) <= substr((string) $startTime, 0, 5));
+                            }
+                        }
+                    }
+
                     $isPatternOff = (bool) $patternItem->is_off || ! $startTime;
                     $forceOff     = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
                     $isOff        = $forceOff || $isPatternOff;
 
                     $shiftName = $isPatternOff
                         ? "Libur Pola ({$pattern->name} - H{$dayOrder})"
-                        : (optional($patternItem->shift)->name ?? "{$pattern->name} · H{$dayOrder}");
+                        : ($patternItem->name ?: (optional($patternItem->shift)->name ?? "{$pattern->name} · H{$dayOrder}"));
 
-                    $shiftColor = $isPatternOff ? '#64748b' : (optional($patternItem->shift)->color ?? '#6366f1');
+                    $shiftColor = $isPatternOff ? '#64748b' : ($patternItem->color ?: ($pattern->color ?: (optional($patternItem->shift)->color ?? '#6366f1')));
                     $dayColor = $forceOff
-                        ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
+                        ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
                         : $shiftColor;
+
+                    $isWfh = $isOff ? false : ((bool) $patternItem->is_wfh || $isWfhApprovedDay);
 
                     $days[$dateStr] = [
                         'source'          => 'shift',
@@ -3245,11 +3755,13 @@ class ShiftController extends Controller
                         'work_start_time' => $isOff ? null : ($startTime ? substr((string) $startTime, 0, 5) : null),
                         'work_end_time'   => $isOff ? null : ($endTime ? substr((string) $endTime, 0, 5) : null),
                         'is_off'          => $isOff,
-                        'is_wfh'          => false,
-                        'is_field'        => false,
+                        'is_wfh'          => $isWfh,
+                        'is_field'        => ($isOff || ! $isWfh) ? false : (bool) $patternItem->is_field,
                         'is_cross_day'    => $crossDay,
                         'holiday'         => $holidayInfo,
                         'personal_leave'  => $isPersonalLeave,
+                        'leave_type'      => $leaveType,
+                        'leave_reason'    => $leaveReason,
                         'wfh_approved'    => $isWfhApprovedDay,
                     ];
                     $current->addDay();
@@ -3272,12 +3784,10 @@ class ShiftController extends Controller
                     $isOff = (bool) $shiftSchedule->is_off;
                     $isWfh = $isOff ? false : ((bool) $shiftSchedule->is_wfh || $isWfhApprovedDay);
                     $isField = ($isOff || ! $isWfh) ? false : (bool) $shiftSchedule->is_field;
-                    // Cuti mandiri approved juga memaksa hari tsb libur (sama seperti cuti bersama),
-                    // dengan label & flag berbeda agar UI bisa menampilkannya sebagai "CUTI MANDIRI".
+                    // Cuti mandiri / izin / sakit approved juga memaksa hari tsb libur (sama seperti cuti bersama)
                     $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
-                    // Warna cuti mandiri = kuning sama dgn cuti bersama (#FACC15)
                     $dayColor = $forceOff
-                        ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
+                        ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
                         : ($active->shift->color ?? '#6366f1');
                     $days[$dateStr] = [
                         'source'          => 'shift',
@@ -3294,6 +3804,8 @@ class ShiftController extends Controller
                         'is_cross_day'    => (bool) $shiftSchedule->is_cross_day,
                         'holiday'         => $holidayInfo,
                         'personal_leave'  => $isPersonalLeave,
+                        'leave_type'      => $leaveType,
+                        'leave_reason'    => $leaveReason,
                         'wfh_approved'    => $isWfhApprovedDay,
                     ];
                     $current->addDay();
@@ -3313,14 +3825,14 @@ class ShiftController extends Controller
                     $customEnd = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
                 }
 
-                // Cuti mandiri approved juga memaksa hari tsb libur (sama seperti cuti bersama)
+                // Cuti mandiri / izin / sakit approved juga memaksa hari tsb libur (sama seperti cuti bersama)
                 $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
                 $days[$dateStr] = [
                     'source'          => 'office',
                     'shift_id'        => null,
                     'shift_name'      => null,
                     'color'           => $forceOff
-                        ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
+                        ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
                         : $overrideColor,
                     'work_start_time' => ($isOff || $forceOff) ? null : ($customStart ?? $office->work_start_time),
                     'work_end_time'   => ($isOff || $forceOff) ? null : ($customEnd ?? $office->work_end_time),
@@ -3330,19 +3842,26 @@ class ShiftController extends Controller
                     'is_cross_day'    => false,
                     'holiday'         => $holidayInfo,
                     'personal_leave'  => $isPersonalLeave,
+                    'leave_type'      => $leaveType,
+                    'leave_reason'    => $leaveReason,
                     'wfh_approved'    => $isWfhApprovedDay,
                 ];
             } else {
                 // Tidak ada pengaturan kantor sama sekali
                 $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
+                $personalLeaveName = match ($leaveType) {
+                    'izin'  => 'Izin',
+                    'sakit' => 'Sakit',
+                    default => 'Cuti Mandiri',
+                };
                 $days[$dateStr] = [
                     'source'          => 'none',
                     'shift_id'        => null,
                     'shift_name'      => $isCollectiveLeave ? 'Cuti Bersama'
-                        : ($isPersonalLeave ? 'Cuti Mandiri'
+                        : ($isPersonalLeave ? $personalLeaveName
                             : ($isHoliday ? $holidayInfo['name'] : null)),
                     'color'           => $forceOff
-                        ? ($isPersonalLeave ? '#FACC15' : ($overrideColor ?? '#EF4444'))
+                        ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
                         : $overrideColor,
                     'work_start_time' => null,
                     'work_end_time'   => null,
@@ -3352,6 +3871,8 @@ class ShiftController extends Controller
                     'is_cross_day'    => false,
                     'holiday'         => $holidayInfo,
                     'personal_leave'  => $isPersonalLeave,
+                    'leave_type'      => $leaveType,
+                    'leave_reason'    => $leaveReason,
                     'wfh_approved'    => $isWfhApprovedDay,
                 ];
             }
@@ -3443,12 +3964,9 @@ class ShiftController extends Controller
 
         $patterns = ShiftPattern::where('company_id', $actor->company_id)
             ->when($request->filled('attendance_setting_id'), function ($q) use ($request) {
-                $q->where(function ($sub) use ($request) {
-                    $sub->whereNull('attendance_setting_id')
-                        ->orWhere('attendance_setting_id', $request->query('attendance_setting_id'));
-                });
+                $q->where('attendance_setting_id', $request->query('attendance_setting_id'));
             })
-            ->with(['office:id,office_name', 'items.shift:id,name,color,is_active'])
+            ->with(['office:id,office_name', 'items.shift:id,name,color,is_active', 'dayOverrides'])
             ->withCount(['userShifts as active_users_count' => function ($q) use ($today) {
                 $q->whereDate('start_date', '<=', $today)
                   ->where(fn ($sub) => $sub->whereNull('end_date')->orWhereDate('end_date', '>=', $today));
@@ -3467,26 +3985,42 @@ class ShiftController extends Controller
 
         $validated = $request->validate([
             'attendance_setting_id'   => [
-                'nullable',
+                'required',
                 'integer',
                 Rule::exists('attendance_settings', 'id')->where(fn ($q) => $q->where('company_id', $actor->company_id)),
             ],
             'name'                    => 'required|string|max:100',
             'description'             => 'nullable|string|max:500',
+            'color'                   => 'nullable|string|regex:/^#[0-9A-Fa-f]{6}$/',
+            'late_tolerance_minutes'  => 'nullable|integer|min:0|max:300',
             'cycle_days'              => 'required|integer|min:2|max:60',
             'is_active'               => 'nullable|boolean',
-            'items'                   => 'required|array',
-            'items.*.day_order'       => 'required|integer|min:1',
-            'items.*.shift_id'        => 'nullable|integer',
-            'items.*.is_off'          => 'required|boolean',
-            'items.*.work_start_time' => 'nullable|string',
-            'items.*.work_end_time'   => 'nullable|string',
-            'items.*.break_minutes'   => 'nullable|integer|min:0|max:300',
-            'items.*.is_cross_day'    => 'nullable|boolean',
+            'items'                            => 'required|array',
+            'items.*.day_order'                => 'required|integer|min:1',
+            'items.*.shift_id'                 => 'nullable|integer',
+            'items.*.name'                     => 'nullable|string|max:100',
+            'items.*.color'                    => 'nullable|string|regex:/^#[0-9A-Fa-f]{6}$/',
+            'items.*.is_off'                   => 'required|boolean',
+            'items.*.work_start_time'          => 'nullable|string',
+            'items.*.work_end_time'            => 'nullable|string',
+            'items.*.break_minutes'            => 'nullable|integer|min:0|max:300',
+            'items.*.late_tolerance_minutes'   => 'nullable|integer|min:0|max:120',
+            'items.*.is_cross_day'             => 'nullable|boolean',
+            'items.*.is_wfh'                   => 'nullable|boolean',
+            'items.*.is_field'                 => 'nullable|boolean',
+            'day_overrides'                           => 'nullable|array',
+            'day_overrides.*.day_of_week'             => 'required|integer|between:0,6',
+            'day_overrides.*.work_start_time'         => 'nullable|string',
+            'day_overrides.*.work_end_time'           => 'nullable|string',
+            'day_overrides.*.break_minutes'           => 'nullable|integer|min:0|max:300',
+            'day_overrides.*.late_tolerance_minutes'  => 'nullable|integer|min:0|max:120',
+        ], [
+            'attendance_setting_id.required' => 'Cabang / lokasi kantor wajib dipilih untuk pola rotasi shift.',
+            'attendance_setting_id.exists'   => 'Cabang / lokasi kantor tidak valid atau bukan milik perusahaan Anda.',
         ]);
 
         $cycleDays = (int) $validated['cycle_days'];
-        $patternOfficeId = ! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null;
+        $patternOfficeId = (int) $validated['attendance_setting_id'];
 
         $validation = $this->validatePatternItems($validated['items'], $cycleDays, $patternOfficeId, $actor);
         if ($validation['error']) {
@@ -3494,27 +4028,72 @@ class ShiftController extends Controller
         }
         $k3Warnings = $validation['warnings'];
 
+        // Warna unik PER CABANG (lintas template shift & pola rotasi)
+        if (! empty($validated['color'])) {
+            $clash = $this->checkColorClash($actor, $validated['color'], $patternOfficeId, null, null);
+            if ($clash) {
+                $scope = $clash['office_id'] === null
+                    ? ' (berlaku semua kantor)'
+                    : ' (cabang yang sama)';
+                return response()->json([
+                    'message' => "Warna {$validated['color']} sudah dipakai oleh {$clash['type']} '{$clash['name']}'{$scope}. Pilih warna yang berbeda dalam cabang ini.",
+                ], 422);
+            }
+        }
+
         $pattern = DB::transaction(function () use ($actor, $validated, $cycleDays) {
+            $patternColor = ! empty($validated['color']) ? strtolower($validated['color']) : null;
+            $patternTolerance = array_key_exists('late_tolerance_minutes', $validated) && $validated['late_tolerance_minutes'] !== null
+                ? (int) $validated['late_tolerance_minutes']
+                : null;
+
             $pattern = ShiftPattern::create([
-                'company_id'            => $actor->company_id,
-                'attendance_setting_id' => $validated['attendance_setting_id'] ?? null,
-                'name'                  => $validated['name'],
-                'description'           => $validated['description'] ?? null,
-                'cycle_days'            => $cycleDays,
-                'is_active'             => $validated['is_active'] ?? true,
+                'company_id'             => $actor->company_id,
+                'attendance_setting_id'  => $validated['attendance_setting_id'] ?? null,
+                'name'                   => $validated['name'],
+                'description'            => $validated['description'] ?? null,
+                'color'                  => $patternColor,
+                'late_tolerance_minutes' => $patternTolerance,
+                'cycle_days'             => $cycleDays,
+                'is_active'              => $validated['is_active'] ?? true,
             ]);
 
             foreach ($validated['items'] as $item) {
+                $isOff = ! empty($item['is_off']);
                 ShiftPatternItem::create([
-                    'shift_pattern_id' => $pattern->id,
-                    'day_order'        => (int) $item['day_order'],
-                    'shift_id'         => ! empty($item['is_off']) ? null : ($item['shift_id'] ?? null),
-                    'is_off'           => (bool) $item['is_off'],
-                    'work_start_time'  => ! empty($item['is_off']) ? null : ($item['work_start_time'] ?? null),
-                    'work_end_time'    => ! empty($item['is_off']) ? null : ($item['work_end_time'] ?? null),
-                    'break_minutes'    => $item['break_minutes'] ?? 60,
-                    'is_cross_day'     => (bool) ($item['is_cross_day'] ?? false),
+                    'shift_pattern_id'       => $pattern->id,
+                    'day_order'              => (int) $item['day_order'],
+                    'shift_id'               => $isOff ? null : ($item['shift_id'] ?? null),
+                    'name'                   => $isOff ? null : (! empty($item['name']) ? $item['name'] : null),
+                    'color'                  => $isOff ? null : (! empty($item['color']) ? strtolower($item['color']) : $patternColor),
+                    'is_off'                 => $isOff,
+                    'work_start_time'        => $isOff ? null : ($item['work_start_time'] ?? null),
+                    'work_end_time'          => $isOff ? null : ($item['work_end_time'] ?? null),
+                    'break_minutes'          => $item['break_minutes'] ?? 60,
+                    'late_tolerance_minutes' => $isOff ? null : ($item['late_tolerance_minutes'] ?? $patternTolerance),
+                    'is_cross_day'           => (bool) ($item['is_cross_day'] ?? false),
+                    'is_wfh'                 => $isOff ? false : (bool) ($item['is_wfh'] ?? false),
+                    'is_field'               => ($isOff || empty($item['is_wfh'])) ? false : (bool) ($item['is_field'] ?? false),
                 ]);
+            }
+
+            if (! empty($validated['day_overrides'])) {
+                foreach ($validated['day_overrides'] as $override) {
+                    $hasValue = ($override['work_start_time'] ?? null) !== null
+                        || ($override['work_end_time'] ?? null) !== null
+                        || ($override['break_minutes'] ?? null) !== null
+                        || ($override['late_tolerance_minutes'] ?? null) !== null;
+                    if ($hasValue) {
+                        ShiftPatternDayOverride::create([
+                            'shift_pattern_id'       => $pattern->id,
+                            'day_of_week'            => (int) $override['day_of_week'],
+                            'work_start_time'        => ! empty($override['work_start_time']) ? substr($override['work_start_time'], 0, 5) : null,
+                            'work_end_time'          => ! empty($override['work_end_time']) ? substr($override['work_end_time'], 0, 5) : null,
+                            'break_minutes'          => array_key_exists('break_minutes', $override) && $override['break_minutes'] !== null ? (int) $override['break_minutes'] : null,
+                            'late_tolerance_minutes' => array_key_exists('late_tolerance_minutes', $override) && $override['late_tolerance_minutes'] !== null ? (int) $override['late_tolerance_minutes'] : null,
+                        ]);
+                    }
+                }
             }
 
             $this->logActivity(
@@ -3532,15 +4111,20 @@ class ShiftController extends Controller
         return response()->json([
             'message'  => "Pola rotasi shift '{$pattern->name}' berhasil dibuat.",
             'warnings' => $k3Warnings,
-            'data'     => $pattern->load(['office:id,office_name', 'items.shift']),
+            'data'     => $pattern->load(['office:id,office_name', 'items.shift', 'dayOverrides']),
         ], 201);
     }
 
     public function patternShow(Request $request, int $id): JsonResponse
     {
         $actor = $request->user();
+        $today = now('Asia/Jakarta')->toDateString();
         $pattern = ShiftPattern::where('company_id', $actor->company_id)
-            ->with(['office:id,office_name', 'items.shift:id,name,color,is_active'])
+            ->with(['office:id,office_name', 'items.shift:id,name,color,is_active', 'dayOverrides'])
+            ->withCount(['userShifts as active_users_count' => function ($q) use ($today) {
+                $q->whereDate('start_date', '<=', $today)
+                  ->where(fn ($sub) => $sub->whereNull('end_date')->orWhereDate('end_date', '>=', $today));
+            }])
             ->find($id);
 
         if (! $pattern) {
@@ -3567,16 +4151,29 @@ class ShiftController extends Controller
             ],
             'name'                    => 'required|string|max:100',
             'description'             => 'nullable|string|max:500',
+            'color'                   => 'nullable|string|regex:/^#[0-9A-Fa-f]{6}$/',
+            'late_tolerance_minutes'  => 'nullable|integer|min:0|max:300',
             'cycle_days'              => 'required|integer|min:2|max:60',
             'is_active'               => 'nullable|boolean',
-            'items'                   => 'required|array',
-            'items.*.day_order'       => 'required|integer|min:1',
-            'items.*.shift_id'        => 'nullable|integer',
-            'items.*.is_off'          => 'required|boolean',
-            'items.*.work_start_time' => 'nullable|string',
-            'items.*.work_end_time'   => 'nullable|string',
-            'items.*.break_minutes'   => 'nullable|integer|min:0|max:300',
-            'items.*.is_cross_day'    => 'nullable|boolean',
+            'items'                            => 'required|array',
+            'items.*.day_order'                => 'required|integer|min:1',
+            'items.*.shift_id'                 => 'nullable|integer',
+            'items.*.name'                     => 'nullable|string|max:100',
+            'items.*.color'                    => 'nullable|string|regex:/^#[0-9A-Fa-f]{6}$/',
+            'items.*.is_off'                   => 'required|boolean',
+            'items.*.work_start_time'          => 'nullable|string',
+            'items.*.work_end_time'            => 'nullable|string',
+            'items.*.break_minutes'            => 'nullable|integer|min:0|max:300',
+            'items.*.late_tolerance_minutes'   => 'nullable|integer|min:0|max:120',
+            'items.*.is_cross_day'             => 'nullable|boolean',
+            'items.*.is_wfh'                   => 'nullable|boolean',
+            'items.*.is_field'                 => 'nullable|boolean',
+            'day_overrides'                           => 'nullable|array',
+            'day_overrides.*.day_of_week'             => 'required|integer|between:0,6',
+            'day_overrides.*.work_start_time'         => 'nullable|string',
+            'day_overrides.*.work_end_time'           => 'nullable|string',
+            'day_overrides.*.break_minutes'           => 'nullable|integer|min:0|max:300',
+            'day_overrides.*.late_tolerance_minutes'  => 'nullable|integer|min:0|max:120',
         ]);
 
         $cycleDays = (int) $validated['cycle_days'];
@@ -3584,34 +4181,93 @@ class ShiftController extends Controller
             ? (! empty($validated['attendance_setting_id']) ? (int) $validated['attendance_setting_id'] : null)
             : $pattern->attendance_setting_id;
 
+        // Cabang kantor pola rotasi bersifat permanen (hanya ditentukan saat store seperti template shift).
+        if (array_key_exists('attendance_setting_id', $validated)
+            && (int) $patternOfficeId !== (int) $pattern->attendance_setting_id
+        ) {
+            return response()->json([
+                'message' => 'Cabang kantor pola rotasi bersifat permanen dan tidak dapat diubah setelah pola dibuat. Buat pola rotasi baru jika ingin membuat pola untuk cabang lain.',
+            ], 422);
+        }
+
         $validation = $this->validatePatternItems($validated['items'], $cycleDays, $patternOfficeId, $actor);
         if ($validation['error']) {
             return response()->json(['message' => $validation['error']], 422);
         }
         $k3Warnings = $validation['warnings'];
 
-        DB::transaction(function () use ($pattern, $validated, $cycleDays, $actor) {
+        $patternColor = array_key_exists('color', $validated)
+            ? (! empty($validated['color']) ? strtolower($validated['color']) : null)
+            : $pattern->color;
+
+        // Warna unik PER CABANG (lintas template shift & pola rotasi)
+        if (! empty($patternColor)) {
+            $clash = $this->checkColorClash($actor, $patternColor, $pattern->attendance_setting_id, null, $pattern->id);
+            if ($clash) {
+                $scope = $clash['office_id'] === null
+                    ? ' (berlaku semua kantor)'
+                    : ' (cabang yang sama)';
+                return response()->json([
+                    'message' => "Warna {$patternColor} sudah dipakai oleh {$clash['type']} '{$clash['name']}'{$scope}. Pilih warna yang berbeda dalam cabang ini.",
+                ], 422);
+            }
+        }
+
+        DB::transaction(function () use ($pattern, $validated, $cycleDays, $patternColor, $actor) {
+            $patternTolerance = array_key_exists('late_tolerance_minutes', $validated)
+                ? ($validated['late_tolerance_minutes'] !== null ? (int) $validated['late_tolerance_minutes'] : null)
+                : $pattern->late_tolerance_minutes;
+
             $pattern->update([
-                'attendance_setting_id' => array_key_exists('attendance_setting_id', $validated) ? $validated['attendance_setting_id'] : $pattern->attendance_setting_id,
-                'name'                  => $validated['name'],
-                'description'           => $validated['description'] ?? null,
-                'cycle_days'            => $cycleDays,
-                'is_active'             => $validated['is_active'] ?? $pattern->is_active,
+                'attendance_setting_id'  => $pattern->attendance_setting_id,
+                'name'                   => $validated['name'],
+                'description'            => $validated['description'] ?? null,
+                'color'                  => $patternColor,
+                'late_tolerance_minutes' => $patternTolerance,
+                'cycle_days'             => $cycleDays,
+                'is_active'              => $validated['is_active'] ?? $pattern->is_active,
             ]);
 
             ShiftPatternItem::where('shift_pattern_id', $pattern->id)->delete();
 
             foreach ($validated['items'] as $item) {
+                $isOff = ! empty($item['is_off']);
                 ShiftPatternItem::create([
-                    'shift_pattern_id' => $pattern->id,
-                    'day_order'        => (int) $item['day_order'],
-                    'shift_id'         => ! empty($item['is_off']) ? null : ($item['shift_id'] ?? null),
-                    'is_off'           => (bool) $item['is_off'],
-                    'work_start_time'  => ! empty($item['is_off']) ? null : ($item['work_start_time'] ?? null),
-                    'work_end_time'    => ! empty($item['is_off']) ? null : ($item['work_end_time'] ?? null),
-                    'break_minutes'    => $item['break_minutes'] ?? 60,
-                    'is_cross_day'     => (bool) ($item['is_cross_day'] ?? false),
+                    'shift_pattern_id'       => $pattern->id,
+                    'day_order'              => (int) $item['day_order'],
+                    'shift_id'               => $isOff ? null : ($item['shift_id'] ?? null),
+                    'name'                   => $isOff ? null : (! empty($item['name']) ? $item['name'] : null),
+                    'color'                  => $isOff ? null : (! empty($item['color']) ? strtolower($item['color']) : $patternColor),
+                    'is_off'                 => $isOff,
+                    'work_start_time'        => $isOff ? null : ($item['work_start_time'] ?? null),
+                    'work_end_time'          => $isOff ? null : ($item['work_end_time'] ?? null),
+                    'break_minutes'          => $item['break_minutes'] ?? 60,
+                    'late_tolerance_minutes' => $isOff ? null : ($item['late_tolerance_minutes'] ?? $patternTolerance),
+                    'is_cross_day'           => (bool) ($item['is_cross_day'] ?? false),
+                    'is_wfh'                 => $isOff ? false : (bool) ($item['is_wfh'] ?? false),
+                    'is_field'               => ($isOff || empty($item['is_wfh'])) ? false : (bool) ($item['is_field'] ?? false),
                 ]);
+            }
+
+            ShiftPatternDayOverride::where('shift_pattern_id', $pattern->id)->delete();
+
+            if (! empty($validated['day_overrides'])) {
+                foreach ($validated['day_overrides'] as $override) {
+                    $hasValue = ($override['work_start_time'] ?? null) !== null
+                        || ($override['work_end_time'] ?? null) !== null
+                        || ($override['break_minutes'] ?? null) !== null
+                        || ($override['late_tolerance_minutes'] ?? null) !== null;
+                    if ($hasValue) {
+                        ShiftPatternDayOverride::create([
+                            'shift_pattern_id'       => $pattern->id,
+                            'day_of_week'            => (int) $override['day_of_week'],
+                            'work_start_time'        => ! empty($override['work_start_time']) ? substr($override['work_start_time'], 0, 5) : null,
+                            'work_end_time'          => ! empty($override['work_end_time']) ? substr($override['work_end_time'], 0, 5) : null,
+                            'break_minutes'          => array_key_exists('break_minutes', $override) && $override['break_minutes'] !== null ? (int) $override['break_minutes'] : null,
+                            'late_tolerance_minutes' => array_key_exists('late_tolerance_minutes', $override) && $override['late_tolerance_minutes'] !== null ? (int) $override['late_tolerance_minutes'] : null,
+                        ]);
+                    }
+                }
             }
 
             $this->logActivity(
@@ -3627,7 +4283,7 @@ class ShiftController extends Controller
         return response()->json([
             'message'  => "Pola rotasi shift '{$pattern->name}' berhasil diperbarui.",
             'warnings' => $k3Warnings,
-            'data'     => $pattern->fresh()->load(['office:id,office_name', 'items.shift']),
+            'data'     => $pattern->fresh()->load(['office:id,office_name', 'items.shift', 'dayOverrides']),
         ]);
     }
 
@@ -3697,11 +4353,16 @@ class ShiftController extends Controller
 
         foreach ($items as &$item) {
             if (! empty($item['is_off'])) {
-                $item['work_start_time'] = null;
-                $item['work_end_time']   = null;
-                $item['break_minutes']   = 0;
-                $item['is_cross_day']    = false;
-                $item['shift_id']        = null;
+                $item['work_start_time']       = null;
+                $item['work_end_time']         = null;
+                $item['break_minutes']         = 0;
+                $item['is_cross_day']          = false;
+                $item['shift_id']              = null;
+                $item['name']                  = null;
+                $item['color']                 = null;
+                $item['late_tolerance_minutes'] = null;
+                $item['is_wfh']                = false;
+                $item['is_field']              = false;
                 continue;
             }
 
@@ -3758,6 +4419,7 @@ class ShiftController extends Controller
                     ];
                 }
             }
+            $item['is_field'] = (! empty($item['is_wfh']) && ! empty($item['is_field']));
         }
         unset($item);
 
@@ -3858,6 +4520,165 @@ class ShiftController extends Controller
 
         return response()->json([
             'message' => "Pola rotasi '{$patternName}' berhasil dihapus.",
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // patternToggleActive() — toggle aktif/nonaktif pola rotasi
+    // POST /api/v1/dashboard/attendance/shift-patterns/{id}/toggle-active
+    //
+    // Menonaktifkan pola rotasi DIBLOKIR selama masih ada karyawan yang
+    // menggunakan pola ini (assignment aktif/sebelumnya belum dipindah).
+    // ═══════════════════════════════════════════════════════════
+    public function patternToggleActive(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $pattern = ShiftPattern::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if (! $pattern) {
+            return response()->json(['message' => 'Pola rotasi tidak ditemukan di perusahaan Anda.'], 404);
+        }
+
+        $willBeActive = ! $pattern->is_active;
+
+        // Saat menonaktifkan: blokir jika masih ada assignment yang berlaku
+        // (aktif hari ini atau akan datang) untuk pola ini.
+        if (! $willBeActive) {
+            $liveAssignments = $this->liveAssignmentsForPattern($pattern->id);
+
+            if ($liveAssignments->isNotEmpty()) {
+                $names = $liveAssignments->take(5)->map(fn ($a) => $a->user->name ?? 'Karyawan')->join(', ');
+                $more  = $liveAssignments->count() > 5 ? ', dan lainnya.' : '.';
+
+                return response()->json([
+                    'message'      => "Pola rotasi tidak bisa dinonaktifkan karena masih digunakan oleh " . $liveAssignments->count() . " karyawan. Pindahkan karyawan ke shift/pola lain atau hapus assignment karyawan dari pola rotasi ini terlebih dahulu.",
+                    'affected'     => $liveAssignments->map(fn ($a) => [
+                        'user_id'    => $a->user_id,
+                        'user_name'  => $a->user->name ?? 'Karyawan',
+                        'start_date' => $a->start_date->toDateString(),
+                        'end_date'   => $a->end_date?->toDateString(),
+                    ])->values(),
+                    'affected_names' => $names . $more,
+                ], 409);
+            }
+        }
+
+        $pattern->is_active = $willBeActive;
+        $pattern->save();
+
+        $status = $pattern->is_active ? 'diaktifkan' : 'dinonaktifkan';
+
+        $this->logActivity(
+            $actor->id,
+            $actor->company_id,
+            'shift_pattern_toggled',
+            "Pola rotasi shift {$status}: {$pattern->name}",
+            'shift_pattern',
+            $pattern->id
+        );
+
+        return response()->json([
+            'message' => "Pola rotasi '{$pattern->name}' berhasil {$status}.",
+            'data'    => $pattern->load(['office:id,office_name', 'items.shift']),
+        ]);
+    }
+
+    /**
+     * Helper: assignment yang MASIH BERLAKU untuk sebuah pola rotasi
+     */
+    private function liveAssignmentsForPattern(int $patternId)
+    {
+        $today = now('Asia/Jakarta')->toDateString();
+
+        return UserShift::with('user:id,name')
+            ->where('shift_pattern_id', $patternId)
+            ->where(function ($q) use ($today) {
+                $q->where('start_date', '<=', $today)
+                    ->where(fn ($q2) => $q2->whereNull('end_date')->orWhere('end_date', '>=', $today))
+                    ->orWhere('start_date', '>', $today);
+            })
+            ->orderBy('start_date')
+            ->get();
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // patternUsers() — daftar karyawan yang ter-assign ke pola rotasi
+    // GET /api/v1/dashboard/attendance/shift-patterns/{id}/users
+    // ═══════════════════════════════════════════════════════════
+    public function patternUsers(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $pattern = ShiftPattern::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if (! $pattern) {
+            return response()->json(['message' => 'Pola rotasi tidak ditemukan.'], 404);
+        }
+
+        $today = now('Asia/Jakarta')->toDateString();
+
+        $assignments = UserShift::with(['user:id,name,department,attendance_setting_id', 'user.office:id,office_name', 'shiftPattern:id,name,cycle_days'])
+            ->where('shift_pattern_id', $id)
+            ->orderBy('start_date')
+            ->get();
+
+        $rows = $assignments->map(function (UserShift $us) use ($today, $pattern) {
+            $user = $us->user;
+
+            if (! $user) {
+                return null;
+            }
+
+            $startDate = $us->start_date->toDateString();
+            $endDate   = $us->end_date?->toDateString();
+
+            if ($startDate <= $today && ($endDate === null || $endDate >= $today)) {
+                $status = 'active';
+            } elseif ($startDate > $today) {
+                $status = 'upcoming';
+            } else {
+                $status = 'expired';
+            }
+
+            // Hitung hari siklus ke berapa pada hari ini jika aktif
+            $currentCycleDay = null;
+            if ($status === 'active' && $pattern->cycle_days > 0) {
+                $startCarbon = \Carbon\Carbon::parse($startDate, 'Asia/Jakarta')->startOfDay();
+                $todayCarbon = \Carbon\Carbon::parse($today, 'Asia/Jakarta')->startOfDay();
+                $diffDays = $startCarbon->diffInDays($todayCarbon);
+                $anchor = ($us->anchor_day_order ?? 1) - 1;
+                $currentCycleDay = (($anchor + $diffDays) % $pattern->cycle_days) + 1;
+            }
+
+            return [
+                'user_id'           => $user->id,
+                'name'              => $user->name,
+                'department'        => $user->department,
+                'branch'            => optional($user->office)->office_name,
+                'assignment_id'     => $us->id,
+                'status'            => $status,
+                'anchor_day_order'  => $us->anchor_day_order ?? 1,
+                'current_cycle_day' => $currentCycleDay,
+                'start_date'        => $startDate,
+                'end_date'          => $endDate,
+                'notes'             => $us->notes,
+            ];
+        })->filter()->values();
+
+        return response()->json([
+            'pattern_id'   => (int) $pattern->id,
+            'pattern_name' => $pattern->name,
+            'is_active'    => (bool) $pattern->is_active,
+            'cycle_days'   => (int) $pattern->cycle_days,
+            'total'        => $rows->count(),
+            'data'         => $rows,
         ]);
     }
 }

@@ -109,7 +109,7 @@ class ReceiptRecord {
       return double.tryParse(v.toString());
     }
 
-    // rejection_reason: bisa dari field langsung (myReceipts) atau approvals (show)
+    // rejection_reason: bisa dari field langsung (myReceipts), approvals (show), atau ocr_error jika OCR ditolak
     String? rejection = m['rejection_reason']?.toString();
     if ((rejection == null || rejection.isEmpty) && m['approvals'] != null) {
       final approvals = m['approvals'] as List?;
@@ -120,6 +120,9 @@ class ReceiptRecord {
           break;
         }
       }
+    }
+    if ((rejection == null || rejection.isEmpty) && m['ocr_error'] != null) {
+      rejection = m['ocr_error']?.toString();
     }
 
     // Parse items

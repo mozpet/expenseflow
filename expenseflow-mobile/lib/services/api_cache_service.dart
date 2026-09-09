@@ -112,9 +112,9 @@ class ApiCacheService {
 
   // ─── Auto-Invalidation Registry ─────────────────────────────────────────────
   static final List<MutationInvalidationRule> _mutationRules = [
-    // Presensi Check-In / Check-Out / Sync Offline
+    // Presensi Check-In / Check-Out
     MutationInvalidationRule(
-      pattern: RegExp(r'^/attendance/(check-in|check-out|sync-offline)'),
+      pattern: RegExp(r'^/attendance/(check-in|check-out)'),
       invalidates: [
         '/attendance/status',
         '/attendance/my',

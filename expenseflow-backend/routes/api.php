@@ -259,6 +259,8 @@ Route::prefix('v1')->group(function () {
             // ── Pola Rotasi Shift (Shift Patterns / Recurring Rolling Cycles) ──
             Route::get('/shift-patterns', [ShiftController::class, 'patternIndex']);
             Route::post('/shift-patterns', [ShiftController::class, 'patternStore']);
+            Route::get('/shift-patterns/{id}/users', [ShiftController::class, 'patternUsers']);
+            Route::post('/shift-patterns/{id}/toggle-active', [ShiftController::class, 'patternToggleActive']);
             Route::get('/shift-patterns/{id}', [ShiftController::class, 'patternShow']);
             Route::match(['put', 'patch'], '/shift-patterns/{id}', [ShiftController::class, 'patternUpdate']);
             Route::delete('/shift-patterns/{id}', [ShiftController::class, 'patternDestroy']);
@@ -270,7 +272,6 @@ Route::prefix('v1')->group(function () {
         ->group(function () {
             Route::post('/check-in', [AttendanceController::class, 'checkIn']);
             Route::post('/check-out', [AttendanceController::class, 'checkOut']);
-            Route::post('/sync-offline', [AttendanceController::class, 'syncOffline']);
         });
 
     // Status, riwayat presensi & cuti/izin — semua karyawan, tanpa gerbang attendance_access.

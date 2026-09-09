@@ -41,11 +41,36 @@ class GeminiVisionDriver implements OcrDriverInterface
         $base64Image = base64_encode(file_get_contents($fullPath));
 
         $prompt = <<<PROMPT
-Anda adalah asisten OCR ahli dalam menganalisis struk pembayaran/nota belanja Indonesia.
-Analisis foto struk ini dan ekstrak informasi berikut secara mendalam dan akurat:
-1. "merchant": Nama toko / restoran / merchant (contoh: "Domino's Pizza", "INDOMARET", "ALFAMART", "SPBU PERTAMINA", "KFC", dll). Jika tidak ditemukan, isi null.
-2. "date": Tanggal transaksi dalam format standar YYYY-MM-DD (contoh: "2026-08-26"). Jika tidak ditemukan, isi null.
-3. "items": Daftar rincian barang/makanan/produk yang dibeli dalam bentuk array objek:
+Anda adalah sistem AI pemeriksa dan verifikasi struk belanja/nota pengeluaran perusahaan yang sangat ketat dan akurat.
+Tugas utama Anda adalah memastikan integritas data keuangan dan mencegah manipulasi nominal akibat gambar yang buram, bergoyang, atau tidak jelas.
+
+LANGKAH 1 — VALIDASI KUALITAS & KELAYAKAN GAMBAR (SANGAT KRUSIAL):
+Periksa foto struk secara teliti:
+- Apakah foto mengalami motion blur (bergoyang), out of focus (buram/kabur), resolusi terlalu rendah, pencahayaan terlalu gelap/silau, atau terpotong?
+- Khusus untuk bagian NOMINAL ANGKA (total bayar / grand total / subtotal / rincian harga): Apakah angka terbaca dengan 100% jelas dan tegas tanpa keraguan?
+- ATURAN KETAT ANTI-HALUSINASI: DILARANG KERAS MENEBAK, MEMPERKIRAKAN, ATAU MENGARANG ANGKA jika angka terlihat samar, kabur, berbayang, atau tidak terbaca pasti!
+- JIKA FOTO BURAM / BERGOYANG / ANGKA TIDAK DAPAT DIBACA DENGAN JELAS DAN PASTI:
+  Anda WAJIB MENOLAK struk ini dengan menetapkan output JSON:
+  {
+    "is_clear": false,
+    "rejection_reason": "Foto struk buram atau bergoyang sehingga angka tidak dapat dibaca dengan jelas. Harap ambil foto ulang struk fisik Anda dengan posisi kamera stabil dan pencahayaan yang cukup.",
+    "merchant": null,
+    "date": null,
+    "items": [],
+    "subtotal": null,
+    "discount": null,
+    "tax": null,
+    "amount": null,
+    "raw_text": null
+  }
+
+LANGKAH 2 — EKSTRAKSI DATA (Hanya jika "is_clear" bernilai true):
+Jika dan hanya jika foto tajam, jelas, dan seluruh teks serta angka terbaca tanpa keraguan:
+1. "is_clear": true,
+2. "rejection_reason": null,
+3. "merchant": Nama toko / restoran / merchant (contoh: "Domino's Pizza", "INDOMARET", "ALFAMART", "SPBU PERTAMINA", "KFC", dll). Jika tidak tertera, null.
+4. "date": Tanggal transaksi dalam format standar YYYY-MM-DD (contoh: "2026-08-26"). Jika tidak ditemukan, null.
+5. "items": Daftar rincian barang/makanan/produk yang dibeli dalam bentuk array objek:
    [
      {
        "name": "Nama barang / produk",
@@ -54,15 +79,16 @@ Analisis foto struk ini dan ekstrak informasi berikut secara mendalam dan akurat
        "total": 45455
      }
    ]
-   (Ekstrak seluruh item yang tertera pada struk secara terpisah beserta qty dan harganya).
-4. "subtotal": Total harga belanjaan sebelum pajak dan diskon sebagai angka murni (contoh: 100000). Jika tidak tertera, isi null.
-5. "discount": Nilai diskon / potongan harga / promo sebagai angka positif murni (contoh: 10000). Jika tidak ada diskon, isi null.
-6. "tax": Nilai pajak / PPN / PB1 / Service Charge sebagai angka murni (contoh: 10000). Jika tidak ada pajak, isi null.
-7. "amount": Total nominal pembayaran akhir / Grand Total yang dibayarkan pelanggan dalam bentuk angka murni tanpa simbol (contoh: 110000).
-8. "raw_text": Seluruh teks yang terbaca pada struk dari atas ke bawah.
+6. "subtotal": Total belanjaan sebelum pajak dan diskon sebagai angka murni (contoh: 100000). Jika tidak tertera, null.
+7. "discount": Nilai diskon / potongan harga / promo sebagai angka positif murni (contoh: 10000). Jika tidak ada diskon, null.
+8. "tax": Nilai pajak / PPN / PB1 / Service Charge sebagai angka murni (contoh: 10000). Jika tidak ada pajak, null.
+9. "amount": Total nominal pembayaran akhir / Grand Total yang dibayarkan pelanggan dalam bentuk angka murni tanpa simbol (contoh: 110000).
+10. "raw_text": Seluruh teks yang terbaca pada struk dari atas ke bawah.
 
 Kembalikan HANYA format JSON valid tanpa tanda markdown tambahan:
 {
+  "is_clear": true,
+  "rejection_reason": null,
   "merchant": "Domino's Pizza Ramayana Semper",
   "date": "2026-08-26",
   "items": [
@@ -81,8 +107,13 @@ Kembalikan HANYA format JSON valid tanpa tanda markdown tambahan:
 }
 PROMPT;
 
-        $model = env('GEMINI_MODEL', 'gemini-1.5-flash');
-        $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
+        $primaryModel = config('services.gemini.model') ?? env('GEMINI_MODEL', 'gemini-3.5-flash-lite');
+        $candidateModels = array_values(array_unique(array_filter([
+            $primaryModel,
+            'gemini-3.5-flash-lite',
+            'gemini-3.1-flash-lite',
+            'gemini-3.5-flash',
+        ])));
 
         $payload = [
             'contents' => [
@@ -104,18 +135,51 @@ PROMPT;
             ],
         ];
 
-        try {
-            $response = Http::timeout(30)
-                ->withHeaders(['Content-Type' => 'application/json'])
-                ->post($url, $payload);
-        } catch (\Exception $e) {
-            Log::error('Gemini Vision OCR connection error', ['error' => $e->getMessage()]);
-            throw new \RuntimeException('Gagal terhubung ke Gemini Vision API: ' . $e->getMessage());
+        $response = null;
+        $lastException = null;
+
+        foreach ($candidateModels as $index => $model) {
+            $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
+
+            try {
+                $response = Http::timeout(10)
+                    ->withHeaders(['Content-Type' => 'application/json'])
+                    ->post($url, $payload);
+
+                if ($response->successful()) {
+                    break;
+                }
+
+                $status = $response->status();
+                $body   = $response->body();
+
+                if (isset($candidateModels[$index + 1])) {
+                    Log::warning("Gemini Vision OCR: Model {$model} error ({$status}), mencoba fallback ke model {$candidateModels[$index + 1]}", [
+                        'status' => $status,
+                        'body'   => $body,
+                    ]);
+                    continue;
+                }
+
+                break;
+            } catch (\Exception $e) {
+                $lastException = $e;
+                Log::warning("Gemini Vision OCR connection error with model {$model}", ['error' => $e->getMessage()]);
+                if (isset($candidateModels[$index + 1])) {
+                    Log::info("Gemini Vision OCR: Fallback dari {$model} ke {$candidateModels[$index + 1]} setelah timeout/exception");
+                    continue;
+                }
+                throw new \RuntimeException('Gagal terhubung ke Gemini Vision API: ' . $e->getMessage());
+            }
         }
 
-        if (! $response->successful()) {
-            $status = $response->status();
-            $body   = $response->body();
+        if (! $response && $lastException) {
+            throw new \RuntimeException('Gagal terhubung ke Gemini Vision API: ' . $lastException->getMessage());
+        }
+
+        if (! $response || ! $response->successful()) {
+            $status = $response ? $response->status() : 500;
+            $body   = $response ? $response->body() : 'No response from Gemini API';
             Log::error('Gemini Vision API response error', [
                 'status' => $status,
                 'body'   => $body,
@@ -146,8 +210,13 @@ PROMPT;
 
         if (! is_array($parsed)) {
             // Fallback parsing menggunakan Concerns ParsesOcrText
+            $extractedAmount = $this->extractAmount($textOutput);
+            if ($extractedAmount === null) {
+                throw new \RuntimeException('Foto struk buram atau teks tidak terbaca jelas. Harap ambil foto ulang.');
+            }
+
             return [
-                'amount'   => $this->extractAmount($textOutput),
+                'amount'   => $extractedAmount,
                 'subtotal' => null,
                 'tax'      => null,
                 'discount' => null,
@@ -156,6 +225,18 @@ PROMPT;
                 'date'     => $this->extractDate($textOutput),
                 'raw_text' => $textOutput,
             ];
+        }
+
+        // ─── Validasi Kualitas & Ketertelisikan Gambar ───────────────────
+        if (isset($parsed['is_clear']) && $parsed['is_clear'] === false) {
+            $reason = ! empty($parsed['rejection_reason'])
+                ? (string) $parsed['rejection_reason']
+                : 'Foto struk buram atau bergoyang sehingga angka tidak dapat dibaca jelas. Harap ambil foto ulang.';
+            throw new \RuntimeException($reason);
+        }
+
+        if (! empty($parsed['rejection_reason'])) {
+            throw new \RuntimeException((string) $parsed['rejection_reason']);
         }
 
         $rawText = $parsed['raw_text'] ?? $textOutput;
@@ -174,8 +255,16 @@ PROMPT;
             }
         }
 
+        $finalAmount = isset($parsed['amount']) && is_numeric($parsed['amount'])
+            ? (float) $parsed['amount']
+            : $this->extractAmount($rawText);
+
+        if ($finalAmount === null) {
+            throw new \RuntimeException('Foto struk buram atau angka total tidak terdeteksi dengan pasti. Harap ambil foto ulang.');
+        }
+
         return [
-            'amount'   => isset($parsed['amount']) && is_numeric($parsed['amount']) ? (float) $parsed['amount'] : $this->extractAmount($rawText),
+            'amount'   => $finalAmount,
             'subtotal' => isset($parsed['subtotal']) && is_numeric($parsed['subtotal']) ? (float) $parsed['subtotal'] : null,
             'tax'      => isset($parsed['tax']) && is_numeric($parsed['tax']) ? (float) $parsed['tax'] : null,
             'discount' => isset($parsed['discount']) && is_numeric($parsed['discount']) ? (float) $parsed['discount'] : null,

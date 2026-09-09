@@ -12,7 +12,7 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['company_id', 'employee_code', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date'])]
+#[Fillable(['company_id', 'employee_code', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -35,11 +35,13 @@ class User extends Authenticatable
             'radius_enabled'       => 'boolean',
             'monthly_claim_limit'  => 'decimal:2',
             'device_bound_at'      => 'datetime',
-            'birth_date'           => 'date:Y-m-d',
-            'is_pregnant'          => 'boolean',
-            'joined_date'          => 'date:Y-m-d',
-            'contract_start_date'  => 'date:Y-m-d',
-            'contract_end_date'    => 'date:Y-m-d',
+            'birth_date'               => 'date:Y-m-d',
+            'is_pregnant'              => 'boolean',
+            'is_domicile_same_as_ktp'  => 'boolean',
+            'number_of_dependents'     => 'integer',
+            'joined_date'              => 'date:Y-m-d',
+            'contract_start_date'      => 'date:Y-m-d',
+            'contract_end_date'        => 'date:Y-m-d',
         ];
     }
 
@@ -87,5 +89,11 @@ class User extends Authenticatable
     public function loginAttempts()
     {
         return $this->hasMany(LoginAttempt::class);
+    }
+
+    /** Penugasan shift karyawan (user_shifts). */
+    public function userShifts()
+    {
+        return $this->hasMany(UserShift::class);
     }
 }

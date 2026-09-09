@@ -140,8 +140,22 @@ class ReceiptController extends Controller
             'claimed_amount' => 'sometimes|required|numeric|min:0',
         ];
 
-        // Jika OCR gagal — izinkan input manual field yang seharusnya diisi OCR
+        // Jika OCR gagal — cek apakah ditolak karena buram/bergoyang
         if ($receipt->ocr_status === 'failed') {
+            $ocrError = strtolower($receipt->ocr_error ?? '');
+            $isBlurry = str_contains($ocrError, 'buram') ||
+                str_contains($ocrError, 'blur') ||
+                str_contains($ocrError, 'bergoyang') ||
+                str_contains($ocrError, 'tidak terbaca') ||
+                str_contains($ocrError, 'tidak terdeteksi');
+
+            if ($isBlurry) {
+                return response()->json([
+                    'message' => 'Foto struk buram atau tidak terbaca jelas. Pengisian manual tidak diizinkan demi integritas data & kepatuhan audit. Silakan ambil foto ulang struk fisik Anda.',
+                    'code'    => 'RECEIPT_IMAGE_BLURRY',
+                ], 422);
+            }
+
             $rules['total_amount']   = 'sometimes|required|numeric|min:0';
             $rules['receipt_date']   = 'sometimes|required|date';
             $rules['vendor_name']    = 'nullable|string|max:255';
@@ -246,9 +260,25 @@ class ReceiptController extends Controller
         }
 
         if ($receipt->ocr_status === 'failed') {
-            return response()->json([
-                'message' => 'OCR gagal, isi data manual dulu.',
-            ], 400);
+            $ocrError = strtolower($receipt->ocr_error ?? '');
+            $isBlurry = str_contains($ocrError, 'buram') ||
+                str_contains($ocrError, 'blur') ||
+                str_contains($ocrError, 'bergoyang') ||
+                str_contains($ocrError, 'tidak terbaca') ||
+                str_contains($ocrError, 'tidak terdeteksi');
+
+            if ($isBlurry) {
+                return response()->json([
+                    'message' => 'Foto struk buram atau tidak terbaca jelas. Harap ambil foto ulang struk fisik Anda sebelum mengajukan klaim.',
+                    'code'    => 'RECEIPT_IMAGE_BLURRY',
+                ], 422);
+            }
+
+            if ($receipt->total_amount === null || $receipt->receipt_date === null) {
+                return response()->json([
+                    'message' => 'OCR gagal membaca struk. Silakan lengkapi data manual terlebih dahulu.',
+                ], 400);
+            }
         }
 
         $claimVal = (float) ($receipt->claimed_amount ?: $receipt->total_amount);

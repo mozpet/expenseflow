@@ -57,7 +57,15 @@ class UserController extends Controller
                 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit',
                 'is_active', 'employment_type', 'joined_date', 'identity_number',
                 'contract_start_date', 'contract_end_date', 'bank_name',
-                'bank_account_no', 'bank_account_holder', 'created_at', 'updated_at',
+                'bank_account_no', 'bank_account_holder',
+                // Prioritas 1 fields
+                'emergency_contact_name', 'emergency_contact_relation',
+                'emergency_contact_phone', 'emergency_contact_address',
+                'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province',
+                'domicile_address', 'is_domicile_same_as_ktp',
+                'religion', 'marital_status', 'number_of_dependents',
+                'blood_type', 'medical_conditions',
+                'created_at', 'updated_at',
             ])
             ->latest()
             ->paginate($limit);
@@ -101,6 +109,25 @@ class UserController extends Controller
             'bank_name'             => 'nullable|string|max:50',
             'bank_account_no'       => 'nullable|string|max:50',
             'bank_account_holder'   => 'nullable|string|max:150',
+            // Prioritas 1 — Kontak Darurat
+            'emergency_contact_name'     => 'nullable|string|max:150',
+            'emergency_contact_relation' => ['nullable', Rule::in(['Orang Tua', 'Suami/Istri', 'Saudara', 'Anak', 'Lainnya'])],
+            'emergency_contact_phone'    => 'nullable|string|max:20',
+            'emergency_contact_address'  => 'nullable|string|max:500',
+            // Prioritas 1 — Alamat KTP & Domisili
+            'ktp_address'                => 'nullable|string|max:500',
+            'ktp_postal_code'            => 'nullable|string|max:10',
+            'ktp_city'                   => 'nullable|string|max:100',
+            'ktp_province'               => 'nullable|string|max:100',
+            'domicile_address'           => 'nullable|string|max:500',
+            'is_domicile_same_as_ktp'    => 'nullable|boolean',
+            // Prioritas 1 — Agama & Status Sipil
+            'religion'                   => ['nullable', Rule::in(['Islam', 'Kristen', 'Katolik', 'Hindu', 'Buddha', 'Konghucu'])],
+            'marital_status'             => ['nullable', Rule::in(['single', 'married', 'divorced', 'widowed'])],
+            'number_of_dependents'       => 'nullable|integer|min:0|max:20',
+            // Prioritas 1 — K3 & Medis
+            'blood_type'                 => ['nullable', Rule::in(['A', 'B', 'AB', 'O', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])],
+            'medical_conditions'         => 'nullable|string|max:1000',
         ]);
 
         $gender = null;
@@ -130,9 +157,25 @@ class UserController extends Controller
             'joined_date'           => $validated['joined_date'] ?? null,
             'contract_start_date'   => $validated['contract_start_date'] ?? null,
             'contract_end_date'     => $validated['contract_end_date'] ?? null,
-            'bank_name'             => $validated['bank_name'] ?? null,
-            'bank_account_no'       => $validated['bank_account_no'] ?? null,
-            'bank_account_holder'   => $validated['bank_account_holder'] ?? null,
+            'bank_name'                  => $validated['bank_name'] ?? null,
+            'bank_account_no'            => $validated['bank_account_no'] ?? null,
+            'bank_account_holder'        => $validated['bank_account_holder'] ?? null,
+            // Prioritas 1
+            'emergency_contact_name'     => $validated['emergency_contact_name'] ?? null,
+            'emergency_contact_relation' => $validated['emergency_contact_relation'] ?? null,
+            'emergency_contact_phone'    => $validated['emergency_contact_phone'] ?? null,
+            'emergency_contact_address'  => $validated['emergency_contact_address'] ?? null,
+            'ktp_address'                => $validated['ktp_address'] ?? null,
+            'ktp_postal_code'            => $validated['ktp_postal_code'] ?? null,
+            'ktp_city'                   => $validated['ktp_city'] ?? null,
+            'ktp_province'               => $validated['ktp_province'] ?? null,
+            'domicile_address'           => $validated['domicile_address'] ?? null,
+            'is_domicile_same_as_ktp'    => (bool) ($validated['is_domicile_same_as_ktp'] ?? false),
+            'religion'                   => $validated['religion'] ?? null,
+            'marital_status'             => $validated['marital_status'] ?? null,
+            'number_of_dependents'       => $validated['number_of_dependents'] ?? 0,
+            'blood_type'                 => $validated['blood_type'] ?? null,
+            'medical_conditions'         => $validated['medical_conditions'] ?? null,
         ]);
 
         AuditLogger::log(
@@ -148,6 +191,12 @@ class UserController extends Controller
                 'identity_number', 'monthly_claim_limit', 'employment_type',
                 'joined_date', 'contract_start_date', 'contract_end_date',
                 'bank_name', 'bank_account_no', 'bank_account_holder',
+                'emergency_contact_name', 'emergency_contact_relation',
+                'emergency_contact_phone', 'emergency_contact_address',
+                'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province',
+                'domicile_address', 'is_domicile_same_as_ktp',
+                'religion', 'marital_status', 'number_of_dependents',
+                'blood_type', 'medical_conditions',
             ])
         );
 
@@ -158,7 +207,13 @@ class UserController extends Controller
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
                 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
-                'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder'
+                'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
+                'emergency_contact_name', 'emergency_contact_relation',
+                'emergency_contact_phone', 'emergency_contact_address',
+                'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province',
+                'domicile_address', 'is_domicile_same_as_ktp',
+                'religion', 'marital_status', 'number_of_dependents',
+                'blood_type', 'medical_conditions',
             ]),
         ], 201);
     }
@@ -204,6 +259,25 @@ class UserController extends Controller
             'bank_name'             => 'sometimes|nullable|string|max:50',
             'bank_account_no'       => 'sometimes|nullable|string|max:50',
             'bank_account_holder'   => 'sometimes|nullable|string|max:150',
+            // Prioritas 1 — Kontak Darurat
+            'emergency_contact_name'     => 'sometimes|nullable|string|max:150',
+            'emergency_contact_relation' => 'sometimes|nullable|string|max:50',
+            'emergency_contact_phone'    => 'sometimes|nullable|string|max:20',
+            'emergency_contact_address'  => 'sometimes|nullable|string|max:500',
+            // Prioritas 1 — Alamat KTP & Domisili
+            'ktp_address'                => 'sometimes|nullable|string|max:500',
+            'ktp_postal_code'            => 'sometimes|nullable|string|max:10',
+            'ktp_city'                   => 'sometimes|nullable|string|max:100',
+            'ktp_province'               => 'sometimes|nullable|string|max:100',
+            'domicile_address'           => 'sometimes|nullable|string|max:500',
+            'is_domicile_same_as_ktp'    => 'sometimes|nullable|boolean',
+            // Prioritas 1 — Agama & Status Sipil
+            'religion'                   => ['sometimes', 'nullable', Rule::in(['Islam', 'Kristen', 'Katolik', 'Hindu', 'Buddha', 'Konghucu'])],
+            'marital_status'             => ['sometimes', 'nullable', Rule::in(['single', 'married', 'divorced', 'widowed'])],
+            'number_of_dependents'       => 'sometimes|nullable|integer|min:0|max:20',
+            // Prioritas 1 — K3 & Medis
+            'blood_type'                 => ['sometimes', 'nullable', Rule::in(['A', 'B', 'AB', 'O', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])],
+            'medical_conditions'         => 'sometimes|nullable|string|max:1000',
         ]);
 
         // Hanya super_admin yang boleh menetapkan role super_admin (cegah escalation).
@@ -234,6 +308,12 @@ class UserController extends Controller
             'identity_number', 'attendance_setting_id', 'monthly_claim_limit',
             'employment_type', 'joined_date', 'contract_start_date',
             'contract_end_date', 'bank_name', 'bank_account_no', 'bank_account_holder',
+            'emergency_contact_name', 'emergency_contact_relation',
+            'emergency_contact_phone', 'emergency_contact_address',
+            'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province',
+            'domicile_address', 'is_domicile_same_as_ktp',
+            'religion', 'marital_status', 'number_of_dependents',
+            'blood_type', 'medical_conditions',
         ]);
 
         $user->update($validated);
@@ -269,7 +349,13 @@ class UserController extends Controller
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
                 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
-                'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder'
+                'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
+                'emergency_contact_name', 'emergency_contact_relation',
+                'emergency_contact_phone', 'emergency_contact_address',
+                'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province',
+                'domicile_address', 'is_domicile_same_as_ktp',
+                'religion', 'marital_status', 'number_of_dependents',
+                'blood_type', 'medical_conditions',
             ]),
         ]);
     }
@@ -423,6 +509,22 @@ class UserController extends Controller
             'users.*.bank_account_no'        => 'nullable|string|max:50',
             'users.*.bank_account_holder'    => 'nullable|string|max:150',
             'users.*.leave_balance'          => 'nullable|numeric|min:0',
+            // Prioritas 1 — Kontak Darurat, Alamat, Agama, Status Sipil, Medis
+            'users.*.emergency_contact_name'     => 'nullable|string|max:150',
+            'users.*.emergency_contact_relation' => 'nullable|string|max:50',
+            'users.*.emergency_contact_phone'    => 'nullable|string|max:20',
+            'users.*.emergency_contact_address'  => 'nullable|string|max:500',
+            'users.*.ktp_address'                => 'nullable|string|max:500',
+            'users.*.ktp_postal_code'            => 'nullable|string|max:10',
+            'users.*.ktp_city'                   => 'nullable|string|max:100',
+            'users.*.ktp_province'               => 'nullable|string|max:100',
+            'users.*.domicile_address'           => 'nullable|string|max:500',
+            'users.*.is_domicile_same_as_ktp'    => 'nullable|boolean',
+            'users.*.religion'                   => 'nullable|string',
+            'users.*.marital_status'             => 'nullable|string',
+            'users.*.number_of_dependents'       => 'nullable|integer|min:0|max:20',
+            'users.*.blood_type'                 => 'nullable|string',
+            'users.*.medical_conditions'         => 'nullable|string|max:1000',
             'default_password'               => 'nullable|string|min:6',
             'default_role'                   => 'nullable|string',
             'default_attendance_setting_id'  => 'nullable|integer',
@@ -604,6 +706,25 @@ class UserController extends Controller
                 }
                 $birthPlace = !empty($row['birth_place']) ? trim($row['birth_place']) : null;
 
+                // Normalisasi field Prioritas 1
+                $emergencyPhone = !empty($row['emergency_contact_phone']) ? preg_replace('/[^0-9+]/', '', trim($row['emergency_contact_phone'])) : null;
+                $religion = !empty($row['religion']) && in_array(trim($row['religion']), ['Islam', 'Kristen', 'Katolik', 'Hindu', 'Buddha', 'Konghucu']) ? trim($row['religion']) : null;
+                $rawMarital = !empty($row['marital_status']) ? strtolower(trim($row['marital_status'])) : null;
+                $maritalStatus = null;
+                if ($rawMarital) {
+                    if (in_array($rawMarital, ['single', 'lajang', 'belum menikah', 'belum kawin'])) {
+                        $maritalStatus = 'single';
+                    } elseif (in_array($rawMarital, ['married', 'menikah', 'kawin'])) {
+                        $maritalStatus = 'married';
+                    } elseif (in_array($rawMarital, ['divorced', 'cerai', 'cerai hidup'])) {
+                        $maritalStatus = 'divorced';
+                    } elseif (in_array($rawMarital, ['widowed', 'janda', 'duda', 'cerai mati'])) {
+                        $maritalStatus = 'widowed';
+                    }
+                }
+                $bloodType = !empty($row['blood_type']) && in_array(strtoupper(trim($row['blood_type'])), ['A', 'B', 'AB', 'O', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-']) ? strtoupper(trim($row['blood_type'])) : null;
+                $isDomicileSame = isset($row['is_domicile_same_as_ktp']) ? (bool) $row['is_domicile_same_as_ktp'] : false;
+
                 // Buat user baru
                 $user = User::create([
                     'company_id'            => $companyId,
@@ -632,6 +753,22 @@ class UserController extends Controller
                     'bank_name'             => !empty($row['bank_name']) ? trim($row['bank_name']) : null,
                     'bank_account_no'       => !empty($row['bank_account_no']) ? trim($row['bank_account_no']) : null,
                     'bank_account_holder'   => !empty($row['bank_account_holder']) ? trim($row['bank_account_holder']) : $name,
+                    // Prioritas 1
+                    'emergency_contact_name'     => !empty($row['emergency_contact_name']) ? trim($row['emergency_contact_name']) : null,
+                    'emergency_contact_relation' => !empty($row['emergency_contact_relation']) ? trim($row['emergency_contact_relation']) : null,
+                    'emergency_contact_phone'    => $emergencyPhone,
+                    'emergency_contact_address'  => !empty($row['emergency_contact_address']) ? trim($row['emergency_contact_address']) : null,
+                    'ktp_address'                => !empty($row['ktp_address']) ? trim($row['ktp_address']) : null,
+                    'ktp_postal_code'            => !empty($row['ktp_postal_code']) ? trim($row['ktp_postal_code']) : null,
+                    'ktp_city'                   => !empty($row['ktp_city']) ? trim($row['ktp_city']) : null,
+                    'ktp_province'               => !empty($row['ktp_province']) ? trim($row['ktp_province']) : null,
+                    'domicile_address'           => !empty($row['domicile_address']) ? trim($row['domicile_address']) : null,
+                    'is_domicile_same_as_ktp'    => $isDomicileSame,
+                    'religion'                   => $religion,
+                    'marital_status'             => $maritalStatus,
+                    'number_of_dependents'       => isset($row['number_of_dependents']) && is_numeric($row['number_of_dependents']) ? (int) $row['number_of_dependents'] : 0,
+                    'blood_type'                 => $bloodType,
+                    'medical_conditions'         => !empty($row['medical_conditions']) ? trim($row['medical_conditions']) : null,
                 ]);
 
                 // Inisialisasi saldo cuti jika disediakan

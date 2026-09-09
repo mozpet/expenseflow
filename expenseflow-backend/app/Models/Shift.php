@@ -16,12 +16,14 @@ class Shift extends Model
         'description',
         'is_active',
         'color',
+        'late_tolerance_minutes',
     ];
 
     protected function casts(): array
     {
         return [
-            'is_active' => 'boolean',
+            'is_active'              => 'boolean',
+            'late_tolerance_minutes' => 'integer',
         ];
     }
 

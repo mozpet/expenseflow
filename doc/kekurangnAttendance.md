@@ -505,3 +505,30 @@ if ($startStr === $today) {
 - **Kondisi Saat Ini:** Tidak ada endpoint analitik yang membandingkan antara **Shift yang Ditugaskan** vs **Presensi Nyata di Lapangan**.
 - **Dampak Operasional:** HRD tidak dapat mendeteksi karyawan yang melakukan presensi di luar jadwal shift-nya (misal: dijadwalkan Shift 1 Pagi tapi masuk di Shift 2 Siang tanpa izin tukar dinas).
 
+---
+
+#### 16. [SELESAI ✅ 2026-09-09] Penegasan Pola Rotasi Khusus Per-Cabang (Penghapusan Opsi 'Semua Cabang')
+- **Lokasi Kode:**
+  - Backend Controller: `app/Http/Controllers/API/ShiftController.php` (`patternStore()`, `patternIndex()`).
+  - Frontend Web: `expenseflow-web/src/components/ShiftManagement.tsx` (`ShiftPatternFormModal`, filter shift, validasi form, preselection kantor cabang pertama).
+  - Automated Tests: 
+    - `tests/Feature/ShiftPatternRotationTest.php` (22 test methods, 154 assertions green).
+    - `tests/Feature/ShiftRotationWfhFieldNightTest.php` (6 test methods, 52 assertions green).
+- **Latar Belakang & Alasan:**
+  - Opsi *"Semua Cabang (Company-wide)"* pada Pola Rotasi berpotensi menimbulkan kerancuan dan bug operasional:
+    1. Pola rotasi company-wide dapat memanggil template shift yang terikat pada cabang tertentu, membingungkan radius geofencing/koordinat presensi karyawan di cabang lain.
+    2. Kalender libur mingguan, batas jam kerja, dan perhitungan jeda istirahat K3 antarshift antar-cabang bisa berbeda.
+    3. Pencegahan human error admin/HRD saat meng-assign pola ke karyawan lintas cabang.
+- **Implementasi Fitur:**
+  1. **Backend Validation Guard:**
+     - `patternStore()` mengubah aturan validasi `attendance_setting_id` dari `nullable` menjadi `required|integer|exists:attendance_settings,id`.
+     - Pesan kesalahan validasi bahasa Indonesia yang jelas: *"Cabang / lokasi kantor wajib dipilih untuk pola rotasi shift."*.
+     - `patternIndex()` menerapkan filter ketat berdasarkan parameter `attendance_setting_id`.
+  2. **Antarmuka Pengguna Frontend Web (`ShiftManagement.tsx`):**
+     - Opsi `<option value="">— Semua Cabang (Company-wide) —</option>` dihapus dari dropdown modal pembuatan pola rotasi.
+     - Form otomatis memilih cabang pertama yang tersedia sebagai default (`offices[0]?.id`).
+     - Field ditandai wajib dengan asterisk merah `*` dan atribut HTML `required`.
+     - Validasi sisi klien memastikan `attendance_setting_id` terisi sebelum payload dikirimkan.
+     - Dropdown pilihan shift di dalam item siklus hanya menampilkan shift milik cabang yang dipilih atau shift global.
+
+

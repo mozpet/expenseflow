@@ -5,44 +5,28 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
-class ShiftPatternItem extends Model
+class ShiftPatternDayOverride extends Model
 {
     protected $fillable = [
         'shift_pattern_id',
-        'day_order',
-        'shift_id',
-        'name',
-        'color',
-        'is_off',
+        'day_of_week',
         'work_start_time',
         'work_end_time',
         'break_minutes',
         'late_tolerance_minutes',
-        'is_cross_day',
-        'is_wfh',
-        'is_field',
     ];
 
     protected function casts(): array
     {
         return [
-            'day_order'              => 'integer',
-            'is_off'                 => 'boolean',
+            'day_of_week'            => 'integer',
             'break_minutes'          => 'integer',
             'late_tolerance_minutes' => 'integer',
-            'is_cross_day'           => 'boolean',
-            'is_wfh'                 => 'boolean',
-            'is_field'               => 'boolean',
         ];
     }
 
     public function pattern(): BelongsTo
     {
         return $this->belongsTo(ShiftPattern::class, 'shift_pattern_id');
-    }
-
-    public function shift(): BelongsTo
-    {
-        return $this->belongsTo(Shift::class);
     }
 }

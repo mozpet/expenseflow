@@ -37,6 +37,7 @@ import {
   History,
   RotateCcw,
   Archive,
+  Layers,
   Sparkles,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
@@ -610,16 +611,20 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   const debouncedBalanceHistorySearch = useDebounce(balanceHistorySearch, 500);
   const [report, setReport] = useState<any | null>(null);
-  const [reportFilter, setReportFilter] = useState<{ start_date: string; end_date: string; status: string; type: string; search?: string; office_id?: string }>({
+  const [reportFilter, setReportFilter] = useState<{ start_date: string; end_date: string; status: string; type: string; search?: string; office_id?: string; shift_id?: string }>({
     start_date: '',
     end_date: '',
     status: '',
     type: '',
     search: '',
     office_id: '',
+    shift_id: '',
   });
   const [reportSearch, setReportSearch] = useState('');
   const [reportPage, setReportPage] = useState(1);
+  const [reportPageSize, setReportPageSize] = useState(25);
+  const [reportAvailableShifts, setReportAvailableShifts] = useState<any[]>([]);
+  const [reportSubTab, setReportSubTab] = useState<'log' | 'matrix'>('log');
   const [offices, setOffices] = useState<any[]>([]);
   const [todayOfficeFilter, setTodayOfficeFilter] = useState('');
   const [searchCheckedIn, setSearchCheckedIn] = useState('');
@@ -787,21 +792,26 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setError(null);
     try {
       if (forceRefresh) invalidateCache('/dashboard/attendance/report');
-      const f: any = { page };
+      const f: any = { page, per_page: reportPageSize };
       if (reportFilter.start_date) f.start_date = reportFilter.start_date;
       if (reportFilter.end_date) f.end_date = reportFilter.end_date;
       if (reportFilter.status) f.status = reportFilter.status;
       if (reportFilter.type) f.type = reportFilter.type;
       if (reportFilter.search) f.search = reportFilter.search;
       if (reportFilter.office_id) f.office_id = reportFilter.office_id;
-      setReport(await attendanceApi.report(f, forceRefresh));
+      if (reportFilter.shift_id) f.shift_id = reportFilter.shift_id;
+      const res: any = await attendanceApi.report(f, forceRefresh);
+      setReport(res);
+      if (res?.available_shifts?.length) {
+        setReportAvailableShifts(res.available_shifts);
+      }
     } catch (e) {
       reportApiError(e, 'Gagal memuat laporan presensi.');
     } finally {
       setLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reportFilter, reportPage]);
+  }, [reportFilter, reportPage, reportPageSize]);
 
   const loadHolidays = useCallback(async (forceRefresh = false) => {
     setLoading(true);
@@ -844,7 +854,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, balanceSubTab, reportFilter, reportPage, holidayYear, loadBalanceHistories]);
+  }, [tab, balanceSubTab, reportFilter, reportPage, reportPageSize, holidayYear, loadBalanceHistories]);
 
   // Ketentuan 3: Auto-refresh data jika server mendeteksi data baru masuk dari mobile/backend
   useEffect(() => {
@@ -970,6 +980,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       if (reportFilter.type) f.type = reportFilter.type;
       if (reportFilter.search) f.search = reportFilter.search;
       if (reportFilter.office_id) f.office_id = reportFilter.office_id;
+      if (reportFilter.shift_id) f.shift_id = reportFilter.shift_id;
       await attendanceApi.exportReport(f);
       onAddAuditLog('Export Laporan Presensi', 'Mengunduh laporan presensi (CSV)', 'bg-indigo-600');
     } catch (e) {
@@ -2459,31 +2470,41 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       {tab === 'report' && (
         <div className="space-y-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4">
-            <div className="flex justify-between items-center">
+            <div className="flex flex-wrap justify-between items-center gap-3">
               <div className="flex items-center gap-3">
                 <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Filter Data</h3>
                 {(reportFilter.start_date || reportFilter.end_date) && (
                   <button
                     onClick={() => setReportFilterAndReset({ ...reportFilter, start_date: '', end_date: '' })}
-                    className="text-[10px] flex items-center gap-1 font-semibold text-rose-500 hover:text-rose-600 transition-colors bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 dark:hover:bg-rose-900/50 px-2 py-1 rounded-md"
+                    className="text-[10px] flex items-center gap-1 font-semibold text-rose-500 hover:text-rose-600 transition-colors bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/30 dark:hover:bg-rose-900/50 px-2 py-1 rounded-md cursor-pointer"
                   >
                     <X className="w-3 h-3" />
                     Reset Tanggal
                   </button>
                 )}
               </div>
-              <div className="relative w-full sm:w-64 shrink-0">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
-                <input
-                  type="text"
-                  placeholder="Cari nama karyawan..."
-                  value={reportSearch}
-                  onChange={(e) => setReportSearch(e.target.value)}
-                  className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors"
-                />
+              <div className="flex items-center gap-2.5 w-full sm:w-auto">
+                <div className="relative flex-1 sm:w-64 shrink-0">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                  <input
+                    type="text"
+                    placeholder="Cari nama karyawan..."
+                    value={reportSearch}
+                    onChange={(e) => setReportSearch(e.target.value)}
+                    className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors"
+                  />
+                </div>
+                <button
+                  onClick={handleExport}
+                  className="flex items-center justify-center gap-1.5 px-3.5 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-200 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition shrink-0 cursor-pointer shadow-2xs"
+                  title="Unduh data laporan dalam format CSV"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Export CSV</span>
+                </button>
               </div>
             </div>
-            <div className="grid grid-cols-2 md:grid-cols-6 gap-4 items-end">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 items-end">
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Dari Tanggal</label>
                 <CustomDatePicker
@@ -2511,8 +2532,39 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               </div>
 
               <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor</label>
+                <select value={reportFilter.office_id || ''} onChange={(e) => setReportFilterAndReset({ ...reportFilter, office_id: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer">
+                  <option value="">Semua Kantor</option>
+                  {offices.map(o => (
+                    <option key={o.id} value={o.id}>{o.office_name}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Shift</label>
+                <select
+                  value={reportFilter.shift_id || ''}
+                  onChange={(e) => setReportFilterAndReset({ ...reportFilter, shift_id: e.target.value })}
+                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer"
+                >
+                  <option value="">Semua Shift</option>
+                  <option value="office">🏢 Kantor (Default)</option>
+                  {reportAvailableShifts.map((s) => {
+                    const shiftStat = report?.by_shift?.find((bs: any) => bs.shift_id === s.id);
+                    const lateNote = shiftStat?.late > 0 ? ` (⚠️ ${shiftStat.late} Telat)` : '';
+                    return (
+                      <option key={s.id} value={s.id}>
+                        {s.name}{lateNote}
+                      </option>
+                    );
+                  })}
+                </select>
+              </div>
+
+              <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Status</label>
-                <select value={reportFilter.status} onChange={(e) => setReportFilterAndReset({ ...reportFilter, status: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors">
+                <select value={reportFilter.status} onChange={(e) => setReportFilterAndReset({ ...reportFilter, status: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer">
                   <option value="">Semua Status</option>
                   <option value="present">Hadir</option>
                   <option value="late">Telat</option>
@@ -2524,28 +2576,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <option value="sakit">Sakit</option>
                 </select>
               </div>
+
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Lokasi</label>
-                <select value={reportFilter.type} onChange={(e) => setReportFilterAndReset({ ...reportFilter, type: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors">
+                <select value={reportFilter.type} onChange={(e) => setReportFilterAndReset({ ...reportFilter, type: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer">
                   <option value="">Semua Lokasi</option>
                   <option value="onsite">On Site</option>
                   <option value="wfh">WFH</option>
                   <option value="field">Lapangan</option>
                 </select>
-              </div>
-              <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor</label>
-                <select value={reportFilter.office_id || ''} onChange={(e) => setReportFilterAndReset({ ...reportFilter, office_id: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors">
-                  <option value="">Semua Kantor</option>
-                  {offices.map(o => (
-                    <option key={o.id} value={o.id}>{o.office_name}</option>
-                  ))}
-                </select>
-              </div>
-              <div className="pt-2 flex gap-2">
-                <button onClick={handleExport} className="w-full flex items-center justify-center gap-1.5 px-3 py-2.5 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-lg text-xs font-bold transition">
-                  <Download className="w-3.5 h-3.5" /> Export CSV
-                </button>
               </div>
             </div>
           </div>
@@ -2554,6 +2593,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             <TabSkeleton tab="report" />
           ) : report && (
             <>
+              {/* Summary global */}
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-11 gap-3">
                 <SummaryCard label="Hadir" value={report.summary?.present ?? 0} color="text-emerald-600" />
                 <SummaryCard label="Telat" value={report.summary?.late ?? 0} color="text-amber-600" />
@@ -2568,197 +2608,450 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <SummaryCard label="Lembur" value={fmtMinutes(report.summary?.total_overtime_minutes)} color="text-orange-600" />
               </div>
 
-              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 overflow-x-auto">
-                <table className="w-full text-xs text-left">
-                  <thead>
-                    <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
-                      <th className="py-2 px-2 font-semibold">NIK</th>
-                      <th className="py-2 px-2 font-semibold">
-                        <button
-                          onClick={() => setReportNameSort(s => s === 'asc' ? 'desc' : 'asc')}
-                          className="flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group"
-                          title="Urutkan berdasarkan nama"
-                        >
-                          Nama
-                          <span className="text-[10px] font-bold">
-                            {reportNameSort === 'asc' ? '↑' : reportNameSort === 'desc' ? '↓' : <span className="opacity-30 group-hover:opacity-70">↕</span>}
-                          </span>
-                        </button>
-                      </th>
-                      <th className="py-2 px-2 font-semibold">Departemen</th>
-                      <th className="py-2 px-2 font-semibold">Tanggal</th>
-                      <th className="py-2 px-2 font-semibold">Masuk</th>
-                      <th className="py-2 px-2 font-semibold">Pulang</th>
-                      <th className="py-2 px-2 font-semibold">Jam Kerja</th>
-                      <th className="py-2 px-2 font-semibold">Telat</th>
-                      <th className="py-2 px-2 font-semibold">Lembur</th>
-                      <th className="py-2 px-2 font-semibold">Lokasi</th>
-                      <th className="py-2 px-2 font-semibold">GPS (WFH)</th>
-                      <th className="py-2 px-2 font-semibold text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-                    {(() => {
-                      let filteredReport = rows(report.report);
-                      if (reportNameSort) {
-                        filteredReport = [...filteredReport].sort((a: any, b: any) => {
-                          const cmp = (a.user_name ?? '').localeCompare(b.user_name ?? '', 'id');
-                          return reportNameSort === 'asc' ? cmp : -cmp;
-                        });
-                      }
+              {/* ── Sub-nav Mode Tampilan: Detail Log Presensi vs Rekapitulasi per Shift ── */}
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
+                  <button
+                    type="button"
+                    onClick={() => setReportSubTab('log')}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                      reportSubTab === 'log'
+                        ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <ClipboardList className="w-3.5 h-3.5" />
+                    <span>Detail Log Presensi</span>
+                    {report?.report?.total !== undefined && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-100 dark:bg-slate-800 font-mono">
+                        {report.report.total}
+                      </span>
+                    )}
+                  </button>
 
-                      if (filteredReport.length === 0) {
-                        return (
-                          <tr>
-                            <td colSpan={10} className="text-center py-12">
-                              <div className="flex flex-col items-center justify-center text-slate-400 space-y-3">
-                                <div className="w-12 h-12 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center">
-                                  <CalendarCheck className="w-6 h-6 opacity-40" />
-                                </div>
-                                <p className="text-xs font-medium">{reportSearch ? `Tidak ada karyawan bernama "${reportSearch}" di laporan ini.` : 'Tidak ada data presensi pada periode ini.'}</p>
-                              </div>
-                            </td>
-                          </tr>
-                        );
-                      }
+                  <button
+                    type="button"
+                    onClick={() => setReportSubTab('matrix')}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                      reportSubTab === 'matrix'
+                        ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                        : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <BarChart3 className="w-3.5 h-3.5" />
+                    <span>Rekapitulasi per Shift</span>
+                    {report?.by_shift && report.by_shift.length > 0 && (
+                      <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 font-mono font-bold">
+                        {report.by_shift.length} Shift
+                      </span>
+                    )}
+                  </button>
+                </div>
 
-                      return filteredReport.map((r: any, idx: number) => {
-                        const isVirtual = r.id === null; // baris virtual absent/leave
-                        return (
-                          <tr
-                            key={r.id ?? `v-${r.user_id}-${r.date}-${idx}`}
-                            className={`transition-colors ${isVirtual
-                              ? 'bg-slate-50/60 dark:bg-slate-800/20 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
-                              : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
-                              }`}
-                          >
-                            <td className="py-3 px-2 text-slate-500 whitespace-nowrap font-mono text-[11px]">{r.employee_code ?? '—'}</td>
-                            <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">{r.user_name}</td>
-                            <td className="py-3 px-2 text-slate-500 whitespace-nowrap">{r.department ?? '—'}</td>
-                            <td className="py-3 px-2 text-slate-500 whitespace-nowrap">
-                              <span className="inline-flex items-center gap-1">
-                                {fmtDateRange(r.date, r.is_cross_day ? r.checkout_date : null)}
-                                {r.is_cross_day && (
-                                  <span title="Shift lintas tengah malam">
-                                    <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
-                                  </span>
-                                )}
-                              </span>
-                            </td>
-                            <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_in_time)}</td>
-                            <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_out_time)}</td>
-                            <td className="py-3 px-2 font-mono text-violet-600 dark:text-violet-400 font-medium whitespace-nowrap">
-                              {r.working_minutes != null ? fmtMinutes(r.working_minutes) : <span className="text-slate-300 dark:text-slate-600">—</span>}
-                            </td>
-                            <td className="py-3 px-2 font-mono whitespace-nowrap">
-                              {r.late_minutes ? (
-                                <span className="text-rose-600 dark:text-rose-400 font-medium">
-                                  {fmtMinutes(r.late_minutes)}
-                                </span>
-                              ) : (
-                                <span className="text-slate-300 dark:text-slate-600">—</span>
-                              )}
-                            </td>
-                            <td className="py-3 px-2 font-mono whitespace-nowrap">
-                              {r.overtime_minutes > 0 ? (
-                                <span className="text-orange-600 dark:text-orange-400 font-medium">
-                                  {fmtMinutes(r.overtime_minutes)}
-                                  {r.is_holiday ? <span className="ml-1 text-[9px] font-bold text-rose-500">LIBUR</span> : null}
-                                </span>
-                              ) : (
-                                <span className="text-slate-300 dark:text-slate-600">—</span>
-                              )}
-                            </td>
-                            <td className="py-3 px-2 whitespace-nowrap">
-                              {r.check_in_type ? (
-                                <span className="flex items-center gap-1.5">
-                                  {r.check_in_type === 'wfh' && <Home className="w-3.5 h-3.5 text-indigo-500" />}
-                                  {r.check_in_type === 'field' && <MapPin className="w-3.5 h-3.5 text-amber-500" />}
-                                  {r.check_in_type === 'onsite' && <Building2 className="w-3.5 h-3.5 text-slate-400" />}
-                                  {r.check_in_type === 'wfh' ? 'WFH' : r.check_in_type === 'field' ? 'Lapangan' : 'Kantor'}
-                                </span>
-                              ) : (
-                                <span className="text-slate-300 dark:text-slate-600">—</span>
-                              )}
-                            </td>
-                            <td className="py-3 px-2 whitespace-nowrap">
-                              {(r.check_in_type === 'wfh' || r.check_in_type === 'field') && r.check_in_lat && r.check_in_lng ? (
-                                <a
-                                  href={`https://www.google.com/maps?q=${r.check_in_lat},${r.check_in_lng}`}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  title={`Buka di Google Maps: ${Number(r.check_in_lat).toFixed(6)}, ${Number(r.check_in_lng).toFixed(6)}`}
-                                  className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:underline text-[11px] font-mono transition-colors"
-                                >
-                                  <MapPin className="w-3 h-3 shrink-0" />
-                                  {Number(r.check_in_lat).toFixed(4)},
-                                  {Number(r.check_in_lng).toFixed(4)}
-                                </a>
-                              ) : (
-                                <span className="text-slate-300 dark:text-slate-600 text-[11px]">—</span>
-                              )}
-                            </td>
-                            <td className="py-3 px-2 text-center whitespace-nowrap">
-                              <span className={`inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${statusBadge(r.status)}`}>
-                                {statusLabel(r.status)}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      });
-                    })()}
-                  </tbody>
-                </table>
+                {/* Indikator Filter Shift Aktif */}
+                {reportFilter.shift_id && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <span className="text-slate-500 text-[11px]">Filter Shift aktif:</span>
+                    <span className="px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 font-medium text-[11px] border border-indigo-200 dark:border-indigo-800 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-indigo-500" />
+                      {reportFilter.shift_id === 'office'
+                        ? '🏢 Kantor (Default)'
+                        : reportAvailableShifts.find(s => String(s.id) === String(reportFilter.shift_id))?.name || reportFilter.shift_id}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setReportFilterAndReset({ ...reportFilter, shift_id: '' })}
+                      className="text-[11px] font-semibold text-rose-500 hover:underline cursor-pointer"
+                    >
+                      Reset Filter
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* Pagination */}
-              {(() => {
-                const meta = report?.report;
-                if (!meta || meta.last_page <= 1) return null;
-                return (
-                  <div className="flex items-center justify-between gap-3 mt-2 px-1">
-                    <p className="text-[11px] text-slate-400">
-                      Menampilkan {((meta.current_page - 1) * meta.per_page) + 1}–{Math.min(meta.current_page * meta.per_page, meta.total)} dari <span className="font-semibold text-slate-600 dark:text-slate-300">{meta.total}</span> baris
-                    </p>
+              {reportSubTab === 'log' ? (
+                <>
+                  <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
+                <div className="p-5 overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                        <th className="py-2 px-2 font-semibold">NIK</th>
+                        <th className="py-2 px-2 font-semibold">
+                          <button
+                            onClick={() => setReportNameSort(s => s === 'asc' ? 'desc' : 'asc')}
+                            className="flex items-center gap-1 hover:text-indigo-600 dark:hover:text-indigo-400 transition-colors group cursor-pointer"
+                            title="Urutkan berdasarkan nama"
+                          >
+                            Nama
+                            <span className="text-[10px] font-bold">
+                              {reportNameSort === 'asc' ? '↑' : reportNameSort === 'desc' ? '↓' : <span className="opacity-30 group-hover:opacity-70">↕</span>}
+                            </span>
+                          </button>
+                        </th>
+                        <th className="py-2 px-2 font-semibold">Departemen</th>
+                        <th className="py-2 px-2 font-semibold">Shift</th>
+                        <th className="py-2 px-2 font-semibold">Tanggal</th>
+                        <th className="py-2 px-2 font-semibold">Masuk</th>
+                        <th className="py-2 px-2 font-semibold">Pulang</th>
+                        <th className="py-2 px-2 font-semibold">Jam Kerja</th>
+                        <th className="py-2 px-2 font-semibold">Telat</th>
+                        <th className="py-2 px-2 font-semibold">Lembur</th>
+                        <th className="py-2 px-2 font-semibold">Lokasi</th>
+                        <th className="py-2 px-2 font-semibold">GPS (WFH)</th>
+                        <th className="py-2 px-2 font-semibold text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                      {(() => {
+                        let filteredReport = rows(report.report);
+                        if (reportNameSort) {
+                          filteredReport = [...filteredReport].sort((a: any, b: any) => {
+                            const cmp = (a.user_name ?? '').localeCompare(b.user_name ?? '', 'id');
+                            return reportNameSort === 'asc' ? cmp : -cmp;
+                          });
+                        }
+
+                        if (filteredReport.length === 0) {
+                          return (
+                            <tr>
+                              <td colSpan={13} className="text-center py-12">
+                                <div className="flex flex-col items-center justify-center text-slate-400 space-y-3">
+                                  <div className="w-12 h-12 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center">
+                                    <CalendarCheck className="w-6 h-6 opacity-40" />
+                                  </div>
+                                  <p className="text-xs font-medium">{reportSearch ? `Tidak ada karyawan bernama "${reportSearch}" di laporan ini.` : 'Tidak ada data presensi pada periode ini.'}</p>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        }
+
+                        return filteredReport.map((r: any, idx: number) => {
+                          const isVirtual = r.id === null; // baris virtual absent/leave
+                          return (
+                            <tr
+                              key={r.id ?? `v-${r.user_id}-${r.date}-${idx}`}
+                              className={`transition-colors ${isVirtual
+                                ? 'bg-slate-50/60 dark:bg-slate-800/20 hover:bg-slate-100/60 dark:hover:bg-slate-800/40'
+                                : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
+                                }`}
+                            >
+                              <td className="py-3 px-2 text-slate-500 whitespace-nowrap font-mono text-[11px]">{r.employee_code ?? '—'}</td>
+                              <td className="py-3 px-2 font-semibold text-slate-800 dark:text-slate-200 whitespace-nowrap">{r.user_name}</td>
+                              <td className="py-3 px-2 text-slate-500 whitespace-nowrap">{r.department ?? '—'}</td>
+                              <td className="py-3 px-2 whitespace-nowrap">
+                                <span
+                                  className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold"
+                                  style={{
+                                    backgroundColor: `${r.shift_color || '#64748b'}18`,
+                                    color: r.shift_color || '#64748b',
+                                  }}
+                                >
+                                  {r.shift_name || 'Kantor (Default)'}
+                                </span>
+                              </td>
+                              <td className="py-3 px-2 text-slate-500 whitespace-nowrap">
+                                <span className="inline-flex items-center gap-1">
+                                  {fmtDateRange(r.date, r.is_cross_day ? r.checkout_date : null)}
+                                  {r.is_cross_day && (
+                                    <span title="Shift lintas tengah malam">
+                                      <Moon className="w-3 h-3 text-indigo-400 shrink-0" />
+                                    </span>
+                                  )}
+                                </span>
+                              </td>
+                              <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_in_time)}</td>
+                              <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_out_time)}</td>
+                              <td className="py-3 px-2 font-mono text-violet-600 dark:text-violet-400 font-medium whitespace-nowrap">
+                                {r.working_minutes != null ? fmtMinutes(r.working_minutes) : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                              </td>
+                              <td className="py-3 px-2 font-mono whitespace-nowrap">
+                                {r.late_minutes ? (
+                                  <span className="text-rose-600 dark:text-rose-400 font-medium">
+                                    {fmtMinutes(r.late_minutes)}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-300 dark:text-slate-600">—</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-2 font-mono whitespace-nowrap">
+                                {r.overtime_minutes > 0 ? (
+                                  <span className="text-orange-600 dark:text-orange-400 font-medium">
+                                    {fmtMinutes(r.overtime_minutes)}
+                                    {r.is_holiday ? <span className="ml-1 text-[9px] font-bold text-rose-500">LIBUR</span> : null}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-300 dark:text-slate-600">—</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-2 whitespace-nowrap">
+                                {r.check_in_type ? (
+                                  <span className="flex items-center gap-1.5">
+                                    {r.check_in_type === 'wfh' && <Home className="w-3.5 h-3.5 text-indigo-500" />}
+                                    {r.check_in_type === 'field' && <MapPin className="w-3.5 h-3.5 text-amber-500" />}
+                                    {r.check_in_type === 'onsite' && <Building2 className="w-3.5 h-3.5 text-slate-400" />}
+                                    {r.check_in_type === 'wfh' ? 'WFH' : r.check_in_type === 'field' ? 'Lapangan' : 'Kantor'}
+                                  </span>
+                                ) : (
+                                  <span className="text-slate-300 dark:text-slate-600">—</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-2 whitespace-nowrap">
+                                {(r.check_in_type === 'wfh' || r.check_in_type === 'field') && r.check_in_lat && r.check_in_lng ? (
+                                  <a
+                                    href={`https://www.google.com/maps?q=${r.check_in_lat},${r.check_in_lng}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title={`Buka di Google Maps: ${Number(r.check_in_lat).toFixed(6)}, ${Number(r.check_in_lng).toFixed(6)}`}
+                                    className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 hover:underline text-[11px] font-mono transition-colors"
+                                  >
+                                    <MapPin className="w-3 h-3 shrink-0" />
+                                    {Number(r.check_in_lat).toFixed(4)},
+                                    {Number(r.check_in_lng).toFixed(4)}
+                                  </a>
+                                ) : (
+                                  <span className="text-slate-300 dark:text-slate-600 text-[11px]">—</span>
+                                )}
+                              </td>
+                              <td className="py-3 px-2 text-center whitespace-nowrap">
+                                <span className={`inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${statusBadge(r.status)}`}>
+                                  {statusLabel(r.status)}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        });
+                      })()}
+                    </tbody>
+                  </table>
+                </div>
+
+                {/* Pagination footer (Server-side) - disembunyikan jika total data <= 25 */}
+                {report?.report && report.report.total > 25 && (
+                  <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+                    <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                      <span>
+                        Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                          {report.report.from ?? (((report.report.current_page - 1) * report.report.per_page) + 1)} - {report.report.to ?? Math.min(report.report.current_page * report.report.per_page, report.report.total)}
+                        </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{report.report.total}</strong> data
+                      </span>
+                      <span className="hidden sm:inline">•</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="hidden sm:inline">Per hal:</span>
+                        <select
+                          value={reportPageSize}
+                          onChange={(e) => {
+                            setReportPageSize(Number(e.target.value));
+                            setReportPage(1);
+                          }}
+                          className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                        >
+                          <option value={25}>25</option>
+                          <option value={50}>50</option>
+                          <option value={100}>100</option>
+                        </select>
+                      </div>
+                    </div>
+
                     <div className="flex items-center gap-1.5">
                       <button
+                        onClick={() => setReportPage(1)}
                         disabled={reportPage <= 1}
-                        onClick={() => setReportPage(p => p - 1)}
-                        className="px-2.5 py-1.5 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                        className="p-1 rounded border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                        title="Halaman Pertama"
                       >
-                        ‹ Prev
+                        «
                       </button>
-                      {Array.from({ length: Math.min(5, meta.last_page) }, (_, i) => {
-                        const half = 2;
-                        let start = Math.max(1, reportPage - half);
-                        const end = Math.min(meta.last_page, start + 4);
-                        start = Math.max(1, end - 4);
-                        const pg = start + i;
-                        if (pg > meta.last_page) return null;
-                        return (
-                          <button
-                            key={pg}
-                            onClick={() => setReportPage(pg)}
-                            className={`w-7 h-7 text-xs font-semibold rounded-lg transition ${pg === reportPage
-                              ? 'bg-indigo-600 text-white'
-                              : 'border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300'
-                              }`}
-                          >
-                            {pg}
-                          </button>
-                        );
-                      })}
                       <button
-                        disabled={reportPage >= meta.last_page}
-                        onClick={() => setReportPage(p => p + 1)}
-                        className="px-2.5 py-1.5 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg disabled:opacity-40 hover:bg-slate-50 dark:hover:bg-slate-800 transition"
+                        onClick={() => setReportPage((p) => Math.max(1, p - 1))}
+                        disabled={reportPage <= 1}
+                        className="p-1 rounded border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                        title="Halaman Sebelumnya"
                       >
-                        Next ›
+                        ‹
+                      </button>
+                      <span className="px-2 font-mono font-semibold text-slate-700 dark:text-slate-300">
+                        Hal {report.report.current_page} / {Math.max(1, report.report.last_page)}
+                      </span>
+                      <button
+                        onClick={() => setReportPage((p) => Math.min(report.report.last_page, p + 1))}
+                        disabled={reportPage >= report.report.last_page}
+                        className="p-1 rounded border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                        title="Halaman Berikutnya"
+                      >
+                        ›
+                      </button>
+                      <button
+                        onClick={() => setReportPage(report.report.last_page)}
+                        disabled={reportPage >= report.report.last_page}
+                        className="p-1 rounded border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 disabled:opacity-30 disabled:cursor-not-allowed hover:bg-slate-50 dark:hover:bg-slate-800 transition cursor-pointer"
+                        title="Halaman Terakhir"
+                      >
+                        »
                       </button>
                     </div>
                   </div>
-                );
-              })()}
+                )}
+              </div>
+            </>
+          ) : (
+            /* ── Tampilan Sub-tab 2: Matriks & Rekapitulasi per Shift ── */
+            <div className="space-y-4">
+              {/* Header Info Banner */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-3">
+                  <div className="p-2.5 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 shrink-0">
+                    <Layers className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                      Matriks Rekapitulasi Performa Shift
+                    </h3>
+                    <p className="text-xs text-slate-500">
+                      Evaluasi perbandingan tingkat kehadiran, keterlambatan, dan lembur antar shift
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={handleExport}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-xl text-xs font-bold transition cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Export CSV
+                  </button>
+                </div>
+              </div>
+
+              {/* Tabel Matriks Rekapitulasi */}
+              <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl shadow-xs overflow-hidden">
+                <div className="p-5 overflow-x-auto">
+                  <table className="w-full text-xs text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500 uppercase text-[10px] tracking-wider">
+                        <th className="py-3 px-3 font-semibold">Shift Kerja</th>
+                        <th className="py-3 px-3 font-semibold text-center">Total Jadwal</th>
+                        <th className="py-3 px-3 font-semibold text-center">Tingkat Hadir</th>
+                        <th className="py-3 px-3 font-semibold text-center">Tepat Waktu</th>
+                        <th className="py-3 px-3 font-semibold text-center">Telat Masuk</th>
+                        <th className="py-3 px-3 font-semibold text-center">Pulang Awal</th>
+                        <th className="py-3 px-3 font-semibold text-center">Alpha</th>
+                        <th className="py-3 px-3 font-semibold text-right">Total Jam Kerja</th>
+                        <th className="py-3 px-3 font-semibold text-right">Total Lembur</th>
+                        <th className="py-3 px-3 font-semibold text-center">Aksi</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                      {report.by_shift && report.by_shift.length > 0 ? (
+                        report.by_shift.map((s: any) => {
+                          const presentPct = s.total_records > 0 ? Math.round((s.present / s.total_records) * 100) : 0;
+                          const onTime = Math.max(0, s.present - s.late);
+                          return (
+                            <tr key={s.shift_id ?? 'office'} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors">
+                              <td className="py-3.5 px-3">
+                                <div className="flex items-center gap-2.5">
+                                  <span
+                                    className="w-3 h-3 rounded-full shrink-0 shadow-xs"
+                                    style={{ backgroundColor: s.color || '#6366f1' }}
+                                  />
+                                  <div>
+                                    <span className="font-bold text-slate-800 dark:text-slate-100 text-xs">
+                                      {s.shift_name}
+                                    </span>
+                                    <p className="text-[10px] text-slate-400">
+                                      {s.shift_id === null ? 'Default Kantor' : 'Shift Khusus'}
+                                    </p>
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-3 text-center font-mono font-semibold text-slate-700 dark:text-slate-300">
+                                {s.total_records}
+                              </td>
+                              <td className="py-3.5 px-3 text-center">
+                                <div className="inline-flex flex-col items-center min-w-[70px]">
+                                  <span className="font-mono font-bold text-xs text-slate-800 dark:text-slate-200">
+                                    {presentPct}%
+                                  </span>
+                                  <div className="w-16 h-1.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden mt-1">
+                                    <div
+                                      className={`h-full rounded-full ${
+                                        presentPct >= 80
+                                          ? 'bg-emerald-500'
+                                          : presentPct >= 50
+                                          ? 'bg-amber-500'
+                                          : 'bg-rose-500'
+                                      }`}
+                                      style={{ width: `${Math.min(100, presentPct)}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </td>
+                              <td className="py-3.5 px-3 text-center font-mono text-emerald-600 dark:text-emerald-400 font-semibold">
+                                {onTime}
+                              </td>
+                              <td className="py-3.5 px-3 text-center">
+                                {s.late > 0 ? (
+                                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 font-mono font-bold text-[11px]">
+                                    ⚠️ {s.late}
+                                  </span>
+                                ) : (
+                                  <span className="font-mono text-slate-400">0</span>
+                                )}
+                              </td>
+                              <td className="py-3.5 px-3 text-center font-mono text-violet-600 dark:text-violet-400">
+                                {s.early_leave || 0}
+                              </td>
+                              <td className="py-3.5 px-3 text-center">
+                                {s.absent > 0 ? (
+                                  <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 font-mono font-bold text-[11px]">
+                                    {s.absent}
+                                  </span>
+                                ) : (
+                                  <span className="font-mono text-slate-400">0</span>
+                                )}
+                              </td>
+                              <td className="py-3.5 px-3 text-right font-mono text-cyan-600 dark:text-cyan-400">
+                                {fmtMinutes(s.working_minutes)}
+                              </td>
+                              <td className="py-3.5 px-3 text-right font-mono text-orange-600 dark:text-orange-400 font-semibold">
+                                {fmtMinutes(s.overtime_minutes)}
+                              </td>
+                              <td className="py-3.5 px-3 text-center">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const targetVal = s.shift_id !== null ? String(s.shift_id) : 'office';
+                                    setReportFilterAndReset({
+                                      ...reportFilter,
+                                      shift_id: targetVal,
+                                    });
+                                    setReportSubTab('log');
+                                  }}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 font-semibold text-[11px] transition cursor-pointer"
+                                  title="Lihat rincian log karyawan shift ini"
+                                >
+                                  <span>Lihat Log</span>
+                                  <ExternalLink className="w-3 h-3" />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={10} className="py-8 text-center text-slate-400">
+                            Belum ada data shift pada periode yang dipilih.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
             </>
           )}
         </div>

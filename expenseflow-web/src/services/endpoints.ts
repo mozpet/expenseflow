@@ -160,6 +160,22 @@ export interface BulkImportPayload {
     bank_account_no?: string;
     bank_account_holder?: string;
     leave_balance?: number;
+    // Prioritas 1
+    emergency_contact_name?: string;
+    emergency_contact_relation?: string;
+    emergency_contact_phone?: string;
+    emergency_contact_address?: string;
+    ktp_address?: string;
+    ktp_postal_code?: string;
+    ktp_city?: string;
+    ktp_province?: string;
+    domicile_address?: string;
+    is_domicile_same_as_ktp?: boolean;
+    religion?: string;
+    marital_status?: string;
+    number_of_dependents?: number;
+    blood_type?: string;
+    medical_conditions?: string;
   }>;
   default_password?: string;
   default_role?: string;
@@ -307,6 +323,8 @@ export const attendanceApi = {
     type?: 'onsite' | 'wfh' | 'field' | string;
     search?: string;
     office_id?: number | string;
+    shift_id?: number | string;
+    per_page?: number | string;
     page?: number;
   }, forceRefresh = false) => apiGet('/dashboard/attendance/report', filters as Record<string, string | number | boolean>, { forceRefresh }),
   exportReport: (filters?: {
@@ -317,6 +335,7 @@ export const attendanceApi = {
     type?: string;
     search?: string;
     office_id?: number | string;
+    shift_id?: number | string;
   }) =>
     apiDownload(
       '/dashboard/attendance/report/export',
@@ -379,11 +398,16 @@ export interface ShiftScheduleInput {
 export interface ShiftPatternItemInput {
   day_order: number;
   shift_id?: number | null;
+  name?: string | null;
+  color?: string | null;
   is_off: boolean;
   work_start_time?: string | null;
   work_end_time?: string | null;
   break_minutes?: number;
+  late_tolerance_minutes?: number | null;
   is_cross_day?: boolean;
+  is_wfh?: boolean;
+  is_field?: boolean;
 }
 
 export interface ShiftPatternItem {
@@ -391,16 +415,39 @@ export interface ShiftPatternItem {
   shift_pattern_id: number;
   day_order: number;
   shift_id: number | null;
+  name?: string | null;
+  color?: string | null;
   is_off: boolean;
   work_start_time: string | null;
   work_end_time: string | null;
   break_minutes: number;
+  late_tolerance_minutes?: number | null;
   is_cross_day: boolean;
+  is_wfh?: boolean;
+  is_field?: boolean;
   shift?: {
     id: number;
     name: string;
     color?: string;
   } | null;
+}
+
+export interface ShiftPatternDayOverrideInput {
+  day_of_week: number; // 0=Minggu, 1=Senin, ..., 6=Sabtu
+  work_start_time?: string | null;
+  work_end_time?: string | null;
+  break_minutes?: number | null;
+  late_tolerance_minutes?: number | null;
+}
+
+export interface ShiftPatternDayOverride {
+  id?: number;
+  shift_pattern_id?: number;
+  day_of_week: number;
+  work_start_time?: string | null;
+  work_end_time?: string | null;
+  break_minutes?: number | null;
+  late_tolerance_minutes?: number | null;
 }
 
 export interface ShiftPattern {
@@ -413,12 +460,15 @@ export interface ShiftPattern {
   } | null;
   name: string;
   description?: string | null;
+  color?: string | null;
+  late_tolerance_minutes?: number | null;
   cycle_days: number;
   is_active: boolean;
   active_users_count?: number;
   created_at?: string;
   updated_at?: string;
   items: ShiftPatternItem[];
+  day_overrides?: ShiftPatternDayOverride[];
 }
 
 export const shiftApi = {
@@ -431,6 +481,7 @@ export const shiftApi = {
     attendance_setting_id: number;
     schedules: ShiftScheduleInput[];
     color?: string | null;
+    late_tolerance_minutes?: number | null;
   }) => apiPost('/dashboard/attendance/shifts', payload),
   update: (
     id: number | string,
@@ -440,6 +491,7 @@ export const shiftApi = {
       attendance_setting_id?: number;
       schedules?: ShiftScheduleInput[];
       color?: string | null;
+      late_tolerance_minutes?: number | null;
     },
   ) => apiPut(`/dashboard/attendance/shifts/${id}`, payload),
   toggleActive: (id: number | string) =>
@@ -451,7 +503,19 @@ export const shiftApi = {
     apiGet(`/dashboard/attendance/shifts/${id}/users`, undefined, { forceRefresh }),
 
   // ── Roster harian (siapa masuk shift apa pada tanggal tertentu) ──
-  roster: (filters?: { date?: string; attendance_setting_id?: number; search?: string; department?: string }, forceRefresh = false) =>
+  roster: (
+    filters?: {
+      date?: string;
+      attendance_setting_id?: number;
+      search?: string;
+      department?: string;
+      status?: string;
+      shift_name?: string;
+      page?: number;
+      per_page?: number | string;
+    },
+    forceRefresh = false,
+  ) =>
     apiGet('/dashboard/attendance/shifts/roster', filters as Record<string, string | number>, { forceRefresh }),
 
   // ── Riwayat assignment shift seorang karyawan ──
@@ -513,22 +577,32 @@ export const shiftApi = {
     create: (payload: {
       name: string;
       description?: string;
+      color?: string | null;
+      late_tolerance_minutes?: number | null;
       attendance_setting_id?: number | null;
       cycle_days: number;
       is_active?: boolean;
       items: ShiftPatternItemInput[];
+      day_overrides?: ShiftPatternDayOverrideInput[];
     }) => apiPost('/dashboard/attendance/shift-patterns', payload),
     update: (
       id: number | string,
       payload: {
         name?: string;
         description?: string;
+        color?: string | null;
+        late_tolerance_minutes?: number | null;
         attendance_setting_id?: number | null;
         cycle_days?: number;
         is_active?: boolean;
         items?: ShiftPatternItemInput[];
+        day_overrides?: ShiftPatternDayOverrideInput[];
       },
     ) => apiPut(`/dashboard/attendance/shift-patterns/${id}`, payload),
+    toggleActive: (id: number | string) =>
+      apiPost(`/dashboard/attendance/shift-patterns/${id}/toggle-active`),
+    users: (id: number | string, forceRefresh = false) =>
+      apiGet(`/dashboard/attendance/shift-patterns/${id}/users`, undefined, { forceRefresh }),
     destroy: (id: number | string) =>
       apiDelete(`/dashboard/attendance/shift-patterns/${id}`),
   },

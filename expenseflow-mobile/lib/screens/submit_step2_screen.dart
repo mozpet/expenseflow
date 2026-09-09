@@ -183,9 +183,10 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
             _buildOcrStatusPanel(),
             const SizedBox(height: 16),
 
-            // Form input (hanya tampil setelah OCR selesai/gagal)
-            if (_phase == _Phase.ready || _phase == _Phase.ocrFailed ||
-                _phase == _Phase.submitting) ...[
+            // Form input (hanya tampil setelah OCR selesai atau gagal non-buram, BUKAN jika foto buram/ditolak)
+            if ((_phase == _Phase.ready ||
+                (_phase == _Phase.ocrFailed && !_isOcrBlurry) ||
+                _phase == _Phase.submitting)) ...[
               _buildFormSection(),
               const SizedBox(height: 32),
               _buildSubmitButton(),
@@ -196,6 +197,15 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
     ),
   );
 }
+
+  bool get _isOcrBlurry {
+    final ocrError = (_ocrData?['ocr_error'] ?? '').toString().toLowerCase();
+    return ocrError.contains('buram') ||
+        ocrError.contains('blur') ||
+        ocrError.contains('goyang') ||
+        ocrError.contains('tidak terbaca') ||
+        ocrError.contains('tidak terdeteksi');
+  }
 
   Widget _buildOcrStatusPanel() {
     switch (_phase) {
@@ -241,6 +251,12 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
 
       case _Phase.ocrFailed:
         final ocrError = (_ocrData?['ocr_error'] ?? '').toString();
+
+        // ─── Kasus Khusus: Foto Buram / Bergoyang ────────────────
+        if (_isOcrBlurry) {
+          return _buildBlurryRejectionCard(ocrError);
+        }
+
         final isRateLimited = ocrError.contains('429') ||
             ocrError.contains('Too Many Requests') ||
             ocrError.contains('RESOURCE_EXHAUSTED') ||
@@ -402,6 +418,128 @@ class _SubmitStep2ScreenState extends State<SubmitStep2Screen> {
       default:
         return const SizedBox.shrink();
     }
+  }
+
+  Widget _buildBlurryRejectionCard(String ocrError) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF5F5),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFFF8A80), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.red.withValues(alpha: 0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFEBEE),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.no_photography_outlined,
+                  color: Color(0xFFD32F2F),
+                  size: 28,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Foto Struk Ditolak: Buram / Bergoyang',
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14.5,
+                        color: Color(0xFFB71C1C),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      ocrError.isNotEmpty
+                          ? ocrError
+                          : 'Sistem mendeteksi foto struk buram atau bergoyang sehingga angka tidak dapat dibaca jelas.',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Color(0xFFC62828),
+                        height: 1.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: const Color(0xFFFFCDD2)),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Icon(Icons.shield_outlined,
+                    size: 16, color: Color(0xFFE53935)),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Demi akurasi pembacaan OCR dan mencegah manipulasi data, pengisian manual dilarang untuk foto yang tidak jelas. Anda wajib mengambil foto ulang struk fisik Anda.',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: Colors.grey.shade800,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          ElevatedButton.icon(
+            onPressed: () {
+              if (_receiptId != null) {
+                Provider.of<ReceiptProvider>(context, listen: false)
+                    .deleteDraft(_receiptId!);
+              }
+              Navigator.pop(context);
+            },
+            icon: const Icon(Icons.camera_alt, color: Colors.white, size: 18),
+            label: const Text(
+              '📸 Ambil Foto Ulang Struk',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+                color: Colors.white,
+              ),
+            ),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: const Color(0xFFD32F2F),
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(vertical: 14),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              elevation: 0,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildLockedOcrCard() {

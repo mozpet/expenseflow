@@ -83,9 +83,16 @@ class ShiftCalendarDay {
   final bool isField;
   /// Info hari libur jika tanggal ini merupakan hari libur (null = bukan libur).
   final HolidayInfo? holiday;
-  /// true = tanggal ini adalah CUTI MANDIRI (cuti pribadi approved, bukan cuti bersama).
-  /// Warna sama dengan cuti bersama (kuning), hanya label yang berbeda.
+  /// true = tanggal ini adalah pengajuan pribadi approved (cuti, izin, atau sakit).
   final bool personalLeave;
+  /// Jenis pengajuan pribadi: 'cuti', 'izin', 'sakit' (null jika bukan pengajuan pribadi).
+  final String? leaveType;
+  /// Alasan / keterangan pengajuan jika ada.
+  final String? leaveReason;
+
+  bool get isIzin => leaveType == 'izin';
+  bool get isSakit => leaveType == 'sakit';
+  bool get isCuti => leaveType == 'cuti' || (personalLeave && (leaveType == null || leaveType == 'cuti'));
 
   ShiftCalendarDay({
     required this.date,
@@ -103,6 +110,8 @@ class ShiftCalendarDay {
     this.isField = false,
     this.holiday,
     this.personalLeave = false,
+    this.leaveType,
+    this.leaveReason,
   });
 
   factory ShiftCalendarDay.fromJson(String date, Map<String, dynamic> json) {
@@ -123,6 +132,8 @@ class ShiftCalendarDay {
       isField: json['is_field'] == true,
       holiday: holidayJson != null ? HolidayInfo.fromJson(holidayJson as Map<String, dynamic>) : null,
       personalLeave: json['personal_leave'] == true,
+      leaveType: json['leave_type'] as String?,
+      leaveReason: json['leave_reason'] as String?,
     );
   }
 }
@@ -153,11 +164,63 @@ class ShiftInfo {
   }
 }
 
+class ShiftTodayInfo {
+  final String date;
+  final String source; // 'shift' | 'office' | 'none'
+  final String type; // 'work' | 'holiday' | 'leave' | 'off'
+  final String title;
+  final String subTitle;
+  final String? shiftName;
+  final String? workStartTime;
+  final String? workEndTime;
+  final bool isOff;
+  final bool isWfh;
+  final String? color;
+  final HolidayInfo? holiday;
+  final Map<String, dynamic>? leave;
+
+  ShiftTodayInfo({
+    required this.date,
+    required this.source,
+    required this.type,
+    required this.title,
+    required this.subTitle,
+    this.shiftName,
+    this.workStartTime,
+    this.workEndTime,
+    this.isOff = false,
+    this.isWfh = false,
+    this.color,
+    this.holiday,
+    this.leave,
+  });
+
+  factory ShiftTodayInfo.fromJson(Map<String, dynamic> json) {
+    final holidayJson = json['holiday'];
+    return ShiftTodayInfo(
+      date: json['date'] ?? '',
+      source: json['source'] ?? 'office',
+      type: json['type'] ?? 'work',
+      title: json['title'] ?? '',
+      subTitle: json['sub_title'] ?? '',
+      shiftName: json['shift_name'],
+      workStartTime: json['work_start_time'],
+      workEndTime: json['work_end_time'],
+      isOff: json['is_off'] == true,
+      isWfh: json['is_wfh'] == true,
+      color: json['color'],
+      holiday: holidayJson != null ? HolidayInfo.fromJson(holidayJson as Map<String, dynamic>) : null,
+      leave: json['leave'] != null ? Map<String, dynamic>.from(json['leave']) : null,
+    );
+  }
+}
+
 class ShiftProvider extends ChangeNotifier {
   bool _loading = false;
   String? _error;
   String _source = 'none';
   ShiftInfo? _shiftInfo;
+  ShiftTodayInfo? _todayInfo;
   List<ShiftScheduleDay> _schedules = [];
 
   // Banner shift update di beranda
@@ -176,6 +239,7 @@ class ShiftProvider extends ChangeNotifier {
   String? get error => _error;
   String get source => _source;
   ShiftInfo? get shiftInfo => _shiftInfo;
+  ShiftTodayInfo? get todayInfo => _todayInfo;
   List<ShiftScheduleDay> get schedules => _schedules;
   bool get hasShiftUpdate => _hasShiftUpdate;
   String? get shiftUpdateNote => _shiftUpdateNote;
@@ -212,6 +276,12 @@ class ShiftProvider extends ChangeNotifier {
         _shiftInfo = ShiftInfo.fromJson(data['shift']);
       } else {
         _shiftInfo = null;
+      }
+
+      if (data['today'] != null) {
+        _todayInfo = ShiftTodayInfo.fromJson(data['today']);
+      } else {
+        _todayInfo = null;
       }
 
       if (data['schedules'] != null) {

@@ -103,11 +103,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
       final calDay = prov.getScheduleForDate(date);
       if (calDay != null) {
         if (calDay.source == 'shift') {
-          // Dapatkan nama shift (jika shiftName sama dengan nama libur atau cuti, fallback ke nama shift dari mySchedule)
+          // Dapatkan nama shift (jika shiftName sama dengan nama libur atau cuti/izin/sakit, fallback ke nama shift dari mySchedule)
           final isHolidayName = calDay.holiday != null && calDay.shiftName == calDay.holiday!.name;
           final String shiftName = (calDay.shiftName != null &&
                   calDay.shiftName != 'Cuti Bersama' &&
                   calDay.shiftName != 'Cuti Mandiri' &&
+                  calDay.shiftName != 'Izin' &&
+                  calDay.shiftName != 'Sakit' &&
                   !isHolidayName)
               ? calDay.shiftName!
               : (prov.shiftInfo?.name.isNotEmpty == true
@@ -119,9 +121,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               prov.shiftInfo?.startDate;
           final String? endDate = calDay.endDate ?? prov.shiftInfo?.endDate;
 
+          final String headerColor = (calDay.personalLeave || isHolidayName)
+              ? (prov.shiftInfo?.color ?? '#6366F1')
+              : (calDay.color ?? (prov.shiftInfo?.color ?? '#6366F1'));
+
           return _ShiftDisplayInfo(
             name: shiftName,
-            color: calDay.color ?? (prov.shiftInfo?.color ?? '#6366F1'),
+            color: headerColor,
             source: 'shift',
             startDate: startDate,
             endDate: endDate,
@@ -527,23 +533,40 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             final isHoliday = holiday != null;
             // Cuti bersama yang sudah diikuti (accepted) → shiftName 'Cuti Bersama'
             final isCollectiveLeave = calDay?.shiftName == 'Cuti Bersama';
-            // CUTI MANDIRI: cuti pribadi yang di-approve HRD (flag personal_leave dari API).
+            // Pengajuan pribadi yang di-approve HRD (cuti / izin / sakit)
             final bool isPersonalLeave =
-                (calDay?.personalLeave ?? false) || calDay?.shiftName == 'Cuti Mandiri';
-            // Hari kerja dari rumah (WFH) — hanya jika bukan libur/OFF/cuti bersama/mandiri
+                (calDay?.personalLeave ?? false) ||
+                calDay?.shiftName == 'Cuti Mandiri' ||
+                calDay?.shiftName == 'Izin' ||
+                calDay?.shiftName == 'Sakit';
+            final bool isIzin = (calDay?.isIzin == true) || calDay?.shiftName == 'Izin';
+            final bool isSakit = (calDay?.isSakit == true) || calDay?.shiftName == 'Sakit';
+            final bool isCuti = isCollectiveLeave || (isPersonalLeave && !isIzin && !isSakit);
+
+            // Hari kerja dari rumah (WFH) — hanya jika bukan libur/OFF/cuti/izin/sakit
             final bool isWfhDay = (calDay?.isWfh ?? false) &&
                 !isOff &&
                 !isHoliday &&
                 !isCollectiveLeave &&
                 !isPersonalLeave;
-            // Warna aksen sesuai jenis libur: nasional merah, cuti bersama & cuti mandiri kuning, perusahaan/cabang biru
-            final holidayAccent = isCollectiveLeave || isPersonalLeave
-                ? const Color(0xFFD97706) // amber 600
-                : holiday != null
-                    ? (holiday.isNational
-                        ? const Color(0xFFEF4444) // merah
-                        : const Color(0xFF3B82F6)) // biru
-                    : null;
+
+            // Warna aksen sesuai jenis:
+            //   - Izin: ungu (0xFF7B1FA2)
+            //   - Sakit: orange (0xFFEA580C)
+            //   - Cuti (bersama/mandiri): amber (0xFFD97706)
+            //   - Libur nasional: merah (0xFFEF4444)
+            //   - Libur perusahaan/cabang: biru (0xFF3B82F6)
+            final holidayAccent = isIzin
+                ? const Color(0xFF7B1FA2)
+                : isSakit
+                    ? const Color(0xFFEA580C)
+                    : isCuti
+                        ? const Color(0xFFD97706)
+                        : holiday != null
+                            ? (holiday.isNational
+                                ? const Color(0xFFEF4444) // merah
+                                : const Color(0xFF3B82F6)) // biru
+                            : null;
 
             return Expanded(
               child: GestureDetector(
@@ -557,26 +580,34 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                         ? cellColor.withValues(alpha: 0.14)
                         : isToday
                             ? const Color(0xFFEBF5FF)
-                            : isCollectiveLeave || isPersonalLeave
-                                ? const Color(0xFFFFFBEB)
-                                : isHoliday
-                                    ? const Color(0xFFFEF2F2)
-                                    : isOff
-                                        ? const Color(0xFFFFF1F2).withValues(alpha: 0.6)
-                                        : Colors.white,
+                            : isIzin
+                                ? const Color(0xFFFAF5FF)
+                                : isSakit
+                                    ? const Color(0xFFFFF7ED)
+                                    : isCuti
+                                        ? const Color(0xFFFFFBEB)
+                                        : isHoliday
+                                            ? const Color(0xFFFEF2F2)
+                                            : isOff
+                                                ? const Color(0xFFFFF1F2).withValues(alpha: 0.6)
+                                                : Colors.white,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
                       color: isSelected
                           ? cellColor
                           : isToday
                               ? const Color(0xFF1E88E5)
-                              : isCollectiveLeave || isPersonalLeave
-                                  ? const Color(0xFFFDE68A)
-                                  : isHoliday
-                                      ? const Color(0xFFFECACA)
-                                      : isOff
-                                          ? const Color(0xFFFFE4E6)
-                                          : const Color(0xFFF1F5F9),
+                              : isIzin
+                                  ? const Color(0xFFE9D5FF)
+                                  : isSakit
+                                      ? const Color(0xFFFED7AA)
+                                      : isCuti
+                                          ? const Color(0xFFFDE68A)
+                                          : isHoliday
+                                              ? const Color(0xFFFECACA)
+                                              : isOff
+                                                  ? const Color(0xFFFFE4E6)
+                                                  : const Color(0xFFF1F5F9),
                       width: isSelected ? 1.8 : (isToday ? 1.4 : 0.8),
                     ),
                   ),
@@ -626,7 +657,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                         ],
                       ),
                       const SizedBox(height: 1),
-                      // Indikator jam / OFF / nama libur / CUTI
+                      // Indikator jam / OFF / nama libur / CUTI / IZIN / SAKIT
                       Row(
                         mainAxisAlignment: MainAxisAlignment.center,
                         mainAxisSize: MainAxisSize.min,
@@ -640,7 +671,25 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                 color: Colors.purple.shade600,
                               ),
                             ),
-                          if (isCollectiveLeave || isPersonalLeave)
+                          if (isIzin)
+                            const Text(
+                              'IZIN',
+                              style: TextStyle(
+                                fontSize: 7.5,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF7B1FA2),
+                              ),
+                            )
+                          else if (isSakit)
+                            const Text(
+                              'SAKIT',
+                              style: TextStyle(
+                                fontSize: 7.5,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFFEA580C),
+                              ),
+                            )
+                          else if (isCuti)
                             const Text(
                               'CUTI',
                               style: TextStyle(
@@ -733,9 +782,12 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     // Cuti Bersama: ditandai dengan holiday.isCollective == true ATAU shiftName 'Cuti Bersama'
     final bool isCollectiveLeave = (holiday != null && holiday.isCollective) ||
         calDay?.shiftName == 'Cuti Bersama';
-    // Cuti Mandiri: cuti pribadi yang disetujui HRD
+    // Pengajuan pribadi yang disetujui HRD (cuti, izin, atau sakit)
     final bool isPersonalLeave =
-        (calDay?.personalLeave ?? false) || calDay?.shiftName == 'Cuti Mandiri';
+        (calDay?.personalLeave ?? false) ||
+        calDay?.shiftName == 'Cuti Mandiri' ||
+        calDay?.shiftName == 'Izin' ||
+        calDay?.shiftName == 'Sakit';
 
     // Deteksi shift malam lintas hari dari kemarin
     final prevDate = date.subtract(const Duration(days: 1));
@@ -770,12 +822,14 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           if (schedule == null)
             Text('Tidak ada jadwal.',
                 style: TextStyle(color: Colors.grey.shade500))
-          // ── KONDISI 1: Cuti (Cuti Bersama / Cuti Mandiri)
+          // ── KONDISI 1: Cuti / Izin / Sakit (Personal Leave atau Cuti Bersama)
           else if (isCollectiveLeave || isPersonalLeave) ...[
             _buildLeaveCard(
               isCollective: isCollectiveLeave,
               holiday: holiday,
               shiftName: calDay?.shiftName,
+              leaveType: calDay?.leaveType,
+              leaveReason: calDay?.leaveReason,
             ),
           ]
           // ── KONDISI 2: Hari Libur / Tanggal Merah Biasa (Libur Nasional / Perusahaan / Cabang)
@@ -1016,28 +1070,69 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     );
   }
 
-  /// Kartu Cuti (Cuti Mandiri / Cuti Bersama)
+  /// Kartu Cuti / Izin / Sakit (Personal Leave / Cuti Bersama)
   Widget _buildLeaveCard({
     required bool isCollective,
     HolidayInfo? holiday,
     String? shiftName,
+    String? leaveType,
+    String? leaveReason,
   }) {
-    const Color baseColor = Color(0xFFD97706);
-    const Color bgColor = Color(0xFFFFFBEB);
-    const Color borderColor = Color(0xFFFDE68A);
-    const Color textColor = Color(0xFF92400E);
+    final bool isIzin = leaveType == 'izin' || shiftName == 'Izin';
+    final bool isSakit = leaveType == 'sakit' || shiftName == 'Sakit';
 
-    final String title = isCollective
-        ? (holiday != null && holiday.name.isNotEmpty
-            ? 'Cuti Bersama: ${holiday.name}'
-            : 'Cuti Bersama')
-        : 'Cuti Mandiri';
+    final Color baseColor;
+    final Color bgColor;
+    final Color borderColor;
+    final Color textColor;
+    final IconData icon;
+    final String title;
+    final String subtitle;
 
-    final String subtitle = isCollective
-        ? (holiday?.scope == 'cabang'
-            ? 'Hari Libur Cuti Bersama Khusus Cabang (Diikuti)'
-            : 'Hari Libur Cuti Bersama yang Diikuti')
-        : 'Pengajuan Cuti Pribadi (Disetujui HRD)';
+    if (isCollective) {
+      baseColor = const Color(0xFFD97706);
+      bgColor = const Color(0xFFFFFBEB);
+      borderColor = const Color(0xFFFDE68A);
+      textColor = const Color(0xFF92400E);
+      icon = Icons.celebration_rounded;
+      title = (holiday != null && holiday.name.isNotEmpty)
+          ? 'Cuti Bersama: ${holiday.name}'
+          : 'Cuti Bersama';
+      subtitle = (holiday?.scope == 'cabang')
+          ? 'Hari Libur Cuti Bersama Khusus Cabang (Diikuti)'
+          : 'Hari Libur Cuti Bersama yang Diikuti';
+    } else if (isIzin) {
+      baseColor = const Color(0xFF7B1FA2);
+      bgColor = const Color(0xFFFAF5FF);
+      borderColor = const Color(0xFFE9D5FF);
+      textColor = const Color(0xFF581C87);
+      icon = Icons.event_note_rounded;
+      title = 'Izin';
+      subtitle = (leaveReason != null && leaveReason.trim().isNotEmpty)
+          ? 'Alasan: $leaveReason (Disetujui HRD)'
+          : 'Pengajuan Izin Pribadi (Disetujui HRD)';
+    } else if (isSakit) {
+      baseColor = const Color(0xFFEA580C);
+      bgColor = const Color(0xFFFFF7ED);
+      borderColor = const Color(0xFFFED7AA);
+      textColor = const Color(0xFF9A3412);
+      icon = Icons.medical_services_outlined;
+      title = 'Sakit';
+      subtitle = (leaveReason != null && leaveReason.trim().isNotEmpty)
+          ? 'Keterangan: $leaveReason (Disetujui HRD)'
+          : 'Pengajuan Izin Sakit (Disetujui HRD)';
+    } else {
+      // Cuti Mandiri / Tahunan
+      baseColor = const Color(0xFFD97706);
+      bgColor = const Color(0xFFFFFBEB);
+      borderColor = const Color(0xFFFDE68A);
+      textColor = const Color(0xFF92400E);
+      icon = Icons.beach_access_rounded;
+      title = 'Cuti Tahunan';
+      subtitle = (leaveReason != null && leaveReason.trim().isNotEmpty)
+          ? 'Alasan: $leaveReason (Disetujui HRD)'
+          : 'Pengajuan Cuti Pribadi (Disetujui HRD)';
+    }
 
     return Container(
       width: double.infinity,
@@ -1057,9 +1152,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               borderRadius: BorderRadius.circular(10),
             ),
             child: Icon(
-              isCollective
-                  ? Icons.celebration_rounded
-                  : Icons.person_outline_rounded,
+              icon,
               color: baseColor,
               size: 22,
             ),
@@ -1071,7 +1164,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               children: [
                 Text(
                   title,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 14,
                     fontWeight: FontWeight.bold,
                     color: textColor,
@@ -1080,7 +1173,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 const SizedBox(height: 3),
                 Text(
                   subtitle,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 12,
                     color: baseColor,
                   ),

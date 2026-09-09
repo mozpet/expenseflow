@@ -56,19 +56,34 @@ class ProcessOcrJob implements ShouldQueue
             $this->saveOcrData($receipt, $ocrResult);
 
         } catch (\Throwable $e) {
+            $errorMessage = $e->getMessage();
+            $lowerError   = strtolower($errorMessage);
+
+            $isBlurryOrUnreadable = str_contains($lowerError, 'buram') ||
+                str_contains($lowerError, 'blur') ||
+                str_contains($lowerError, 'bergoyang') ||
+                str_contains($lowerError, 'tidak terbaca') ||
+                str_contains($lowerError, 'tidak terdeteksi');
+
             Log::error('ProcessOcrJob gagal', [
                 'receipt_id' => $this->receiptId,
                 'attempt'    => $this->attempts(),
-                'error'      => $e->getMessage(),
+                'error'      => $errorMessage,
+                'is_blurry'  => $isBlurryOrUnreadable,
             ]);
 
             // Update status gagal + simpan error
-            $this->updateOcrStatus($receipt->id, 'failed', $this->attempts(), $e->getMessage());
+            $this->updateOcrStatus($receipt->id, 'failed', $this->attempts(), $errorMessage);
 
             // Notifikasi gagal via activity_logs
-            $this->logNotification($receipt, 'ocr_failed', 'OCR gagal: ' . $e->getMessage(), 'receipt', $receipt->id);
+            $this->logNotification($receipt, 'ocr_failed', 'OCR ditolak/gagal: ' . $errorMessage, 'receipt', $receipt->id);
 
-            // Re-throw agar Laravel retry mechanism bekerja
+            // Jika gambar buram/bergoyang/tidak terbaca, JANGAN retry agar tidak membuang kuota & delay tidak perlu
+            if ($isBlurryOrUnreadable) {
+                return;
+            }
+
+            // Re-throw untuk error koneksi/server agar Laravel retry mechanism bekerja
             throw $e;
         }
     }
@@ -113,13 +128,18 @@ class ProcessOcrJob implements ShouldQueue
             DB::table('receipts')->where('id', $receipt->id)->update($updates);
         }
 
-        // ─── Pre-fill claimed_amount jika masih kosong ──────────
+        // ─── Pre-fill claimed_amount & total_amount jika masih kosong ──────────
         $receipt->refresh();
+        $fillData = [];
         if ($receipt->claimed_amount === null && $receipt->ocr_raw_amount !== null) {
-            DB::table('receipts')->where('id', $receipt->id)->update([
-                'claimed_amount' => $receipt->ocr_raw_amount,
-                'updated_at'     => $now,
-            ]);
+            $fillData['claimed_amount'] = $receipt->ocr_raw_amount;
+        }
+        if ($receipt->total_amount === null && $receipt->ocr_raw_amount !== null) {
+            $fillData['total_amount'] = $receipt->ocr_raw_amount;
+        }
+        if (! empty($fillData)) {
+            $fillData['updated_at'] = $now;
+            DB::table('receipts')->where('id', $receipt->id)->update($fillData);
         }
 
         // Hitung ulang variance flag & deteksi potensi duplikat

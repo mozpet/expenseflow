@@ -162,6 +162,10 @@ class ShiftRotationMobileEndpointsTest extends TestCase
         $this->assertEquals($this->pattern->id, $response->json('pattern_id'));
         $this->assertEquals($this->pattern->name, $response->json('pattern_name'));
         $this->assertCount(3, $response->json('schedules'));
+        $this->assertNotNull($response->json('today'));
+        $this->assertArrayHasKey('title', $response->json('today'));
+        $this->assertArrayHasKey('sub_title', $response->json('today'));
+        $this->assertArrayHasKey('type', $response->json('today'));
     }
 
     public function test_leave_preview_skips_pattern_off_days(): void
@@ -177,5 +181,68 @@ class ShiftRotationMobileEndpointsTest extends TestCase
         $response->assertOk();
         // total_days seharusnya hanya 2 hari kerja, bukan 3 hari
         $this->assertEquals(2, $response->json('total_days'));
+    }
+
+    public function test_my_schedule_calendar_distinguishes_leave_types_cuti_izin_sakit(): void
+    {
+        Sanctum::actingAs($this->employee);
+
+        // Buat pengajuan izin (Andi mengajukan izin pada 2026-09-08)
+        \App\Models\LeaveRequest::create([
+            'user_id'    => $this->employee->id,
+            'leave_type' => 'izin',
+            'start_date' => '2026-09-08',
+            'end_date'   => '2026-09-08',
+            'total_days' => 1,
+            'reason'     => 'Keperluan keluarga mendesak',
+            'status'     => 'approved',
+        ]);
+
+        // Buat pengajuan sakit (2026-09-10)
+        \App\Models\LeaveRequest::create([
+            'user_id'    => $this->employee->id,
+            'leave_type' => 'sakit',
+            'start_date' => '2026-09-10',
+            'end_date'   => '2026-09-10',
+            'total_days' => 1,
+            'reason'     => 'Demam tinggi',
+            'status'     => 'approved',
+        ]);
+
+        // Buat pengajuan cuti (2026-09-12)
+        \App\Models\LeaveRequest::create([
+            'user_id'    => $this->employee->id,
+            'leave_type' => 'cuti',
+            'start_date' => '2026-09-12',
+            'end_date'   => '2026-09-12',
+            'total_days' => 1,
+            'reason'     => 'Cuti tahunan',
+            'status'     => 'approved',
+        ]);
+
+        $response = $this->getJson('/api/v1/attendance/my-schedule-calendar?month=9&year=2026');
+        $response->assertOk();
+        $days = $response->json('days');
+
+        // Cek Izin
+        $izinDay = $days['2026-09-08'];
+        $this->assertTrue($izinDay['personal_leave']);
+        $this->assertEquals('izin', $izinDay['leave_type']);
+        $this->assertEquals('Keperluan keluarga mendesak', $izinDay['leave_reason']);
+        $this->assertEquals('#A855F7', $izinDay['color']);
+
+        // Cek Sakit
+        $sakitDay = $days['2026-09-10'];
+        $this->assertTrue($sakitDay['personal_leave']);
+        $this->assertEquals('sakit', $sakitDay['leave_type']);
+        $this->assertEquals('Demam tinggi', $sakitDay['leave_reason']);
+        $this->assertEquals('#EA580C', $sakitDay['color']);
+
+        // Cek Cuti
+        $cutiDay = $days['2026-09-12'];
+        $this->assertTrue($cutiDay['personal_leave']);
+        $this->assertEquals('cuti', $cutiDay['leave_type']);
+        $this->assertEquals('Cuti tahunan', $cutiDay['leave_reason']);
+        $this->assertEquals('#FACC15', $cutiDay['color']);
     }
 }

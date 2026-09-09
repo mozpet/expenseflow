@@ -1395,7 +1395,13 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                     </h4>
                   </div>
                   <span className="text-base font-extrabold text-slate-700 dark:text-slate-300 font-mono">
-                    {selectedReceipt.duplicateTotalAmount ? formatCurrency(selectedReceipt.duplicateTotalAmount) : formatCurrency(selectedReceipt.duplicateReference?.totalAmount ?? selectedReceipt.klaim)}
+                    {formatCurrency(
+                      (selectedReceipt.duplicateTotalAmount && selectedReceipt.duplicateTotalAmount > 0)
+                        ? selectedReceipt.duplicateTotalAmount
+                        : ((selectedReceipt.duplicateReference?.totalAmount && selectedReceipt.duplicateReference.totalAmount > 0)
+                            ? selectedReceipt.duplicateReference.totalAmount
+                            : selectedReceipt.klaim)
+                    )}
                   </span>
                 </div>
 

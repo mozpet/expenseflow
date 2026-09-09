@@ -293,34 +293,16 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
           _activeLatLng.latitude, _activeLatLng.longitude,
           isMocked: _position?.isMocked ?? false);
       if (!mounted) return;
+      final isEarlyLeave = !wasCheckIn && prov.todayIsEarlyLeave;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(wasCheckIn
               ? 'Presensi masuk berhasil dicatat!'
-              : 'Presensi pulang berhasil dicatat!'),
-          backgroundColor: Colors.green,
-          duration: const Duration(seconds: 2),
-        ),
-      );
-      Navigator.pop(context);
-    } on OfflineAttendanceSavedException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Row(
-            children: [
-              const Icon(Icons.cloud_off, color: Colors.white, size: 20),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  e.message,
-                  style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
-                ),
-              ),
-            ],
-          ),
-          backgroundColor: Colors.amber.shade800,
-          duration: const Duration(seconds: 4),
+              : (isEarlyLeave
+                  ? 'Presensi pulang berhasil dicatat (Pulang Cepat)'
+                  : 'Presensi pulang berhasil dicatat!')),
+          backgroundColor: isEarlyLeave ? const Color(0xFF7E22CE) : Colors.green,
+          duration: const Duration(seconds: 3),
         ),
       );
       Navigator.pop(context);
@@ -536,7 +518,9 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
         ? 'Simpan Presensi Masuk'
         : prov.canCheckOut
             ? 'Simpan Presensi Pulang'
-            : 'Presensi Hari Ini Selesai';
+            : prov.todayIsEarlyLeave
+                ? 'Presensi Selesai (Pulang Cepat)'
+                : 'Presensi Hari Ini Selesai';
 
     final userOffice = prov.primaryOffice ?? (prov.offices.isNotEmpty ? prov.offices.first : null);
     final displayedOffices = userOffice != null ? [userOffice] : prov.offices;

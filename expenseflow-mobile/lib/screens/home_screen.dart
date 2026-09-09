@@ -479,10 +479,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   const SizedBox(height: 20),
 
                   // ─── Banner Sistem (Bila Aktif) ─────────────────────
-                  if (presensiProv.hasPendingOfflineSync) ...[
-                    _buildOfflineSyncBanner(presensiProv),
-                    const SizedBox(height: 14),
-                  ],
                   if (shiftProv.hasShiftUpdate) ...[
                     _buildShiftUpdateBanner(shiftProv),
                     const SizedBox(height: 14),
@@ -522,10 +518,17 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     IconData statusIcon;
 
     if (hasCheckedOut) {
-      statusTitle = 'Selesai Hari Ini';
-      statusBg = const Color(0xFFECFDF5);
-      statusText = const Color(0xFF059669);
-      statusIcon = Icons.check_circle_rounded;
+      if (presensiProv.todayIsEarlyLeave) {
+        statusTitle = 'Pulang Cepat';
+        statusBg = const Color(0xFFFAF5FF);
+        statusText = const Color(0xFF7E22CE);
+        statusIcon = Icons.exit_to_app_rounded;
+      } else {
+        statusTitle = 'Selesai Hari Ini';
+        statusBg = const Color(0xFFECFDF5);
+        statusText = const Color(0xFF059669);
+        statusIcon = Icons.check_circle_rounded;
+      }
     } else if (hasCheckedIn) {
       statusTitle = 'Aktif Bekerja';
       statusBg = const Color(0xFFEFF6FF);
@@ -663,8 +666,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                         Padding(
                           padding: const EdgeInsets.only(top: 2),
                           child: Text(
-                            presensiProv.todayTotalJamKerja,
-                            style: const TextStyle(fontSize: 10, color: Color(0xFF059669), fontWeight: FontWeight.bold),
+                            presensiProv.todayIsEarlyLeave
+                                ? 'Pulang Cepat • ${presensiProv.todayTotalJamKerja}'
+                                : presensiProv.todayTotalJamKerja,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: presensiProv.todayIsEarlyLeave
+                                  ? const Color(0xFF7E22CE)
+                                  : const Color(0xFF059669),
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
                     ],
@@ -1034,90 +1045,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  Widget _buildOfflineSyncBanner(PresensiProvider prov) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: Colors.amber.shade50,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.amber.shade300),
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.amber.shade100,
-              shape: BoxShape.circle,
-            ),
-            child: Icon(Icons.cloud_off_rounded, color: Colors.amber.shade900, size: 20),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Presensi Offline (${prov.offlineQueue.length})',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.amber.shade900,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Tersimpan lokal, siap disinkronkan ke server.',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    color: Colors.amber.shade800,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          prov.isSyncingOffline
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amber),
-                )
-              : TextButton(
-                  onPressed: () async {
-                    try {
-                      final res = await prov.syncOfflineQueue();
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(
-                          content: Text('Sinkronisasi selesai: ${res['synced'] ?? 0} data berhasil dikirim.'),
-                          backgroundColor: Colors.green,
-                        ),
-                      );
-                    } catch (e) {
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Gagal menghubungkan ke server. Silakan coba lagi saat sinyal stabil.'),
-                          backgroundColor: Colors.red,
-                        ),
-                      );
-                    }
-                  },
-                  style: TextButton.styleFrom(
-                    backgroundColor: Colors.amber.shade800,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                  ),
-                  child: const Text('Sync', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
-                ),
-        ],
-      ),
-    );
-  }
-
   Widget _buildTodayScheduleCard(ShiftProvider prov) {
     if (prov.loading) {
       return const ShimmerLoading(
@@ -1125,20 +1052,88 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
     }
 
-    if (prov.source == 'none' || prov.shiftInfo == null) {
+    if (prov.source == 'none' && prov.shiftInfo == null && prov.todayInfo == null) {
       return const SizedBox.shrink();
     }
 
+    final today = prov.todayInfo;
     final todayDow = DateTime.now().weekday % 7; // 0=Minggu
     final schedule = prov.getScheduleForDayOfWeek(todayDow);
-    final isOff = schedule?.isOff ?? false;
 
-    Color shiftColor;
-    try {
-      final hex = (prov.shiftInfo!.color).replaceAll('#', '');
-      shiftColor = Color(int.parse('FF$hex', radix: 16));
-    } catch (_) {
-      shiftColor = const Color(0xFF1E88E5);
+    final bool isOff = today != null ? today.isOff : (schedule?.isOff ?? false);
+
+    // Judul kartu jadwal:
+    // - Jika libur nasional / cuti bersama -> nama libur
+    // - Jika izin / sakit / cuti -> "Izin" / "Sakit" / "Cuti Tahunan"
+    // - Jika shift -> nama shift
+    // - Jika jam kantor -> "Jam Kantor Default"
+    String titleText;
+    if (today != null && today.title.isNotEmpty) {
+      titleText = today.title;
+    } else if (prov.shiftInfo != null && prov.shiftInfo!.name.isNotEmpty) {
+      titleText = prov.shiftInfo!.name;
+    } else {
+      titleText = 'Jam Kantor Default';
+    }
+
+    // Subtitle kartu jadwal:
+    // - Jika libur / off / cuti / izin -> "Libur"
+    // - Jika jam kantor default -> "08:00 — 17:00 WIB"
+    // - Jika shift -> jam masuk dan pulangnya: "07:00 — 15:00 WIB"
+    String subTitleText;
+    if (isOff) {
+      subTitleText = 'Libur';
+    } else if (today != null && today.subTitle.isNotEmpty) {
+      subTitleText = today.subTitle;
+    } else if (schedule != null && schedule.workStartTime != null) {
+      subTitleText = '${_shortTime(schedule.workStartTime!)} — ${_shortTime(schedule.workEndTime!)} WIB';
+    } else {
+      subTitleText = '08:00 — 17:00 WIB';
+    }
+
+    // Icon dan warna aksen kartu
+    Color accentColor;
+    IconData cardIcon;
+
+    if (today != null) {
+      if (today.type == 'holiday') {
+        accentColor = const Color(0xFFEF4444);
+        cardIcon = Icons.beach_access_rounded;
+      } else if (today.type == 'leave') {
+        final lType = today.leave?['leave_type'];
+        if (lType == 'izin') {
+          accentColor = const Color(0xFFA855F7);
+          cardIcon = Icons.event_note_rounded;
+        } else if (lType == 'sakit') {
+          accentColor = const Color(0xFFEA580C);
+          cardIcon = Icons.medical_services_outlined;
+        } else {
+          accentColor = const Color(0xFFD97706);
+          cardIcon = Icons.beach_access_rounded;
+        }
+      } else if (isOff) {
+        accentColor = const Color(0xFFEF4444);
+        cardIcon = Icons.weekend_outlined;
+      } else {
+        // Hari kerja aktif
+        final colorStr = today.color ?? prov.shiftInfo?.color ?? '#64748B';
+        try {
+          final hex = colorStr.replaceAll('#', '');
+          accentColor = Color(int.parse('FF$hex', radix: 16));
+        } catch (_) {
+          accentColor = const Color(0xFF64748B);
+        }
+        cardIcon = Icons.schedule_rounded;
+      }
+    } else {
+      final colorStr = prov.shiftInfo?.color ?? (isOff ? '#EF4444' : '#64748B');
+      try {
+        final hex = colorStr.replaceAll('#', '');
+        accentColor = Color(int.parse('FF$hex', radix: 16));
+      } catch (_) {
+        accentColor = isOff ? const Color(0xFFEF4444) : const Color(0xFF64748B);
+      }
+      cardIcon = isOff ? Icons.weekend_outlined : Icons.schedule_rounded;
     }
 
     return Column(
@@ -1197,12 +1192,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 Container(
                   padding: const EdgeInsets.all(10),
                   decoration: BoxDecoration(
-                    color: shiftColor.withValues(alpha: 0.12),
+                    color: accentColor.withValues(alpha: 0.12),
                     borderRadius: BorderRadius.circular(14),
                   ),
                   child: Icon(
-                    isOff ? Icons.weekend_outlined : Icons.schedule_rounded,
-                    color: shiftColor,
+                    cardIcon,
+                    color: accentColor,
                     size: 24,
                   ),
                 ),
@@ -1212,7 +1207,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        prov.shiftInfo!.name,
+                        titleText,
                         style: const TextStyle(
                           fontSize: 14.5,
                           fontWeight: FontWeight.bold,
@@ -1221,11 +1216,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       ),
                       const SizedBox(height: 3),
                       Text(
-                        isOff
-                            ? 'Hari Libur Shift'
-                            : schedule != null && schedule.workStartTime != null
-                                ? '${_shortTime(schedule.workStartTime!)} — ${_shortTime(schedule.workEndTime!)} WIB'
-                                : 'Tidak ada jadwal',
+                        subTitleText,
                         style: TextStyle(
                           fontSize: 12.5,
                           color: isOff ? Colors.red.shade600 : Colors.grey.shade600,

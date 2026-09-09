@@ -24,7 +24,7 @@ class Receipt extends Model
     protected function casts(): array
     {
         return [
-            'receipt_date'           => 'date',
+            'receipt_date'           => 'date:Y-m-d',
             'submitted_at'           => 'datetime',
             'paid_at'                => 'datetime',
             'total_amount'           => 'decimal:2',
@@ -35,7 +35,7 @@ class Receipt extends Model
             'ocr_raw_tax'            => 'decimal:2',
             'ocr_raw_discount'       => 'decimal:2',
             'ocr_raw_items'          => 'array',
-            'ocr_raw_date'           => 'date',
+            'ocr_raw_date'           => 'date:Y-m-d',
             'variance_flag'          => 'boolean',
             'variance_pct'           => 'decimal:2',
             'is_potential_duplicate' => 'boolean',
@@ -147,7 +147,7 @@ class Receipt extends Model
             }
         }
 
-        // 2. Layer 2: Cek kecocokan Metadata (Nominal + Tanggal + Merchant)
+        // 2. Layer 2: Cek kecocokan Metadata (Nominal + Tanggal + Merchant Fuzzy)
         $amount   = (float) ($this->total_amount ?: ($this->claimed_amount ?: $this->ocr_raw_amount));
         $date     = $this->receipt_date ?: $this->ocr_raw_date;
         $merchant = trim((string) ($this->vendor_name ?: $this->ocr_raw_merchant));
@@ -155,7 +155,7 @@ class Receipt extends Model
         if ($amount > 0 && $date) {
             $dateStr = is_string($date) ? substr($date, 0, 10) : $date->format('Y-m-d');
 
-            $metaDuplicate = self::where('company_id', $this->company_id)
+            $candidates = self::where('company_id', $this->company_id)
                 ->where('id', '!=', $this->id)
                 ->where('status', '!=', 'rejected')
                 ->where(function ($q) use ($amount) {
@@ -167,23 +167,46 @@ class Receipt extends Model
                     $q->whereDate('receipt_date', $dateStr)
                       ->orWhereDate('ocr_raw_date', $dateStr);
                 })
-                ->when(!empty($merchant), function ($q) use ($merchant) {
-                    $q->where(function ($sub) use ($merchant) {
-                        $sub->where('vendor_name', 'like', '%' . $merchant . '%')
-                            ->orWhere('ocr_raw_merchant', 'like', '%' . $merchant . '%');
-                    });
-                })
-                ->first();
+                ->get();
 
-            if ($metaDuplicate) {
-                $formattedAmount = 'Rp ' . number_format($amount, 0, ',', '.');
-                $merchantInfo    = !empty($merchant) ? " di {$merchant}" : '';
+            $normalize = function (?string $str): string {
+                return preg_replace('/[^a-z0-9]/', '', strtolower($str ?? ''));
+            };
 
-                $this->is_potential_duplicate = true;
-                $this->duplicate_reference_id = $metaDuplicate->id;
-                $this->duplicate_reason = "Kombinasi tanggal ({$dateStr}), nominal ({$formattedAmount}){$merchantInfo} serupa dengan struk {$metaDuplicate->receipt_number}.";
-                $this->saveQuietly();
-                return true;
+            $normMerchant = $normalize($merchant);
+            $formattedAmount = 'Rp ' . number_format($amount, 0, ',', '.');
+
+            foreach ($candidates as $metaDuplicate) {
+                $cMerchant = trim((string) ($metaDuplicate->vendor_name ?: $metaDuplicate->ocr_raw_merchant));
+                $normC = $normalize($cMerchant);
+
+                $isMatch = false;
+                $reason = '';
+
+                // Jika salah satu nama merchant tidak terbaca, kesamaan tanggal + nominal sudah cukup kuat
+                if (empty($normMerchant) || empty($normC)) {
+                    $isMatch = true;
+                    $reason = "Kombinasi tanggal ({$dateStr}) dan nominal ({$formattedAmount}) identik dengan struk {$metaDuplicate->receipt_number}.";
+                } elseif ($normMerchant === $normC || str_contains($normMerchant, $normC) || str_contains($normC, $normMerchant)) {
+                    $isMatch = true;
+                    $merchantInfo = !empty($cMerchant) ? " di {$cMerchant}" : '';
+                    $reason = "Kombinasi tanggal ({$dateStr}), nominal ({$formattedAmount}){$merchantInfo} serupa dengan struk {$metaDuplicate->receipt_number}.";
+                } else {
+                    similar_text($normMerchant, $normC, $simPct);
+                    if ($simPct >= 60) {
+                        $isMatch = true;
+                        $merchantInfo = !empty($cMerchant) ? " di {$cMerchant}" : '';
+                        $reason = "Kombinasi tanggal ({$dateStr}), nominal ({$formattedAmount}){$merchantInfo} serupa dengan struk {$metaDuplicate->receipt_number}.";
+                    }
+                }
+
+                if ($isMatch) {
+                    $this->is_potential_duplicate = true;
+                    $this->duplicate_reference_id = $metaDuplicate->id;
+                    $this->duplicate_reason = $reason;
+                    $this->saveQuietly();
+                    return true;
+                }
             }
         }
 

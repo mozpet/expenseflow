@@ -37,7 +37,11 @@ import {
   Mail,
   Smartphone,
   MoreVertical,
-  Trash2
+  Trash2,
+  Heart,
+  MapPin,
+  ChevronLeft,
+  PhoneCall
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmationDialog } from './ConfirmationDialog';
@@ -46,6 +50,18 @@ import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
 import { ImportEmployeeModal } from './ImportEmployeeModal';
+import { EmployeeMultiTabForm } from './EmployeeMultiTabForm';
+
+// Tipe Tab untuk Form Tambah & Edit Karyawan (5 Tab UI Architecture)
+export type FormTabType = 'work' | 'personal' | 'payroll' | 'bpjs' | 'access';
+
+export const FORM_TABS: { id: FormTabType; step: number; label: string; sublabel: string; icon: any }[] = [
+  { id: 'work', step: 1, label: 'Pekerjaan & Organisasi', sublabel: 'Kontrak, Dept & Jabatan', icon: Briefcase },
+  { id: 'personal', step: 2, label: 'Data Pribadi & Kependudukan', sublabel: 'KTP, Kontak Darurat & Alamat', icon: UserCheck },
+  { id: 'payroll', step: 3, label: 'Finansial & Pajak', sublabel: 'Rekening Bank & PPh 21 TER', icon: Wallet },
+  { id: 'bpjs', step: 4, label: 'Jaminan Sosial (BPJS)', sublabel: 'BPJS Ketenagakerjaan & Kesehatan', icon: ShieldCheck },
+  { id: 'access', step: 5, label: 'Akses & Dokumen', sublabel: 'Presensi Mobile, Akun & Berkas', icon: Smartphone },
+];
 
 interface Employee {
 
@@ -103,6 +119,26 @@ interface Employee {
   hasJht?: boolean;
   hasJp?: boolean;
   overtimeEligible?: boolean;
+
+  // Prioritas 1 — Kontak Darurat & Alamat
+  emergencyContactName?: string | null;
+  emergencyContactRelation?: string | null;
+  emergencyContactPhone?: string | null;
+  emergencyContactAddress?: string | null;
+  ktpAddress?: string | null;
+  domicileAddress?: string | null;
+  isDomicileSameAsKtp?: boolean;
+
+  // Prioritas 1 — Data Pribadi & Medis K3
+  religion?: string | null;
+  maritalStatus?: string | null;
+  numberOfDependents?: number | null;
+  bloodType?: string | null;
+  medicalConditions?: string | null;
+
+  // Prioritas 1 — BPJS Tambahan
+  hasJkk?: boolean;
+  hasJkm?: boolean;
 }
 
 // Kantor perusahaan (dari attendance_settings) untuk dropdown penempatan.
@@ -174,6 +210,20 @@ function mapEmployee(u: any): Employee {
     hasJht: u.has_jht !== false,
     hasJp: u.has_jp !== false,
     overtimeEligible: u.overtime_eligible !== false,
+    emergencyContactName: u.emergency_contact_name ?? null,
+    emergencyContactRelation: u.emergency_contact_relation ?? null,
+    emergencyContactPhone: u.emergency_contact_phone ?? null,
+    emergencyContactAddress: u.emergency_contact_address ?? null,
+    ktpAddress: u.ktp_address ?? null,
+    domicileAddress: u.domicile_address ?? null,
+    isDomicileSameAsKtp: u.is_domicile_same_as_ktp !== false,
+    religion: u.religion ?? null,
+    maritalStatus: u.marital_status ?? null,
+    numberOfDependents: u.number_of_dependents !== null && u.number_of_dependents !== undefined ? Number(u.number_of_dependents) : null,
+    bloodType: u.blood_type ?? null,
+    medicalConditions: u.medical_conditions ?? null,
+    hasJkk: u.has_jkk !== false,
+    hasJkm: u.has_jkm !== false,
   };
 }
 
@@ -292,6 +342,8 @@ export const KaryawanManagement: React.FC<{
 
   // Views/Forms controllers: 'list' (tabel utama), 'add' (halaman tambah), 'edit' (halaman edit)
   const [viewMode, setViewMode] = useState<'list' | 'add' | 'edit'>('list');
+  // Tab aktif pada form Tambah / Edit Karyawan (5 Tab UI Architecture)
+  const [formTab, setFormTab] = useState<FormTabType>('work');
 
   // Detail Modal / Slide-Over Drawer State
   const [detailEmployee, setDetailEmployee] = useState<Employee | null>(null);
@@ -355,6 +407,8 @@ export const KaryawanManagement: React.FC<{
       bpjsKetenagakerjaanEnabled: emp.bpjsKetenagakerjaanEnabled ?? true,
       hasJht: emp.hasJht ?? (emp.employmentType !== 'Internship'),
       hasJp: emp.hasJp ?? (emp.employmentType === 'PKWTT' || emp.employmentType === 'PKWT'),
+      hasJkk: emp.hasJkk ?? true,
+      hasJkm: emp.hasJkm ?? true,
       overtimeEligible: emp.overtimeEligible ?? (emp.role === 'employee'),
       wfhEnabled: emp.wfhEnabled ?? true,
       radiusEnabled: emp.radiusEnabled ?? true,
@@ -362,6 +416,20 @@ export const KaryawanManagement: React.FC<{
       deviceName: emp.deviceName || (seed % 2 === 0 ? 'Samsung Galaxy A54' : 'iPhone 13 Pro'),
       deviceId: emp.deviceId || `DEV-${seed}84F9B${seed}`,
       deviceBoundAt: emp.deviceBoundAt || emp.tanggalMasuk || '2026-01-10',
+
+      // Prioritas 1 Fallbacks
+      religion: emp.religion || 'Islam',
+      maritalStatus: emp.maritalStatus || 'single',
+      numberOfDependents: emp.numberOfDependents ?? 0,
+      bloodType: emp.bloodType || '—',
+      medicalConditions: emp.medicalConditions || '—',
+      emergencyContactName: emp.emergencyContactName || '—',
+      emergencyContactRelation: emp.emergencyContactRelation || '—',
+      emergencyContactPhone: emp.emergencyContactPhone || '—',
+      emergencyContactAddress: emp.emergencyContactAddress || '—',
+      ktpAddress: emp.ktpAddress || '—',
+      domicileAddress: emp.domicileAddress || (emp.isDomicileSameAsKtp ? (emp.ktpAddress || '—') : '—'),
+      isDomicileSameAsKtp: emp.isDomicileSameAsKtp ?? true,
     };
   };
 
@@ -411,7 +479,27 @@ export const KaryawanManagement: React.FC<{
     bpjsKetenagakerjaanEnabled: true,
     hasJht: true,
     hasJp: true,
+    hasJkk: true,
+    hasJkm: true,
     overtimeEligible: true,
+
+    // Prioritas 1 — Kontak Darurat
+    emergencyContactName: '',
+    emergencyContactRelation: 'Keluarga',
+    emergencyContactPhone: '',
+    emergencyContactAddress: '',
+
+    // Prioritas 1 — Alamat KTP & Domisili
+    ktpAddress: '',
+    domicileAddress: '',
+    isDomicileSameAsKtp: true,
+
+    // Prioritas 1 — Agama, Pernikahan & Medis K3
+    religion: 'Islam',
+    maritalStatus: 'single' as 'single' | 'married' | 'divorced' | 'widowed',
+    numberOfDependents: 0 as number | '',
+    bloodType: '',
+    medicalConditions: '',
   });
 
   const [nonaktifEmployee, setNonaktifEmployee] = useState<Employee | null>(null);
@@ -469,7 +557,27 @@ export const KaryawanManagement: React.FC<{
     bpjsKetenagakerjaanEnabled: true,
     hasJht: true,
     hasJp: true,
+    hasJkk: true,
+    hasJkm: true,
     overtimeEligible: true,
+
+    // Prioritas 1 — Kontak Darurat
+    emergencyContactName: '',
+    emergencyContactRelation: 'Keluarga',
+    emergencyContactPhone: '',
+    emergencyContactAddress: '',
+
+    // Prioritas 1 — Alamat KTP & Domisili
+    ktpAddress: '',
+    domicileAddress: '',
+    isDomicileSameAsKtp: true,
+
+    // Prioritas 1 — Agama, Pernikahan & Medis K3
+    religion: 'Islam',
+    maritalStatus: 'single' as 'single' | 'married' | 'divorced' | 'widowed',
+    numberOfDependents: 0 as number | '',
+    bloodType: '',
+    medicalConditions: '',
   });
 
   // Reusable General Confirmation Dialog state
@@ -621,6 +729,19 @@ export const KaryawanManagement: React.FC<{
             bank_name: addForm.bankName || undefined,
             bank_account_no: addForm.bankAccountNo || undefined,
             bank_account_holder: addForm.bankAccountHolder || undefined,
+            // Prioritas 1 — Kontak Darurat, Alamat, Agama, Sipil & Medis
+            emergency_contact_name: addForm.emergencyContactName || undefined,
+            emergency_contact_relation: addForm.emergencyContactRelation || undefined,
+            emergency_contact_phone: addForm.emergencyContactPhone || undefined,
+            emergency_contact_address: addForm.emergencyContactAddress || undefined,
+            ktp_address: addForm.ktpAddress || undefined,
+            domicile_address: addForm.isDomicileSameAsKtp ? (addForm.ktpAddress || undefined) : (addForm.domicileAddress || undefined),
+            is_domicile_same_as_ktp: addForm.isDomicileSameAsKtp,
+            religion: addForm.religion || undefined,
+            marital_status: addForm.maritalStatus || undefined,
+            number_of_dependents: addForm.numberOfDependents !== '' ? Number(addForm.numberOfDependents) : 0,
+            blood_type: addForm.bloodType || undefined,
+            medical_conditions: addForm.medicalConditions || undefined,
           });
           await loadEmployees();
           onAddAuditLog('Karyawan Baru Terdaftar', `Menambahkan karyawan baru: ${addForm.nama} - Role: ${addForm.role}`, 'bg-indigo-600');
@@ -665,8 +786,24 @@ export const KaryawanManagement: React.FC<{
             bpjsKetenagakerjaanEnabled: true,
             hasJht: true,
             hasJp: true,
+            hasJkk: true,
+            hasJkm: true,
             overtimeEligible: true,
+
+            emergencyContactName: '',
+            emergencyContactRelation: 'Keluarga',
+            emergencyContactPhone: '',
+            emergencyContactAddress: '',
+            ktpAddress: '',
+            domicileAddress: '',
+            isDomicileSameAsKtp: true,
+            religion: 'Islam',
+            maritalStatus: 'single',
+            numberOfDependents: 0,
+            bloodType: '',
+            medicalConditions: '',
           });
+          setFormTab('work');
           setViewMode('list');
         } catch (err) {
           reportApiError(err, 'Gagal menambahkan karyawan.');
@@ -680,6 +817,7 @@ export const KaryawanManagement: React.FC<{
   // Edit employee trigger & open full-page edit view
   const handleOpenEdit = (emp: Employee) => {
     setEditEmployee(emp);
+    setFormTab('work');
     setEditForm({
       employmentType: (emp.employmentType as any) || 'PKWTT',
       nama: emp.nama,
@@ -707,17 +845,37 @@ export const KaryawanManagement: React.FC<{
       bankAccountNo: emp.bankAccountNo || '',
       bankAccountHolder: emp.bankAccountHolder || emp.nama,
       salaryType: emp.employmentType === 'Internship' ? 'daily' : 'monthly',
-      basicSalary: '',
-      npwp: '',
-      ptkpStatus: 'TK/0',
-      taxMethod: 'gross',
-      bpjsKesehatanNo: '',
-      bpjsKetenagakerjaanNo: '',
-      bpjsKesehatanEnabled: true,
-      bpjsKetenagakerjaanEnabled: true,
-      hasJht: emp.employmentType !== 'Internship',
-      hasJp: emp.employmentType === 'PKWTT' || emp.employmentType === 'PKWT',
-      overtimeEligible: emp.role === 'employee',
+      basicSalary: emp.basicSalary ? emp.basicSalary : '',
+      npwp: emp.npwp || '',
+      ptkpStatus: emp.ptkpStatus || 'TK/0',
+      taxMethod: emp.taxMethod || 'gross',
+      bpjsKesehatanNo: emp.bpjsKesehatanNo || '',
+      bpjsKetenagakerjaanNo: emp.bpjsKetenagakerjaanNo || '',
+      bpjsKesehatanEnabled: emp.bpjsKesehatanEnabled ?? true,
+      bpjsKetenagakerjaanEnabled: emp.bpjsKetenagakerjaanEnabled ?? true,
+      hasJht: emp.hasJht ?? (emp.employmentType !== 'Internship'),
+      hasJp: emp.hasJp ?? (emp.employmentType === 'PKWTT' || emp.employmentType === 'PKWT'),
+      hasJkk: emp.hasJkk ?? true,
+      hasJkm: emp.hasJkm ?? true,
+      overtimeEligible: emp.overtimeEligible ?? (emp.role === 'employee'),
+
+      // Prioritas 1 — Kontak Darurat
+      emergencyContactName: emp.emergencyContactName || '',
+      emergencyContactRelation: emp.emergencyContactRelation || 'Keluarga',
+      emergencyContactPhone: emp.emergencyContactPhone || '',
+      emergencyContactAddress: emp.emergencyContactAddress || '',
+
+      // Prioritas 1 — Alamat KTP & Domisili
+      ktpAddress: emp.ktpAddress || '',
+      domicileAddress: emp.domicileAddress || '',
+      isDomicileSameAsKtp: emp.isDomicileSameAsKtp ?? true,
+
+      // Prioritas 1 — Agama, Pernikahan & Medis K3
+      religion: emp.religion || 'Islam',
+      maritalStatus: (emp.maritalStatus as any) || 'single',
+      numberOfDependents: emp.numberOfDependents ?? 0,
+      bloodType: emp.bloodType || '',
+      medicalConditions: emp.medicalConditions || '',
     });
     setViewMode('edit');
   };
@@ -757,6 +915,19 @@ export const KaryawanManagement: React.FC<{
             bank_name: editForm.bankName || undefined,
             bank_account_no: editForm.bankAccountNo || undefined,
             bank_account_holder: editForm.bankAccountHolder || undefined,
+            // Prioritas 1 — Kontak Darurat, Alamat, Agama, Sipil & Medis
+            emergency_contact_name: editForm.emergencyContactName || undefined,
+            emergency_contact_relation: editForm.emergencyContactRelation || undefined,
+            emergency_contact_phone: editForm.emergencyContactPhone || undefined,
+            emergency_contact_address: editForm.emergencyContactAddress || undefined,
+            ktp_address: editForm.ktpAddress || undefined,
+            domicile_address: editForm.isDomicileSameAsKtp ? (editForm.ktpAddress || undefined) : (editForm.domicileAddress || undefined),
+            is_domicile_same_as_ktp: editForm.isDomicileSameAsKtp,
+            religion: editForm.religion || undefined,
+            marital_status: editForm.maritalStatus || undefined,
+            number_of_dependents: editForm.numberOfDependents !== '' ? Number(editForm.numberOfDependents) : 0,
+            blood_type: editForm.bloodType || undefined,
+            medical_conditions: editForm.medicalConditions || undefined,
           });
           await loadEmployees();
           onAddAuditLog('Update Profil Karyawan', `Profil ${editForm.nama} (${editEmployee.id}) diperbarui`, 'bg-indigo-600');
@@ -891,7 +1062,10 @@ export const KaryawanManagement: React.FC<{
 
           {viewMode === 'list' && (
             <button
-              onClick={() => setViewMode('add')}
+              onClick={() => {
+                setViewMode('add');
+                setFormTab('work');
+              }}
               className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-xs font-bold shadow-sm shadow-indigo-500/15 transition duration-150 cursor-pointer"
             >
               <UserPlus className="w-3.5 h-3.5" />
@@ -904,6 +1078,7 @@ export const KaryawanManagement: React.FC<{
               onClick={() => {
                 setViewMode('list');
                 setEditEmployee(null);
+                setFormTab('work');
               }}
               className="flex-1 sm:flex-initial flex items-center justify-center gap-1.5 py-2 px-4 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-705 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition duration-150 cursor-pointer"
             >
@@ -1386,1552 +1561,39 @@ export const KaryawanManagement: React.FC<{
           </div>
         </>
       ) : viewMode === 'add' ? (
-        /* TAMBAH KARYAWAN WEB FORM (Form adaptif berdasarkan Status Kontrak & Kebutuhan Payroll Roadmap) */
-        <form onSubmit={handleAddNewEmployeeSubmit} className="space-y-6 leading-relaxed">
-          {/* 1. SELEKTOR UTAMA STATUS KONTRAK (Paling Atas) */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div>
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                  <Briefcase className="w-4 h-4 text-indigo-600" />
-                  Pilih Status Hubungan Kerja Karyawan *
-                </span>
-                <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
-                  Formulir di bawah akan otomatis menyesuaikan kebutuhan data kontrak, hak benefit, dan skema payroll berdasarkan status yang Anda pilih.
-                </p>
-              </div>
-              <span className="px-2.5 py-1 text-[10px] font-bold rounded-full bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-800 shrink-0">
-                Langkah 1 dari 2
-              </span>
-            </div>
-
-            {/* 4 Card Pilihan Status Kontrak */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* PKWTT (Tetap) */}
-              <button
-                type="button"
-                onClick={() => setAddForm({
-                  ...addForm,
-                  employmentType: 'PKWTT',
-                  hasJht: true,
-                  hasJp: true,
-                  salaryType: 'monthly',
-                  overtimeEligible: true
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  addForm.employmentType === 'PKWTT'
-                    ? 'bg-teal-50/60 dark:bg-teal-950/30 border-teal-500 dark:border-teal-500 ring-2 ring-teal-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-teal-300 dark:hover:border-teal-700'
-                }`}
-              >
-                {addForm.employmentType === 'PKWTT' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-teal-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-teal-100 dark:bg-teal-900/50 text-teal-700 dark:text-teal-400 flex items-center justify-center mb-2.5">
-                    <ShieldCheck className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">PKWTT (Tetap)</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Karyawan tetap tanpa batas kontrak. Fasilitas BPJS lengkap (JHT + JP) & cuti tahunan penuh.
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-teal-100 dark:border-teal-900/40 text-[9px] font-semibold text-teal-700 dark:text-teal-400">
-                  • Gaji Bulanan • BPJS Lengkap
-                </div>
-              </button>
-
-              {/* PKWT (Kontrak) */}
-              <button
-                type="button"
-                onClick={() => setAddForm({
-                  ...addForm,
-                  employmentType: 'PKWT',
-                  hasJht: true,
-                  hasJp: true,
-                  salaryType: 'monthly',
-                  overtimeEligible: true
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  addForm.employmentType === 'PKWT'
-                    ? 'bg-blue-50/60 dark:bg-blue-950/30 border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-700'
-                }`}
-              >
-                {addForm.employmentType === 'PKWT' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-400 flex items-center justify-center mb-2.5">
-                    <Clock className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">PKWT (Kontrak)</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Karyawan kontrak bertempo. Membutuhkan tanggal mulai & selesai kontrak (reminder H-30).
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-blue-100 dark:border-blue-900/40 text-[9px] font-semibold text-blue-700 dark:text-blue-400">
-                  • Wajib Tgl Kontrak • Evaluasi
-                </div>
-              </button>
-
-              {/* Probation (Masa Percobaan) */}
-              <button
-                type="button"
-                onClick={() => setAddForm({
-                  ...addForm,
-                  employmentType: 'Probation',
-                  hasJht: true,
-                  hasJp: false,
-                  salaryType: 'monthly',
-                  overtimeEligible: true
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  addForm.employmentType === 'Probation'
-                    ? 'bg-amber-50/60 dark:bg-amber-950/30 border-amber-500 dark:border-amber-500 ring-2 ring-amber-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-amber-300 dark:hover:border-amber-700'
-                }`}
-              >
-                {addForm.employmentType === 'Probation' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-400 flex items-center justify-center mb-2.5">
-                    <Sparkles className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">Probasi (Percobaan)</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Calon karyawan tetap dalam masa evaluasi kinerja (biasanya 3–6 bulan) sebelum diangkat PKWTT.
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-amber-100 dark:border-amber-900/40 text-[9px] font-semibold text-amber-700 dark:text-amber-400">
-                  • Evaluasi 3-6 Bulan • Calon Tetap
-                </div>
-              </button>
-
-              {/* Internship (Magang / Freelance) */}
-              <button
-                type="button"
-                onClick={() => setAddForm({
-                  ...addForm,
-                  employmentType: 'Internship',
-                  hasJht: false,
-                  hasJp: false,
-                  salaryType: 'daily',
-                  overtimeEligible: false
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  addForm.employmentType === 'Internship'
-                    ? 'bg-purple-50/60 dark:bg-purple-950/30 border-purple-500 dark:border-purple-500 ring-2 ring-purple-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-purple-300 dark:hover:border-purple-700'
-                }`}
-              >
-                {addForm.employmentType === 'Internship' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-purple-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-400 flex items-center justify-center mb-2.5">
-                    <Users className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">Magang / Internship</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Siswa/mahasiswa magang atau tenaga proyek khusus. Berbasis uang saku/honorarium.
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-purple-100 dark:border-purple-900/40 text-[9px] font-semibold text-purple-700 dark:text-purple-400">
-                  • Uang Saku / Harian • Tanpa JP/JHT
-                </div>
-              </button>
-            </div>
-
-            {/* Banner info penjelas status terpilih */}
-            <div className={`p-3.5 rounded-2xl border text-xs flex items-start gap-2.5 ${
-              addForm.employmentType === 'PKWTT'
-                ? 'bg-teal-50/50 dark:bg-teal-950/20 border-teal-200 dark:border-teal-900/40 text-teal-900 dark:text-teal-300'
-                : addForm.employmentType === 'PKWT'
-                ? 'bg-blue-50/50 dark:bg-blue-950/20 border-blue-200 dark:border-blue-900/40 text-blue-900 dark:text-blue-300'
-                : addForm.employmentType === 'Probation'
-                ? 'bg-amber-50/50 dark:bg-amber-950/20 border-amber-200 dark:border-amber-900/40 text-amber-900 dark:text-amber-300'
-                : 'bg-purple-50/50 dark:bg-purple-950/20 border-purple-200 dark:border-purple-900/40 text-purple-900 dark:text-purple-300'
-            }`}>
-              <Info className="w-4.5 h-4.5 shrink-0 mt-0.5" />
-              <div className="space-y-0.5">
-                <p className="font-bold text-[11px]">
-                  Mode Formulir: {
-                    addForm.employmentType === 'PKWTT' ? 'Karyawan Tetap (PKWTT)' :
-                    addForm.employmentType === 'PKWT' ? 'Karyawan Kontrak (PKWT)' :
-                    addForm.employmentType === 'Probation' ? 'Calon Karyawan Probasi' :
-                    'Peserta Magang / Internship'
-                  }
-                </p>
-                <p className="text-[10px] opacity-90 leading-relaxed">
-                  {addForm.employmentType === 'PKWTT' && 'Semua data rekening bank, NPWP, PTKP, dan BPJS lengkap wajib disiapkan untuk penggajian bulanan resmi.'}
-                  {addForm.employmentType === 'PKWT' && 'Wajib mengisi tanggal mulai dan selesai kontrak kerja agar sistem dapat memberikan peringatan perpanjangan kontrak H-30.'}
-                  {addForm.employmentType === 'Probation' && 'Target masa percobaan dapat diatur 3 s.d 6 bulan. Karyawan akan dievaluasi sebelum diangkat ke status PKWTT.'}
-                  {addForm.employmentType === 'Internship' && 'Dapat menggunakan basis uang saku harian atau bulanan. Tidak dikenakan iuran Jaminan Pensiun (JP) & JHT.'}
-                </p>
-              </div>
-            </div>
-          </div>
-
-          {/* 2. GRID 2 KOLOM FORM DATA DETAIL */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* KOLOM KIRI: DATA PRIBADI & PEKERJAAN */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-              <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                  <UserPlus className="w-4 h-4 text-indigo-600" />
-                  1. Data Pribadi & Profil Pekerjaan
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">* Wajib diisi</span>
-              </div>
-
-              <div className="space-y-3.5">
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 mb-3">
-                  Identitas Diri
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nama Lengkap *</label>
-                    <input
-                      type="text"
-                      value={addForm.nama}
-                      onChange={(e) => setAddForm({ ...addForm, nama: e.target.value })}
-                      required
-                      placeholder="Sesuai KTP"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK Karyawan *</label>
-                    <input
-                      type="text"
-                      value={addForm.nik}
-                      onChange={(e) => setAddForm({ ...addForm, nik: e.target.value })}
-                      required
-                      placeholder="EMP-XXXX"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK KTP (16 Digit) *</label>
-                    <input
-                      type="text"
-                      value={addForm.nikKtp}
-                      onChange={(e) => setAddForm({ ...addForm, nikKtp: e.target.value.replace(/[^0-9]/g, '') })}
-                      required
-                      maxLength={16}
-                      placeholder="16 digit NIK KTP"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nomor WhatsApp / HP</label>
-                    <input
-                      type="text"
-                      value={addForm.hp}
-                      onChange={(e) => setAddForm({ ...addForm, hp: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={13}
-                      placeholder="08xxxxxxxxxx"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Jenis Kelamin *</label>
-                    <select
-                      value={addForm.gender}
-                      onChange={(e) => setAddForm({ ...addForm, gender: e.target.value as any, isPregnant: e.target.value === 'Perempuan' ? addForm.isPregnant : false })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    >
-                      <option value="Laki-laki">Laki-laki</option>
-                      <option value="Perempuan">Perempuan</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tempat Lahir</label>
-                    <input
-                      type="text"
-                      value={addForm.birthPlace}
-                      onChange={(e) => setAddForm({ ...addForm, birthPlace: e.target.value })}
-                      placeholder="Contoh: Jakarta"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Lahir</label>
-                      {addForm.birthDate && (
-                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                          (() => {
-                            const age = Math.floor((new Date().getTime() - new Date(addForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000));
-                            return age < 17 ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400' : 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400';
-                          })()
-                        }`}>
-                          {Math.floor((new Date().getTime() - new Date(addForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000))} thn
-                        </span>
-                      )}
-                    </div>
-                    <CustomDatePicker
-                      value={addForm.birthDate}
-                      onChange={(val) => setAddForm({ ...addForm, birthDate: val })}
-                      placeholder="Pilih tgl lahir"
-                      size="sm"
-                    />
-                  </div>
-                </div>
-
-                {addForm.gender === 'Perempuan' && (
-                  <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50">
-                    <input
-                      type="checkbox"
-                      id="add_is_pregnant"
-                      checked={addForm.isPregnant}
-                      onChange={(e) => setAddForm({ ...addForm, isPregnant: e.target.checked })}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                    />
-                    <label htmlFor="add_is_pregnant" className="text-xs text-slate-700 dark:text-slate-200 cursor-pointer select-none">
-                      <span className="font-semibold text-amber-800 dark:text-amber-300">Karyawan Sedang Hamil</span>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400 ml-1.5 block sm:inline">
-                        (Otomatis dilindungi dari penugasan shift malam sesuai UU No. 13/2003 Pasal 76)
-                      </span>
-                    </label>
-                  </div>
-                )}
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
-                    Email Kantor * <span className="text-[9px] text-slate-400 dark:text-slate-500 font-normal">(Digunakan untuk login aplikasi)</span>
-                  </label>
-                  <input
-                    type="email"
-                    value={addForm.email}
-                    onChange={(e) => setAddForm({ ...addForm, email: e.target.value })}
-                    required
-                    placeholder="nama@perusahaan.co.id"
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  />
-                </div>
-
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Ketentuan Tanggal & Kontrak ({addForm.employmentType})
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Bergabung (Joined Date) *</label>
-                    <CustomDatePicker
-                      value={addForm.joinedDate}
-                      onChange={(val) => setAddForm({ ...addForm, joinedDate: val, tanggalMasuk: val })}
-                      placeholder="Pilih tgl bergabung"
-                      size="sm"
-                      required
-                    />
-                  </div>
-
-                  {/* Jika PKWT: Tampilkan input mulai & selesai kontrak */}
-                  {addForm.employmentType === 'PKWT' && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-blue-600 dark:text-blue-400 block">Selesai Kontrak (Expired Date) *</label>
-                      <CustomDatePicker
-                        value={addForm.contractEndDate}
-                        onChange={(val) => setAddForm({ ...addForm, contractEndDate: val })}
-                        placeholder="Pilih tgl selesai"
-                        size="sm"
-                        required={addForm.employmentType === 'PKWT'}
-                      />
-                    </div>
-                  )}
-
-                  {/* Jika Probation: Target evaluasi probasi */}
-                  {addForm.employmentType === 'Probation' && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-amber-600 dark:text-amber-400 block">Target Selesai Probasi (3-6 Bln) *</label>
-                      <CustomDatePicker
-                        value={addForm.contractEndDate}
-                        onChange={(val) => setAddForm({ ...addForm, contractEndDate: val })}
-                        placeholder="Pilih target probasi"
-                        size="sm"
-                        required={addForm.employmentType === 'Probation'}
-                      />
-                    </div>
-                  )}
-
-                  {/* Jika Internship: Selesai magang */}
-                  {addForm.employmentType === 'Internship' && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-purple-600 dark:text-purple-400 block">Target Selesai Magang</label>
-                      <CustomDatePicker
-                        value={addForm.contractEndDate}
-                        onChange={(val) => setAddForm({ ...addForm, contractEndDate: val })}
-                        placeholder="Pilih selesai magang"
-                        size="sm"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Form Khusus Rentang Kontrak PKWT */}
-                {addForm.employmentType === 'PKWT' && (
-                  <div className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 rounded-xl space-y-2">
-                    <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5" /> Tanggal Mulai Kontrak PKWT
-                    </p>
-                    <CustomDatePicker
-                      value={addForm.contractStartDate || addForm.joinedDate}
-                      onChange={(val) => setAddForm({ ...addForm, contractStartDate: val })}
-                      placeholder="Pilih tgl mulai kontrak"
-                      size="sm"
-                    />
-                  </div>
-                )}
-
-
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Penempatan & Akses Sistem
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Departemen *</label>
-                    <select
-                      value={addForm.dept}
-                      onChange={(e) => setAddForm({ ...addForm, dept: e.target.value })}
-                      required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="">Pilih dept</option>
-                      {departments.map(d => (
-                        <option key={d} value={d}>{d}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Jabatan / Posisi</label>
-                    <input
-                      type="text"
-                      value={addForm.jabatan}
-                      onChange={(e) => setAddForm({ ...addForm, jabatan: e.target.value })}
-                      placeholder="Staff / Officer / Manager"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Kantor Penempatan (Cabang)</label>
-                    <select
-                      value={addForm.officeId}
-                      onChange={(e) => setAddForm({ ...addForm, officeId: e.target.value === '' ? '' : Number(e.target.value) })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="">Belum ditentukan (Kantor Pusat)</option>
-                      {offices.map(o => (
-                        <option key={o.id} value={o.id}>{o.office_name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Role Akun *</label>
-                    <select
-                      value={addForm.role}
-                      onChange={(e) => setAddForm({ ...addForm, role: e.target.value })}
-                      required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="employee">Employee (Karyawan - Mobile App)</option>
-                      <option value="finance">Finance (Web + Mobile)</option>
-                      <option value="hrd">HRD (Web + Mobile)</option>
-                      <option value="admin">Admin (Web + Mobile)</option>
-                      <option value="super_admin">Super Admin (Full Akses)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Batas Klaim Struk Bulanan (Reimbursement)</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-400 font-mono">Rp</span>
-                    <input
-                      type="number"
-                      value={addForm.limit === null ? '' : addForm.limit}
-                      onChange={(e) => setAddForm({ ...addForm, limit: e.target.value === '' ? '' : Number(e.target.value) })}
-                      placeholder="Kosongkan jika tanpa batas klaim"
-                      className="w-full text-xs p-2.5 pl-9 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* KOLOM KANAN: FINANSIAL PAYROLL, REKENING BANK, PAJAK, BPJS & KEAMANAN */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-              <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                  <Wallet className="w-4 h-4 text-emerald-600" />
-                  2. Finansial Payroll, Pajak & BPJS
-                </span>
-                <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-md">
-                  Roadmap Gaji HRIS
-                </span>
-              </div>
-
-              <div className="space-y-3.5">
-                {/* A. REKENING BANK PAYROLL */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 mb-3">
-                  Informasi Rekening Payroll
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Bank Transfer</label>
-                    <select
-                      value={addForm.bankName}
-                      onChange={(e) => setAddForm({ ...addForm, bankName: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="BCA">Bank BCA</option>
-                      <option value="Mandiri">Bank Mandiri</option>
-                      <option value="BRI">Bank BRI</option>
-                      <option value="BNI">Bank BNI</option>
-                      <option value="CIMB">CIMB Niaga</option>
-                      <option value="Permata">Bank Permata</option>
-                      <option value="BSI">Bank Syariah Indonesia (BSI)</option>
-                      <option value="Danamon">Bank Danamon</option>
-                      <option value="Other">Bank Lainnya</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nomor Rekening</label>
-                    <input
-                      type="text"
-                      value={addForm.bankAccountNo}
-                      onChange={(e) => setAddForm({ ...addForm, bankAccountNo: e.target.value.replace(/[^0-9]/g, '') })}
-                      placeholder="Nomor rekening transfer"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nama Pemilik Rekening (A.N. Rekening)</label>
-                  <input
-                    type="text"
-                    value={addForm.bankAccountHolder || addForm.nama}
-                    onChange={(e) => setAddForm({ ...addForm, bankAccountHolder: e.target.value })}
-                    placeholder="Nama sesuai buku tabungan"
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  />
-                </div>
-
-                {/* B. PENGUPAHAN & GAJI DASAR */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-2">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Skema Pengupahan</label>
-                    <select
-                      value={addForm.salaryType}
-                      onChange={(e) => setAddForm({ ...addForm, salaryType: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="monthly">Gaji Bulanan (Monthly)</option>
-                      <option value="daily">Harian / Uang Saku (Daily)</option>
-                      <option value="hourly">Per Jam (Hourly)</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
-                      {addForm.employmentType === 'Internship' ? 'Uang Saku / Honor (IDR)' : 'Gaji Pokok Acuan (IDR)'}
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-400 font-mono">Rp</span>
-                      <input
-                        type="number"
-                        value={addForm.basicSalary === null ? '' : addForm.basicSalary}
-                        onChange={(e) => setAddForm({ ...addForm, basicSalary: e.target.value === '' ? '' : Number(e.target.value) })}
-                        placeholder="Contoh: 5000000"
-                        className="w-full text-xs p-2.5 pl-9 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* C. DATA PERPAJAKAN PPH 21 TER 2024 */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Pajak Penghasilan (PPh 21 TER 2024)
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
-                      Nomor NPWP <span className="font-normal text-slate-400">(Opsional)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={addForm.npwp}
-                      onChange={(e) => setAddForm({ ...addForm, npwp: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={16}
-                      placeholder="15 atau 16 digit NPWP"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Status PTKP (Kategori TER) *</label>
-                    <select
-                      value={addForm.ptkpStatus}
-                      onChange={(e) => setAddForm({ ...addForm, ptkpStatus: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <optgroup label="TER Kategori A (PTKP Rp 54jt - 58.5jt)">
-                        <option value="TK/0">TK/0 — Tidak Kawin, 0 Tanggungan (TER A)</option>
-                        <option value="TK/1">TK/1 — Tidak Kawin, 1 Tanggungan (TER A)</option>
-                        <option value="K/0">K/0 — Kawin, 0 Tanggungan (TER A)</option>
-                      </optgroup>
-                      <optgroup label="TER Kategori B (PTKP Rp 63jt - 67.5jt)">
-                        <option value="TK/2">TK/2 — Tidak Kawin, 2 Tanggungan (TER B)</option>
-                        <option value="TK/3">TK/3 — Tidak Kawin, 3 Tanggungan (TER B)</option>
-                        <option value="K/1">K/1 — Kawin, 1 Tanggungan (TER B)</option>
-                        <option value="K/2">K/2 — Kawin, 2 Tanggungan (TER B)</option>
-                      </optgroup>
-                      <optgroup label="TER Kategori C (PTKP Rp 72jt ke atas)">
-                        <option value="K/3">K/3 — Kawin, 3 Tanggungan (TER C)</option>
-                        <option value="K/I/0">K/I/0 — Kawin Istri Gabung, 0 Tanggungan (TER C)</option>
-                        <option value="K/I/1">K/I/1 — Kawin Istri Gabung, 1 Tanggungan (TER C)</option>
-                        <option value="K/I/2">K/I/2 — Kawin Istri Gabung, 2 Tanggungan (TER C)</option>
-                        <option value="K/I/3">K/I/3 — Kawin Istri Gabung, 3 Tanggungan (TER C)</option>
-                      </optgroup>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Metode Perhitungan Pajak</label>
-                    <select
-                      value={addForm.taxMethod}
-                      onChange={(e) => setAddForm({ ...addForm, taxMethod: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="gross">Gross (PPh 21 Potong Gaji Karyawan)</option>
-                      <option value="gross_up">Gross-Up (Diberi Tunjangan Pajak)</option>
-                      <option value="nett">Nett (Pajak Ditanggung Perusahaan)</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Hak Upah Lembur (Overtime)</label>
-                    <div className="flex items-center gap-2 pt-1.5">
-                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={addForm.overtimeEligible}
-                          onChange={(e) => setAddForm({ ...addForm, overtimeEligible: e.target.checked })}
-                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
-                        />
-                        <span>Berhak Lembur Berbayar (PP 35/2021)</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* D. KEPESERTAAN BPJS */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Keikutsertaan BPJS Kesehatan & Ketenagakerjaan
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">No. BPJS Kesehatan (13 Digit)</label>
-                    <input
-                      type="text"
-                      value={addForm.bpjsKesehatanNo}
-                      onChange={(e) => setAddForm({ ...addForm, bpjsKesehatanNo: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={13}
-                      placeholder="000xxxxxxxxxx"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">No. BPJS Ketenagakerjaan (KPJ)</label>
-                    <input
-                      type="text"
-                      value={addForm.bpjsKetenagakerjaanNo}
-                      onChange={(e) => setAddForm({ ...addForm, bpjsKetenagakerjaanNo: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={11}
-                      placeholder="11 digit KPJ"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                {/* Checkbox Program BPJS */}
-                <div className="p-3 bg-slate-50 dark:bg-slate-800/30 border border-slate-200 dark:border-slate-700/60 rounded-xl space-y-2 text-xs">
-                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                    Program Jaminan Sosial yang Diikuti:
-                  </p>
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={addForm.bpjsKesehatanEnabled}
-                        onChange={(e) => setAddForm({ ...addForm, bpjsKesehatanEnabled: e.target.checked })}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>BPJS Kesehatan (4% + 1%)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={addForm.bpjsKetenagakerjaanEnabled}
-                        onChange={(e) => setAddForm({ ...addForm, bpjsKetenagakerjaanEnabled: e.target.checked })}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>JKK & JKM (Ditanggung Kantor)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={addForm.hasJht}
-                        onChange={(e) => setAddForm({ ...addForm, hasJht: e.target.checked })}
-                        disabled={addForm.employmentType === 'Internship'}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
-                      />
-                      <span>JHT - Hari Tua (3.7% + 2%)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={addForm.hasJp}
-                        onChange={(e) => setAddForm({ ...addForm, hasJp: e.target.checked })}
-                        disabled={addForm.employmentType === 'Internship'}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
-                      />
-                      <span>JP - Pensiun (2% + 1%)</span>
-                    </label>
-                  </div>
-                </div>
-
-                {/* E. PASSWORD AWAL AKUN */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Sandi Awal Akun Mobile App
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1 relative">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Password Awal *</label>
-                    <div className="relative">
-                      <input
-                        type={addForm.showPassword ? 'text' : 'password'}
-                        value={addForm.password}
-                        onChange={(e) => setAddForm({ ...addForm, password: e.target.value })}
-                        required
-                        className="w-full text-xs p-2.5 pr-10 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setAddForm({ ...addForm, showPassword: !addForm.showPassword })}
-                        className="absolute right-3 top-2.5 text-slate-400 dark:text-slate-500 hover:text-slate-600 dark:hover:text-slate-300 transition"
-                      >
-                        {addForm.showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Konfirmasi Password *</label>
-                    <input
-                      type="password"
-                      value={addForm.confirmPassword}
-                      onChange={(e) => setAddForm({ ...addForm, confirmPassword: e.target.value })}
-                      required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                {addForm.password === addForm.confirmPassword ? (
-                  <div className="p-2.5 px-3 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/30 rounded-xl text-emerald-700 dark:text-emerald-400 text-xs flex items-center gap-1.5">
-                    <Check className="w-4 h-4 shrink-0" />
-                    <span>Password terkonfirmasi cocok.</span>
-                  </div>
-                ) : (
-                  <div className="p-2.5 px-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/30 rounded-xl text-rose-600 dark:text-rose-400 text-xs flex items-center gap-1.5">
-                    <X className="w-4 h-4 shrink-0" />
-                    <span>Password tidak cocok.</span>
-                  </div>
-                )}
-
-                {/* Tombol Simpan & Batal */}
-                <div className="flex gap-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => setViewMode('list')}
-                    className="flex-1 py-3 border border-slate-200 dark:border-slate-700 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
-                  >
-                    Batal
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={addForm.password !== addForm.confirmPassword || submitting}
-                    className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>{submitting ? 'Menyimpan...' : 'Simpan Karyawan Baru'}</span>
-                  </button>
-                </div>
-
-              </div>
-            </div>
-          </div>
-        </form>
+        <EmployeeMultiTabForm
+          isEdit={false}
+          formTab={formTab}
+          setFormTab={setFormTab}
+          form={addForm}
+          setForm={setAddForm}
+          onSubmit={handleAddNewEmployeeSubmit}
+          onCancel={() => {
+            setViewMode('list');
+            setFormTab('work');
+          }}
+          submitting={submitting}
+          offices={offices}
+          departments={departments}
+        />
       ) : (
-        /* EDIT KARYAWAN WEB FORM (Full-page View - Sesuai Status Kontrak & Kebutuhan Payroll Roadmap) */
-        <form onSubmit={handleSaveEditSubmit} className="space-y-6 leading-relaxed">
-          {/* 1. SELEKTOR UTAMA STATUS KONTRAK (Paling Atas) */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <div>
-                <span className="text-xs font-bold text-slate-850 dark:text-slate-100 flex items-center gap-2">
-                  <Edit2 className="w-4 h-4 text-indigo-600" />
-                  Edit Data Karyawan: <span className="text-indigo-600 dark:text-indigo-400 font-bold">{editEmployee?.nama}</span> ({editEmployee?.id})
-                </span>
-                <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
-                  Ubah status kontrak kerja, data penempatan, profil perbankan, atau skema perpajakan & BPJS karyawan.
-                </p>
-              </div>
-              <span className="px-2.5 py-1 text-[10px] font-bold rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-100 dark:border-amber-800 shrink-0">
-                Mode Edit Data
-              </span>
-            </div>
-
-            {/* 4 Card Pilihan Status Kontrak */}
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* PKWTT (Tetap) */}
-              <button
-                type="button"
-                onClick={() => setEditForm({
-                  ...editForm,
-                  employmentType: 'PKWTT',
-                  hasJht: true,
-                  hasJp: true,
-                  salaryType: 'monthly',
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  editForm.employmentType === 'PKWTT'
-                    ? 'bg-teal-50/60 dark:bg-teal-950/30 border-teal-500 dark:border-teal-500 ring-2 ring-teal-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-teal-300 dark:hover:border-teal-700'
-                }`}
-              >
-                {editForm.employmentType === 'PKWTT' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-teal-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-teal-100 dark:bg-teal-900/50 text-teal-700 dark:text-teal-400 flex items-center justify-center mb-2.5">
-                    <ShieldCheck className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">PKWTT (Tetap)</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Karyawan tetap tanpa batas kontrak. Fasilitas BPJS lengkap (JHT + JP) & cuti tahunan penuh.
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-teal-100 dark:border-teal-900/40 text-[9px] font-semibold text-teal-700 dark:text-teal-400">
-                  • Gaji Bulanan • BPJS Lengkap
-                </div>
-              </button>
-
-              {/* PKWT (Kontrak) */}
-              <button
-                type="button"
-                onClick={() => setEditForm({
-                  ...editForm,
-                  employmentType: 'PKWT',
-                  hasJht: true,
-                  hasJp: true,
-                  salaryType: 'monthly',
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  editForm.employmentType === 'PKWT'
-                    ? 'bg-blue-50/60 dark:bg-blue-950/30 border-blue-500 dark:border-blue-500 ring-2 ring-blue-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-blue-300 dark:hover:border-blue-700'
-                }`}
-              >
-                {editForm.employmentType === 'PKWT' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-blue-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-400 flex items-center justify-center mb-2.5">
-                    <Clock className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">PKWT (Kontrak)</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Karyawan kontrak bertempo. Membutuhkan tanggal mulai & selesai kontrak (reminder H-30).
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-blue-100 dark:border-blue-900/40 text-[9px] font-semibold text-blue-700 dark:text-blue-400">
-                  • Wajib Tgl Kontrak • Evaluasi
-                </div>
-              </button>
-
-              {/* Probation (Masa Percobaan) */}
-              <button
-                type="button"
-                onClick={() => setEditForm({
-                  ...editForm,
-                  employmentType: 'Probation',
-                  hasJht: true,
-                  hasJp: false,
-                  salaryType: 'monthly',
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  editForm.employmentType === 'Probation'
-                    ? 'bg-amber-50/60 dark:bg-amber-950/30 border-amber-500 dark:border-amber-500 ring-2 ring-amber-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-amber-300 dark:hover:border-amber-700'
-                }`}
-              >
-                {editForm.employmentType === 'Probation' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-amber-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-amber-100 dark:bg-amber-900/50 text-amber-700 dark:text-amber-400 flex items-center justify-center mb-2.5">
-                    <Sparkles className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">Probasi (Percobaan)</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Calon karyawan tetap dalam masa evaluasi kinerja (biasanya 3–6 bulan) sebelum diangkat PKWTT.
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-amber-100 dark:border-amber-900/40 text-[9px] font-semibold text-amber-700 dark:text-amber-400">
-                  • Evaluasi 3-6 Bulan • Calon Tetap
-                </div>
-              </button>
-
-              {/* Internship (Magang / Freelance) */}
-              <button
-                type="button"
-                onClick={() => setEditForm({
-                  ...editForm,
-                  employmentType: 'Internship',
-                  hasJht: false,
-                  hasJp: false,
-                  salaryType: 'daily',
-                  overtimeEligible: false
-                })}
-                className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
-                  editForm.employmentType === 'Internship'
-                    ? 'bg-purple-50/60 dark:bg-purple-950/30 border-purple-500 dark:border-purple-500 ring-2 ring-purple-500/20 shadow-sm'
-                    : 'bg-white dark:bg-slate-800/40 border-slate-200 dark:border-slate-700 hover:border-purple-300 dark:hover:border-purple-700'
-                }`}
-              >
-                {editForm.employmentType === 'Internship' && (
-                  <span className="absolute top-2 right-2 w-5 h-5 rounded-full bg-purple-500 text-white flex items-center justify-center">
-                    <Check className="w-3 h-3" />
-                  </span>
-                )}
-                <div>
-                  <div className="w-8 h-8 rounded-xl bg-purple-100 dark:bg-purple-900/50 text-purple-700 dark:text-purple-400 flex items-center justify-center mb-2.5">
-                    <Users className="w-4.5 h-4.5" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">Magang / Internship</h4>
-                  <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
-                    Siswa/mahasiswa magang atau tenaga proyek khusus. Berbasis uang saku/honorarium.
-                  </p>
-                </div>
-                <div className="mt-3 pt-2.5 border-t border-purple-100 dark:border-purple-900/40 text-[9px] font-semibold text-purple-700 dark:text-purple-400">
-                  • Uang Saku / Harian • Tanpa JP/JHT
-                </div>
-              </button>
-            </div>
-          </div>
-
-          {/* 2. GRID 2 KOLOM FORM DATA DETAIL (EDIT) */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* KOLOM KIRI: DATA PRIBADI & PEKERJAAN */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-              <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-bold text-slate-850 dark:text-slate-100 flex items-center gap-2">
-                  <UserPlus className="w-4 h-4 text-indigo-600" />
-                  1. Data Pribadi & Profil Pekerjaan
-                </span>
-                <span className="text-[10px] text-slate-400 font-mono">* Wajib diisi</span>
-              </div>
-
-              <div className="space-y-3.5">
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 mb-3">
-                  Identitas Diri
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nama Lengkap *</label>
-                    <input
-                      type="text"
-                      value={editForm.nama}
-                      onChange={(e) => setEditForm({ ...editForm, nama: e.target.value })}
-                      required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK Karyawan</label>
-                    <input
-                      type="text"
-                      value={editForm.nik}
-                      onChange={(e) => setEditForm({ ...editForm, nik: e.target.value })}
-                      placeholder="EMP-XXXX"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">NIK KTP (16 Digit) *</label>
-                    <input
-                      type="text"
-                      value={editForm.nikKtp}
-                      onChange={(e) => setEditForm({ ...editForm, nikKtp: e.target.value.replace(/[^0-9]/g, '') })}
-                      required
-                      maxLength={16}
-                      placeholder="16 digit NIK KTP"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nomor WhatsApp / HP</label>
-                    <input
-                      type="text"
-                      value={editForm.hp}
-                      onChange={(e) => setEditForm({ ...editForm, hp: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={13}
-                      placeholder="08xxxxxxxxxx"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Jenis Kelamin *</label>
-                    <select
-                      value={editForm.gender}
-                      onChange={(e) => setEditForm({ ...editForm, gender: e.target.value as any, isPregnant: e.target.value === 'Perempuan' ? editForm.isPregnant : false })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    >
-                      <option value="Laki-laki">Laki-laki</option>
-                      <option value="Perempuan">Perempuan</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tempat Lahir</label>
-                    <input
-                      type="text"
-                      value={editForm.birthPlace}
-                      onChange={(e) => setEditForm({ ...editForm, birthPlace: e.target.value })}
-                      placeholder="Contoh: Jakarta"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Lahir</label>
-                      {editForm.birthDate && (
-                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                          (() => {
-                            const age = Math.floor((new Date().getTime() - new Date(editForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000));
-                            return age < 17 ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400' : 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400';
-                          })()
-                        }`}>
-                          {Math.floor((new Date().getTime() - new Date(editForm.birthDate).getTime()) / (365.25 * 24 * 3600 * 1000))} thn
-                        </span>
-                      )}
-                    </div>
-                    <CustomDatePicker
-                      value={editForm.birthDate}
-                      onChange={(val) => setEditForm({ ...editForm, birthDate: val })}
-                      placeholder="Pilih tgl lahir"
-                      size="sm"
-                    />
-                  </div>
-                </div>
-
-                {editForm.gender === 'Perempuan' && (
-                  <div className="flex items-center gap-2 p-2.5 rounded-xl bg-amber-50/60 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/50">
-                    <input
-                      type="checkbox"
-                      id="edit_is_pregnant"
-                      checked={editForm.isPregnant}
-                      onChange={(e) => setEditForm({ ...editForm, isPregnant: e.target.checked })}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                    />
-                    <label htmlFor="edit_is_pregnant" className="text-xs text-slate-700 dark:text-slate-200 cursor-pointer select-none">
-                      <span className="font-semibold text-amber-800 dark:text-amber-300">Karyawan Sedang Hamil</span>
-                      <span className="text-[11px] text-slate-500 dark:text-slate-400 ml-1.5 block sm:inline">
-                        (Otomatis dilindungi dari penugasan shift malam sesuai UU No. 13/2003 Pasal 76)
-                      </span>
-                    </label>
-                  </div>
-                )}
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
-                    Email Kantor <span className="text-[9px] text-slate-400 dark:text-slate-500 font-normal">(Tidak bisa diubah — ID login mobile app)</span>
-                  </label>
-                  <input
-                    type="email"
-                    value={editEmployee?.email || ''}
-                    disabled
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-100/70 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 focus:outline-none cursor-not-allowed"
-                  />
-                </div>
-
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-light-divider dark:border-slate-800/80 pt-4 mb-3">
-                  Ketentuan Tanggal & Kontrak ({editForm.employmentType})
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Tanggal Bergabung (Joined Date)</label>
-                    <CustomDatePicker
-                      value={editForm.joinedDate}
-                      onChange={(val) => setEditForm({ ...editForm, joinedDate: val })}
-                      placeholder="Pilih tgl bergabung"
-                      size="sm"
-                    />
-                  </div>
-
-                  {/* Jika PKWT: Tampilkan input selesai kontrak */}
-                  {editForm.employmentType === 'PKWT' && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-blue-600 dark:text-blue-400 block">Selesai Kontrak (Expired Date) *</label>
-                      <CustomDatePicker
-                        value={editForm.contractEndDate}
-                        onChange={(val) => setEditForm({ ...editForm, contractEndDate: val })}
-                        placeholder="Pilih tgl selesai"
-                        size="sm"
-                        required={editForm.employmentType === 'PKWT'}
-                      />
-                    </div>
-                  )}
-
-                  {/* Jika Probation: Target evaluasi probasi */}
-                  {editForm.employmentType === 'Probation' && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-amber-600 dark:text-amber-400 block">Target Selesai Probasi (3-6 Bln) *</label>
-                      <CustomDatePicker
-                        value={editForm.contractEndDate}
-                        onChange={(val) => setEditForm({ ...editForm, contractEndDate: val })}
-                        placeholder="Pilih target probasi"
-                        size="sm"
-                        required={editForm.employmentType === 'Probation'}
-                      />
-                    </div>
-                  )}
-
-                  {/* Jika Internship: Selesai magang */}
-                  {editForm.employmentType === 'Internship' && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-purple-600 dark:text-purple-400 block">Target Selesai Magang</label>
-                      <CustomDatePicker
-                        value={editForm.contractEndDate}
-                        onChange={(val) => setEditForm({ ...editForm, contractEndDate: val })}
-                        placeholder="Pilih selesai magang"
-                        size="sm"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {/* Form Khusus Rentang Kontrak PKWT */}
-                {editForm.employmentType === 'PKWT' && (
-                  <div className="p-3 bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/30 rounded-xl space-y-2">
-                    <p className="text-[11px] font-bold text-blue-800 dark:text-blue-300 flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5" /> Tanggal Mulai Kontrak PKWT
-                    </p>
-                    <CustomDatePicker
-                      value={editForm.contractStartDate || editForm.joinedDate}
-                      onChange={(val) => setEditForm({ ...editForm, contractStartDate: val })}
-                      placeholder="Pilih tgl mulai kontrak"
-                      size="sm"
-                    />
-                  </div>
-                )}
-
-
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Penempatan & Akses Sistem
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Departemen</label>
-                    <select
-                      value={editForm.dept}
-                      onChange={(e) => setEditForm({ ...editForm, dept: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="">Pilih dept</option>
-                      {departments.map(d => (
-                        <option key={d} value={d}>{d}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Jabatan / Posisi</label>
-                    <input
-                      type="text"
-                      value={editForm.jabatan}
-                      onChange={(e) => setEditForm({ ...editForm, jabatan: e.target.value })}
-                      placeholder="Staff / Officer / Manager"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Kantor Penempatan (Cabang)</label>
-                    <select
-                      value={editForm.officeId}
-                      onChange={(e) => setEditForm({ ...editForm, officeId: e.target.value === '' ? '' : Number(e.target.value) })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="">Belum ditentukan (Kantor Pusat)</option>
-                      {offices.map(o => (
-                        <option key={o.id} value={o.id}>{o.office_name}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Role Akun *</label>
-                    <select
-                      value={editForm.role}
-                      onChange={(e) => setEditForm({ ...editForm, role: e.target.value })}
-                      required
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="employee">Employee (Karyawan - Mobile App)</option>
-                      <option value="finance">Finance (Web + Mobile)</option>
-                      <option value="hrd">HRD (Web + Mobile)</option>
-                      <option value="admin">Admin (Web + Mobile)</option>
-                      <option value="super_admin">Super Admin (Full Akses)</option>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Batas Klaim Struk Bulanan (Reimbursement)</label>
-                  <div className="relative">
-                    <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-400 font-mono">Rp</span>
-                    <input
-                      type="number"
-                      value={editForm.limit === null ? '' : editForm.limit}
-                      onChange={(e) => setEditForm({ ...editForm, limit: e.target.value === '' ? '' : Number(e.target.value) })}
-                      placeholder="Kosongkan jika tanpa batas klaim"
-                      className="w-full text-xs p-2.5 pl-9 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* KOLOM KANAN: FINANSIAL PAYROLL, REKENING BANK, PAJAK, BPJS */}
-            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-              <div className="flex justify-between items-center pb-3 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                  <Wallet className="w-4 h-4 text-emerald-600" />
-                  2. Finansial Payroll, Pajak & BPJS
-                </span>
-                <span className="text-[10px] font-semibold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-md">
-                  Roadmap Gaji HRIS
-                </span>
-              </div>
-
-              <div className="space-y-3.5">
-                {/* A. REKENING BANK PAYROLL */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 mb-3">
-                  Informasi Rekening Payroll
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Bank Transfer</label>
-                    <select
-                      value={editForm.bankName}
-                      onChange={(e) => setEditForm({ ...editForm, bankName: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="BCA">Bank BCA</option>
-                      <option value="Mandiri">Bank Mandiri</option>
-                      <option value="BRI">Bank BRI</option>
-                      <option value="BNI">Bank BNI</option>
-                      <option value="CIMB">CIMB Niaga</option>
-                      <option value="Permata">Bank Permata</option>
-                      <option value="BSI">Bank Syariah Indonesia (BSI)</option>
-                      <option value="Danamon">Bank Danamon</option>
-                      <option value="Other">Bank Lainnya</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nomor Rekening</label>
-                    <input
-                      type="text"
-                      value={editForm.bankAccountNo}
-                      onChange={(e) => setEditForm({ ...editForm, bankAccountNo: e.target.value.replace(/[^0-9]/g, '') })}
-                      placeholder="Nomor rekening transfer"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Nama Pemilik Rekening (A.N. Rekening)</label>
-                  <input
-                    type="text"
-                    value={editForm.bankAccountHolder || editForm.nama}
-                    onChange={(e) => setEditForm({ ...editForm, bankAccountHolder: e.target.value })}
-                    placeholder="Nama sesuai buku tabungan"
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                  />
-                </div>
-
-                {/* B. PENGUPAHAN & GAJI DASAR */}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-2">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Skema Pengupahan</label>
-                    <select
-                      value={editForm.salaryType}
-                      onChange={(e) => setEditForm({ ...editForm, salaryType: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="monthly">Gaji Bulanan (Monthly)</option>
-                      <option value="daily">Harian / Uang Saku (Daily)</option>
-                      <option value="hourly">Per Jam (Hourly)</option>
-                    </select>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
-                      {editForm.employmentType === 'Internship' ? 'Uang Saku / Honor (IDR)' : 'Gaji Pokok Acuan (IDR)'}
-                    </label>
-                    <div className="relative">
-                      <span className="absolute left-3 top-2.5 text-xs font-bold text-slate-400 font-mono">Rp</span>
-                      <input
-                        type="number"
-                        value={editForm.basicSalary === null ? '' : editForm.basicSalary}
-                        onChange={(e) => setEditForm({ ...editForm, basicSalary: e.target.value === '' ? '' : Number(e.target.value) })}
-                        placeholder="Contoh: 5000000"
-                        className="w-full text-xs p-2.5 pl-9 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* C. DATA PERPAJAKAN PPH 21 TER 2024 */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Pajak Penghasilan (PPh 21 TER 2024)
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
-                      Nomor NPWP <span className="font-normal text-slate-400">(Opsional)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={editForm.npwp}
-                      onChange={(e) => setEditForm({ ...editForm, npwp: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={16}
-                      placeholder="15 atau 16 digit NPWP"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Status PTKP (Kategori TER) *</label>
-                    <select
-                      value={editForm.ptkpStatus}
-                      onChange={(e) => setEditForm({ ...editForm, ptkpStatus: e.target.value })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <optgroup label="TER Kategori A (PTKP Rp 54jt - 58.5jt)">
-                        <option value="TK/0">TK/0 — Tidak Kawin, 0 Tanggungan (TER A)</option>
-                        <option value="TK/1">TK/1 — Tidak Kawin, 1 Tanggungan (TER A)</option>
-                        <option value="K/0">K/0 — Kawin, 0 Tanggungan (TER A)</option>
-                      </optgroup>
-                      <optgroup label="TER Kategori B (PTKP Rp 63jt - 67.5jt)">
-                        <option value="TK/2">TK/2 — Tidak Kawin, 2 Tanggungan (TER B)</option>
-                        <option value="TK/3">TK/3 — Tidak Kawin, 3 Tanggungan (TER B)</option>
-                        <option value="K/1">K/1 — Kawin, 1 Tanggungan (TER B)</option>
-                        <option value="K/2">K/2 — Kawin, 2 Tanggungan (TER B)</option>
-                      </optgroup>
-                      <optgroup label="TER Kategori C (PTKP Rp 72jt ke atas)">
-                        <option value="K/3">K/3 — Kawin, 3 Tanggungan (TER C)</option>
-                        <option value="K/I/0">K/I/0 — Kawin Istri Gabung, 0 Tanggungan (TER C)</option>
-                        <option value="K/I/1">K/I/1 — Kawin Istri Gabung, 1 Tanggungan (TER C)</option>
-                        <option value="K/I/2">K/I/2 — Kawin Istri Gabung, 2 Tanggungan (TER C)</option>
-                        <option value="K/I/3">K/I/3 — Kawin Istri Gabung, 3 Tanggungan (TER C)</option>
-                      </optgroup>
-                    </select>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Metode Perhitungan Pajak</label>
-                    <select
-                      value={editForm.taxMethod}
-                      onChange={(e) => setEditForm({ ...editForm, taxMethod: e.target.value as any })}
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/60 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-semibold"
-                    >
-                      <option value="gross">Gross (PPh 21 Potong Gaji Karyawan)</option>
-                      <option value="gross_up">Gross-Up (Diberi Tunjangan Pajak)</option>
-                      <option value="nett">Nett (Pajak Ditanggung Perusahaan)</option>
-                    </select>
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Hak Upah Lembur (Overtime)</label>
-                    <div className="flex items-center gap-2 pt-1.5">
-                      <label className="flex items-center gap-2 text-xs font-semibold text-slate-700 dark:text-slate-300 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={editForm.overtimeEligible}
-                          onChange={(e) => setEditForm({ ...editForm, overtimeEligible: e.target.checked })}
-                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500"
-                        />
-                        <span>Berhak Lembur Berbayar (PP 35/2021)</span>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-
-                {/* D. KEPESERTAAN BPJS */}
-                <span className="text-[10px] font-extrabold text-slate-400 dark:text-slate-500 uppercase tracking-widest block pb-1 border-b border-slate-200 dark:border-slate-800/80 pt-4 mb-3">
-                  Keikutsertaan BPJS Kesehatan & Ketenagakerjaan
-                </span>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">No. BPJS Kesehatan (13 Digit)</label>
-                    <input
-                      type="text"
-                      value={editForm.bpjsKesehatanNo}
-                      onChange={(e) => setEditForm({ ...editForm, bpjsKesehatanNo: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={13}
-                      placeholder="000xxxxxxxxxx"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">No. BPJS Ketenagakerjaan (KPJ)</label>
-                    <input
-                      type="text"
-                      value={editForm.bpjsKetenagakerjaanNo}
-                      onChange={(e) => setEditForm({ ...editForm, bpjsKetenagakerjaanNo: e.target.value.replace(/[^0-9]/g, '') })}
-                      maxLength={11}
-                      placeholder="11 digit KPJ"
-                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/10 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono"
-                    />
-                  </div>
-                </div>
-
-                {/* Checkbox Program BPJS */}
-                <div className="p-3 bg-slate-50 dark:bg-slate-800/30 border border-slate-200 dark:border-slate-700/60 rounded-xl space-y-2 text-xs">
-                  <p className="text-[10px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider">
-                    Program Jaminan Sosial yang Diikuti:
-                  </p>
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={editForm.bpjsKesehatanEnabled}
-                        onChange={(e) => setEditForm({ ...editForm, bpjsKesehatanEnabled: e.target.checked })}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>BPJS Kesehatan (4% + 1%)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={editForm.bpjsKetenagakerjaanEnabled}
-                        onChange={(e) => setEditForm({ ...editForm, bpjsKetenagakerjaanEnabled: e.target.checked })}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <span>JKK & JKM (Ditanggung Kantor)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={editForm.hasJht}
-                        onChange={(e) => setEditForm({ ...editForm, hasJht: e.target.checked })}
-                        disabled={editForm.employmentType === 'Internship'}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
-                      />
-                      <span>JHT - Hari Tua (3.7% + 2%)</span>
-                    </label>
-                    <label className="flex items-center gap-2 cursor-pointer text-slate-700 dark:text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={editForm.hasJp}
-                        onChange={(e) => setEditForm({ ...editForm, hasJp: e.target.checked })}
-                        disabled={editForm.employmentType === 'Internship'}
-                        className="w-3.5 h-3.5 rounded text-indigo-600 focus:ring-indigo-500 disabled:opacity-50"
-                      />
-                      <span>JP - Pensiun (2% + 1%)</span>
-                    </label>
-                  </div>
-                </div>
-
-                {/* Tombol Simpan & Batal (Edit) */}
-                <div className="flex gap-2.5 pt-4 border-t border-slate-100 dark:border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setViewMode('list');
-                      setEditEmployee(null);
-                    }}
-                    className="flex-1 py-3 border border-slate-200 dark:border-slate-700 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
-                  >
-                    Batal
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold text-xs rounded-xl shadow-md transition cursor-pointer disabled:opacity-50 flex items-center justify-center gap-2"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>{submitting ? 'Menyimpan...' : 'Simpan Perubahan Data'}</span>
-                  </button>
-                </div>
-
-              </div>
-            </div>
-          </div>
-        </form>
+        <EmployeeMultiTabForm
+          isEdit={true}
+          formTab={formTab}
+          setFormTab={setFormTab}
+          form={editForm}
+          setForm={setEditForm}
+          onSubmit={handleSaveEditSubmit}
+          onCancel={() => {
+            setViewMode('list');
+            setEditEmployee(null);
+            setFormTab('work');
+          }}
+          submitting={submitting}
+          editEmployee={editEmployee}
+          offices={offices}
+          departments={departments}
+        />
       )}
 
       {/* MODAL NONAKTIFKAN AKUN KARYAWAN */}
@@ -3376,6 +2038,153 @@ export const KaryawanManagement: React.FC<{
                           </div>
                         </div>
                       </div>
+
+                      {/* Status Sipil & Medis K3 Card */}
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                          <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                            <Heart className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                            Status Sipil, Agama & Kesehatan K3
+                          </h4>
+                          <span className="text-[10px] text-slate-400 font-medium">Data Kepegawaian & K3</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Agama</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-medium text-slate-800 dark:text-slate-200">{fullData.religion || '—'}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Status Pernikahan</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-medium text-slate-800 dark:text-slate-200">
+                                {fullData.maritalStatus === 'single' ? 'Belum Menikah' :
+                                 fullData.maritalStatus === 'married' ? 'Menikah' :
+                                 fullData.maritalStatus === 'divorced' ? 'Cerai Hidup' :
+                                 fullData.maritalStatus === 'widowed' ? 'Cerai Mati' : (fullData.maritalStatus || '—')}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Tanggungan Anak/Keluarga</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                                {fullData.numberOfDependents ?? 0} Orang
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Golongan Darah</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-bold text-rose-600 dark:text-rose-400">{fullData.bloodType || '—'}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1 sm:col-span-2">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Riwayat Penyakit Khusus / Alergi</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs text-slate-700 dark:text-slate-300">{fullData.medicalConditions || 'Tidak ada riwayat'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Kontak Darurat Card */}
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                          <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                            <PhoneCall className="w-4 h-4 text-emerald-600 dark:text-emerald-400" />
+                            Kontak Darurat (Emergency Contact K3)
+                          </h4>
+                          <span className="text-[10px] text-emerald-600 font-bold bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800/40">
+                            Prosedur Tanggap Darurat
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nama Kontak</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{fullData.emergencyContactName || '—'}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Hubungan Keluarga</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">{fullData.emergencyContactRelation || '—'}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">No. HP / Telepon Darurat</span>
+                            <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-mono font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1.5">
+                                <Phone className="w-3 h-3 text-emerald-500" />
+                                {fullData.emergencyContactPhone || '—'}
+                              </span>
+                              {fullData.emergencyContactPhone && fullData.emergencyContactPhone !== '—' && (
+                                <button
+                                  onClick={() => handleCopyText(fullData.emergencyContactPhone || '', 'emgPhone')}
+                                  className="text-slate-400 hover:text-emerald-600 transition p-1 cursor-pointer"
+                                  title="Salin No. HP Darurat"
+                                >
+                                  {copiedField === 'emgPhone' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                </button>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Alamat Kontak Darurat</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs text-slate-700 dark:text-slate-300">{fullData.emergencyContactAddress || '—'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Alamat KTP & Domisili Card */}
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                          <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                            <MapPin className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                            Alamat KTP & Domisili Tempat Tinggal
+                          </h4>
+                          <span className="text-[10px] text-slate-400 font-medium">Validasi Kependudukan</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Alamat Sesuai KTP</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-700/60 min-h-[60px]">
+                              <p className="text-xs text-slate-800 dark:text-slate-200 leading-relaxed">{fullData.ktpAddress || 'Belum diisi'}</p>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Alamat Domisili Saat Ini</span>
+                              {fullData.isDomicileSameAsKtp && (
+                                <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-full">
+                                  Sama dengan KTP
+                                </span>
+                              )}
+                            </div>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-700/60 min-h-[60px]">
+                              <p className="text-xs text-slate-800 dark:text-slate-200 leading-relaxed">
+                                {fullData.isDomicileSameAsKtp ? (fullData.ktpAddress || 'Sama dengan KTP') : (fullData.domicileAddress || 'Belum diisi')}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
                     </div>
                   )}
 

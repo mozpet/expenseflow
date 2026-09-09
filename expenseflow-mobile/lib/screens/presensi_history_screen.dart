@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../utils.dart';
+import '../widgets/custom_date_range_picker_dialog.dart';
 import '../widgets/skeleton.dart';
 import 'presensi_map_screen.dart';
 
@@ -12,6 +14,8 @@ class PresensiHistoryScreen extends StatefulWidget {
 }
 
 class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
+  DateTimeRange? _selectedDateRange;
+
   @override
   void initState() {
     super.initState();
@@ -30,6 +34,82 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
       if (!mounted) return;
       Provider.of<PresensiProvider>(context, listen: false).fetchMyAttendance();
     });
+  }
+
+  String _formatDate(DateTime d) => formatDateIndonesian(d);
+
+  Future<void> _pickDateRange() async {
+    final now = DateTime.now();
+    final picked = await showCustomDateRangePicker(
+      context: context,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(now.year + 2),
+      initialDateRange: _selectedDateRange ??
+          DateTimeRange(
+            start: DateTime(now.year, now.month, 1),
+            end: DateTime(now.year, now.month, now.day),
+          ),
+    );
+    if (picked != null) {
+      setState(() {
+        _selectedDateRange = picked;
+      });
+    }
+  }
+
+  void _setDatePreset(String preset) {
+    final now = DateTime.now();
+    setState(() {
+      if (preset == 'hari_ini') {
+        _selectedDateRange = DateTimeRange(
+          start: DateTime(now.year, now.month, now.day),
+          end: DateTime(now.year, now.month, now.day),
+        );
+      } else if (preset == '7_hari') {
+        final start = now.subtract(const Duration(days: 6));
+        _selectedDateRange = DateTimeRange(
+          start: DateTime(start.year, start.month, start.day),
+          end: DateTime(now.year, now.month, now.day),
+        );
+      } else if (preset == 'bulan_ini') {
+        _selectedDateRange = DateTimeRange(
+          start: DateTime(now.year, now.month, 1),
+          end: DateTime(now.year, now.month, now.day),
+        );
+      } else if (preset == 'bulan_lalu') {
+        final lastMonth = DateTime(now.year, now.month - 1, 1);
+        final lastMonthEnd = DateTime(now.year, now.month, 0);
+        _selectedDateRange = DateTimeRange(
+          start: lastMonth,
+          end: lastMonthEnd,
+        );
+      } else {
+        _selectedDateRange = null;
+      }
+    });
+  }
+
+  List<PresensiRecord> _filteredRecords(List<PresensiRecord> all) {
+    if (_selectedDateRange == null) return all;
+    final start = DateTime(
+      _selectedDateRange!.start.year,
+      _selectedDateRange!.start.month,
+      _selectedDateRange!.start.day,
+    );
+    final end = DateTime(
+      _selectedDateRange!.end.year,
+      _selectedDateRange!.end.month,
+      _selectedDateRange!.end.day,
+      23,
+      59,
+      59,
+    );
+    return all.where((r) {
+      final dt = r.parsedDate;
+      if (dt == null) return true;
+      return (dt.isAfter(start) || dt.isAtSameMomentAs(start)) &&
+          (dt.isBefore(end) || dt.isAtSameMomentAs(end));
+    }).toList();
   }
 
   @override
@@ -62,15 +142,13 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
       body: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Banner status WFH — informatif saja, bukan gerbang akses.
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
-            child: Consumer<PresensiProvider>(
-              builder: (context, prov, _) {
-                if (prov.canCheckOut && !prov.wfhEnabled) {
-                  // User sudah check-in tapi HRD mematikan WFH → tetap tampilkan
-                  // opsi checkout agar user tidak bingung.
-                  return Container(
+          // Banner checkout darurat (hanya tampil jika user sedang check-in tapi WFH dimatikan HRD di tengah shift)
+          Consumer<PresensiProvider>(
+            builder: (context, prov, _) {
+              if (prov.canCheckOut && !prov.wfhEnabled) {
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                  child: Container(
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(
                       horizontal: 14,
@@ -122,103 +200,12 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                         ),
                       ],
                     ),
-                  );
-                } else if (prov.wfhEnabled) {
-                  // WFH aktif: tampilkan tombol presensi + info
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFE8F5E9),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFFC8E6C9)),
-                    ),
-                    child: Row(
-                      children: [
-                        const Icon(
-                          Icons.home_work_outlined,
-                          color: Colors.green,
-                          size: 18,
-                        ),
-                        const SizedBox(width: 8),
-                        const Expanded(
-                          child: Text(
-                            'Mode WFH aktif — tekan tombol + untuk presensi.',
-                            style: TextStyle(
-                              color: Colors.green,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                        // Shortcut tombol presensi di dalam banner
-                        GestureDetector(
-                          onTap: _goToPresensiMap,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: Colors.green,
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                            child: const Text(
-                              'Presensi',
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 11,
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                } else {
-                  // WFH nonaktif: info bahwa presensi via hardware
-                  return Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
-                    ),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFFFF3E0),
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFFFFE0B2)),
-                    ),
-                    child: const Row(
-                      children: [
-                        Icon(
-                          Icons.business_outlined,
-                          color: Colors.orange,
-                          size: 18,
-                        ),
-                        SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            'Presensi kantor via perangkat absensi. '
-                            'Riwayat Anda ditampilkan di bawah.',
-                            style: TextStyle(
-                              color: Colors.orange,
-                              fontWeight: FontWeight.bold,
-                              fontSize: 12,
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                }
-              },
-            ),
+                  ),
+                );
+              }
+              return const SizedBox.shrink();
+            },
           ),
-          const SizedBox(height: 12),
           // Blue Today Card
           Padding(
             padding: const EdgeInsets.all(16.0),
@@ -369,6 +356,37 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                               ],
                             ),
                           ),
+                        // Chip pulang cepat — tampil jika status pulang cepat
+                        if (presensiProv.todayIsEarlyLeave)
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: const Color(0xFF7E22CE).withValues(alpha: 0.9),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  Icons.exit_to_app_rounded,
+                                  size: 14,
+                                  color: Colors.white,
+                                ),
+                                SizedBox(width: 6),
+                                Text(
+                                  'Pulang Cepat',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         // Chip telat
                         if (presensiProv.todayLateMinutes > 0)
                           Container(
@@ -408,87 +426,269 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
             ),
           ),
 
-          // Title Section
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-            child: Text(
-              'Riwayat Presensi',
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.w600,
-                color: Colors.black87,
+          // Title Section & Counter
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16.0, 4.0, 16.0, 8.0),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text(
+                  'Riwayat Presensi',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: Colors.black87,
+                  ),
+                ),
+                if (_selectedDateRange != null)
+                  Text(
+                    '${_filteredRecords(presensiProv.records).length} presensi',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.grey.shade600,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          // ─── Filter Tanggal Bar ─────────────────────────────────────
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: _selectedDateRange != null
+                    ? const Color(0xFFE3F2FD)
+                    : Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: _selectedDateRange != null
+                      ? const Color(0xFF90CAF9)
+                      : Colors.grey.shade200,
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.calendar_month,
+                    size: 17,
+                    color: _selectedDateRange != null
+                        ? const Color(0xFF1565C0)
+                        : Colors.grey.shade600,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: InkWell(
+                      onTap: _pickDateRange,
+                      child: Text(
+                        _selectedDateRange != null
+                            ? '${_formatDate(_selectedDateRange!.start)} – ${_formatDate(_selectedDateRange!.end)}'
+                            : 'Semua Tanggal',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: _selectedDateRange != null
+                              ? FontWeight.bold
+                              : FontWeight.w500,
+                          color: _selectedDateRange != null
+                              ? const Color(0xFF1565C0)
+                              : Colors.grey.shade700,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ),
+                  if (_selectedDateRange != null) ...[
+                    GestureDetector(
+                      onTap: () => setState(() => _selectedDateRange = null),
+                      child: Container(
+                        padding: const EdgeInsets.all(2),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade100,
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(
+                          Icons.close,
+                          size: 14,
+                          color: Color(0xFF0D47A1),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                  ],
+                  PopupMenuButton<String>(
+                    tooltip: 'Opsi Tanggal',
+                    icon: Icon(
+                      Icons.tune,
+                      size: 16,
+                      color: _selectedDateRange != null
+                          ? const Color(0xFF1565C0)
+                          : Colors.grey.shade600,
+                    ),
+                    padding: EdgeInsets.zero,
+                    onSelected: (val) {
+                      if (val == 'custom') {
+                        _pickDateRange();
+                      } else {
+                        _setDatePreset(val);
+                      }
+                    },
+                    itemBuilder: (_) => [
+                      const PopupMenuItem(
+                        value: 'semua',
+                        child: Text(
+                          'Semua Tanggal',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'hari_ini',
+                        child: Text(
+                          'Hari Ini',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: '7_hari',
+                        child: Text(
+                          '7 Hari Terakhir',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'bulan_ini',
+                        child: Text(
+                          'Bulan Ini',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'bulan_lalu',
+                        child: Text(
+                          'Bulan Lalu',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                      const PopupMenuDivider(),
+                      const PopupMenuItem(
+                        value: 'custom',
+                        child: Text(
+                          'Pilih Rentang...',
+                          style: TextStyle(fontSize: 13),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ),
             ),
           ),
 
           // History ListView with Pull to Refresh
           Expanded(
-            child: RefreshIndicator(
-              onRefresh: () => presensiProv.fetchMyAttendance(forceRefresh: true),
-              child: presensiProv.loadingHistory && presensiProv.records.isEmpty
-                  ? ShimmerLoading(
-                      child: ListView.builder(
-                        physics: const AlwaysScrollableScrollPhysics(),
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 8,
-                        ),
-                        itemCount: 5,
-                        itemBuilder: (_, _) => const SkeletonAttendanceItem(),
-                      ),
-                    )
-                  : presensiProv.records.isEmpty
-                      ? ListView(
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          children: [
-                            SizedBox(
-                              height: MediaQuery.of(context).size.height * 0.12,
+            child: Builder(
+              builder: (context) {
+                final filtered = _filteredRecords(presensiProv.records);
+
+                return RefreshIndicator(
+                  onRefresh: () => presensiProv.fetchMyAttendance(forceRefresh: true),
+                  child: presensiProv.loadingHistory && presensiProv.records.isEmpty
+                      ? ShimmerLoading(
+                          child: ListView.builder(
+                            physics: const AlwaysScrollableScrollPhysics(),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 8,
                             ),
-                            Center(
-                              child: Padding(
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 32),
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(
-                                      Icons.assignment_ind_outlined,
-                                      size: 48,
-                                      color: Colors.grey.shade300,
-                                    ),
-                                    const SizedBox(height: 12),
-                                    const Text(
-                                      'Belum ada riwayat presensi',
-                                      style: TextStyle(color: Colors.grey),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                    const SizedBox(height: 4),
-                                    const Text(
-                                      'Data presensi Anda akan muncul di sini\nsetelah tercatat di sistem.',
-                                      style: TextStyle(
-                                        color: Colors.grey,
-                                        fontSize: 12,
-                                      ),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                          ],
-                        )
-                      : ListView.builder(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 16.0,
-                            vertical: 8.0,
+                            itemCount: 5,
+                            itemBuilder: (_, _) => const SkeletonAttendanceItem(),
                           ),
-                          physics: const AlwaysScrollableScrollPhysics(),
-                          itemCount: presensiProv.records.length,
-                          itemBuilder: (context, index) {
-                            final record = presensiProv.records[index];
-                            return _buildHistoryCard(record);
-                          },
-                        ),
+                        )
+                      : filtered.isEmpty
+                          ? ListView(
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              children: [
+                                SizedBox(
+                                  height: MediaQuery.of(context).size.height * 0.10,
+                                ),
+                                Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 32,
+                                    ),
+                                    child: Column(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          Icons.assignment_ind_outlined,
+                                          size: 48,
+                                          color: Colors.grey.shade300,
+                                        ),
+                                        const SizedBox(height: 12),
+                                        Text(
+                                          _selectedDateRange != null
+                                              ? 'Tidak ada riwayat presensi'
+                                              : 'Belum ada riwayat presensi',
+                                          style: const TextStyle(
+                                            color: Colors.grey,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Text(
+                                          _selectedDateRange != null
+                                              ? 'Tidak ada data presensi pada rentang tanggal yang dipilih.'
+                                              : 'Data presensi Anda akan muncul di sini\nsetelah tercatat di sistem.',
+                                          style: const TextStyle(
+                                            color: Colors.grey,
+                                            fontSize: 12,
+                                          ),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                        if (_selectedDateRange != null) ...[
+                                          const SizedBox(height: 16),
+                                          OutlinedButton.icon(
+                                            onPressed: () {
+                                              setState(() {
+                                                _selectedDateRange = null;
+                                              });
+                                            },
+                                            icon: const Icon(Icons.refresh, size: 16),
+                                            label: const Text('Reset Filter Tanggal'),
+                                            style: OutlinedButton.styleFrom(
+                                              foregroundColor: const Color(0xFF0088FF),
+                                              side: const BorderSide(
+                                                color: Color(0xFF0088FF),
+                                              ),
+                                              shape: RoundedRectangleBorder(
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16.0,
+                                vertical: 8.0,
+                              ),
+                              physics: const AlwaysScrollableScrollPhysics(),
+                              itemCount: filtered.length,
+                              itemBuilder: (context, index) {
+                                final record = filtered[index];
+                                return _buildHistoryCard(record);
+                              },
+                            ),
+                );
+              },
             ),
           ),
         ],
@@ -566,6 +766,12 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                                 'Auto-Checkout',
                                 Colors.purple.shade600,
                                 Colors.purple.shade50,
+                              ),
+                            if (record.isEarlyLeave)
+                              _badge(
+                                'Pulang Cepat',
+                                const Color(0xFF7E22CE),
+                                const Color(0xFFF3E8FF),
                               ),
                             if (record.lateMinutes > 0)
                               _badge(

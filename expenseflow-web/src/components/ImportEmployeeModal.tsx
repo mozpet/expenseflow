@@ -149,6 +149,94 @@ const TARGET_FIELDS: TargetField[] = [
     description: 'Plafon klaim struk/reimbursement (angka)',
     aliases: ['limit', 'plafon', 'limit klaim', 'monthly limit', 'batas klaim', 'plafon klaim', 'max klaim'],
   },
+  // Prioritas 1: Kontak Darurat
+  {
+    key: 'emergency_contact_name',
+    label: 'Nama Kontak Darurat',
+    description: 'Nama keluarga/kerabat darurat',
+    aliases: ['kontak darurat', 'nama kontak darurat', 'emergency contact', 'emergency name', 'kontak darurat nama', 'nama darurat'],
+  },
+  {
+    key: 'emergency_contact_relation',
+    label: 'Hubungan Kontak Darurat',
+    description: 'Orang Tua / Pasangan / Saudara',
+    aliases: ['hubungan darurat', 'relasi darurat', 'hubungan kontak darurat', 'emergency relation', 'hubungan'],
+  },
+  {
+    key: 'emergency_contact_phone',
+    label: 'No HP Kontak Darurat',
+    description: 'Nomor telepon aktif darurat',
+    aliases: ['hp darurat', 'no darurat', 'telp darurat', 'emergency phone', 'no hp darurat', 'telepon darurat'],
+  },
+  {
+    key: 'emergency_contact_address',
+    label: 'Alamat Kontak Darurat',
+    description: 'Alamat lengkap kontak darurat',
+    aliases: ['alamat darurat', 'alamat kontak darurat', 'emergency address'],
+  },
+  // Prioritas 1: Alamat KTP & Domisili
+  {
+    key: 'ktp_address',
+    label: 'Alamat KTP',
+    description: 'Alamat jalan/gang sesuai KTP',
+    aliases: ['alamat ktp', 'alamat sesuai ktp', 'ktp address', 'alamat'],
+  },
+  {
+    key: 'ktp_city',
+    label: 'Kota/Kabupaten KTP',
+    description: 'Kota sesuai KTP',
+    aliases: ['kota ktp', 'kabupaten ktp', 'kota', 'kabupaten', 'city'],
+  },
+  {
+    key: 'ktp_province',
+    label: 'Provinsi KTP',
+    description: 'Provinsi sesuai KTP',
+    aliases: ['provinsi ktp', 'provinsi', 'province'],
+  },
+  {
+    key: 'ktp_postal_code',
+    label: 'Kode Pos KTP',
+    description: '5 digit kode pos KTP',
+    aliases: ['kode pos', 'kodepos', 'postal code', 'zip code', 'kode pos ktp'],
+  },
+  {
+    key: 'domicile_address',
+    label: 'Alamat Domisili',
+    description: 'Alamat tempat tinggal saat ini jika berbeda dari KTP',
+    aliases: ['domisili', 'alamat domisili', 'tempat tinggal', 'domicile address'],
+  },
+  // Prioritas 1: Agama & Status Sipil
+  {
+    key: 'religion',
+    label: 'Agama',
+    description: 'Islam / Kristen / Katolik / Hindu / Buddha / Konghucu',
+    aliases: ['agama', 'religion', 'kepercayaan'],
+  },
+  {
+    key: 'marital_status',
+    label: 'Status Perkawinan',
+    description: 'single / married / divorced / widowed (Lajang/Menikah/Cerai)',
+    aliases: ['status nikah', 'status perkawinan', 'status pernikahan', 'marital status', 'status marital'],
+  },
+  {
+    key: 'number_of_dependents',
+    label: 'Jumlah Tanggungan',
+    description: 'Jumlah anak/tanggungan untuk PTKP (angka 0-10)',
+    aliases: ['tanggungan', 'jumlah tanggungan', 'anak', 'jumlah anak', 'dependents'],
+  },
+  // Prioritas 1: K3 & Medis
+  {
+    key: 'blood_type',
+    label: 'Golongan Darah',
+    description: 'A / B / AB / O (dengan atau tanpa rhesus)',
+    aliases: ['golongan darah', 'gol darah', 'goldar', 'blood type', 'blood group'],
+  },
+  {
+    key: 'medical_conditions',
+    label: 'Kondisi Medis / Catatan K3',
+    description: 'Riwayat penyakit khusus, alergi, atau catatan medis K3',
+    aliases: ['kondisi medis', 'riwayat penyakit', 'alergi', 'catatan medis', 'k3', 'medical conditions', 'alergi obat'],
+  },
 ];
 
 type WizardStep = 1 | 2 | 3 | 4 | 5;
@@ -295,7 +383,22 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
       'Atas Nama Rekening',
       'Tanggal Masuk',
       'Saldo Cuti Awal',
-      'NIK KTP'
+      'NIK KTP',
+      // Prioritas 1
+      'Nama Kontak Darurat',
+      'Hubungan Kontak Darurat',
+      'No HP Kontak Darurat',
+      'Alamat Kontak Darurat',
+      'Alamat KTP',
+      'Kota KTP',
+      'Provinsi KTP',
+      'Kode Pos KTP',
+      'Alamat Domisili',
+      'Agama',
+      'Status Perkawinan',
+      'Jumlah Tanggungan',
+      'Golongan Darah',
+      'Catatan Medis K3'
     ];
 
     const sampleRows = [
@@ -315,7 +418,21 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
         'Budi Santoso',
         '2024-01-15',
         '12',
-        '3171012345670001'
+        '3171012345670001',
+        'Dewi Santoso',
+        'Istri',
+        '081234567899',
+        'Jl. Melati No. 12, Kebayoran Baru',
+        'Jl. Melati No. 12 RT 01/RW 02',
+        'Jakarta Selatan',
+        'DKI Jakarta',
+        '12140',
+        '',
+        'Islam',
+        'married',
+        '1',
+        'O',
+        'Tidak ada riwayat alergi'
       ],
       [
         'EMP002',
@@ -333,7 +450,21 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
         'Siti Rahma',
         '2024-03-01',
         '10',
-        '3171012345670002'
+        '3171012345670002',
+        'Ahmad Hidayat',
+        'Orang Tua',
+        '081298765000',
+        'Jl. Dago No. 45, Bandung',
+        'Jl. Dago No. 45',
+        'Bandung',
+        'Jawa Barat',
+        '40135',
+        '',
+        'Islam',
+        'single',
+        '0',
+        'A',
+        'Alergi penisilin'
       ],
       [
         'EMP003',
@@ -351,7 +482,21 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
         'Dimas Arya',
         '2025-06-10',
         '12',
-        '3171012345670003'
+        '3171012345670003',
+        'Hendra Arya',
+        'Saudara Kandung',
+        '081311223300',
+        'Jl. Basuki Rahmat No. 8, Surabaya',
+        'Jl. Basuki Rahmat No. 8',
+        'Surabaya',
+        'Jawa Timur',
+        '60271',
+        '',
+        'Kristen',
+        'single',
+        '0',
+        'B',
+        ''
       ],
     ];
 
@@ -453,6 +598,22 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
           bank_account_no: u.bank_account_no || undefined,
           bank_account_holder: u.bank_account_holder || undefined,
           leave_balance: u.leave_balance ? Number(u.leave_balance) : 12,
+          // Prioritas 1
+          emergency_contact_name: u.emergency_contact_name || undefined,
+          emergency_contact_relation: u.emergency_contact_relation || undefined,
+          emergency_contact_phone: u.emergency_contact_phone || undefined,
+          emergency_contact_address: u.emergency_contact_address || undefined,
+          ktp_address: u.ktp_address || undefined,
+          ktp_postal_code: u.ktp_postal_code || undefined,
+          ktp_city: u.ktp_city || undefined,
+          ktp_province: u.ktp_province || undefined,
+          domicile_address: u.domicile_address || undefined,
+          is_domicile_same_as_ktp: u.is_domicile_same_as_ktp !== undefined ? Boolean(u.is_domicile_same_as_ktp) : undefined,
+          religion: u.religion || undefined,
+          marital_status: u.marital_status || undefined,
+          number_of_dependents: u.number_of_dependents ? Number(u.number_of_dependents) : undefined,
+          blood_type: u.blood_type || undefined,
+          medical_conditions: u.medical_conditions || undefined,
         })),
         default_password: defaultPassword,
         default_role: defaultRole,

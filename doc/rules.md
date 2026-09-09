@@ -26,12 +26,13 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Invoice multi-level    : SELESAI (store, approve 3 level, reject)
   - Vendor management      : SELESAI (CRUD, toggle active, audit log)
   - User management        : SELESAI (CRUD, deactivate, reset password, audit log pengubahan data sensitif)
-  - Presensi (attendance)  : SELESAI (check-in/out WFH, leave, report, CSV export, offline mode & batch sync)
+  - Presensi (attendance)  : SELESAI (check-in/out WFH, leave, report, CSV export, online-only server time enforcement)
   - Custom Shift/Scheduling: SELESAI (shift per karyawan & cabang, override jam kerja, roster, bulk assign) — 2026-07-04
   - Audit Log Sensitif     : SELESAI (diff Sebelum vs Sesudah, masking password/token, severity, export CSV) — 2026-09-02
-  - Offline Presensi Mobile: SELESAI (local queue, recorded_at accuracy, auto-sync batch, banner UI) — 2026-09-02
+  - Presensi Online-Only (Anti-Clock Spoofing): SELESAI (mode offline ditiadakan; jam presensi mutlak server-side now('Asia/Jakarta') demi mencegah manipulasi jam HP) — 2026-09-09
   - Kalender Libur Otomatis: SELESAI (API Hari Libur Indonesia SKB 3 Menteri, preview modal, auto-sync batch, artisan command) — 2026-09-02
   - Status Alpha Batas Presensi Telat: SELESAI (karyawan belum check-in & lewat batas waktu cutoff kantor langsung berstatus Alpha di laporan hari ini & dashboard HRD) — 2026-09-02
+  - Filter Tanggal & Cleanup Banner Presensi Mobile: SELESAI (banner "Mode WFH aktif" dihapus dari layar riwayat presensi mobile; filter tanggal, preset bulan/hari, counter data, empty state & reset filter ditambahkan) — 2026-09-08
   - Approval Matrix Bertingkat: DI-KEEP DULU (multi-level expense approval ditunda atas arahan user — 2026-09-02)
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
   - Custom Role Management : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
@@ -148,6 +149,26 @@ bootstrap/
 | 20e | `shift_schedules` | Detail 7 hari per shift dengan **VERSIONING** (shift_id, **effective_date**, day_of_week 0=Minggu–6=Sabtu, work_start_time, work_end_time, is_off, is_cross_day). Unique(shift_id, day_of_week, effective_date). **Versi yang berlaku pada tanggal T = baris dengan effective_date ≤ T terbesar.** Edit jam kerja shift membuat VERSI BARU (effective_date = hari ini + max(1, shift_notice_days)); versi lama tetap berlaku sebelum tanggal efektif. |
 | 20f | `user_shifts` | Assignment shift ke karyawan (user_id, shift_id **nullable**=default kantor, start_date, **end_date nullable**, notes). Unique(user_id, start_date). **Shift berlaku pada tanggal T jika: start_date ≤ T DAN (end_date NULL ATAU end_date ≥ T).** Diurutkan DESC start_date → ambil first() = assignment terbaru yang mencakup tanggal T. |
 | 20g | `holiday_exclusions` | **Pengecualian karyawan pada hari libur** (holiday_id, user_id, timestamps, unique(holiday_id, user_id)). Ditambah 2026-08-20. Karyawan yang masuk daftar ini **TIDAK dianggap libur** pada tanggal tsb: tetap hari kerja normal, tidak dibuatkan leave_request cuti bersama, tidak dianggap libur di kalender mobile, dan tidak terpotong saldo. Dipakai `isNonWorkingDay()`, `countWorkingDays()`, `ShiftController::calendar()`. |
+| 20h | `shift_patterns` | Pola rotasi shift (company_id, **attendance_setting_id** nullable=cabang/null=company-wide, name, description, color, late_tolerance_minutes, cycle_days, is_active). Ditambah 2026-09-08. **Cabang kantor pola bersifat permanen** (tidak dapat dipindah antar cabang setelah dibuat). |
+| 20i | `shift_pattern_items` | Hari siklus pola rotasi (shift_pattern_id, day_order 1..N, shift_id nullable, name nullable, color nullable, is_off, work_start_time nullable, work_end_time nullable, break_minutes, late_tolerance_minutes nullable, is_cross_day, is_wfh, is_field). Kolom self-contained mandiri. |
+| 20j | `shift_pattern_day_overrides` | Override jadwal hari kalender per pola rotasi (shift_pattern_id, day_of_week 0=Minggu–6=Sabtu, work_start_time nullable, work_end_time nullable, break_minutes nullable, late_tolerance_minutes nullable). Unique(shift_pattern_id, day_of_week). Ditambah 2026-09-09. |
+
+> **Aturan Calendar Day Override untuk Pola Rotasi Shift (2026-09-09):**
+> 1. Pola rotasi shift berputar berdasarkan urutan siklus (H1, H2, ..., HN), bukan berdasarkan nama hari kalender (Senin–Minggu).
+> 2. Untuk mengakomodasi kebutuhan spesifik hari kalender (contoh: istirahat Sholat Jumat lebih panjang 90 menit, atau Selasa jam kerja berbeda), disediakan fitur **Calendar Day Override** yang disimpan di tabel `shift_pattern_day_overrides`.
+> 3. Saat `ShiftController::resolveSchedule()` menghitung jadwal karyawan pada tanggal T:
+>    - Urutan siklus dihitung terlebih dahulu untuk mendapatkan item pola rotasi dasar (`patternItem`).
+>    - Jika hari tersebut adalah hari kerja (`!$patternItem->is_off`), dicek apakah pola rotasi memiliki override untuk `dayOfWeek` tanggal T.
+>    - Jika ditemukan override, field yang terisi (non-null) akan **menimpa** nilai dasar (partial override): `work_start_time`, `work_end_time`, `break_minutes`, `late_tolerance_minutes`.
+>    - Jika jam masuk/pulang di-override, status lintas hari (`is_cross_day`) otomatis dihitung ulang (`work_end_time <= work_start_time`).
+> 4. **Override diabaikan pada hari libur siklus**: Jika hari siklus pada tanggal T berstatus libur (`is_off = true`), override tidak diterapkan dan karyawan tetap libur.
+> 5. Override ini berlaku secara konsisten di `resolveSchedule()`, `resolveSchedulesBulk()`, `calendar()`, `roster()`, dan `myScheduleCalendar()`.
+
+> **Aturan Keunikan Warna Lintas Entitas Per Cabang (2026-09-09):**
+> 1. Dalam 1 cabang kantor yang sama (atau company-wide jika `attendance_setting_id` NULL), **setiap warna hanya boleh dipakai tepat 1 kali**, saling mengecualikan secara timbal balik antara **Template Shift (`shifts`)** dan **Pola Rotasi (`shift_patterns`)**.
+> 2. Jika suatu warna (contoh: `#f43f5e` / merah) sudah digunakan oleh template shift di Cabang Lapangan, maka pola rotasi khusus Cabang Lapangan **TIDAK BISA** memakai warna merah tersebut lagi (dan sebaliknya, penambahan/perubahan ditolak dengan status HTTP 422).
+> 3. Dua cabang berbeda (misal: Cabang Lapangan vs Kantor Jakarta) **tetap diperbolehkan** menggunakan warna yang sama.
+> 4. Di frontend (UI), preset warna yang sudah dipakai oleh template shift atau pola rotasi di cabang terkait otomatis di-disable (`opacity-40 cursor-not-allowed`) disertai tooltip dan badge peringatan visual saat memilih warna.
 
 > **Kebijakan Saldo Cuti Bersama (2026-08-20):** kolom `attendance_settings.collective_leave_policy` **DIDROP** (migration `2026_08_20_064513...`). Perilaku di-**hardcode** menjadi `block`: karyawan hanya boleh ikut cuti bersama jika sisa saldo cuti ≥ `total_days`. Jika tidak cukup → ditolak (422 "Saldo cuti Anda tidak cukup...") dan di mobile banner menampilkan peringatan + tombol "Ya, Saya Ikut" di-disable.
 >
@@ -315,6 +336,7 @@ Header `X-Platform: mobile` atau `web`
 - Saat `wfh_enabled = true`, `attendance_enabled` otomatis true
 - Check-in WFH tidak validasi lokasi GPS (tanpa radius check)
 - Status present/late tetap dihitung dari jam kerja perusahaan
+- Di layar Riwayat Presensi mobile, banner status "Mode WFH aktif" ditiadakan agar antarmuka bersih dan langsung menampilkan kartu ringkasan presensi & filter tanggal.
 
 ---
 
@@ -1803,51 +1825,27 @@ Aplikasi mobile Flutter dirancang agar karyawan tidak perlu login berulang-ulang
 
 ---
 
-## 4. Fitur #5: Offline Mode Presensi (Bad Network Fallback & Auto-Sync)
+## 4. Presensi Online-Only & Pencegahan Manipulasi Waktu (Anti-Clock Spoofing) — 2026-09-09
 
-### A. Latar Belakang & Masalah Lapangan
-Karyawan seringkali melakukan presensi di lokasi minim sinyal (misalnya di basement parkir kantor, proyek lapangan, atau saat jaringan seluler down). Presensi tidak boleh gagal hanya karena ketiadaan sinyal internet sesaat.
+### A. Alasan Penonaktifan Mode Offline Presensi
+Pada evaluasi keamanan 2026-09-09, ditemukan celah kritis pada mode presensi offline:
+1. Pengguna dapat sengaja mematikan koneksi internet (mode pesawat).
+2. Mematikan fitur waktu otomatis (*Automatic Date & Time*) di menu Pengaturan HP dan memundurkan jam kalender perangkat (misal dari 09:00 ke 07:40).
+3. Melakukan presensi offline yang menyimpan `recorded_at` palsu ke antrean lokal HP.
+4. Menyalakan internet kembali agar data disinkronkan ke server dan dihitung hadir tepat waktu.
 
-### B. Database Schema (`attendances`)
-Migration `2026_09_02_000004_add_offline_sync_to_attendances_table.php`:
-- `is_offline_sync` (boolean, default false) — penanda presensi dicatat offline.
-- `offline_recorded_at` (datetime, nullable) — waktu aktual tombol presensi ditekan pada HP.
-
-### C. Backend API: Preservasi Jam & Keterlambatan Akurat
-1. **Dukungan `recorded_at` pada `checkIn` dan `checkOut`**:
-   - Backend menerima parameter `recorded_at` (ISO 8601 string waktu lokal HP).
-   - Penentuan status kehadiran (*Hadir Tepat Waktu* vs *Terlambat / Late*) dan perhitungan *work_minutes* dihitung berdasarkan **waktu aktual presensi ditekan saat offline**, BUKAN waktu saat internet baru tersambung jam kemudian.
-2. **Batch Sync Endpoint (`POST /api/v1/attendance/sync-offline`)**:
-   - Menerima kumpulan array aksi offline:
-     ```json
-     {
-       "items": [
-         {
-           "id": "offline_1725300000000_check_in",
-           "type": "check_in",
-           "latitude": -6.2088,
-           "longitude": 106.8456,
-           "recorded_at": "2026-09-02T07:45:00+07:00",
-           "is_mocked": false
-         }
-       ]
-     }
-     ```
-   - Bersifat **Idempotent**: Pengiriman ulang aksi yang sama tidak menimbulkan error atau record ganda.
-
-### D. Mobile Service & Provider (`OfflineAttendanceService` & `presensi_provider.dart`)
-1. **Antrean Lokal (*Offline Queue*)**:
-   - Disimpan di `SharedPreferences` dalam format JSON list.
-   - Memiliki method: `enqueue()`, `getQueue()`, `syncQueue()`, `clearQueue()`.
-2. **Fallback Otomatis saat Presensi**:
-   - Pada method `simpanPresensi()` di `presensi_provider.dart`:
-     - Jika `ApiService.checkIn` atau `checkOut` mengalami error koneksi jaringan / timeout / 5xx, aksi otomatis masuk ke antrean offline.
-     - State UI lokal langsung terupdate secara optimistik (jam masuk/pulang langsung tampil) dan melempar `OfflineAttendanceSavedException`.
-     - `presensi_map_screen.dart` menangkap exception ini dan menampilkan snackbar oranye informatif:
-       `"Presensi disimpan secara offline (07:45 WIB). Akan disinkronkan saat koneksi tersedia."`
-3. **Background Auto-Sync & Manual Sync**:
-   - Saat app dibuka kembali atau `syncStatusFromBackend()` berjalan dan server dapat dihubungi, antrean otomatis disinkronkan di latar belakang.
-   - **Banner Beranda**: Jika terdapat antrean offline yang belum tersinkron, `home_screen.dart` menampilkan banner kuning *"Presensi Offline (X)"* lengkap dengan tombol **"Sync"** untuk sinkronisasi manual.
+### B. Keputusan & Implementasi Teknis (Online-Only Enforcement)
+Demi menjamin integritas data presensi dan meniadakan celah kecurangan:
+1. **Mode Offline Presensi Resmi DITIADAKAN Sepenuhnya**:
+   - Parameter `recorded_at` dan `is_offline_sync` tidak lagi diterima pada endpoint `checkIn()` dan `checkOut()`.
+   - Waktu presensi masuk dan pulang mutlak diambil dari **jam server backend** (`now('Asia/Jakarta')`) yang tersinkronisasi via NTP. Manipulasi jam pada perangkat pengguna 100% tidak berpengaruh.
+   - Endpoint batch sync `POST /api/v1/attendance/sync-offline` dihapus dari routing backend.
+2. **Pembersihan Sisi Mobile (Flutter)**:
+   - File antrean lokal `offline_attendance_service.dart` dihapus.
+   - Banner *"Presensi Offline"* di beranda dan exception `OfflineAttendanceSavedException` dihilangkan.
+   - Jika pengguna menekan tombol presensi saat tidak ada koneksi internet / server offline, aplikasi langsung menampilkan pesan error informatif bahwa koneksi internet aktif diperlukan.
+3. **Kompatibilitas Data Historis**:
+   - Kolom `is_offline_sync` dan `offline_recorded_at` pada database `attendances` tetap dipertahankan sebagai arsip data lama, namun tidak lagi diisi pada transaksi presensi baru.
 
 ---
 
@@ -2031,5 +2029,117 @@ Antarmuka web dashboard ExpenseFlow kini mendukung **Dark Mode (Mode Gelap)** pe
    - **Mobile Top Bar**: Tombol cepat toggle tema di bar atas mobile.
 4. **Cakupan Komponen**:
    - Seluruh halaman, modal dialog (`ConfirmationDialog`, `ForgotPasswordModal`, `ImportEmployeeModal`), popover date/time picker (`CustomDatePicker`, `CustomTimePicker`), grafik Recharts (`AnalyticsCharts`), dan tabel data telah diselaraskan dengan kontras dark theme yang nyaman (`bg-slate-900`, `bg-slate-950`, border `slate-800`, text `slate-100`/`slate-300`).
+
+---
+
+## 10. Standar & Analisis Kelengkapan Form Data Karyawan (HRIS, K3, Pajak, BPJS & Regulasi Indonesia)
+
+### A. Latar Belakang & Tujuan
+Dokumentasi ini menjadi acuan pengembangan modul **User / Employee Management** agar data karyawan pada ExpenseFlow memenuhi:
+1. **Standar HRIS & Regulasi Ketenagakerjaan Indonesia** (UU Ketenagakerjaan No. 13/2003, UU Cipta Kerja No. 6/2023, Peraturan Pemerintah No. 35/2021).
+2. **Kepatuhan Pajak & Jaminan Sosial** (PPh 21 skema TER PP 58/2023 & PMK 168/2023, BPJS Ketenagakerjaan, BPJS Kesehatan e-Dabu).
+3. **Keselamatan dan Kesehatan Kerja (K3)** dan tanggap darurat kecelakaan kerja di kantor maupun lapangan.
+4. **Otomatisasi Alur Persetujuan (Approval Workflow)** untuk cuti, izin, lembur, dan klaim pengeluaran (reimbursement).
+
+---
+
+### B. Baseline Data Saat Ini (Kondisi Eksisting)
+* **Sudah Tersimpan di Database (`users`)**:
+  - `name`, `email`, `password`, `phone`
+  - `employee_code` (NIK Karyawan), `identity_number` (NIK KTP 16 digit)
+  - `gender`, `birth_place`, `birth_date`, `is_pregnant` (K3 shift malam)
+  - `role`, `department`, `attendance_setting_id` (kantor penempatan)
+  - `employment_type` (PKWTT, PKWT, Probation, Internship)
+  - `joined_date`, `contract_start_date`, `contract_end_date`
+  - `monthly_claim_limit`, `is_active`
+  - `bank_name`, `bank_account_no`, `bank_account_holder`
+  - Device & Attendance flags (`attendance_enabled`, `wfh_enabled`, `radius_enabled`, `device_id`, `device_name`, `device_bound_at`, `fcm_token`)
+* **Sudah Ada di UI Web (Form), tetapi Masih Mock/Roadmap di Backend**:
+  - `basic_salary`, `salary_type` (monthly/daily/hourly)
+  - `npwp`, `ptkp_status` (TK/0 s/d K/3), `tax_method` (gross/gross_up/nett)
+  - `bpjs_kesehatan_no`, `bpjs_ketenagakerjaan_no`, program flags (`has_jht`, `has_jp`, `overtime_eligible`)
+
+---
+
+### C. Daftar Form & Field yang Masih Kurang (Berdasarkan Prioritas)
+
+#### 1. Prioritas Utama: Krusial untuk Legal, K3 & Operasional Dasar
+| Bidang | Field yang Dibutuhkan | Tipe Data & Format | Urgensi & Kegunaan |
+|---|---|---|---|
+| **Kontak Darurat** | `emergency_contact_name`<br>`emergency_contact_relation`<br>`emergency_contact_phone`<br>`emergency_contact_address` | String (100)<br>Enum/String (Orang Tua, Pasangan, Saudara)<br>String (15)<br>Text | **Wajib untuk K3 & HR**: Insiden darurat medis atau kecelakaan kerja saat dinas/lapangan. |
+| **Alamat Lengkap** | `ktp_address`, `ktp_postal_code`, `ktp_city`, `ktp_province`<br>`domicile_address`, `is_domicile_same_as_ktp` | Text, String (10)<br>String (100)<br>Boolean | Sinkronisasi dengan modul rekrutmen. Karyawan perantau/kost sering memiliki alamat tinggal berbeda dengan KTP. |
+| **Agama** | `religion` | Enum: `Islam`, `Kristen`, `Katolik`, `Hindu`, `Buddha`, `Konghucu` | **Penentuan THR Keagamaan resmi** (wajib dibayarkan H-7 hari raya agama karyawan bersangkutan) & hak cuti keagamaan. |
+| **Status Sipil** | `marital_status`<br>`number_of_dependents` | Enum: `single`, `married`, `divorced`<br>Integer (0–5) | Penentu status resmi **PTKP PPh 21** dan plafon kepesertaan jaminan kesehatan keluarga. |
+| **K3 & Medis** | `blood_type`<br>`medical_conditions` / `allergies` | Enum: `A`, `B`, `AB`, `O` (+ rhesus)<br>Text (nullable) | Standar tanggap darurat pertolongan pertama pada kecelakaan kerja (P3K). |
+
+#### 2. Prioritas Menengah: Kepatuhan Pajak, BPJS & Payroll Terintegrasi
+| Bidang | Field yang Dibutuhkan | Tipe Data & Format | Urgensi & Kegunaan |
+|---|---|---|---|
+| **Pajak Penghasilan** | `npwp` (16 digit)<br>`ptkp_status`<br>`tax_method` | String (16/20)<br>Enum: `TK/0`, `TK/1`, `TK/2`, `TK/3`, `K/0`, `K/1`, `K/2`, `K/3`, `K/I/0–3`<br>Enum: `gross`, `gross_up`, `nett` | Perhitungan PPh 21 TER (Tarif Efektif Rata-Rata) resmi 2024. Wajib disimpan permanen di database backend. |
+| **BPJS Ketenagakerjaan** | `bpjs_ketenagakerjaan_no`<br>`has_jht`, `has_jp`, `has_jkk`, `has_jkm` | String (16)<br>Boolean flags | Pelaporan SIPP BPJS Ketenagakerjaan. JHT & JP ada iuran potongan karyawan vs tanggungan perusahaan. |
+| **BPJS Kesehatan** | `bpjs_kesehatan_no`<br>`bpjs_kesehatan_family_covered` | String (13)<br>Boolean | Pelaporan e-Dabu BPJS Kesehatan untuk karyawan dan keluarga inti. |
+| **Komponen Gaji** | `basic_salary`<br>`fixed_allowance`<br>`transport_allowance_per_day`<br>`meal_allowance_per_day` | Decimal (12,2) | Dasar perhitungan lembur (`1/173 x upah`), denda keterlambatan/potongan absen, dan pesangon kontrak. |
+
+#### 3. Prioritas Alur Kerja: Struktur Organisasi & Jenjang Persetujuan
+| Bidang | Field yang Dibutuhkan | Tipe Data & Format | Urgensi & Kegunaan |
+|---|---|---|---|
+| **Atasan Langsung** | `manager_id` | Foreign Key $\rightarrow$ `users.id` (nullable) | Mengubah input atasan dari teks bebas menjadi **Relasi Hirarki**. Mengaktifkan approval berjenjang otomatis untuk cuti, lembur, dan klaim. |
+| **Masa Percobaan** | `probation_end_date` | Date (nullable) | Karyawan status *Probation* (maks. 3 bulan). Sistem memberikan reminder notifikasi H-14 kepada HR untuk evaluasi pengangkatan/terminasi. |
+| **Level Jabatan** | `job_level` / `grade` | String / Enum (Staff, Officer, Supervisor, Manager, Head, Director) | Menentukan standar plafon klaim reimbursement hotel/transport, tunjangan, dan hak fasilitas kantor. |
+| **Pendidikan Terakhir** | `education_level`<br>`institution_name`<br>`major`<br>`graduation_year` | Enum (SMA/SMK, D3, S1, S2, S3)<br>String (100)<br>String (100)<br>Year | Wajib Lapor Ketenagakerjaan Perusahaan (WLKP Kemnaker) & audit kepatuhan ISO/SDM. |
+
+#### 4. Manajemen Berkas Digital (Employee Digital Filing / Uploads)
+Karyawan atau HRD dapat mengunggah salinan berkas resmi sebagai arsip digital perusahaan:
+* **Foto KTP & Kartu Keluarga (KK)**: Bukti verifikasi kependudukan dan susunan keluarga.
+* **Foto NPWP & Buku Rekening Bank**: Memastikan nomor rekening dan nama pemilik valid untuk transfer gaji/reimburse.
+* **Dokumen Kontrak Kerja (PDF PKWT/PKWTT)**: Surat perjanjian kerja yang telah ditandatangani kedua belah pihak.
+* **Ijazah & Sertifikasi Keahlian/K3**: Bukti kualifikasi legal karyawan.
+* **Pas Foto Formal**: Foto profil resmi untuk kartu tanda pengenal / ID Card.
+
+#### 5. Data Terminasi & Offboarding (Saat Karyawan Keluar)
+* `resignation_date` / `termination_date` (Tanggal efektif keluar).
+* `termination_type` (Resign sukarela, habis masa kontrak PKWT, selesai masa magang, pensiun, PHK).
+* `exit_interview_notes` (Catatan evaluasi perusahaan).
+* `paklaring_issued` (Status penerbitan Surat Pengalaman Kerja / Keterangan Berhenti).
+
+---
+
+### D. Rekomendasi Arsitektur Antarmuka (UI/UX Multi-Tab Form)
+Agar form pendaftaran dan pengubahan data karyawan tidak panjang dan membingungkan (*cognitive overload*), form dibagi menjadi 5 Tab terstruktur:
+
+1. **Tab 1: Pekerjaan & Organisasi (`Work & Organization`)**
+   - NIK Karyawan (`employee_code`), Nama Lengkap, Email Kantor, No. HP/WhatsApp.
+   - Departemen, Jabatan, Role Sistem, Atasan Langsung (`manager_id`), Kantor Penempatan (`attendance_setting_id`).
+   - Tipe Kerja (`employment_type`), Tanggal Bergabung (`joined_date`), Periode Kontrak (`contract_start_date` & `end_date`), Tanggal Evaluasi Probasi (`probation_end_date`).
+2. **Tab 2: Data Pribadi & Kependudukan (`Personal & Demographics`)**
+   - NIK KTP (`identity_number`), Tempat & Tanggal Lahir, Jenis Kelamin, Agama, Golongan Darah.
+   - Status Perkawinan & Jumlah Tanggungan.
+   - Alamat KTP & Alamat Domisili (dengan tombol centang *"Alamat domisili sama dengan KTP"*).
+   - Kontak Darurat (Nama, Hubungan, No. Telepon).
+3. **Tab 3: Finansial, Gaji & Pajak (`Payroll & Tax`)**
+   - Akun Bank: Nama Bank, No. Rekening, Nama Pemilik Rekening.
+   - Kompensasi: Gaji Pokok, Tipe Penggajian (Bulanan/Harian), Hak Lembur (*Overtime Eligible*).
+   - Pajak: NPWP, Status PTKP (TK/0 s/d K/3), Metode PPh 21 (Gross / Gross Up / Nett).
+4. **Tab 4: Jaminan Sosial & Keluarga (`BPJS & Family`)**
+   - Nomor BPJS Ketenagakerjaan (KPJ) & checklist program aktif (JHT, JP, JKK, JKM).
+   - Nomor BPJS Kesehatan & data keluarga tertanggung (Pasangan & Anak).
+5. **Tab 5: Dokumen & Hak Akses (`Documents & Access Control`)**
+   - Pengunggahan berkas digital (KTP, KK, NPWP, Kontrak PKWT/PKWTT).
+   - Toggle Akses Presensi & Perangkat:
+     - Izin Presensi Mobile (`attendance_enabled`).
+     - Izin Presensi Luar Kantor / WFH (`wfh_enabled`).
+     - Wajib Radius Kantor (`radius_enabled`).
+     - Informasi Binding Device & Tombol Lepas Tautan (*Reset Device Binding*).
+
+---
+
+### E. Kewajiban Pengembang Terhadap Bulk Import Data (Aturan Seksi 8)
+> **PENGINGAT PENTING:**
+> Sesuai aturan pada **Seksi 8**, setiap penambahan kolom baru di atas ke database `users`:
+> 1. Wajib didaftarkan ke migration backend dan `$fillable` pada `User.php`.
+> 2. Wajib ditambahkan ke logika validasi dan mapping di `UserController::bulkImport`.
+> 3. Wajib didaftarkan ke `TARGET_FIELDS` dan kamus `aliases` pada `ImportEmployeeModal.tsx` di frontend.
+> 4. Wajib disertakan dalam template download Excel/CSV (`downloadTemplate`).
+
 
 

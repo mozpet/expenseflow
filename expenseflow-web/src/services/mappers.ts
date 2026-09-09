@@ -128,14 +128,23 @@ export function mapReceipt(r: any): Receipt {
     discount,
     isPotentialDuplicate: Boolean(r.is_potential_duplicate),
     duplicateReceiptNumber: r.duplicate_reference?.receipt_number,
-    duplicateTotalAmount: r.duplicate_reference?.total_amount ? num(r.duplicate_reference.total_amount) : undefined,
+    duplicateTotalAmount: (() => {
+      const d = r.duplicate_reference;
+      if (!d) return undefined;
+      const v = d.total_amount ?? d.claimed_amount ?? d.ocr_raw_amount ?? d.approved_amount;
+      return v !== null && v !== undefined ? num(v) : undefined;
+    })(),
     duplicateReason: r.duplicate_reason,
     duplicateReferenceId: r.duplicate_reference_id ? Number(r.duplicate_reference_id) : undefined,
     duplicateReference: r.duplicate_reference ? {
       id: Number(r.duplicate_reference.id),
       receiptNumber: r.duplicate_reference.receipt_number,
-      totalAmount: num(r.duplicate_reference.total_amount),
-      receiptDate: r.duplicate_reference.receipt_date,
+      totalAmount: (() => {
+        const d = r.duplicate_reference;
+        const v = d.total_amount ?? d.claimed_amount ?? d.ocr_raw_amount ?? d.approved_amount;
+        return v !== null && v !== undefined ? num(v) : klaim;
+      })(),
+      receiptDate: formatTanggal(r.duplicate_reference.receipt_date ?? r.duplicate_reference.submitted_at ?? r.duplicate_reference.created_at),
       imagePath: r.duplicate_reference.image_path,
       uploaderName: r.duplicate_reference.user?.name,
       department: r.duplicate_reference.user?.department,
@@ -199,14 +208,23 @@ export function mapReceiptToApproval(r: any): StrukApproval {
     kategori: r.category ?? '—',
     isPotentialDuplicate: Boolean(r.is_potential_duplicate),
     duplicateReceiptNumber: r.duplicate_reference?.receipt_number,
-    duplicateTotalAmount: r.duplicate_reference?.total_amount ? num(r.duplicate_reference.total_amount) : undefined,
+    duplicateTotalAmount: (() => {
+      const d = r.duplicate_reference;
+      if (!d) return undefined;
+      const v = d.total_amount ?? d.claimed_amount ?? d.ocr_raw_amount ?? d.approved_amount;
+      return v !== null && v !== undefined ? num(v) : undefined;
+    })(),
     duplicateReason: r.duplicate_reason,
     duplicateReferenceId: r.duplicate_reference_id ? Number(r.duplicate_reference_id) : undefined,
     duplicateReference: r.duplicate_reference ? {
       id: Number(r.duplicate_reference.id),
       receiptNumber: r.duplicate_reference.receipt_number,
-      totalAmount: num(r.duplicate_reference.total_amount),
-      receiptDate: r.duplicate_reference.receipt_date,
+      totalAmount: (() => {
+        const d = r.duplicate_reference;
+        const v = d.total_amount ?? d.claimed_amount ?? d.ocr_raw_amount ?? d.approved_amount;
+        return v !== null && v !== undefined ? num(v) : num(r.claimed_amount ?? r.total_amount ?? r.ocr_raw_amount);
+      })(),
+      receiptDate: formatTanggal(r.duplicate_reference.receipt_date ?? r.duplicate_reference.submitted_at ?? r.duplicate_reference.created_at),
       imagePath: r.duplicate_reference.image_path,
       uploaderName: r.duplicate_reference.user?.name,
       department: r.duplicate_reference.user?.department,

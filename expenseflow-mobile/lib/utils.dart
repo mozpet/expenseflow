@@ -13,11 +13,18 @@ String formatDateIndonesian(dynamic date) {
   if (date == null) return '-';
   DateTime? dt;
   if (date is DateTime) {
-    dt = date;
+    dt = date.isUtc ? date.toLocal() : date;
   } else if (date is String) {
     if (date.isEmpty) return '-';
-    final raw = date.length >= 10 ? date.substring(0, 10) : date;
-    dt = DateTime.tryParse(raw);
+    // Jika string berisi timestamp ISO (ada T atau Z), parse secara utuh lalu konversi ke waktu lokal
+    if (date.contains('T') || date.endsWith('Z')) {
+      final parsed = DateTime.tryParse(date);
+      if (parsed != null) {
+        dt = parsed.toLocal();
+      }
+    }
+    // Jika format biasa (YYYY-MM-DD), parse langsung
+    dt ??= DateTime.tryParse(date.length >= 10 ? date.substring(0, 10) : date);
   }
   if (dt == null) return date.toString();
   const months = [

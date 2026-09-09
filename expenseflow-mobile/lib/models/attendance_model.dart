@@ -1,6 +1,7 @@
 class PresensiRecord {
   final int id; // attendance ID — untuk mapping overtime approval
   final String date;
+  final String? rawDate; // YYYY-MM-DD dari backend atau DateTime lokal
   final String masukTime;
   final String pulangTime;
   final String? checkInType; // 'wfh', 'onsite', 'field'
@@ -9,14 +10,16 @@ class PresensiRecord {
   final bool isAutoCheckout;
   final int lateMinutes;
   final bool isOfflineSync;
-  final bool isOfflinePending;
   // null = belum ada lembur / belum diproses; 'pending'/'approved'/'rejected'
   final String? overtimeStatus;
   final String? overtimeReason;
+  // Status presensi dari backend: 'present', 'late', 'early_leave', 'absent', 'wfh', dll.
+  final String? status;
 
   PresensiRecord({
     this.id = 0,
     required this.date,
+    this.rawDate,
     required this.masukTime,
     required this.pulangTime,
     this.checkInType,
@@ -25,14 +28,17 @@ class PresensiRecord {
     this.isAutoCheckout = false,
     this.lateMinutes = 0,
     this.isOfflineSync = false,
-    this.isOfflinePending = false,
     this.overtimeStatus,
     this.overtimeReason,
+    this.status,
   });
+
+  bool get isEarlyLeave => status == 'early_leave';
 
   PresensiRecord copyWith({
     int? id,
     String? date,
+    String? rawDate,
     String? masukTime,
     String? pulangTime,
     String? checkInType,
@@ -41,13 +47,14 @@ class PresensiRecord {
     bool? isAutoCheckout,
     int? lateMinutes,
     bool? isOfflineSync,
-    bool? isOfflinePending,
     String? overtimeStatus,
     String? overtimeReason,
+    String? status,
   }) {
     return PresensiRecord(
       id: id ?? this.id,
       date: date ?? this.date,
+      rawDate: rawDate ?? this.rawDate,
       masukTime: masukTime ?? this.masukTime,
       pulangTime: pulangTime ?? this.pulangTime,
       checkInType: checkInType ?? this.checkInType,
@@ -56,10 +63,39 @@ class PresensiRecord {
       isAutoCheckout: isAutoCheckout ?? this.isAutoCheckout,
       lateMinutes: lateMinutes ?? this.lateMinutes,
       isOfflineSync: isOfflineSync ?? this.isOfflineSync,
-      isOfflinePending: isOfflinePending ?? this.isOfflinePending,
       overtimeStatus: overtimeStatus ?? this.overtimeStatus,
       overtimeReason: overtimeReason ?? this.overtimeReason,
+      status: status ?? this.status,
     );
+  }
+
+  /// Parse tanggal record menjadi DateTime (hanya year, month, day).
+  DateTime? get parsedDate {
+    if (rawDate != null && rawDate!.isNotEmpty) {
+      final clean = rawDate!.length >= 10 ? rawDate!.substring(0, 10) : rawDate!;
+      final dt = DateTime.tryParse(clean);
+      if (dt != null) return DateTime(dt.year, dt.month, dt.day);
+    }
+    // Fallback: coba parsing langsung dari date jika format ISO
+    final dtIso = DateTime.tryParse(date);
+    if (dtIso != null) return DateTime(dtIso.year, dtIso.month, dtIso.day);
+
+    // Fallback: parsing format teks Indonesia "6 September 2026"
+    final parts = date.trim().split(RegExp(r'\s+'));
+    if (parts.length >= 3) {
+      final day = int.tryParse(parts[0]);
+      final year = int.tryParse(parts[2]);
+      const months = {
+        'januari': 1, 'februari': 2, 'maret': 3, 'april': 4,
+        'mei': 5, 'juni': 6, 'juli': 7, 'agustus': 8,
+        'september': 9, 'oktober': 10, 'november': 11, 'desember': 12,
+      };
+      final month = months[parts[1].toLowerCase()];
+      if (day != null && month != null && year != null) {
+        return DateTime(year, month, day);
+      }
+    }
+    return null;
   }
 
   bool get canClaimOvertime =>

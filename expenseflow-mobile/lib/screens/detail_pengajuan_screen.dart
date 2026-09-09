@@ -232,30 +232,51 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    // Foto placeholder
-                    Container(
-                      height: 80,
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFECEFF1),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: Colors.blueGrey.shade100),
-                      ),
-                      child: Center(
+                    // Peringatan Potensi Duplikat jika terdeteksi
+                    if (widget.receipt.isPotentialDuplicate) ...[
+                      Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFFFF8E1),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: const Color(0xFFFFB300)),
+                        ),
                         child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Icon(Icons.photo_library_outlined,
-                                color: Colors.blueGrey.shade400, size: 20),
-                            const SizedBox(width: 8),
-                            Text('Foto struk tersimpan permanen',
-                                style: TextStyle(
-                                    color: Colors.blueGrey.shade600,
-                                    fontSize: 13)),
+                            const Icon(Icons.warning_amber_rounded,
+                                color: Color(0xFFD97706), size: 20),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'Peringatan: Potensi Struk Duplikat',
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 12.5,
+                                      color: Color(0xFFB45309),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    widget.receipt.duplicateReason ??
+                                        'Struk ini terdeteksi serupa dengan struk lain yang pernah diajukan.',
+                                    style: const TextStyle(
+                                      fontSize: 11.5,
+                                      color: Color(0xFF92400E),
+                                      height: 1.35,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
                           ],
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 20),
+                      const SizedBox(height: 16),
+                    ],
 
                     // Data OCR
                     Row(

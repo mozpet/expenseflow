@@ -317,7 +317,13 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                         calDay?.shiftName == 'Cuti Bersama';
                     final bool isPersonalLeave =
                         (calDay?.personalLeave ?? false) ||
-                        calDay?.shiftName == 'Cuti Mandiri';
+                        calDay?.shiftName == 'Cuti Mandiri' ||
+                        calDay?.shiftName == 'Izin' ||
+                        calDay?.shiftName == 'Sakit';
+                    final bool isIzin = (calDay?.isIzin == true) || calDay?.shiftName == 'Izin';
+                    final bool isSakit = (calDay?.isSakit == true) || calDay?.shiftName == 'Sakit';
+                    final bool isCuti = isCollectiveLeave || (isPersonalLeave && !isIzin && !isSakit);
+
                     final bool isWfhDay =
                         (calDay?.isWfh ?? false) &&
                         !isOff &&
@@ -335,13 +341,17 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                         date.isAfter(maxDate) ||
                         (widget.disableUnavailable && isUnavailable);
 
-                    final holidayAccent = isCollectiveLeave || isPersonalLeave
-                        ? const Color(0xFFD97706)
-                        : holiday != null
-                        ? (holiday.isNational
-                              ? const Color(0xFFEF4444)
-                              : const Color(0xFF3B82F6))
-                        : null;
+                    final holidayAccent = isIzin
+                        ? const Color(0xFF7B1FA2)
+                        : isSakit
+                            ? const Color(0xFFEA580C)
+                            : isCuti
+                                ? const Color(0xFFD97706)
+                                : holiday != null
+                                ? (holiday.isNational
+                                      ? const Color(0xFFEF4444)
+                                      : const Color(0xFF3B82F6))
+                                : null;
 
                     return Expanded(
                       child: GestureDetector(
@@ -446,26 +456,31 @@ class _CustomDatePickerDialogState extends State<_CustomDatePickerDialog> {
                                           color: Colors.purple.shade600,
                                         ),
                                       ),
-                                    if (isCollectiveLeave)
-                                      Text(
+                                    if (isIzin)
+                                      const Text(
+                                        'IZIN',
+                                        style: TextStyle(
+                                          fontSize: 8,
+                                          fontWeight: FontWeight.w700,
+                                          color: Color(0xFF7B1FA2),
+                                        ),
+                                      )
+                                    else if (isSakit)
+                                      const Text(
+                                        'SAKIT',
+                                        style: TextStyle(
+                                          fontSize: 8,
+                                          fontWeight: FontWeight.w700,
+                                          color: Color(0xFFEA580C),
+                                        ),
+                                      )
+                                    else if (isCuti)
+                                      const Text(
                                         'CUTI',
                                         style: TextStyle(
                                           fontSize: 8,
                                           fontWeight: FontWeight.w700,
-                                          color: const Color(0xFFD97706),
-                                        ),
-                                      )
-                                    else if (isPersonalLeave)
-                                      Flexible(
-                                        child: Text(
-                                          'CUTI MANDIRI',
-                                          maxLines: 1,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: TextStyle(
-                                            fontSize: 7,
-                                            fontWeight: FontWeight.w700,
-                                            color: const Color(0xFFD97706),
-                                          ),
+                                          color: Color(0xFFD97706),
                                         ),
                                       )
                                     else if (isHoliday)

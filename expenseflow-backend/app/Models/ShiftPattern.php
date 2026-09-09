@@ -13,6 +13,8 @@ class ShiftPattern extends Model
         'attendance_setting_id',
         'name',
         'description',
+        'color',
+        'late_tolerance_minutes',
         'cycle_days',
         'is_active',
     ];
@@ -20,9 +22,10 @@ class ShiftPattern extends Model
     protected function casts(): array
     {
         return [
-            'attendance_setting_id' => 'integer',
-            'cycle_days'            => 'integer',
-            'is_active'             => 'boolean',
+            'attendance_setting_id'  => 'integer',
+            'late_tolerance_minutes' => 'integer',
+            'cycle_days'             => 'integer',
+            'is_active'              => 'boolean',
         ];
     }
 
@@ -39,6 +42,11 @@ class ShiftPattern extends Model
     public function items(): HasMany
     {
         return $this->hasMany(ShiftPatternItem::class)->orderBy('day_order');
+    }
+
+    public function dayOverrides(): HasMany
+    {
+        return $this->hasMany(ShiftPatternDayOverride::class)->orderBy('day_of_week');
     }
 
     public function userShifts(): HasMany

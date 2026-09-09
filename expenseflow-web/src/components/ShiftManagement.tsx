@@ -1,9 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import {
-  CalendarClock, CalendarDays, Plus, Pencil, Trash2, X, RefreshCw,
+  CalendarClock, CalendarDays, Calendar, Plus, Pencil, Trash2, X, RefreshCw,
   Search, Users, Building2, AlertCircle, AlertTriangle, CheckCircle2, Moon,
   Layers, UserCog, Save, History, ArrowRight, Info, Clock, ToggleLeft, ToggleRight,
-  Repeat, Check, ChevronRight,
+  Repeat, Check, ChevronRight, Lock, ChevronDown, ChevronUp, Sliders,
 } from 'lucide-react';
 import { shiftApi, attendanceApi, ShiftPattern, ShiftPatternItem, ShiftPatternItemInput } from '../services/endpoints';
 import { ApiError, invalidateCache } from '../services/api';
@@ -20,6 +20,7 @@ interface OfficeOpt {
   office_name: string;
   work_start_time?: string | null;
   work_end_time?: string | null;
+  late_tolerance_minutes?: number | null;
   enforce_weekly_hours?: boolean;
   max_weekly_hours?: number | null;
   shift_notice_days?: number | null;
@@ -42,8 +43,9 @@ interface ShiftTemplate {
   description: string | null;
   is_active: boolean;
   color: string | null;
+  late_tolerance_minutes?: number | null;
   attendance_setting_id: number | null;
-  office?: { id: number; office_name: string } | null;
+  office?: { id: number; office_name: string; late_tolerance_minutes?: number | null } | null;
   schedules: ScheduleRow[];
 }
 
@@ -156,6 +158,85 @@ const avatarColors = [
 ];
 const avatarFor = (name: string) =>
   avatarColors[name.split('').reduce((a, c) => a + c.charCodeAt(0), 0) % avatarColors.length];
+
+// 30 preset warna kontras dan cerah untuk Template Shift & Pola Rotasi.
+// Catatan: Warna abu-abu (#64748b, #9ca3af, dll) TIDAK digunakan di sini
+// karena khusus diperuntukkan untuk menandakan hari OFF / Libur pada kalender.
+export const SHIFT_PRESET_COLORS = [
+  '#e53e3e', // merah
+  '#dd6b20', // oranye tua
+  '#d69e2e', // kuning keemasan
+  '#38a169', // hijau daun
+  '#2b6cb0', // biru tua
+  '#6b46c1', // ungu
+  '#d53f8c', // pink magenta
+  '#319795', // teal
+  '#00b5d8', // cyan
+  '#84cc16', // hijau lime
+  '#c05621', // burnt orange
+  '#285e61', // teal gelap
+  '#44337a', // ungu gelap
+  '#702459', // pink tua / plum
+  '#234e52', // hijau tua
+  '#2a4365', // biru navy
+  '#7b341e', // coklat merah
+  '#1a365d', // biru midnight
+  '#f6ad55', // oranye muda / peach
+  '#48bb78', // hijau muda / mint
+  // ─── 10 Warna Tambahan Baru (Cerah, Berkarakter & Bebas Abu-abu) ───
+  '#6366f1', // indigo (warna tema utama)
+  '#f43f5e', // rose coral cerah
+  '#0ea5e9', // sky blue cerah
+  '#10b981', // emerald zamrud
+  '#d946ef', // electric fuchsia
+  '#f59e0b', // warm amber / marigold
+  '#8b5cf6', // vivid violet / lavender
+  '#ec4899', // hot pink cerah
+  '#0891b2', // deep marine cyan
+  '#b45309', // cinnamon bronze / tembaga
+];
+
+/**
+ * Cek bentrok warna per cabang di frontend (lintas Template Shift dan Pola Rotasi).
+ * 1 Cabang hanya boleh menggunakan 1 warna yang sama untuk 1 template atau 1 pola.
+ */
+function findColorClash(
+  colorHex: string,
+  targetBranchId: number | null,
+  shifts: ShiftTemplate[] = [],
+  patterns: ShiftPattern[] = [],
+  excludeShiftId?: number | null,
+  excludePatternId?: number | null,
+): { type: 'template shift' | 'pola rotasi'; name: string } | null {
+  if (!colorHex) return null;
+  const cLower = colorHex.toLowerCase();
+
+  // 1. Cek di template shift
+  const clashingShift = shifts.find((s) => {
+    if (!s.color || s.color.toLowerCase() !== cLower) return false;
+    if (excludeShiftId != null && s.id === excludeShiftId) return false;
+    if (s.attendance_setting_id == null) return true; // company-wide clash
+    if (targetBranchId == null) return true; // target company-wide -> clash
+    return s.attendance_setting_id === targetBranchId;
+  });
+  if (clashingShift) {
+    return { type: 'template shift', name: clashingShift.name };
+  }
+
+  // 2. Cek di pola rotasi
+  const clashingPattern = patterns.find((p) => {
+    if (!p.color || p.color.toLowerCase() !== cLower) return false;
+    if (excludePatternId != null && p.id === excludePatternId) return false;
+    if (p.attendance_setting_id == null) return true; // company-wide clash
+    if (targetBranchId == null) return true; // target company-wide -> clash
+    return p.attendance_setting_id === targetBranchId;
+  });
+  if (clashingPattern) {
+    return { type: 'pola rotasi', name: clashingPattern.name };
+  }
+
+  return null;
+}
 
 // Default 7 hari kerja Sen–Jum, libur Sabtu–Minggu.
 const defaultSchedules = (start = '08:00', end = '17:00'): ScheduleRow[] =>
@@ -277,18 +358,25 @@ function isOffOnDate(
 interface ShiftFormProps {
   offices: OfficeOpt[];
   shifts: ShiftTemplate[];
+  patterns?: ShiftPattern[];
   editing: ShiftTemplate | null;
   onClose: () => void;
   onSaved: () => void;
 }
 
-function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFormProps) {
+function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSaved }: ShiftFormProps) {
   const [name, setName] = useState(editing?.name ?? '');
   const [description, setDescription] = useState(editing?.description ?? '');
   const [isActive, setIsActive] = useState(editing?.is_active ?? true);
   const [color, setColor] = useState(editing?.color ?? '#6366f1');
   const [branchId, setBranchId] = useState<string>(
     editing?.attendance_setting_id ? String(editing.attendance_setting_id) : '',
+  );
+  const [customToleranceEnabled, setCustomToleranceEnabled] = useState<boolean>(
+    editing?.late_tolerance_minutes != null,
+  );
+  const [lateToleranceMinutes, setLateToleranceMinutes] = useState<number | ''>(
+    editing?.late_tolerance_minutes ?? 15,
   );
   const [schedules, setSchedules] = useState<ScheduleRow[]>(() => {
     if (editing?.schedules?.length) {
@@ -440,26 +528,20 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
       if (!s.work_start_time || !s.work_end_time)
         return `${DAY_NAMES[s.day_of_week]}: jam masuk & pulang wajib diisi (atau tandai libur).`;
     }
+    if (customToleranceEnabled && (lateToleranceMinutes === '' || Number(lateToleranceMinutes) < 0 || Number(lateToleranceMinutes) > 300)) {
+      return 'Batas toleransi keterlambatan harus berupa angka antara 0 dan 300 menit.';
+    }
     return null;
   };
 
-  // Validasi duplikat warna lokal (sama logika backend, per-kantor)
+  // Validasi duplikat warna lokal (lintas template shift & pola rotasi, per-cabang)
   const validateColorLocal = (): string | null => {
     if (!color) return null;
     const targetBranchLocal =
       branchId !== '' ? Number(branchId) : editing?.attendance_setting_id ?? null;
-    const editingIsCompanyWideLocal =
-      editing != null && editing.attendance_setting_id == null;
-    const clash = shifts.find((s) => {
-      if (s.id === editing?.id) return false;
-      if (s.color == null || s.color.toLowerCase() !== color.toLowerCase()) return false;
-      if (s.attendance_setting_id == null) return true;
-      if (editingIsCompanyWideLocal) return true;
-      if (targetBranchLocal == null) return false;
-      return s.attendance_setting_id === targetBranchLocal;
-    });
+    const clash = findColorClash(color, targetBranchLocal, shifts, patterns, editing?.id, null);
     return clash
-      ? `Warna ${color} sudah dipakai oleh shift '${clash.name}' (kantor ini). Pilih warna yang berbeda dalam kantor ini.`
+      ? `Warna ${color} sudah dipakai oleh ${clash.type} '${clash.name}' (cabang ini). Pilih warna yang berbeda dalam cabang ini.`
       : null;
   };
 
@@ -472,6 +554,7 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
       description: description.trim() || undefined,
       color: color || null,
       is_active: isActive,
+      late_tolerance_minutes: customToleranceEnabled && lateToleranceMinutes !== '' ? Number(lateToleranceMinutes) : null,
       schedules: schedules.map((s) => ({
         day_of_week: s.day_of_week,
         is_off: s.is_off,
@@ -530,7 +613,7 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4 py-6"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-200">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-3xl lg:max-w-4xl max-h-[90vh] overflow-y-auto border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white dark:bg-slate-900 z-10">
           <div className="flex items-center gap-3">
@@ -596,69 +679,22 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
             ) : null}
             <div>
               <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">Warna Shift</label>
-              {/* 20 preset warna kontras untuk kalender — pilih satu.
+              {/* 30 preset warna kontras untuk kalender — pilih satu.
                   Warna yang sudah dipakai shift lain dinonaktifkan (unused) */}
               <div className="flex flex-wrap gap-2">
-                {[
-                  '#e53e3e', // merah
-                  '#dd6b20', // oranye tua
-                  '#d69e2e', // kuning keemasan
-                  '#38a169', // hijau
-                  '#2b6cb0', // biru tua
-                  '#6b46c1', // ungu
-                  '#d53f8c', // pink magenta
-                  '#319795', // teal
-                  '#00b5d8', // cyan
-                  '#84cc16', // hijau lime
-                  '#c05621', // burnt orange
-                  '#285e61', // teal gelap
-                  '#44337a', // ungu gelap
-                  '#702459', // pink tua
-                  '#234e52', // hijau tua
-                  '#2a4365', // biru navy
-                  '#7b341e', // coklat merah
-                  '#1a365d', // biru midnight
-                  '#f6ad55', // oranye muda
-                  '#48bb78', // hijau muda
-                ].map((c) => {
-                  // Warna unik PER KANTOR. Lingkup bentrok mengikuti kantor yang
-                  // DIPILIH di form (bukan status editing):
-                  // - Shift lain company-wide (attendance_setting_id null) selalu
-                  //   bentrok, karena berlaku di semua kantor.
-                  // - Jika user sudah pilih cabang: warna bentrok bila dipakai
-                  //   shift lain di cabang yang sama.
-                  // - Jika user belum pilih cabang (khusus saat BUAT): jangan
-                  //   disable apa pun — biarkan backend yang memvalidasi.
-                  // - Saat EDIT: kantor target = kantor yang dipilih di form
-                  //   (default = kantor shift yang sedang diedit).
-                  // Perbandingan warna case-insensitive (#E53E3E == #e53e3e).
-                  // Saat EDIT shift company-wide (tidak ada pilihan cabang, branchId
-                  // kosong) → target dianggap company-wide → bentrok dengan semua.
-                  const isEditingCompanyWide =
-                    editing != null && editing.attendance_setting_id == null;
+                {SHIFT_PRESET_COLORS.map((c) => {
                   const targetBranch =
                     branchId !== '' ? Number(branchId) : editing?.attendance_setting_id ?? null;
-                  const usedBy = shifts.find((s) => {
-                    if (s.color == null || s.color.toLowerCase() !== c.toLowerCase()) return false;
-                    if (s.id === editing?.id) return false;
-                    // Shift lain company-wide selalu bentrok (di kantor mana pun)
-                    if (s.attendance_setting_id == null) return true;
-                    // Shift target company-wide → semua shift cabang bentrok
-                    if (isEditingCompanyWide) return true;
-                    // Belum bisa tahu kantor target → biarkan backend memvalidasi
-                    if (targetBranch == null) return false;
-                    // Bentrok hanya jika di cabang yang sama
-                    return s.attendance_setting_id === targetBranch;
-                  });
-                  const isUsed = !!usedBy;
-                  const isSelected = color === c;
+                  const clash = findColorClash(c, targetBranch, shifts, patterns, editing?.id, null);
+                  const isUsed = !!clash;
+                  const isSelected = color?.toLowerCase() === c.toLowerCase();
                   return (
                     <button
                       key={c}
                       type="button"
                       onClick={() => { if (!isUsed) setColor(c); }}
                       disabled={isUsed}
-                      title={usedBy ? `Sudah dipakai oleh shift "${usedBy.name}" (kantor ini)` : c}
+                      title={clash ? `Sudah dipakai oleh ${clash.type} "${clash.name}" (cabang ini)` : c}
                       className={`w-7 h-7 rounded-full border-[3px] transition-all ${isSelected
                         ? 'border-slate-800 dark:border-white scale-125 shadow-md'
                         : isUsed
@@ -671,13 +707,26 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
                 })}
               </div>
               {/* Preview warna terpilih */}
-              <div className="mt-2 flex items-center gap-2">
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
                 <span
                   className="w-4 h-4 rounded-full border border-black/10 dark:border-white/20 shrink-0"
                   style={{ backgroundColor: color }}
                 />
                 <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{color}</span>
                 <span className="text-[10px] text-slate-400 dark:text-slate-500">— tampilan di kalender</span>
+                {(() => {
+                  const targetBranch =
+                    branchId !== '' ? Number(branchId) : editing?.attendance_setting_id ?? null;
+                  const clash = findColorClash(color, targetBranch, shifts, patterns, editing?.id, null);
+                  if (clash) {
+                    return (
+                      <span className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">
+                        (⚠️ Sudah dipakai {clash.type} "{clash.name}")
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
             </div>
             <div className="sm:col-span-2 flex flex-col sm:flex-row gap-4">
@@ -723,6 +772,72 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
             </div>
           )}
 
+          {/* Pengaturan Toleransi Keterlambatan Khusus Shift (Item 14 Kategori D) */}
+          <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 rounded-xl p-3.5 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={customToleranceEnabled}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setCustomToleranceEnabled(checked);
+                    if (checked && (lateToleranceMinutes === '' || lateToleranceMinutes == null)) {
+                      setLateToleranceMinutes(15);
+                    }
+                  }}
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">
+                    Kustomisasi Toleransi Keterlambatan Shift
+                  </span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 block leading-relaxed">
+                    Atur batas toleransi keterlambatan khusus untuk template shift ini. Jika checkbox tidak dicentang (OFF), jadwal presensi akan otomatis mengikuti batas toleransi kantor cabang.
+                  </span>
+                </div>
+              </label>
+            </div>
+
+            {customToleranceEnabled ? (
+              <div className="pt-2.5 border-t border-slate-200/80 dark:border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                    Batas Toleransi Keterlambatan:
+                  </span>
+                  <div className="relative flex items-center">
+                    <input
+                      type="number"
+                      min={0}
+                      max={300}
+                      value={lateToleranceMinutes}
+                      onChange={(e) =>
+                        setLateToleranceMinutes(
+                          e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10) || 0)
+                        )
+                      }
+                      className="w-24 text-xs font-semibold p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                    />
+                    <span className="ml-2 text-xs text-slate-500 dark:text-slate-400">menit</span>
+                  </div>
+                </div>
+                <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold flex items-center gap-1">
+                  <span>⏱️ Khusus shift ini: {lateToleranceMinutes === '' ? 0 : lateToleranceMinutes} menit</span>
+                </div>
+              </div>
+            ) : (
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 flex items-center gap-1.5 pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
+                <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                <span>Mengikuti default kantor cabang:</span>
+                <span className="font-semibold text-slate-600 dark:text-slate-300">
+                  {selectedOffice?.late_tolerance_minutes != null
+                    ? `${selectedOffice.late_tolerance_minutes} menit`
+                    : '15 menit (default)'}
+                </span>
+              </div>
+            )}
+          </div>
+
           {/* Editor 7 hari */}
           <div>
             <div className="flex items-center justify-between mb-2">
@@ -742,106 +857,108 @@ function ShiftFormModal({ offices, shifts, editing, onClose, onSaved }: ShiftFor
                 )}
               </div>
             </div>
-            <div className="space-y-1.5">
-              {schedules.map((s) => (
-                <div
-                  key={s.day_of_week}
-                  className={`flex items-center gap-2 sm:gap-3 p-2 rounded-lg border ${s.is_off ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-100 dark:border-rose-900/40' : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700'
-                    }`}
-                >
-                  <span className="w-14 sm:w-16 text-xs font-bold text-slate-700 dark:text-slate-200 shrink-0">
-                    {DAY_NAMES[s.day_of_week]}
-                  </span>
-
-                  <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 cursor-pointer select-none shrink-0">
-                    <input
-                      type="checkbox"
-                      checked={s.is_off}
-                      onChange={() => toggleOff(s.day_of_week)}
-                      className="w-3.5 h-3.5 rounded accent-rose-500"
-                    />
-                    Libur
-                  </label>
-
-                  <label className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${s.is_off ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600' : 'text-cyan-700 dark:text-cyan-400'}`}>
-                    <input
-                      type="checkbox"
-                      checked={!s.is_off && Boolean(s.is_wfh)}
-                      disabled={s.is_off}
-                      onChange={() => toggleWfh(s.day_of_week)}
-                      className="w-3.5 h-3.5 rounded accent-cyan-600"
-                    />
-                    WFH
-                  </label>
-
-                  <label
-                    className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${s.is_off || !s.is_wfh ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600' : 'text-emerald-700 dark:text-emerald-400'}`}
-                    title={!s.is_wfh ? 'Centang WFH terlebih dahulu untuk memilih Lapangan' : undefined}
+            <div className="overflow-x-auto pb-1">
+              <div className="space-y-1.5 min-w-[640px] sm:min-w-0">
+                {schedules.map((s) => (
+                  <div
+                    key={s.day_of_week}
+                    className={`flex items-center gap-2 sm:gap-2.5 p-2 rounded-lg border ${s.is_off ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-100 dark:border-rose-900/40' : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700'
+                      }`}
                   >
-                    <input
-                      type="checkbox"
-                      checked={!s.is_off && Boolean(s.is_wfh) && Boolean(s.is_field)}
-                      disabled={s.is_off || !s.is_wfh}
-                      onChange={() => toggleField(s.day_of_week)}
-                      className="w-3.5 h-3.5 rounded accent-emerald-600"
-                    />
-                    Lapangan
-                  </label>
+                    <span className="w-14 sm:w-16 text-xs font-bold text-slate-700 dark:text-slate-200 shrink-0">
+                      {DAY_NAMES[s.day_of_week]}
+                    </span>
 
-                  {s.is_off ? (
-                    <span className="text-[11px] text-rose-500 dark:text-rose-400 italic flex-1">Tidak ada jam kerja</span>
-                  ) : (
-                    <div className="flex items-center gap-2 flex-1">
+                    <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 cursor-pointer select-none shrink-0">
                       <input
-                        type="time"
-                        value={s.work_start_time ?? ''}
-                        onChange={(e) => setDay(s.day_of_week, { work_start_time: e.target.value })}
-                        className="text-xs p-1.5 border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                        type="checkbox"
+                        checked={s.is_off}
+                        onChange={() => toggleOff(s.day_of_week)}
+                        className="w-3.5 h-3.5 rounded accent-rose-500"
                       />
-                      <ArrowRight className="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" />
+                      Libur
+                    </label>
+
+                    <label className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${s.is_off ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600' : 'text-cyan-700 dark:text-cyan-400'}`}>
                       <input
-                        type="time"
-                        value={s.work_end_time ?? ''}
-                        onChange={(e) => setDay(s.day_of_week, { work_end_time: e.target.value })}
-                        className="text-xs p-1.5 border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                        type="checkbox"
+                        checked={!s.is_off && Boolean(s.is_wfh)}
+                        disabled={s.is_off}
+                        onChange={() => toggleWfh(s.day_of_week)}
+                        className="w-3.5 h-3.5 rounded accent-cyan-600"
                       />
-                      {/* Input Durasi Jam Istirahat (menit) */}
-                      <div className="flex items-center gap-1 shrink-0" title="Durasi jam istirahat (menit, standar 60)">
-                        <span className="text-[10px] text-slate-400 font-medium">Ist:</span>
+                      WFH
+                    </label>
+
+                    <label
+                      className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${s.is_off || !s.is_wfh ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600' : 'text-emerald-700 dark:text-emerald-400'}`}
+                      title={!s.is_wfh ? 'Centang WFH terlebih dahulu untuk memilih Lapangan' : undefined}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!s.is_off && Boolean(s.is_wfh) && Boolean(s.is_field)}
+                        disabled={s.is_off || !s.is_wfh}
+                        onChange={() => toggleField(s.day_of_week)}
+                        className="w-3.5 h-3.5 rounded accent-emerald-600"
+                      />
+                      Lapangan
+                    </label>
+
+                    {s.is_off ? (
+                      <span className="text-[11px] text-rose-500 dark:text-rose-400 italic flex-1">Tidak ada jam kerja</span>
+                    ) : (
+                      <div className="flex items-center gap-2 flex-1 min-w-0">
                         <input
-                          type="number"
-                          min={0}
-                          max={240}
-                          value={s.break_minutes ?? 60}
-                          onChange={(e) => setDay(s.day_of_week, { break_minutes: e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value) || 0) })}
-                          className="w-12 text-xs p-1 text-center border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                          placeholder="60"
+                          type="time"
+                          value={s.work_start_time ?? ''}
+                          onChange={(e) => setDay(s.day_of_week, { work_start_time: e.target.value })}
+                          className="w-[88px] sm:w-[96px] text-xs p-1.5 border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 shrink-0"
                         />
-                        <span className="text-[10px] text-slate-400">m</span>
+                        <ArrowRight className="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" />
+                        <input
+                          type="time"
+                          value={s.work_end_time ?? ''}
+                          onChange={(e) => setDay(s.day_of_week, { work_end_time: e.target.value })}
+                          className="w-[88px] sm:w-[96px] text-xs p-1.5 border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 shrink-0"
+                        />
+                        {/* Input Durasi Jam Istirahat (menit) */}
+                        <div className="flex items-center gap-1 shrink-0" title="Durasi jam istirahat (menit, standar 60)">
+                          <span className="text-[10px] text-slate-400 font-medium">Ist:</span>
+                          <input
+                            type="number"
+                            min={0}
+                            max={240}
+                            value={s.break_minutes ?? 60}
+                            onChange={(e) => setDay(s.day_of_week, { break_minutes: e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value) || 0) })}
+                            className="w-11 text-xs p-1 text-center border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                            placeholder="60"
+                          />
+                          <span className="text-[10px] text-slate-400">m</span>
+                        </div>
+                        {/* Indikator shift lintas tengah malam (jam pulang <= jam masuk) */}
+                        {s.work_start_time && s.work_end_time && s.work_end_time <= s.work_start_time && (
+                          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 shrink-0 whitespace-nowrap" title="Shift berakhir keesokan harinya">
+                            <Moon className="w-3 h-3" /> +1 hari
+                          </span>
+                        )}
+                        {/* Badge K3 jeda istirahat ke hari berikutnya */}
+                        {k3Gaps[s.day_of_week] && (
+                          <span
+                            className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap ${k3Gaps[s.day_of_week].status === 'error'
+                              ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/50'
+                              : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/50'
+                              }`}
+                            title={`Jeda ke ${k3Gaps[s.day_of_week].nextDayName}: ${k3Gaps[s.day_of_week].hours}j`}
+                          >
+                            <AlertCircle className="w-3 h-3 shrink-0" />
+                            <span>{k3Gaps[s.day_of_week].hours}j → {k3Gaps[s.day_of_week].nextDayName}</span>
+                          </span>
+                        )}
                       </div>
-                      {/* Indikator shift lintas tengah malam (jam pulang <= jam masuk) */}
-                      {s.work_start_time && s.work_end_time && s.work_end_time <= s.work_start_time && (
-                        <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 shrink-0" title="Shift berakhir keesokan harinya">
-                          <Moon className="w-3 h-3" /> +1 hari
-                        </span>
-                      )}
-                      {/* Badge K3 jeda istirahat ke hari berikutnya */}
-                      {k3Gaps[s.day_of_week] && (
-                        <span
-                          className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${k3Gaps[s.day_of_week].status === 'error'
-                            ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400'
-                            : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400'
-                            }`}
-                          title={`Jeda ke ${k3Gaps[s.day_of_week].nextDayName}: ${k3Gaps[s.day_of_week].hours}j`}
-                        >
-                          <AlertCircle className="w-3 h-3" />
-                          {k3Gaps[s.day_of_week].hours}j → {k3Gaps[s.day_of_week].nextDayName}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
+                    )}
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
 
@@ -1007,6 +1124,7 @@ export function isNightShift(shift?: ShiftTemplate | null): boolean {
 // ═══════════════════════════════════════════════════════════════
 interface ShiftPatternFormProps {
   shifts: ShiftTemplate[];
+  patterns?: ShiftPattern[];
   offices: OfficeOpt[];
   editing: ShiftPattern | null;
   onClose: () => void;
@@ -1017,11 +1135,34 @@ interface PatternDayItemState {
   day_order: number;
   is_off: boolean;
   shift_id: number | null;
+  name: string;
+  color: string;
   work_start_time: string | null;
   work_end_time: string | null;
   break_minutes: number;
+  late_tolerance_minutes: number | null;
   is_cross_day: boolean;
+  is_wfh: boolean;
+  is_field?: boolean;
 }
+
+interface DayOverrideState {
+  enabled: boolean;
+  work_start_time: string;
+  work_end_time: string;
+  break_minutes: number | '';
+  late_tolerance_minutes: number | '';
+}
+
+const DOW_OPTIONS = [
+  { dow: 1, name: 'Senin', short: 'Sen' },
+  { dow: 2, name: 'Selasa', short: 'Sel' },
+  { dow: 3, name: 'Rabu', short: 'Rab' },
+  { dow: 4, name: 'Kamis', short: 'Kam' },
+  { dow: 5, name: 'Jumat', short: 'Jum' },
+  { dow: 6, name: 'Sabtu', short: 'Sab' },
+  { dow: 0, name: 'Minggu', short: 'Min' },
+];
 
 /**
  * Hitung jeda istirahat K3 antar hari berurutan dalam siklus pola rotasi + wrap-around (HN -> H1).
@@ -1085,11 +1226,18 @@ function computePatternWeeklyHours(days: PatternDayItemState[]): number {
   return Math.round((avgWeeklyMins / 60) * 10) / 10;
 }
 
-function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: ShiftPatternFormProps) {
+function ShiftPatternFormModal({ shifts, patterns = [], offices, editing, onClose, onSaved }: ShiftPatternFormProps) {
   const [name, setName] = useState(editing?.name ?? '');
   const [description, setDescription] = useState(editing?.description ?? '');
+  const [color, setColor] = useState(editing?.color ?? '#6366f1');
   const [attendanceSettingId, setAttendanceSettingId] = useState<number | ''>(
-    editing?.attendance_setting_id ?? '',
+    editing?.attendance_setting_id ?? (offices[0]?.id ?? ''),
+  );
+  const [customToleranceEnabled, setCustomToleranceEnabled] = useState<boolean>(
+    editing?.late_tolerance_minutes != null,
+  );
+  const [lateToleranceMinutes, setLateToleranceMinutes] = useState<number | ''>(
+    editing?.late_tolerance_minutes ?? 15,
   );
   const [cycleDays, setCycleDays] = useState<number>(editing?.cycle_days ?? 6);
   const [isActive, setIsActive] = useState<boolean>(editing?.is_active ?? true);
@@ -1098,22 +1246,86 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
   const [k3Warnings, setK3Warnings] = useState<string[]>([]);
   const [showK3Confirm, setShowK3Confirm] = useState(false);
 
-  // Shift aktif yang relevan sesuai cabang pola rotasi ini
+  // Calendar Day Overrides (Jumat istirahat panjang, dll.)
+  const existingOverrides = useMemo(() => {
+    return editing?.day_overrides ?? (editing as any)?.dayOverrides ?? [];
+  }, [editing]);
+
+  const [showDayOverrides, setShowDayOverrides] = useState<boolean>(() => {
+    return Boolean(existingOverrides.length > 0);
+  });
+
+  const [dayOverrides, setDayOverrides] = useState<Record<number, DayOverrideState>>(() => {
+    const init: Record<number, DayOverrideState> = {};
+    for (let dow = 0; dow <= 6; dow++) {
+      init[dow] = {
+        enabled: false,
+        work_start_time: '',
+        work_end_time: '',
+        break_minutes: '',
+        late_tolerance_minutes: '',
+      };
+    }
+    const overridesList = editing?.day_overrides ?? (editing as any)?.dayOverrides ?? [];
+    if (overridesList.length) {
+      for (const ov of overridesList) {
+        init[ov.day_of_week] = {
+          enabled: true,
+          work_start_time: ov.work_start_time ? ov.work_start_time.slice(0, 5) : '',
+          work_end_time: ov.work_end_time ? ov.work_end_time.slice(0, 5) : '',
+          break_minutes: ov.break_minutes != null ? ov.break_minutes : '',
+          late_tolerance_minutes: ov.late_tolerance_minutes != null ? ov.late_tolerance_minutes : '',
+        };
+      }
+    }
+    return init;
+  });
+
+  const activeOverridesCount = useMemo(() => {
+    return DOW_OPTIONS.filter(({ dow }) => dayOverrides[dow]?.enabled).length;
+  }, [dayOverrides]);
+
+  const toggleDayOverride = (dow: number) => {
+    setDayOverrides((prev) => {
+      const current = prev[dow];
+      const willEnable = !current.enabled;
+      return {
+        ...prev,
+        [dow]: {
+          ...current,
+          enabled: willEnable,
+          break_minutes: willEnable && dow === 5 && current.break_minutes === '' ? 90 : current.break_minutes,
+        },
+      };
+    });
+  };
+
+  const updateDayOverride = (dow: number, patch: Partial<DayOverrideState>) => {
+    setDayOverrides((prev) => ({
+      ...prev,
+      [dow]: {
+        ...prev[dow],
+        ...patch,
+      },
+    }));
+  };
+
+  // Shift aktif yang relevan sesuai cabang pola rotasi ini (pola selalu terikat cabang)
   const availableShifts = useMemo(() => {
     return shifts.filter((s) => {
       if (!s.is_active) return false;
       if (attendanceSettingId) {
         return !s.attendance_setting_id || s.attendance_setting_id === Number(attendanceSettingId);
       }
-      return !s.attendance_setting_id;
+      return false;
     });
   }, [shifts, attendanceSettingId]);
 
   const defaultShift = availableShifts[0] ?? null;
 
-  // Setting kantor yang dipilih untuk mengecek batasan jam kerja mingguan
+  // Setting kantor yang dipilih untuk batasan jam kerja mingguan & toleransi default
   const selectedOffice = useMemo(
-    () => offices.find((o) => String(o.id) === String(attendanceSettingId)) ?? null,
+    () => offices.find((o) => String(o.id) === String(attendanceSettingId)) ?? offices[0] ?? null,
     [offices, attendanceSettingId],
   );
 
@@ -1124,15 +1336,22 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
         day_order: it.day_order,
         is_off: Boolean(it.is_off),
         shift_id: it.shift_id ?? null,
+        name: it.name ?? '',
+        color: it.color ?? (editing?.color ?? '#6366f1'),
         work_start_time: it.work_start_time ? it.work_start_time.slice(0, 5) : null,
         work_end_time: it.work_end_time ? it.work_end_time.slice(0, 5) : null,
         break_minutes: it.break_minutes ?? 60,
+        late_tolerance_minutes: it.late_tolerance_minutes ?? null,
         is_cross_day: Boolean(it.is_cross_day),
+        is_wfh: Boolean(it.is_wfh),
+        is_field: (!it.is_off && it.is_wfh) ? Boolean(it.is_field) : false,
       }));
     }
     // Default: Pola 4-2 (4 Kerja, 2 Libur)
     const defStart = defaultShift?.schedules?.find((sc) => !sc.is_off)?.work_start_time?.slice(0, 5) ?? '07:00';
     const defEnd = defaultShift?.schedules?.find((sc) => !sc.is_off)?.work_end_time?.slice(0, 5) ?? '15:00';
+    const defName = defaultShift?.name ?? '';
+    const defColor = editing?.color ?? '#6366f1';
 
     return Array.from({ length: 6 }, (_, i) => {
       const order = i + 1;
@@ -1141,10 +1360,15 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
         day_order: order,
         is_off: isOff,
         shift_id: isOff ? null : (defaultShift?.id ?? null),
+        name: isOff ? '' : defName,
+        color: defColor,
         work_start_time: isOff ? null : defStart,
         work_end_time: isOff ? null : defEnd,
-        break_minutes: 60,
+        break_minutes: isOff ? 0 : 60,
+        late_tolerance_minutes: null,
         is_cross_day: false,
+        is_wfh: false,
+        is_field: false,
       };
     });
   });
@@ -1172,16 +1396,22 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
       if (prev.length > val) return prev.slice(0, val);
       const defStart = defaultShift?.schedules?.find((sc) => !sc.is_off)?.work_start_time?.slice(0, 5) ?? '07:00';
       const defEnd = defaultShift?.schedules?.find((sc) => !sc.is_off)?.work_end_time?.slice(0, 5) ?? '15:00';
+      const defName = defaultShift?.name ?? '';
       const added: PatternDayItemState[] = [];
       for (let i = prev.length + 1; i <= val; i++) {
         added.push({
           day_order: i,
           is_off: false,
           shift_id: defaultShift?.id ?? null,
+          name: defName,
+          color: color || '#6366f1',
           work_start_time: defStart,
           work_end_time: defEnd,
           break_minutes: 60,
+          late_tolerance_minutes: null,
           is_cross_day: false,
+          is_wfh: false,
+          is_field: false,
         });
       }
       return [...prev, ...added];
@@ -1193,6 +1423,7 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
     setCycleDays(total);
     const defStart = defaultShift?.schedules?.find((sc) => !sc.is_off)?.work_start_time?.slice(0, 5) ?? '07:00';
     const defEnd = defaultShift?.schedules?.find((sc) => !sc.is_off)?.work_end_time?.slice(0, 5) ?? '15:00';
+    const defName = defaultShift?.name ?? '';
 
     const newRows: PatternDayItemState[] = Array.from({ length: total }, (_, i) => {
       const order = i + 1;
@@ -1201,39 +1432,145 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
         day_order: order,
         is_off: isOff,
         shift_id: isOff ? null : (defaultShift?.id ?? null),
+        name: isOff ? '' : defName,
+        color: color || '#6366f1',
         work_start_time: isOff ? null : defStart,
         work_end_time: isOff ? null : defEnd,
         break_minutes: isOff ? 0 : 60,
+        late_tolerance_minutes: null,
         is_cross_day: false,
+        is_wfh: false,
+        is_field: false,
       };
     });
     setDays(newRows);
   };
 
-  const updateDay = (index: number, patch: Partial<PatternDayItemState>) => {
-    setDays((prev) => {
-      const copy = [...prev];
-      const updated = { ...copy[index], ...patch };
-      // Bila memilih shift_id, isi otomatis jam masuk/keluar dari template shift
-      if (patch.shift_id !== undefined && patch.shift_id !== null) {
-        const sh = shifts.find((s) => s.id === patch.shift_id);
-        if (sh && sh.schedules?.length) {
-          const firstWork = sh.schedules.find((sc) => !sc.is_off);
-          if (firstWork) {
-            updated.work_start_time = firstWork.work_start_time?.slice(0, 5) ?? '07:00';
-            updated.work_end_time = firstWork.work_end_time?.slice(0, 5) ?? '15:00';
-            updated.break_minutes = firstWork.break_minutes ?? 60;
-            updated.is_cross_day = Boolean(firstWork.is_cross_day);
-          }
+  const setDay = (order: number, patch: Partial<PatternDayItemState>) => {
+    setDays((prev) =>
+      prev.map((d) => {
+        if (d.day_order !== order) return d;
+        const updated = { ...d, ...patch };
+        if (updated.work_start_time && updated.work_end_time) {
+          updated.is_cross_day = updated.work_end_time <= updated.work_start_time;
         }
-      }
-      // Deteksi cross-day otomatis jika jam masuk & pulang diubah
-      if (updated.work_start_time && updated.work_end_time) {
-        updated.is_cross_day = updated.work_end_time <= updated.work_start_time;
-      }
-      copy[index] = updated;
-      return copy;
-    });
+        return updated;
+      })
+    );
+  };
+
+  const toggleOff = (order: number) => {
+    setDays((prev) =>
+      prev.map((d) =>
+        d.day_order === order
+          ? d.is_off
+            ? {
+                ...d,
+                is_off: false,
+                is_wfh: false,
+                is_field: false,
+                work_start_time: '07:00',
+                work_end_time: '15:00',
+                break_minutes: 60,
+                is_cross_day: false,
+              }
+            : {
+                ...d,
+                is_off: true,
+                is_wfh: false,
+                is_field: false,
+                work_start_time: null,
+                work_end_time: null,
+                break_minutes: 0,
+                is_cross_day: false,
+              }
+          : d
+      )
+    );
+  };
+
+  const toggleWfh = (order: number) => {
+    setDays((prev) =>
+      prev.map((d) => {
+        if (d.day_order !== order || d.is_off) return d;
+        const nextWfh = !d.is_wfh;
+        return {
+          ...d,
+          is_wfh: nextWfh,
+          is_field: nextWfh ? Boolean(d.is_field) : false,
+        };
+      })
+    );
+  };
+
+  const toggleField = (order: number) => {
+    setDays((prev) =>
+      prev.map((d) => {
+        if (d.day_order !== order || d.is_off || !d.is_wfh) return d;
+        return {
+          ...d,
+          is_field: !d.is_field,
+        };
+      })
+    );
+  };
+
+  // Aksi Cepat 1: Salin jam Hari 1 ke semua hari kerja dalam siklus
+  const copyDay1ToAll = () => {
+    const day1 = days.find((d) => d.day_order === 1);
+    if (!day1 || day1.is_off || !day1.work_start_time || !day1.work_end_time) return;
+    setDays((prev) =>
+      prev.map((d) => {
+        if (d.day_order === 1 || d.is_off) return d;
+        return {
+          ...d,
+          work_start_time: day1.work_start_time,
+          work_end_time: day1.work_end_time,
+          break_minutes: day1.break_minutes,
+          is_cross_day: day1.is_cross_day,
+          is_wfh: day1.is_wfh,
+          is_field: day1.is_field,
+          name: d.name || day1.name,
+        };
+      })
+    );
+  };
+
+  // Aksi Cepat 2: Salin jam, warna, dan toleransi dari template shift
+  const copyFromTemplate = (templateId: number) => {
+    const sh = shifts.find((s) => s.id === templateId);
+    if (!sh) return;
+    if (sh.color) {
+      setColor(sh.color);
+    }
+    if (sh.late_tolerance_minutes != null) {
+      setCustomToleranceEnabled(true);
+      setLateToleranceMinutes(sh.late_tolerance_minutes);
+    }
+    const workSc = sh.schedules?.find((sc) => !sc.is_off);
+    const startTime = workSc?.work_start_time?.slice(0, 5) ?? '07:00';
+    const endTime = workSc?.work_end_time?.slice(0, 5) ?? '15:00';
+    const breakMins = workSc?.break_minutes ?? 60;
+    const isWfh = Boolean(workSc?.is_wfh);
+    const isField = isWfh ? Boolean(workSc?.is_field) : false;
+    const isCross = endTime <= startTime;
+
+    setDays((prev) =>
+      prev.map((d) => {
+        if (d.is_off) return d;
+        return {
+          ...d,
+          shift_id: sh.id,
+          name: d.name || sh.name,
+          work_start_time: startTime,
+          work_end_time: endTime,
+          break_minutes: breakMins,
+          is_cross_day: isCross,
+          is_wfh: isWfh,
+          is_field: isField,
+        };
+      })
+    );
   };
 
   const validate = (): string | null => {
@@ -1241,6 +1578,10 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
     if (cycleDays < 2 || cycleDays > 30) return 'Panjang siklus harus antara 2 hingga 30 hari.';
 
     // P0 #2 — Kewajiban minimal 1 hari libur (UU No. 13/2003 Pasal 79)
+    if (!editing && !attendanceSettingId) {
+      return 'Cabang / lokasi kerja wajib dipilih.';
+    }
+
     const offDays = days.filter((d) => d.is_off).length;
     if (offDays === 0) {
       return 'Pola rotasi wajib memiliki minimal 1 hari libur dalam siklus (UU No. 13/2003 Pasal 79).';
@@ -1280,28 +1621,26 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
     }
 
     // Validasi jeda K3 kritis (< 8 jam)
-    const k3Err = Object.entries(k3Gaps).find(([, g]) => g.status === 'error');
+    const k3Err = (Object.entries(k3Gaps) as [string, { status: 'error' | 'warning'; hours: number; nextDayOrder: number }][]).find(
+      ([, g]) => g.status === 'error',
+    );
     if (k3Err) {
       const [dayOrd, g] = k3Err;
       return `Hari ke-${dayOrd} → Hari ke-${g.nextDayOrder}: jeda istirahat hanya ${g.hours} jam (minimum wajib 8 jam K3). Sesuaikan jam kerja atau berikan hari libur.`;
     }
 
-    // Validasi: pastikan template shift yang dipilih tidak berasal dari cabang lain
-    const invalidBranchItem = days.find((d) => {
-      if (d.is_off || !d.shift_id) return false;
-      const sh = shifts.find((s) => s.id === d.shift_id);
-      if (!sh) return false;
-      if (attendanceSettingId) {
-        return Boolean(sh.attendance_setting_id && sh.attendance_setting_id !== Number(attendanceSettingId));
-      }
-      return Boolean(sh.attendance_setting_id);
-    });
-    if (invalidBranchItem) {
-      const sh = shifts.find((s) => s.id === invalidBranchItem.shift_id);
-      return `Template shift '${sh?.name}' berasal dari cabang lain dan tidak dapat digunakan pada pola rotasi ini.`;
-    }
-
     return null;
+  };
+
+  // Validasi duplikat warna lokal (lintas template shift & pola rotasi, per-cabang)
+  const validateColorLocal = (): string | null => {
+    if (!color) return null;
+    const targetBranchLocal =
+      attendanceSettingId !== '' ? Number(attendanceSettingId) : editing?.attendance_setting_id ?? null;
+    const clash = findColorClash(color, targetBranchLocal, shifts, patterns, null, editing?.id);
+    return clash
+      ? `Warna ${color} sudah dipakai oleh ${clash.type} '${clash.name}' (cabang ini). Pilih warna yang berbeda dalam cabang ini.`
+      : null;
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -1312,13 +1651,23 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
       return;
     }
 
+    const colorErr = validateColorLocal();
+    if (colorErr) {
+      setErr(colorErr);
+      return;
+    }
+
     setBusy(true);
     setErr('');
     try {
       const payload = {
         name: name.trim(),
         description: description.trim() || undefined,
-        attendance_setting_id: attendanceSettingId ? Number(attendanceSettingId) : null,
+        color: color || '#6366f1',
+        late_tolerance_minutes: customToleranceEnabled && lateToleranceMinutes !== ''
+          ? Number(lateToleranceMinutes)
+          : null,
+        attendance_setting_id: Number(attendanceSettingId || editing?.attendance_setting_id),
         cycle_days: cycleDays,
         is_active: isActive,
         items: days.map((d) => {
@@ -1330,12 +1679,29 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
             day_order: d.day_order,
             is_off: isOff,
             shift_id: isOff ? null : d.shift_id,
+            name: isOff ? null : (d.name?.trim() || `Hari ke-${d.day_order}`),
+            color: isOff ? null : (color || '#6366f1'),
             work_start_time: start,
             work_end_time: end,
             break_minutes: isOff ? 0 : (d.break_minutes ?? 60),
+            late_tolerance_minutes: isOff ? null : (customToleranceEnabled && lateToleranceMinutes !== '' ? Number(lateToleranceMinutes) : null),
             is_cross_day: isCross,
+            is_wfh: isOff ? false : Boolean(d.is_wfh),
+            is_field: (isOff || !d.is_wfh) ? false : Boolean(d.is_field),
           };
         }),
+        day_overrides: DOW_OPTIONS
+          .filter(({ dow }) => dayOverrides[dow]?.enabled)
+          .map(({ dow }) => {
+            const ov = dayOverrides[dow];
+            return {
+              day_of_week: dow,
+              work_start_time: ov.work_start_time.trim() ? ov.work_start_time.trim() : null,
+              work_end_time: ov.work_end_time.trim() ? ov.work_end_time.trim() : null,
+              break_minutes: ov.break_minutes !== '' ? Number(ov.break_minutes) : null,
+              late_tolerance_minutes: ov.late_tolerance_minutes !== '' ? Number(ov.late_tolerance_minutes) : null,
+            };
+          }),
       };
 
       const res: any = editing
@@ -1366,7 +1732,7 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4 py-6"
       onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
     >
-      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[92vh] overflow-y-auto border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-200">
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-3xl lg:max-w-4xl max-h-[92vh] overflow-y-auto border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-200">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 sticky top-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-sm z-10">
           <div className="flex items-center gap-3">
@@ -1375,7 +1741,7 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
             </div>
             <div>
               <p className="font-bold text-sm text-slate-800 dark:text-slate-100">
-                {editing ? 'Edit Pola Rotasi Shift' : 'Buat Pola Rotasi Shift Baru'}
+                {editing ? 'Ubah Pola Rotasi Shift' : 'Tambah Pola Rotasi Shift'}
               </p>
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Rolling cycle berulang otomatis tanpa perlu reassign tiap minggu
@@ -1387,7 +1753,25 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-5">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {/* Banner nama cabang jika sedang EDIT (persis seperti Template Shift) */}
+          {editing && (
+            <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl p-3 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Building2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <div>
+                  <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Cabang Terikat</p>
+                  <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                    {editing.office?.office_name ?? (offices.find((o) => o.id === editing.attendance_setting_id)?.office_name) ?? 'Cabang Khusus'}
+                  </p>
+                </div>
+              </div>
+              <span className="text-[10px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-md flex items-center gap-1">
+                <Lock className="w-2.5 h-2.5" /> Cabang Permanen
+              </span>
+            </div>
+          )}
+
           {/* Preset Buttons */}
           <div>
             <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1.5">
@@ -1425,25 +1809,45 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
             </div>
           </div>
 
-          {/* Form Fields: Name, Cycle Days, Status */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="sm:col-span-2">
-              <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
-                Nama Pola Rotasi <span className="text-rose-500">*</span>
-              </label>
+          {/* Info Dasar */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">Nama Pola Rotasi *</label>
               <input
-                type="text"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Contoh: Pola 4-2 Pabrik Utama"
+                placeholder="Contoh: Pola 4-2 Pabrik Utama, Pola Shift Security"
                 className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
                 required
               />
             </div>
-            <div>
-              <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
-                Panjang Siklus (Hari)
-              </label>
+
+            {!editing && (
+              <div>
+                <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">
+                  Cabang / Lokasi Kerja <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={attendanceSettingId}
+                  onChange={(e) => {
+                    const nextId = e.target.value ? Number(e.target.value) : '';
+                    setAttendanceSettingId(nextId);
+                  }}
+                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none cursor-pointer"
+                  required
+                >
+                  {!attendanceSettingId && <option value="" disabled>-- Pilih Cabang --</option>}
+                  {offices.map((o) => (
+                    <option key={o.id} value={o.id}>
+                      Cabang {o.office_name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className={editing ? "sm:col-span-1" : "sm:col-span-2"}>
+              <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">Panjang Siklus (Hari) *</label>
               <input
                 type="number"
                 min={2}
@@ -1454,81 +1858,162 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
                 required
               />
             </div>
-          </div>
 
-          <div>
-            <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
-              Deskripsi Pola <span className="text-slate-400 font-normal">(opsional)</span>
-            </label>
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Contoh: 4 hari kerja shift pagi, 2 hari libur berputar otomatis untuk Tim A & B"
-              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
-            />
-          </div>
-
-          {/* Pengkhususan Cabang (Branch-Specific) */}
-          <div>
-            <label className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
-              Cabang / Lokasi Kerja
-            </label>
-            <div className="relative">
-              <select
-                value={attendanceSettingId}
-                onChange={(e) => {
-                  const nextId = e.target.value ? Number(e.target.value) : '';
-                  setAttendanceSettingId(nextId);
-                  setDays((prev) =>
-                    prev.map((d) => {
-                      if (!d.shift_id) return d;
-                      const sh = shifts.find((s) => s.id === d.shift_id);
-                      if (!sh) return { ...d, shift_id: null };
-                      const isValid = nextId
-                        ? !sh.attendance_setting_id || sh.attendance_setting_id === Number(nextId)
-                        : !sh.attendance_setting_id;
-                      return isValid ? d : { ...d, shift_id: null };
-                    })
+            {/* Warna Pola Rotasi (30 lingkaran preset kontras yang sama dengan Template Shift) */}
+            <div className="sm:col-span-2">
+              <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">Warna Pola Rotasi</label>
+              {/* 30 preset warna kontras untuk kalender & roster — pilih satu.
+                  Warna yang sudah dipakai template shift atau pola rotasi di cabang ini dinonaktifkan */}
+              <div className="flex flex-wrap gap-2">
+                {SHIFT_PRESET_COLORS.map((c) => {
+                  const targetBranch =
+                    attendanceSettingId !== '' ? Number(attendanceSettingId) : editing?.attendance_setting_id ?? null;
+                  const clash = findColorClash(c, targetBranch, shifts, patterns, null, editing?.id);
+                  const isUsed = !!clash;
+                  const isSelected = color?.toLowerCase() === c.toLowerCase();
+                  return (
+                    <button
+                      key={c}
+                      type="button"
+                      onClick={() => { if (!isUsed) setColor(c); }}
+                      disabled={isUsed}
+                      title={clash ? `Sudah dipakai oleh ${clash.type} "${clash.name}" (cabang ini)` : c}
+                      className={`w-7 h-7 rounded-full border-[3px] transition-all ${
+                        isSelected
+                          ? 'border-slate-800 dark:border-white scale-125 shadow-md'
+                          : isUsed
+                            ? 'border-slate-200 dark:border-slate-700 opacity-40 cursor-not-allowed'
+                            : 'border-transparent hover:scale-110 hover:border-slate-300 dark:hover:border-slate-600 cursor-pointer'
+                      }`}
+                      style={{ backgroundColor: c }}
+                    />
                   );
-                }}
-                className="w-full text-xs p-2.5 pl-8 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none cursor-pointer"
-              >
-                <option value="">— Berlaku untuk Semua Cabang (Company-wide) —</option>
-                {offices.map((o) => (
-                  <option key={o.id} value={o.id}>
-                    Cabang {o.office_name}
-                  </option>
-                ))}
-              </select>
-              <Building2 className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-3 pointer-events-none" />
+                })}
+              </div>
+              <div className="mt-2 flex items-center gap-2 flex-wrap">
+                <span
+                  className="w-4 h-4 rounded-full border border-black/10 dark:border-white/20 shrink-0"
+                  style={{ backgroundColor: color }}
+                />
+                <span className="text-[11px] font-mono text-slate-500 dark:text-slate-400">{color}</span>
+                <span className="text-[10px] text-slate-400 dark:text-slate-500">— tampilan di kalender & roster</span>
+                {(() => {
+                  const targetBranch =
+                    attendanceSettingId !== '' ? Number(attendanceSettingId) : editing?.attendance_setting_id ?? null;
+                  const clash = findColorClash(color, targetBranch, shifts, patterns, null, editing?.id);
+                  if (clash) {
+                    return (
+                      <span className="text-[11px] text-rose-600 dark:text-rose-400 font-medium">
+                        (⚠️ Sudah dipakai {clash.type} "{clash.name}")
+                      </span>
+                    );
+                  }
+                  return null;
+                })()}
+              </div>
             </div>
-            <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
-              Pilih cabang tertentu agar pola ini hanya dapat ditugaskan ke karyawan di cabang tersebut dan mencegah salah penugasan lintas cabang.
-            </p>
+
+            <div className="sm:col-span-2 flex flex-col sm:flex-row gap-4">
+              <div className="flex-1">
+                <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">Deskripsi</label>
+                <input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  placeholder="Opsional — keterangan singkat pola rotasi"
+                  className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                />
+              </div>
+
+              {!editing && (
+                <div className="w-full sm:w-56 shrink-0">
+                  <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 block mb-1.5">Status Pola</label>
+                  <div className="flex items-center gap-2 mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsActive(!isActive)}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-600 focus:ring-offset-2 dark:focus:ring-offset-slate-900 ${
+                        isActive ? 'bg-indigo-600' : 'bg-slate-200 dark:bg-slate-700'
+                      }`}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          isActive ? 'translate-x-2' : '-translate-x-2'
+                        }`}
+                      />
+                    </button>
+                    <span className="text-[11px] text-slate-600 dark:text-slate-300 font-medium">
+                      {isActive ? 'Aktif (Dapat ditugaskan)' : 'Nonaktif (Draf)'}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
 
-          {/* Status aktif toggle */}
-          <div className="flex items-center justify-between p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200/70 dark:border-slate-700/60">
-            <div>
-              <p className="text-xs font-semibold text-slate-700 dark:text-slate-200">Status Pola Rotasi</p>
-              <p className="text-[11px] text-slate-400 dark:text-slate-500">Pola aktif dapat dipilih saat menugaskan jadwal karyawan</p>
+          {/* Pengaturan Toleransi Keterlambatan Khusus Pola Shift */}
+          <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700/80 rounded-xl p-3.5 space-y-3">
+            <div className="flex items-start justify-between gap-3">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={customToleranceEnabled}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setCustomToleranceEnabled(checked);
+                    if (checked && (lateToleranceMinutes === '' || lateToleranceMinutes == null)) {
+                      setLateToleranceMinutes(15);
+                    }
+                  }}
+                  className="mt-0.5 w-4 h-4 rounded border-slate-300 dark:border-slate-600 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                />
+                <div>
+                  <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">
+                    Kustomisasi Toleransi Keterlambatan Pola Shift
+                  </span>
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400 block leading-relaxed">
+                    Atur batas toleransi keterlambatan khusus untuk pola rotasi ini. Jika checkbox tidak dicentang (OFF), presensi akan otomatis mengikuti batas toleransi kantor cabang.
+                  </span>
+                </div>
+              </label>
             </div>
-            <button
-              type="button"
-              onClick={() => setIsActive(!isActive)}
-              className="flex items-center gap-1.5 cursor-pointer text-slate-600 dark:text-slate-300"
-            >
-              {isActive ? (
-                <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600 dark:text-emerald-400">
-                  <ToggleRight className="w-6 h-6 text-emerald-500" /> Aktif
+
+            {customToleranceEnabled ? (
+              <div className="pt-2.5 border-t border-slate-200/80 dark:border-slate-700/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
+                    Batas Toleransi Keterlambatan:
+                  </span>
+                  <div className="relative flex items-center">
+                    <input
+                      type="number"
+                      min={0}
+                      max={300}
+                      value={lateToleranceMinutes}
+                      onChange={(e) =>
+                        setLateToleranceMinutes(
+                          e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value, 10) || 0)
+                        )
+                      }
+                      className="w-24 text-xs font-semibold p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
+                    />
+                    <span className="ml-2 text-xs text-slate-500 dark:text-slate-400">menit</span>
+                  </div>
+                </div>
+                <div className="text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold flex items-center gap-1">
+                  <span>⏱️ Khusus pola ini: {lateToleranceMinutes === '' ? 0 : lateToleranceMinutes} menit</span>
+                </div>
+              </div>
+            ) : (
+              <div className="text-[11px] text-slate-400 dark:text-slate-500 flex items-center gap-1.5 pt-1 border-t border-slate-200/60 dark:border-slate-700/60">
+                <Building2 className="w-3.5 h-3.5 text-slate-400" />
+                <span>Mengikuti default kantor cabang:</span>
+                <span className="font-semibold text-slate-600 dark:text-slate-300">
+                  {selectedOffice?.late_tolerance_minutes != null
+                    ? `${selectedOffice.late_tolerance_minutes} menit`
+                    : '15 menit (default)'}
                 </span>
-              ) : (
-                <span className="inline-flex items-center gap-1 text-xs font-bold text-slate-400">
-                  <ToggleLeft className="w-6 h-6 text-slate-400" /> Nonaktif
-                </span>
-              )}
-            </button>
+              </div>
+            )}
           </div>
 
           {/* Sequence Preview Strip */}
@@ -1542,7 +2027,6 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
                 <span className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-400">
                   {workDaysCount} Hari Kerja · {offDaysCount} Hari Libur
                 </span>
-                {/* Chip indikator jam kerja per minggu */}
                 <div className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full ${
                   weeklyStatus === 'error' ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-400' :
                   weeklyStatus === 'warning' ? 'bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400' :
@@ -1564,13 +2048,26 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
                 return (
                   <div
                     key={d.day_order}
+                    style={{
+                      backgroundColor: !d.is_off ? (color || '#6366f1') : undefined,
+                    }}
                     className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition flex items-center gap-1.5 ${
                       d.is_off
-                        ? 'bg-amber-100/70 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border-amber-300/60 dark:border-amber-800'
-                        : 'bg-indigo-600 text-white border-indigo-700 shadow-sm'
+                        ? 'bg-rose-100/70 dark:bg-rose-950/60 text-rose-800 dark:text-rose-300 border-rose-300/60 dark:border-rose-800'
+                        : 'text-white border-black/10 shadow-xs'
                     }`}
                   >
                     <span>H{d.day_order}: {d.is_off ? 'Libur' : (d.work_start_time ? `${d.work_start_time}-${d.work_end_time}` : 'Kerja')}</span>
+                    {!d.is_off && d.is_wfh && !d.is_field && (
+                      <span title="Bekerja dari Rumah (WFH)" className="text-cyan-200 font-normal">
+                        🏠
+                      </span>
+                    )}
+                    {!d.is_off && d.is_wfh && d.is_field && (
+                      <span title="Dinas Lapangan" className="text-emerald-200 font-normal">
+                        🚗
+                      </span>
+                    )}
                     {!d.is_off && isCross && (
                       <span title="Shift berakhir keesokan harinya" className="text-violet-200">
                         <Moon className="w-3 h-3" />
@@ -1590,160 +2087,367 @@ function ShiftPatternFormModal({ shifts, offices, editing, onClose, onSaved }: S
             </div>
           </div>
 
-          {/* Detail Pengaturan Per Hari */}
-          <div className="space-y-2">
-            <p className="text-xs font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider">
-              Rincian Hari Siklus (Hari 1 s.d. Hari {cycleDays})
-            </p>
-            <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
-              {days.map((day, idx) => (
-                <div
-                  key={day.day_order}
-                  className={`p-3.5 rounded-xl border transition ${
-                    day.is_off
-                      ? 'bg-amber-50/50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-800/60'
-                      : 'bg-slate-50/80 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700/80 shadow-xs'
-                  }`}
+          {/* Editor Hari Siklus (Horizontal Kompak + Aksi Cepat) */}
+          <div>
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2 pb-1 border-b border-slate-200/70 dark:border-slate-700/60">
+              <label className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                <CalendarDays className="w-3.5 h-3.5" /> Jadwal Hari Siklus (H1 s.d. H{cycleDays})
+              </label>
+
+              {/* Aksi Cepat Toolbar */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={copyDay1ToAll}
+                  title="Salin jam masuk, pulang, istirahat, dan WFH dari Hari 1 ke semua hari kerja"
+                  className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 transition cursor-pointer"
                 >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                    <div className="flex items-center gap-2">
-                      <span className="w-7 h-7 rounded-lg bg-indigo-100 dark:bg-indigo-950 text-indigo-700 dark:text-indigo-300 border border-indigo-200/60 dark:border-indigo-800/60 font-bold text-xs flex items-center justify-center shrink-0">
-                        H{day.day_order}
-                      </span>
-                      <div>
-                        <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
-                          Hari ke-{day.day_order} Siklus
-                        </p>
-                        <p className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">
-                          {day.is_off ? 'Karyawan dijadwalkan LIBUR pada hari ini' : 'Karyawan dijadwalkan MASUK KERJA'}
-                        </p>
-                      </div>
-                    </div>
+                  <span>⚡ Terapkan Jam H1 ke Semua Hari Kerja</span>
+                </button>
 
-                    {/* Switch Libur / Kerja */}
-                    <div className="flex items-center gap-1.5 self-start sm:self-center">
-                      <button
-                        type="button"
-                        onClick={() => updateDay(idx, { is_off: false })}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                          !day.is_off
-                            ? 'bg-indigo-600 text-white shadow-xs'
-                            : 'bg-white dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700'
-                        }`}
-                      >
-                        Kerja
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => updateDay(idx, { is_off: true })}
-                        className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                          day.is_off
-                            ? 'bg-amber-500 text-white shadow-xs'
-                            : 'bg-white dark:bg-slate-700/70 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600 hover:bg-slate-100 dark:hover:bg-slate-700'
-                        }`}
-                      >
-                        Libur (OFF)
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Konfigurasi jam jika hari kerja */}
-                  {!day.is_off && (
-                    <div className="mt-3 pt-3 border-t border-slate-200/70 dark:border-slate-700/60 grid grid-cols-1 sm:grid-cols-4 gap-2.5 items-end">
-                      <div className="sm:col-span-1">
-                        <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
-                          Template Shift Terkait
-                        </label>
-                        <select
-                          value={day.shift_id ?? ''}
-                          onChange={(e) => updateDay(idx, { shift_id: e.target.value ? Number(e.target.value) : null })}
-                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
-                        >
-                          <option value="">— Jam Custom —</option>
-                          {availableShifts.map((s) => (
-                            <option key={s.id} value={s.id} className="dark:bg-slate-900 text-slate-800 dark:text-slate-100">
-                              {s.name}{!s.attendance_setting_id ? ' (Semua Cabang)' : ''}
-                            </option>
-                          ))}
-                          {day.shift_id && !availableShifts.some((s) => s.id === day.shift_id) && (() => {
-                            const otherShift = shifts.find((s) => s.id === day.shift_id);
-                            return otherShift ? (
-                              <option key={otherShift.id} value={otherShift.id} disabled className="dark:bg-slate-900 text-slate-400">
-                                {otherShift.name} (⚠️ Cabang Lain)
-                              </option>
-                            ) : null;
-                          })()}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase block mb-1">
-                          Jam Masuk
-                        </label>
-                        <input
-                          type="time"
-                          value={day.work_start_time ?? '07:00'}
-                          onChange={(e) => updateDay(idx, { work_start_time: e.target.value })}
-                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none dark:[color-scheme:dark]"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase">
-                            Jam Pulang
-                          </label>
-                          {day.work_start_time && day.work_end_time && day.work_end_time <= day.work_start_time && (
-                            <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-violet-600 dark:text-violet-400" title="Shift berakhir keesokan harinya">
-                              <Moon className="w-2.5 h-2.5" /> +1 hari
-                            </span>
-                          )}
-                        </div>
-                        <input
-                          type="time"
-                          value={day.work_end_time ?? '15:00'}
-                          onChange={(e) => updateDay(idx, { work_end_time: e.target.value })}
-                          className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none dark:[color-scheme:dark]"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center justify-between mb-1">
-                          <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase">
-                            Istirahat (m)
-                          </label>
-                          {/* Badge K3 jeda istirahat ke hari berikutnya */}
-                          {k3Gaps[day.day_order] && (
-                            <span
-                              className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1 py-0.2 rounded-full shrink-0 ${
-                                k3Gaps[day.day_order].status === 'error'
-                                  ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400'
-                                  : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400'
-                              }`}
-                              title={`Jeda ke Hari ke-${k3Gaps[day.day_order].nextDayOrder}: ${k3Gaps[day.day_order].hours}j`}
-                            >
-                              <AlertCircle className="w-2.5 h-2.5" />
-                              {k3Gaps[day.day_order].hours}j → H{k3Gaps[day.day_order].nextDayOrder}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <input
-                            type="number"
-                            min={0}
-                            max={240}
-                            value={day.break_minutes ?? 60}
-                            onChange={(e) => updateDay(idx, { break_minutes: e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value) || 0) })}
-                            className="w-full text-xs p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-400 focus:outline-none"
-                            placeholder="60"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                <div className="relative inline-flex items-center">
+                  <select
+                    onChange={(e) => {
+                      if (e.target.value) {
+                        copyFromTemplate(Number(e.target.value));
+                        e.target.value = '';
+                      }
+                    }}
+                    defaultValue=""
+                    className="text-[11px] py-1 pl-2 pr-6 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-indigo-400 focus:outline-none cursor-pointer"
+                  >
+                    <option value="" disabled>📋 Salin dari Template Shift...</option>
+                    {availableShifts.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}{!s.attendance_setting_id ? ' (Semua Cabang)' : ''}
+                      </option>
+                    ))}
+                  </select>
                 </div>
-              ))}
+              </div>
             </div>
+
+            <div className="overflow-x-auto pb-1">
+              <div className="space-y-1.5 min-w-[640px] sm:min-w-0 max-h-80 overflow-y-auto pr-1">
+                {days.map((d) => {
+                  const isCross = d.work_start_time && d.work_end_time && d.work_end_time <= d.work_start_time;
+                  const gap = k3Gaps[d.day_order];
+                  return (
+                    <div
+                      key={d.day_order}
+                      className={`flex items-center gap-2 sm:gap-2.5 p-2 rounded-lg border transition ${
+                        d.is_off
+                          ? 'bg-rose-50/50 dark:bg-rose-950/20 border-rose-100 dark:border-rose-900/40'
+                          : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-700'
+                      }`}
+                    >
+                      {/* Badge Hari (H1, H2, dst) */}
+                      <div className="flex items-center gap-1.5 w-12 sm:w-14 shrink-0">
+                        <span
+                          style={{
+                            backgroundColor: !d.is_off ? `${color || '#6366f1'}20` : undefined,
+                            borderColor: !d.is_off ? (color || '#6366f1') : undefined,
+                            color: !d.is_off ? (color || '#6366f1') : undefined,
+                          }}
+                          className={`w-7 h-7 rounded-lg font-bold text-xs flex items-center justify-center shrink-0 border ${
+                            d.is_off
+                              ? 'bg-rose-100 dark:bg-rose-950 text-rose-700 dark:text-rose-300 border-rose-300/60 dark:border-rose-800/60'
+                              : ''
+                          }`}
+                        >
+                          H{d.day_order}
+                        </span>
+                      </div>
+
+                      {/* Checkbox Libur */}
+                      <label className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-500 dark:text-slate-400 cursor-pointer select-none shrink-0">
+                        <input
+                          type="checkbox"
+                          checked={d.is_off}
+                          onChange={() => toggleOff(d.day_order)}
+                          className="w-3.5 h-3.5 rounded accent-rose-500"
+                        />
+                        Libur
+                      </label>
+
+                      {/* Checkbox WFH */}
+                      <label className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${
+                        d.is_off ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600' : 'text-cyan-700 dark:text-cyan-400'
+                      }`}>
+                        <input
+                          type="checkbox"
+                          checked={!d.is_off && Boolean(d.is_wfh)}
+                          disabled={d.is_off}
+                          onChange={() => toggleWfh(d.day_order)}
+                          className="w-3.5 h-3.5 rounded accent-cyan-600"
+                        />
+                        WFH
+                      </label>
+
+                      {/* Checkbox Lapangan */}
+                      <label
+                        className={`flex items-center gap-1.5 text-[11px] font-semibold cursor-pointer select-none shrink-0 ${
+                          d.is_off || !d.is_wfh ? 'opacity-40 cursor-not-allowed text-slate-400 dark:text-slate-600' : 'text-emerald-700 dark:text-emerald-400'
+                        }`}
+                        title={!d.is_wfh ? 'Centang WFH terlebih dahulu untuk memilih Lapangan' : undefined}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={!d.is_off && Boolean(d.is_wfh) && Boolean(d.is_field)}
+                          disabled={d.is_off || !d.is_wfh}
+                          onChange={() => toggleField(d.day_order)}
+                          className="w-3.5 h-3.5 rounded accent-emerald-600"
+                        />
+                        Lapangan
+                      </label>
+
+                      {d.is_off ? (
+                        <span className="text-[11px] text-rose-500 dark:text-rose-400 italic flex-1">
+                          Libur (OFF) — Tidak ada jam kerja
+                        </span>
+                      ) : (
+                        <div className="flex items-center gap-2 flex-1 min-w-0">
+                          {/* Jam Masuk */}
+                          <input
+                            type="time"
+                            value={d.work_start_time ?? '07:00'}
+                            onChange={(e) => setDay(d.day_order, { work_start_time: e.target.value })}
+                            className="w-[88px] sm:w-[96px] text-xs p-1.5 border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 shrink-0 dark:[color-scheme:dark]"
+                          />
+                          <ArrowRight className="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" />
+                          {/* Jam Pulang */}
+                          <input
+                            type="time"
+                            value={d.work_end_time ?? '15:00'}
+                            onChange={(e) => setDay(d.day_order, { work_end_time: e.target.value })}
+                            className="w-[88px] sm:w-[96px] text-xs p-1.5 border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 shrink-0 dark:[color-scheme:dark]"
+                          />
+
+                          {/* Durasi Istirahat */}
+                          <div className="flex items-center gap-1 shrink-0" title="Durasi jam istirahat (menit, standar 60)">
+                            <span className="text-[10px] text-slate-400 font-medium">Ist:</span>
+                            <input
+                              type="number"
+                              min={0}
+                              max={240}
+                              value={d.break_minutes ?? 60}
+                              onChange={(e) => setDay(d.day_order, { break_minutes: e.target.value === '' ? 0 : Math.max(0, parseInt(e.target.value) || 0) })}
+                              className="w-11 text-xs p-1 text-center border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                              placeholder="60"
+                            />
+                            <span className="text-[10px] text-slate-400">m</span>
+                          </div>
+
+                          {/* Label / Nama Hari (opsional) */}
+                          <input
+                            type="text"
+                            value={d.name}
+                            onChange={(e) => setDay(d.day_order, { name: e.target.value })}
+                            placeholder={`H${d.day_order} (opsional)`}
+                            title="Label/nama jadwal hari ini (opsional)"
+                            className="w-24 sm:w-28 text-xs p-1.5 border border-slate-200 dark:border-slate-700 rounded-md focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 truncate"
+                          />
+
+                          {/* +1 Hari Cross-day Indicator */}
+                          {isCross && (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-violet-100 dark:bg-violet-950/60 text-violet-700 dark:text-violet-400 shrink-0 whitespace-nowrap" title="Shift berakhir keesokan harinya">
+                              <Moon className="w-3 h-3" /> +1 hari
+                            </span>
+                          )}
+
+                          {/* Badge K3 jeda istirahat ke hari berikutnya */}
+                          {gap && (
+                            <span
+                              className={`inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 whitespace-nowrap ${
+                                gap.status === 'error'
+                                  ? 'bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-900/50'
+                                  : 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/50'
+                              }`}
+                              title={`Jeda ke Hari ke-${gap.nextDayOrder}: ${gap.hours}j (${gap.status === 'error' ? 'Dilarang K3 < 8j' : 'Peringatan K3 8-11j'})`}
+                            >
+                              <AlertCircle className="w-3 h-3 shrink-0" />
+                              <span>{gap.hours}j → H{gap.nextDayOrder}</span>
+                            </span>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+
+          {/* ── Override Hari Kalender (Opsional) ── */}
+          <div className="bg-slate-50/70 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700/80 rounded-xl overflow-hidden transition">
+            <button
+              type="button"
+              onClick={() => setShowDayOverrides(!showDayOverrides)}
+              className="w-full flex items-center justify-between p-3.5 text-left hover:bg-slate-100/60 dark:hover:bg-slate-800/80 transition cursor-pointer select-none"
+            >
+              <div className="flex items-center gap-2.5">
+                <div className="w-7 h-7 rounded-lg bg-amber-50 dark:bg-amber-950/60 border border-amber-200 dark:border-amber-800 flex items-center justify-center text-amber-600 dark:text-amber-400">
+                  <Sliders className="w-3.5 h-3.5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-800 dark:text-slate-200">
+                      Override Hari Kalender (Opsional)
+                    </span>
+                    {activeOverridesCount > 0 ? (
+                      <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-900/50">
+                        {activeOverridesCount} Hari Aktif
+                      </span>
+                    ) : (
+                      <span className="text-[10px] text-slate-400 dark:text-slate-500 font-medium">
+                        (Tidak ada override)
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 leading-snug">
+                    Sesuaikan jam kerja / istirahat jika hari siklus jatuh pada hari kalender tertentu (misal: Jumat istirahat 90 menit)
+                  </p>
+                </div>
+              </div>
+              <div className="text-slate-400 dark:text-slate-500 p-1">
+                {showDayOverrides ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+              </div>
+            </button>
+
+            {showDayOverrides && (
+              <div className="p-3.5 pt-0 border-t border-slate-200/80 dark:border-slate-700/80 space-y-2.5 mt-2">
+                <div className="p-2.5 rounded-lg bg-blue-50/50 dark:bg-blue-950/20 border border-blue-100 dark:border-blue-900/40 text-[11px] text-blue-700 dark:text-blue-300 flex items-start gap-2">
+                  <Info className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <span>
+                    <strong>Cara Kerja:</strong> Pola rotasi berputar menurut siklus (H1, H2, dst). Jika pada suatu tanggal jatuh pada hari kalender di bawah yang diaktifkan, maka field yang terisi akan otomatis menimpa nilai dari siklus. Field yang dikosongkan akan tetap memakai nilai siklus asli. Override hanya berlaku pada hari kerja (tidak mempengaruhi hari libur).
+                  </span>
+                </div>
+
+                <div className="space-y-1.5">
+                  {DOW_OPTIONS.map(({ dow, name: dayName }) => {
+                    const ov = dayOverrides[dow];
+                    return (
+                      <div
+                        key={dow}
+                        className={`p-2.5 rounded-lg border transition ${
+                          ov.enabled
+                            ? 'bg-amber-50/40 dark:bg-amber-950/10 border-amber-200/80 dark:border-amber-900/40 shadow-xs'
+                            : 'bg-white dark:bg-slate-800/60 border-slate-200/70 dark:border-slate-700/60 opacity-80'
+                        }`}
+                      >
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                          {/* Left: Toggle & Name */}
+                          <div className="flex items-center gap-2.5 w-32 shrink-0">
+                            <input
+                              type="checkbox"
+                              id={`ov-toggle-${dow}`}
+                              checked={ov.enabled}
+                              onChange={() => toggleDayOverride(dow)}
+                              className="w-4 h-4 rounded accent-amber-600 cursor-pointer"
+                            />
+                            <label
+                              htmlFor={`ov-toggle-${dow}`}
+                              className="text-xs font-bold text-slate-800 dark:text-slate-200 cursor-pointer select-none flex items-center gap-1.5"
+                            >
+                              <span>{dayName}</span>
+                              {dow === 5 && (
+                                <span className="text-[9px] font-semibold px-1 py-0.2 rounded bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300">
+                                  Jum'at
+                                </span>
+                              )}
+                            </label>
+                          </div>
+
+                          {/* Right: Inputs when enabled */}
+                          {ov.enabled ? (
+                            <div className="flex items-center gap-2 flex-wrap flex-1 min-w-0">
+                              {/* Jam Masuk */}
+                              <div className="flex items-center gap-1" title="Override jam masuk (kosongkan jika tetap)">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">Masuk:</span>
+                                <input
+                                  type="time"
+                                  value={ov.work_start_time}
+                                  onChange={(e) => updateDayOverride(dow, { work_start_time: e.target.value })}
+                                  className="w-[86px] text-xs p-1 border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-amber-400 focus:outline-none dark:[color-scheme:dark]"
+                                />
+                              </div>
+
+                              <ArrowRight className="w-3 h-3 text-slate-300 dark:text-slate-600 shrink-0" />
+
+                              {/* Jam Pulang */}
+                              <div className="flex items-center gap-1" title="Override jam pulang (kosongkan jika tetap)">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">Pulang:</span>
+                                <input
+                                  type="time"
+                                  value={ov.work_end_time}
+                                  onChange={(e) => updateDayOverride(dow, { work_end_time: e.target.value })}
+                                  className="w-[86px] text-xs p-1 border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-amber-400 focus:outline-none dark:[color-scheme:dark]"
+                                />
+                              </div>
+
+                              {/* Durasi Istirahat */}
+                              <div className="flex items-center gap-1" title="Override durasi istirahat (menit)">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">Istirahat:</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={300}
+                                  placeholder="Menit"
+                                  value={ov.break_minutes}
+                                  onChange={(e) => updateDayOverride(dow, { break_minutes: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0) })}
+                                  className="w-14 text-xs p-1 text-center border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-amber-400 focus:outline-none font-semibold"
+                                />
+                                <span className="text-[10px] text-slate-400">mnt</span>
+                              </div>
+
+                              {/* Quick preset for Friday (90m) */}
+                              {dow === 5 && ov.break_minutes !== 90 && (
+                                <button
+                                  type="button"
+                                  onClick={() => updateDayOverride(dow, { break_minutes: 90 })}
+                                  className="text-[10px] font-semibold px-2 py-0.5 rounded bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/60 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800 transition cursor-pointer"
+                                >
+                                  Set 90m
+                                </button>
+                              )}
+
+                              {/* Toleransi Terlambat */}
+                              <div className="flex items-center gap-1" title="Override toleransi terlambat (menit, opsional)">
+                                <span className="text-[10px] text-slate-500 dark:text-slate-400 font-medium">Toleransi:</span>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={120}
+                                  placeholder="Opt"
+                                  value={ov.late_tolerance_minutes}
+                                  onChange={(e) => updateDayOverride(dow, { late_tolerance_minutes: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0) })}
+                                  className="w-12 text-xs p-1 text-center border border-slate-200 dark:border-slate-700 rounded-md bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-amber-400 focus:outline-none"
+                                />
+                                <span className="text-[10px] text-slate-400">mnt</span>
+                              </div>
+
+                              {/* Clear / reset button */}
+                              <button
+                                type="button"
+                                onClick={() => updateDayOverride(dow, { work_start_time: '', work_end_time: '', break_minutes: '', late_tolerance_minutes: '' })}
+                                title="Reset field override hari ini"
+                                className="text-[10px] text-slate-400 hover:text-rose-500 transition cursor-pointer p-0.5"
+                              >
+                                Reset
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 dark:text-slate-500 italic">
+                              Mengikuti jadwal siklus normal
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
 
           {err && (
@@ -2916,6 +3620,191 @@ function ShiftUsersModal({ shift, onClose }: ShiftUsersModalProps) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// MODAL: Lihat karyawan yang ter-assign pada sebuah pola rotasi
+// ═══════════════════════════════════════════════════════════════
+interface PatternUserRow {
+  user_id: number;
+  name: string;
+  department?: string | null;
+  branch?: string | null;
+  assignment_id: number;
+  status: 'active' | 'upcoming' | 'expired';
+  anchor_day_order: number;
+  current_cycle_day?: number | null;
+  start_date: string;
+  end_date?: string | null;
+  notes?: string | null;
+}
+
+interface PatternUsersModalProps {
+  pattern: ShiftPattern;
+  onClose: () => void;
+}
+
+function PatternUsersModal({ pattern, onClose }: PatternUsersModalProps) {
+  const [rows, setRows] = useState<PatternUserRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const res: any = await shiftApi.patterns.users(pattern.id);
+        if (!cancelled) setRows((res?.data ?? []) as PatternUserRow[]);
+      } catch (ex: unknown) {
+        if (!cancelled) setError(ex instanceof ApiError ? ex.message : 'Gagal memuat karyawan pola rotasi.');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pattern.id]);
+
+  const activeCount = rows.filter((r) => r.status === 'active').length;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm px-4 py-6"
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col overflow-hidden border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-200">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: (pattern.color ?? '#6366f1') + '20' }}>
+              <Repeat className="w-5 h-5" style={{ color: pattern.color ?? '#6366f1' }} />
+            </div>
+            <div>
+              <p className="font-bold text-sm text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                {pattern.name}
+                {!pattern.is_active ? (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">Nonaktif</span>
+                ) : (
+                  <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-400">
+                    Siklus {pattern.cycle_days} Hari
+                  </span>
+                )}
+              </p>
+              <p className="text-xs text-slate-500 dark:text-slate-400">
+                {pattern.office?.office_name ? `Cabang ${pattern.office.office_name}` : 'Semua Cabang'} · {rows.length} karyawan · {activeCount} aktif
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-400 transition cursor-pointer">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="flex-1 overflow-y-auto px-6 py-4">
+          {error && (
+            <div className="flex items-start gap-2 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-lg p-3 text-xs text-rose-700 dark:text-rose-400 mb-3">
+              <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+              <span>{error}</span>
+            </div>
+          )}
+
+          {loading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-2.5 p-2.5 rounded-lg bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 animate-pulse">
+                  <div className="w-7 h-7 rounded-full bg-slate-200 dark:bg-slate-700 shrink-0" />
+                  <div className="flex-1 space-y-1.5">
+                    <div className="h-3 w-32 bg-slate-200 dark:bg-slate-700 rounded" />
+                    <div className="h-2 w-20 bg-slate-200 dark:bg-slate-700 rounded" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : rows.length === 0 ? (
+            <div className="py-12 text-center text-slate-400 dark:text-slate-500">
+              <Users className="w-10 h-10 mx-auto opacity-30" />
+              <p className="font-semibold text-sm mt-2">Belum ada karyawan</p>
+              <p className="text-xs mt-0.5">Belum ada karyawan yang di-assign ke pola rotasi ini.</p>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {rows.map((r) => {
+                const av = avatarFor(r.name);
+                return (
+                  <div key={r.assignment_id} className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-100 dark:border-slate-700 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className={`w-7 h-7 rounded-full flex items-center justify-center text-[10px] font-bold shrink-0 ${av.bg} ${av.text}`}>
+                          {initialsOf(r.name)}
+                        </div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{r.name}</p>
+                          <p className="text-[10px] text-slate-400 dark:text-slate-500 truncate">
+                            {r.department || 'Tanpa departemen'}
+                            {r.branch && <> · {r.branch}</>}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Badge status assignment */}
+                      {r.status === 'active' && (
+                        <span className="shrink-0 inline-flex items-center gap-1 rounded-full bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 px-2 py-0.5 text-[9px] font-bold">
+                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" /> AKTIF
+                        </span>
+                      )}
+                      {r.status === 'upcoming' && (
+                        <span className="shrink-0 inline-flex items-center rounded-full bg-sky-100 dark:bg-sky-950/60 text-sky-700 dark:text-sky-400 px-2 py-0.5 text-[9px] font-bold">
+                          SEGERA
+                        </span>
+                      )}
+                      {r.status === 'expired' && (
+                        <span className="shrink-0 inline-flex items-center rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 px-2 py-0.5 text-[9px] font-bold">
+                          BERAKHIR
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-1.5 pt-1 border-t border-slate-200/50 dark:border-slate-700/50 text-[10px] text-slate-500 dark:text-slate-400">
+                      <div className="flex items-center gap-1.5">
+                        <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span>Mulai: <strong className="text-slate-700 dark:text-slate-300">{fmtDate(r.start_date)}</strong></span>
+                        {r.end_date ? (
+                          <span>s/d <strong className="text-slate-700 dark:text-slate-300">{fmtDate(r.end_date)}</strong></span>
+                        ) : (
+                          <span className="text-indigo-600 dark:text-indigo-400 font-medium">(Berkelanjutan)</span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5 text-[10px]">
+                        <span className="text-slate-400">Anchor: H{r.anchor_day_order}</span>
+                        {r.status === 'active' && r.current_cycle_day != null && (
+                          <span className="px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 font-bold border border-indigo-200/60 dark:border-indigo-800/60">
+                            Hari ini: H{r.current_cycle_day}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="px-6 py-3 border-t border-slate-100 dark:border-slate-800 flex justify-end shrink-0">
+          <button
+            onClick={onClose}
+            className="px-4 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 transition cursor-pointer"
+          >
+            Tutup
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // ═══════════════════════════════════════════════════════════════
 type Tab = 'roster' | 'templates' | 'patterns' | 'kalender';
@@ -2943,9 +3832,18 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
 
-  // Paginasi Roster untuk rendering ringan pada 1.000 karyawan
+  // Paginasi Roster Server-Side untuk rendering ringan pada 1.000+ karyawan
   const [rosterPage, setRosterPage] = useState<number>(1);
   const [rosterPageSize, setRosterPageSize] = useState<number>(25);
+  const [rosterTotal, setRosterTotal] = useState<number>(0);
+  const [rosterLastPage, setRosterLastPage] = useState<number>(1);
+  const [rosterFrom, setRosterFrom] = useState<number>(0);
+  const [rosterTo, setRosterTo] = useState<number>(0);
+  const [rosterCounts, setRosterCounts] = useState<{ all: number; assigned: number; unassigned: number }>({
+    all: 0,
+    assigned: 0,
+    unassigned: 0,
+  });
 
   useEffect(() => {
     setRosterPage(1);
@@ -2981,6 +3879,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [showBulk, setShowBulk] = useState(false);
   const [shiftForm, setShiftForm] = useState<{ editing: ShiftTemplate | null } | null>(null);
   const [shiftUsersView, setShiftUsersView] = useState<ShiftTemplate | null>(null);
+  const [patternUsersView, setPatternUsersView] = useState<ShiftPattern | null>(null);
 
   // Dialog konfirmasi template shift (hapus / toggle status)
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -3036,13 +3935,47 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     setError('');
     try {
       if (forceRefresh) invalidateCache('/dashboard/attendance/shifts/roster');
-      const filters: { date?: string; attendance_setting_id?: number; search?: string; department?: string } = { date: rosterDate };
+      const filters: {
+        date?: string;
+        attendance_setting_id?: number;
+        search?: string;
+        department?: string;
+        status?: string;
+        shift_name?: string;
+        page?: number;
+        per_page?: number;
+      } = {
+        date: rosterDate,
+        page: rosterPage,
+        per_page: rosterPageSize,
+      };
       if (rosterBranch) filters.attendance_setting_id = Number(rosterBranch);
       if (rosterDepartment) filters.department = rosterDepartment;
       if (debouncedRosterSearch.trim()) filters.search = debouncedRosterSearch.trim();
+      if (rosterStatusFilter !== 'ALL') filters.status = rosterStatusFilter;
+      if (rosterShiftName) filters.shift_name = rosterShiftName;
+
       const res: any = await shiftApi.roster(filters, forceRefresh);
       setRoster((res?.data ?? []) as RosterRow[]);
       setRosterDayName(res?.day_name ?? '');
+      setRosterTotal(Number(res?.total ?? 0));
+      setRosterLastPage(Math.max(1, Number(res?.last_page ?? 1)));
+      setRosterFrom(Number(res?.from ?? 0));
+      setRosterTo(Number(res?.to ?? 0));
+      if (res?.counts) {
+        setRosterCounts({
+          all: Number(res.counts.all ?? 0),
+          assigned: Number(res.counts.assigned ?? 0),
+          unassigned: Number(res.counts.unassigned ?? 0),
+        });
+      } else {
+        const d = (res?.data ?? []) as RosterRow[];
+        setRosterCounts({
+          all: d.length,
+          assigned: d.filter((r) => r.source === 'shift').length,
+          unassigned: d.filter((r) => r.source !== 'shift').length,
+        });
+      }
       if (Array.isArray(res?.departments) && res.departments.length > 0) {
         setDepartments(res.departments);
       }
@@ -3052,7 +3985,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     } finally {
       setLoadingRoster(false);
     }
-  }, [rosterDate, rosterBranch, rosterDepartment, debouncedRosterSearch]);
+  }, [rosterDate, rosterBranch, rosterDepartment, debouncedRosterSearch, rosterStatusFilter, rosterShiftName, rosterPage, rosterPageSize]);
 
   const loadCalendar = useCallback(async (forceRefresh = false) => {
     setLoadingCal(true);
@@ -3081,6 +4014,52 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   useEffect(() => { if (tab === 'kalender') loadCalendar(); }, [tab, loadCalendar]);
 
   // ─── Aksi Pola Rotasi ───────────────────────────────────────
+  const handleToggleActivePattern = (p: ShiftPattern) => {
+    const aksi = p.is_active ? 'menonaktifkan' : 'mengaktifkan';
+    setConfirmDialog({
+      isOpen: true,
+      title: p.is_active ? 'Nonaktifkan Pola Rotasi' : 'Aktifkan Pola Rotasi',
+      message: (
+        <div className="space-y-2">
+          <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
+            Apakah Anda yakin ingin <strong>{aksi}</strong> pola rotasi <strong>"{p.name}"</strong>?
+          </p>
+          {p.is_active ? (
+            <p className="text-xs text-amber-600 dark:text-amber-400">
+              Pola rotasi yang dinonaktifkan tidak akan muncul di pilihan dropdown assignment baru. Karyawan yang sedang memakai pola ini harus dipindahkan terlebih dahulu sebelum pola dinonaktifkan.
+            </p>
+          ) : (
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              Pola rotasi ini akan kembali tersedia di pilihan dropdown assignment shift/pola karyawan.
+            </p>
+          )}
+        </div>
+      ),
+      confirmText: p.is_active ? 'Ya, Nonaktifkan' : 'Ya, Aktifkan',
+      cancelText: 'Batal',
+      type: p.is_active ? 'warning' : 'info',
+      onConfirm: async () => {
+        setError('');
+        try {
+          await shiftApi.patterns.toggleActive(p.id);
+          await loadPatterns(true);
+          onAddAuditLog?.(p.is_active ? 'Pola rotasi dinonaktifkan' : 'Pola rotasi diaktifkan', p.name, 'bg-indigo-500');
+        } catch (e: unknown) {
+          if (e instanceof ApiError) {
+            const affected = e.data?.affected_names as string | undefined;
+            setError(
+              affected
+                ? `${e.message}\nKaryawan terdampak: ${affected}`
+                : e.message,
+            );
+          } else {
+            setError(`Gagal ${aksi} pola rotasi.`);
+          }
+        }
+      },
+    });
+  };
+
   const handleDeletePattern = (p: ShiftPattern) => {
     setConfirmDialog({
       isOpen: true,
@@ -3404,7 +4383,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
               >
                 <span>Semua Karyawan</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${rosterStatusFilter === 'ALL' ? 'bg-indigo-700 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}`}>
-                  {roster.length}
+                  {rosterCounts.all}
                 </span>
               </button>
               <button
@@ -3418,7 +4397,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
               >
                 <span>Terjadwal Shift / Rotasi</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${rosterStatusFilter === 'ASSIGNED' ? 'bg-emerald-700 text-white' : 'bg-emerald-100 dark:bg-emerald-900/60 text-emerald-800 dark:text-emerald-300'}`}>
-                  {roster.filter((r) => r.source === 'shift').length}
+                  {rosterCounts.assigned}
                 </span>
               </button>
               <button
@@ -3432,7 +4411,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
               >
                 <span>Belum Terjadwal (Default Kantor)</span>
                 <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono ${rosterStatusFilter === 'UNASSIGNED' ? 'bg-amber-700 text-white' : 'bg-amber-100 dark:bg-amber-900/60 text-amber-800 dark:text-amber-300'}`}>
-                  {roster.filter((r) => r.source !== 'shift').length}
+                  {rosterCounts.unassigned}
                 </span>
               </button>
             </div>
@@ -3468,7 +4447,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
               <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                 <CalendarDays className="w-3.5 h-3.5 text-indigo-500" />
                 Jadwal {rosterDayName && <span className="text-indigo-600 dark:text-indigo-400">{rosterDayName}</span>}, {fmtDate(rosterDate)}
-                <span className="text-slate-400 dark:text-slate-500">· {filteredRoster.length} karyawan</span>
+                <span className="text-slate-400 dark:text-slate-500">· {rosterTotal} karyawan</span>
               </p>
               <button
                 onClick={() => loadRoster(true)}
@@ -3527,16 +4506,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                           <Users className="w-10 h-10 opacity-30" />
                           <p className="font-semibold text-sm">Tidak ada karyawan</p>
                           <p className="text-xs">
-                            {roster.length > 0 ? "Tidak ada karyawan yang cocok dengan filter." : "Menampilkan semua karyawan aktif. Pastikan sudah ada karyawan di perusahaan ini."}
+                            {rosterTotal > 0 ? "Tidak ada karyawan yang cocok dengan filter pada halaman ini." : "Menampilkan semua karyawan aktif. Pastikan sudah ada karyawan di perusahaan ini."}
                           </p>
                         </div>
                       </td>
                     </tr>
                   ) : (() => {
-                    const totalRosterPages = Math.max(1, Math.ceil(filteredRoster.length / rosterPageSize));
-                    const paginatedRoster = filteredRoster.slice((rosterPage - 1) * rosterPageSize, rosterPage * rosterPageSize);
-
-                    return paginatedRoster.map((r) => {
+                    return filteredRoster.map((r) => {
                       const av = avatarFor(r.name);
                       const isSel = selected.has(r.user_id);
                       return (
@@ -3655,79 +4631,76 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
               </table>
             </div>
 
-            {/* Pagination footer */}
-            {filteredRoster.length >= 25 && (() => {
-              const totalRosterPages = Math.max(1, Math.ceil(filteredRoster.length / rosterPageSize));
-              return (
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 dark:border-slate-800 text-xs">
-                  <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
-                    <span>
-                      Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
-                        {Math.min((rosterPage - 1) * rosterPageSize + 1, filteredRoster.length)} - {Math.min(rosterPage * rosterPageSize, filteredRoster.length)}
-                      </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{filteredRoster.length}</strong> karyawan
-                    </span>
-                    <span className="hidden sm:inline">•</span>
-                    <div className="flex items-center gap-1.5">
-                      <span className="hidden sm:inline">Per hal:</span>
-                      <select
-                        value={rosterPageSize}
-                        onChange={(e) => {
-                          setRosterPageSize(Number(e.target.value));
-                          setRosterPage(1);
-                        }}
-                        className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
-                      >
-                        <option value={25}>25</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
-                      </select>
-                    </div>
-                  </div>
-
+            {/* Pagination footer (Server-side) - disembunyikan jika data <= 25 */}
+            {rosterTotal > 25 && (
+              <div className="flex flex-col sm:flex-row items-center justify-between gap-3 px-4 py-3 border-t border-slate-100 dark:border-slate-800 text-xs">
+                <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
+                  <span>
+                    Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
+                      {rosterFrom} - {rosterTo}
+                    </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{rosterTotal}</strong> karyawan
+                  </span>
+                  <span className="hidden sm:inline">•</span>
                   <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => setRosterPage(1)}
-                      disabled={rosterPage === 1}
-                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                      title="Halaman Pertama"
+                    <span className="hidden sm:inline">Per hal:</span>
+                    <select
+                      value={rosterPageSize}
+                      onChange={(e) => {
+                        setRosterPageSize(Number(e.target.value));
+                        setRosterPage(1);
+                      }}
+                      className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
                     >
-                      «
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRosterPage(p => Math.max(1, p - 1))}
-                      disabled={rosterPage === 1}
-                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                      title="Halaman Sebelumnya"
-                    >
-                      ‹
-                    </button>
-                    <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
-                      Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{rosterPage}</span> / <span className="font-mono">{totalRosterPages}</span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setRosterPage(p => Math.min(totalRosterPages, p + 1))}
-                      disabled={rosterPage === totalRosterPages}
-                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                      title="Halaman Berikutnya"
-                    >
-                      ›
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setRosterPage(totalRosterPages)}
-                      disabled={rosterPage === totalRosterPages}
-                      className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                      title="Halaman Terakhir"
-                    >
-                      »
-                    </button>
+                      <option value={25}>25</option>
+                      <option value={50}>50</option>
+                      <option value={100}>100</option>
+                    </select>
                   </div>
                 </div>
-              );
-            })()}
+
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setRosterPage(1)}
+                    disabled={rosterPage <= 1}
+                    className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Pertama"
+                  >
+                    «
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRosterPage((p) => Math.max(1, p - 1))}
+                    disabled={rosterPage <= 1}
+                    className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Sebelumnya"
+                  >
+                    ‹
+                  </button>
+                  <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                    Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{rosterPage}</span> / <span className="font-mono">{rosterLastPage}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setRosterPage((p) => Math.min(rosterLastPage, p + 1))}
+                    disabled={rosterPage >= rosterLastPage}
+                    className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Berikutnya"
+                  >
+                    ›
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRosterPage(rosterLastPage)}
+                    disabled={rosterPage >= rosterLastPage}
+                    className="p-1 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                    title="Halaman Terakhir"
+                  >
+                    »
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -3876,8 +4849,27 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                             🌙 Shift Malam
                           </span>
                         )}
+                        {s.late_tolerance_minutes != null ? (
+                          <span
+                            className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/40"
+                            title="Toleransi keterlambatan khusus shift ini"
+                          >
+                            ⏱️ Toleransi: {s.late_tolerance_minutes} mnt
+                          </span>
+                        ) : null}
                       </div>
                       {s.description && <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-1">{s.description}</p>}
+                      <div className="flex items-center gap-1.5 mt-1.5 text-[11px] text-slate-500 dark:text-slate-400">
+                        <Clock className="w-3 h-3 text-slate-400 shrink-0" />
+                        <span>
+                          Toleransi Telat:{' '}
+                          <strong className="font-semibold text-slate-700 dark:text-slate-300">
+                            {s.late_tolerance_minutes != null
+                              ? `${s.late_tolerance_minutes} menit (Khusus Shift)`
+                              : `${s.office?.late_tolerance_minutes ?? 15} menit (Default Cabang)`}
+                          </strong>
+                        </span>
+                      </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <button
@@ -4076,28 +5068,46 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200/80 dark:border-slate-800 shadow-xs hover:shadow-md transition p-5 flex flex-col justify-between gap-4"
                   >
                     <div className="space-y-3">
-                      {/* Header Cabang Kantor di Paling Atas Card */}
+                      {/* Header Cabang Kantor & Toggle Status di Paling Atas Card */}
                       <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
                         <span className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-700 dark:text-indigo-300 bg-indigo-50/80 dark:bg-indigo-950/60 px-2.5 py-1 rounded-md">
                           <Building2 className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                          {p.office?.office_name ? `Cabang ${p.office.office_name}` : 'Semua Cabang'}
+                          {p.office?.office_name ? `Cabang ${p.office.office_name}` : (offices.find((o) => o.id === p.attendance_setting_id)?.office_name ? `Cabang ${offices.find((o) => o.id === p.attendance_setting_id)?.office_name}` : 'Cabang Khusus')}
                         </span>
-                        {p.is_active ? (
-                          <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
-                            <span className="w-1 h-1 rounded-full bg-emerald-500" /> Aktif
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400">
-                            Nonaktif
-                          </span>
-                        )}
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleToggleActivePattern(p)}
+                            className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none cursor-pointer"
+                            style={{ backgroundColor: p.is_active ? '#10b981' : '#64748b' }}
+                            title={p.is_active ? 'Nonaktifkan' : 'Aktifkan'}
+                          >
+                            <span
+                              className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform ${p.is_active ? 'translate-x-[18px]' : 'translate-x-[3px]'}`}
+                            />
+                          </button>
+                          {p.is_active ? (
+                            <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                              <span className="w-1 h-1 rounded-full bg-emerald-500" /> Aktif
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400">
+                              Nonaktif
+                            </span>
+                          )}
+                        </div>
                       </div>
 
                       {/* Top Header */}
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <div className="flex items-center gap-2">
+                            <span className="w-3.5 h-3.5 rounded-full shrink-0 border border-black/10 dark:border-white/20" style={{ backgroundColor: p.color ?? '#6366f1' }} />
                             <h3 className="font-bold text-sm text-slate-800 dark:text-slate-100">{p.name}</h3>
+                            {p.late_tolerance_minutes != null ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/40" title="Toleransi keterlambatan khusus pola ini">
+                                ⏱️ Toleransi: {p.late_tolerance_minutes} mnt
+                              </span>
+                            ) : null}
                           </div>
                           {p.description && (
                             <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
@@ -4111,11 +5121,29 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         </span>
                       </div>
 
-                      {/* Summary hari kerja vs libur */}
-                      <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
+                      {/* Summary hari kerja vs libur & Day Overrides */}
+                      <div className="flex items-center gap-2 flex-wrap text-[11px] text-slate-500 dark:text-slate-400">
                         <span className="font-semibold text-indigo-600 dark:text-indigo-400">{workDays} Hari Kerja</span>
                         <span>·</span>
                         <span className="font-semibold text-amber-600 dark:text-amber-400">{offDays} Hari Libur</span>
+                        {(() => {
+                          const overrides = p.day_overrides ?? (p as any).dayOverrides ?? [];
+                          if (!overrides.length) return null;
+                          const dowNames = ['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'];
+                          const daysStr = overrides.map((o: any) => dowNames[o.day_of_week] || `D${o.day_of_week}`).join(', ');
+                          return (
+                            <>
+                              <span>·</span>
+                              <span
+                                className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200/60 dark:border-amber-900/40"
+                                title={`Override hari kalender aktif untuk: ${daysStr}`}
+                              >
+                                <Sliders className="w-2.5 h-2.5" />
+                                Override: {daysStr}
+                              </span>
+                            </>
+                          );
+                        })()}
                       </div>
 
                       {/* Visual Timeline Strip Per Hari */}
@@ -4123,15 +5151,33 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                         {sortedItems.map((it) => (
                           <div
                             key={it.day_order}
+                            style={{
+                              borderColor: !it.is_off && it.color ? `${it.color}60` : undefined,
+                              backgroundColor: !it.is_off && it.color ? `${it.color}15` : undefined,
+                            }}
                             className={`p-2 rounded-xl text-center border min-w-[70px] flex-1 sm:flex-none transition ${
                               it.is_off
                                 ? 'bg-amber-50/60 dark:bg-amber-950/30 border-amber-200/70 dark:border-amber-900/40 text-amber-800 dark:text-amber-300'
                                 : 'bg-indigo-50/60 dark:bg-indigo-950/40 border-indigo-200/70 dark:border-indigo-800 text-indigo-700 dark:text-indigo-300'
                             }`}
                           >
-                            <p className="text-[10px] font-bold">H{it.day_order}</p>
-                            <p className="text-[11px] font-semibold truncate max-w-[90px]">
-                              {it.is_off ? 'Libur' : (it.shift?.name ? it.shift.name : 'Kerja')}
+                            <div className="flex items-center justify-center gap-1">
+                              <p className="text-[10px] font-bold" style={{ color: !it.is_off && it.color ? it.color : undefined }}>H{it.day_order}</p>
+                              {!it.is_off && it.is_wfh && (
+                                <span className={`text-[8px] font-bold px-1 rounded ${
+                                  it.is_field
+                                    ? 'bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300'
+                                    : 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                                }`}>
+                                  {it.is_field ? 'FLD' : 'WFH'}
+                                </span>
+                              )}
+                              {!it.is_off && it.is_cross_day && (
+                                <Moon className="w-2.5 h-2.5 text-indigo-500 dark:text-indigo-400 inline shrink-0" />
+                              )}
+                            </div>
+                            <p className="text-[11px] font-semibold truncate max-w-[90px]" style={{ color: !it.is_off && it.color ? it.color : undefined }}>
+                              {it.is_off ? 'Libur' : (it.name || it.shift?.name || 'Kerja')}
                             </p>
                             {!it.is_off && it.work_start_time && (
                               <p className="text-[9px] opacity-80 mt-0.5">
@@ -4144,19 +5190,30 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     </div>
 
                     {/* Action buttons */}
-                    <div className="flex items-center justify-end gap-1.5 pt-3 border-t border-slate-100 dark:border-slate-800">
+                    <div className="flex items-center justify-between gap-1.5 pt-3 border-t border-slate-100 dark:border-slate-800">
                       <button
-                        onClick={() => setPatternForm({ editing: p })}
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                        onClick={() => setPatternUsersView(p)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800 hover:bg-indigo-50 dark:hover:bg-indigo-950/40 rounded-lg transition cursor-pointer"
+                        title="Lihat karyawan yang ter-assign pada pola rotasi ini"
                       >
-                        <Pencil className="w-3.5 h-3.5 text-slate-400" /> Edit
+                        <Users className="w-3 h-3" /> Lihat Karyawan
                       </button>
-                      <button
-                        onClick={() => handleDeletePattern(p)}
-                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" /> Hapus
-                      </button>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => setPatternForm({ editing: p })}
+                          className="p-1.5 rounded-lg text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                          title="Ubah"
+                        >
+                          <Pencil className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeletePattern(p)}
+                          className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                          title="Hapus"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 );
@@ -4482,6 +5539,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         <ShiftFormModal
           offices={offices}
           shifts={shifts}
+          patterns={patterns}
           editing={shiftForm.editing}
           onClose={() => setShiftForm(null)}
           onSaved={() => { loadShifts(); onAddAuditLog?.(shiftForm.editing ? 'Shift diperbarui' : 'Shift dibuat', '', 'bg-indigo-500'); }}
@@ -4513,6 +5571,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       {patternForm && (
         <ShiftPatternFormModal
           shifts={shifts}
+          patterns={patterns}
           offices={offices}
           editing={patternForm.editing}
           onClose={() => setPatternForm(null)}
@@ -4527,6 +5586,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         <ShiftUsersModal
           shift={shiftUsersView}
           onClose={() => setShiftUsersView(null)}
+        />
+      )}
+
+      {patternUsersView && (
+        <PatternUsersModal
+          pattern={patternUsersView}
+          onClose={() => setPatternUsersView(null)}
         />
       )}
 
