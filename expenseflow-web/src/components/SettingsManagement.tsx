@@ -1937,6 +1937,7 @@ interface Props {
   onAddAuditLog: (title: string, desc: string, color: string) => void;
   currentSettings: AppSettings;
   onSaveSettings: (s: AppSettings) => void;
+  onSaveBranchSettings?: (branchId: number, limits: { varianceLimit: number | null; maxClaimLimit: number | null }) => Promise<void>;
 }
 
 export const SettingsManagement: React.FC<Props> = ({

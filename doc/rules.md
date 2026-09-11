@@ -33,13 +33,17 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Kalender Libur Otomatis: SELESAI (API Hari Libur Indonesia SKB 3 Menteri, preview modal, auto-sync batch, artisan command) — 2026-09-02
   - Status Alpha Batas Presensi Telat: SELESAI (karyawan belum check-in & lewat batas waktu cutoff kantor langsung berstatus Alpha di laporan hari ini & dashboard HRD) — 2026-09-02
   - Filter Tanggal & Cleanup Banner Presensi Mobile: SELESAI (banner "Mode WFH aktif" dihapus dari layar riwayat presensi mobile; filter tanggal, preset bulan/hari, counter data, empty state & reset filter ditambahkan) — 2026-09-08
+  - Pemisahan & Filter Struk Berdasarkan Cabang: SELESAI (Struk terikat snapshot attendance_setting_id kantor, filter dropdown cabang di Inbox & Riwayat Struk, badge cabang karyawan, kolom Cabang di ekspor transfer bank CSV, read-only akses kantor bagi role Finance) — 2026-09-11
+  - Pengaturan Limit Klaim & Variansi Per Cabang: SELESAI (Konfigurasi batas klaim max_claim_limit & batas toleransi variansi variance_limit dapat diatur berbeda untuk setiap cabang kantor; fallback otomatis ke limit global perusahaan jika null; endpoint PUT /api/v1/dashboard/settings/branches/{id} untuk role Finance & Admin; UI multi-cabang di Inbox Struk) — 2026-09-11
+  - Multi-Foto per Struk (Lampiran Slip EDC / Nota Rincian - P1): SELESAI (Dukungan foto utama struk untuk OCR Gemini + hingga 3 foto lampiran tambahan berupa Slip EDC debit/kredit, bukti transfer QRIS, atau nota rincian item; tabel `receipt_images` dengan `image_type` 'primary' dan 'additional'; preview & thumbnail switcher di Mobile Step 1 & Step 2; thumbnail selector & fullscreen lightbox zoom switch di Dashboard Web; endpoint download/stream `GET /api/v1/receipts/{id}/image?image_id={imageId}`) — 2026-09-11
+  - Laporan Pengeluaran Dinas / Bundling Struk (Expense Reports - P1): SELESAI (Pengelompokan banyak struk ke dalam bundle laporan dinas/perjalanan; tabel `expense_reports` dengan relasi `receipts.expense_report_id`; endpoint CRUD & submit bundle untuk karyawan, serta batch approval / rejection satu kali klik oleh Finance; tab khusus "Laporan Dinas" dengan review modal bundle lengkap di Web Dashboard) — 2026-09-11
   - Approval Matrix Bertingkat: DI-KEEP DULU (multi-level expense approval ditunda atas arahan user — 2026-09-02)
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
   - Custom Role Management : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
   - Fitur yang Di-Keep / Ditunda Sementara (Arahan User 2026-09-02):
     - Approval Matrix Bertingkat (keep dulu)
     - Invoice PRD (masih tahap PRD)
-    - Liveness Detection Presensi (keep dulu)
+    - Liveness Detection Presensi (keep dulu — panduan arsitektur & pilihan 3rd party tercatat di [doc/13-PANDUAN-FACE-RECOGNITION-LIVENESS.md](file:///e:/koding/coba/backend-gawe/doc/13-PANDUAN-FACE-RECOGNITION-LIVENESS.md))
     - Biometrik Login Mobile (tidak usah, diganti Mobile Persistent Session)
     - PDF Payslip (keep dulu, UI masih statis)
     - Widget / Quick Tile Android & iOS (skip dulu)
@@ -114,12 +118,13 @@ bootstrap/
 | 5 | `login_attempts` | Log percobaan login (user_id nullable, ip_address, user_agent, status, attempted_at) |
 | 6 | `company_settings` | Pengaturan perusahaan (key-value) |
 
-### Receipt (Struk) Tables
+### Receipt (Struk) & Laporan Dinas Tables
 | # | Tabel | Keterangan |
 |---|-------|-----------|
-| 7 | `receipts` | Struk (company_id, user_id, receipt_number, sha256_hash, image_path, vendor_name, total_amount nullable, claimed_amount nullable, receipt_date nullable, currency, status, submitted_at, ocr_status, ocr_raw_amount, ocr_raw_merchant, ocr_raw_date, ocr_attempts, ocr_error, variance_flag, variance_pct, category, notes) |
-| 8 | `receipt_images` | Gambar struk (receipt_id, file_path, file_name, file_size, mime_type) |
+| 7 | `receipts` | Struk (company_id, user_id, receipt_number, sha256_hash, image_path, vendor_name, total_amount nullable, claimed_amount nullable, receipt_date nullable, currency, status, submitted_at, ocr_status, ocr_raw_amount, ocr_raw_merchant, ocr_raw_date, ocr_attempts, ocr_error, variance_flag, variance_pct, category, notes, **attendance_setting_id** nullable snapshot cabang, **expense_report_id** nullable foreign key bundle) |
+| 8 | `receipt_images` | Gambar struk & lampiran (receipt_id, file_path, file_name, file_size, mime_type, **image_type** [primary/additional/thumbnail]) |
 | 9 | `receipt_approvals` | Approval struk (receipt_id, user_id, status, notes) |
+| 9b | `expense_reports` | Laporan perjalanan dinas / bundling struk (company_id, user_id, report_number, title, purpose, start_date, end_date, total_claimed_amount, total_approved_amount, status [draft/submitted/approved/rejected/paid], approved_by, approved_at, rejection_reason, notes) |
 
 ### Invoice & Vendor Tables
 | # | Tabel | Keterangan |
@@ -140,7 +145,7 @@ bootstrap/
 | # | Tabel | Keterangan |
 |---|-------|-----------|
 | 17 | `attendances` | Presensi harian (user_id, company_id, date, check_in_time, check_in_lat, check_in_lng, check_in_distance_meters, check_in_type [onsite/wfh/field], check_in_photo, check_out_time, check_out_lat, check_out_lng, check_out_type, status [present/late/absent], **work_minutes**, **overtime_minutes**, **is_holiday**, **auto_checkout_at**, **is_auto_checkout**, notes) |
-| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable) |
+| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable, **variance_limit** integer nullable 0-99%, **max_claim_limit** decimal(15,2) nullable) |
 | 19 | `leave_requests` | Pengajuan cuti/izin (user_id, company_id, leave_type [wfh/izin/sakit/cuti], start_date, end_date, total_days, reason, status [pending/approved/rejected], approved_by, approved_at, rejection_reason) |
 | 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type, quota, used) |
 | 20b | `holidays` | Kalender libur (company_id **nullable** → NULL = libur nasional semua company, date, name, is_national). Unique (company_id, date). Dipakai untuk hitung hari kerja cuti & lembur hari libur. |
@@ -910,8 +915,86 @@ No | Kode Karyawan | Nama Karyawan | Bank | No Rekening | Nama Pemilik Rekening 
 1  | EMP-001       | Budi Santoso  | BCA  | 1234567890  | Budi Santoso          | Rp 450.000     | RCP-20260831-0001, RCP-20260831-0004
 ```
 
+### 6. Pemisahan Struk Berdasarkan Cabang Kantor (Branch Separation & Filtering)
+Sistem struk mendukung segregasi dan filter berdasarkan cabang kantor perusahaan:
+- **Penyimpanan Snapshot Cabang (`receipts.attendance_setting_id`)**:
+  - Tabel `receipts` memiliki kolom `attendance_setting_id` (foreign key nullable ke tabel `attendance_settings` dengan `nullOnDelete()`).
+  - Saat karyawan mengunggah struk (`store()`), sistem otomatis mengambil snapshot `attendance_setting_id` dari user pengunggah (`$user->attendance_setting_id`).
+  - **Backfill & Backward-Compatibility**: Struk yang sudah ada di-backfill dari `users.attendance_setting_id`. Jika struk memiliki `attendance_setting_id` bernilai `null`, query fallback dinamis akan mengecek kantor user saat ini (`user.office`).
+- **Batasan Akses Role (Least Privilege Principle)**:
+  - Role `finance` membutuhkan akses membaca daftar kantor untuk opsi filter dan nama cabang.
+  - Endpoint `GET /api/v1/dashboard/attendance/settings` dan `GET /api/v1/dashboard/offices` dapat diakses oleh `role:finance,hrd,admin,super_admin` (**READ-ONLY**).
+  - Aksi mutasi pengaturan kantor (`store`, `update`, `delete`, `reset-leave-balances`) **tetap mutlak dibatasi** hanya untuk `role:hrd,admin,super_admin`.
+- **Query & Aggregasi Data Backend**:
+  - `GET /api/v1/dashboard/receipts` (Inbox) menerima filter `attendance_setting_id` atau `branch_id`. Meng-eager load relasi `office:id,office_name` dan `user.office:id,office_name`.
+  - `GET /api/v1/dashboard/receipts/all` menerima filter cabang dan menyaring agregasi count `$summary` (total, submitted, approved, paid, rejected) sesuai cabang aktif.
+  - `GET /api/v1/dashboard/receipts/export-disbursement` menyaring data sesuai cabang dan menyertakan kolom `Cabang Kantor` dalam rekap transfer CSV.
+- **Frontend Web (`ReceiptInbox.tsx` & `ReceiptHistory.tsx`)**:
+  - Dropdown filter cabang dengan icon `Building2` di header bar.
+  - Kartu statistik mini (Menunggu Review, Selisih Variance, Potensi Duplikat, Normal) dan tab status langsung beradaptasi secara dinamis saat cabang dipilih.
+  - Badge cabang kantor (`Building2` + nama cabang) ditampilkan di bawah nama karyawan pada tabel Inbox Struk dan Riwayat Approval/Pencairan.
+  - Rincian nama cabang kantor ditampilkan pada modal Verifikasi Struk, modal Detail Riwayat, dan modal Konfirmasi Pencairan / Transfer.
+
+### 7. Pengaturan Limit Klaim & Toleransi Variansi Per Cabang (Branch-Specific Limits)
+Sistem mendukung kustomisasi batas toleransi selisih OCR dan plafon nominal klaim maksimum per cabang kantor:
+- **Konfigurasi Kolom Database (`attendance_settings`)**:
+  - `variance_limit`: integer nullable (0–99%). Persentase toleransi selisih antara nilai hasil OCR dengan nominal klaim karyawan sebelum ditandai `variance_flag = true` dan memicu peringatan review.
+  - `max_claim_limit`: decimal(15,2) nullable. Batas plafon nominal maksimal pengajuan klaim per struk untuk karyawan di cabang terkait.
+- **Prinsip Fallback / Pewarisan (Inheritance to Global Settings)**:
+  - Jika nilai kolom pada cabang bernilai `null`, sistem otomatis mewarisi (*fallback*) nilai dari pengaturan global perusahaan (`company_settings.variance_limit` atau default 10%, dan `company_settings.max_claim_limit`).
+  - Cabang dapat kembali mengikuti pengaturan global kapan saja dengan mengatur nilainya menjadi `null`.
+- **Enforcement Logika di Backend**:
+  - **Plafon Pengajuan Struk (`ReceiptController::validateClaimLimits`)**: Validasi memprioritaskan batas cabang karyawan pembuat struk (`$branch?->max_claim_limit`), jika null baru memvalidasi batas global perusahaan.
+  - **Kalkulasi Toleransi Variansi (`Receipt::recalculateVariance` & `Receipt::getEffectiveVarianceLimit`)**: Menentukan flag variansi berdasarkan limit cabang struk secara dinamis saat OCR selesai atau saat data klaim diubah.
+  - **Proteksi Approval Finance (`ReceiptController::approve` & `bulkApprove`)**: Approval struk yang melewati batas variansi cabang mewajibkan centang konfirmasi override toleransi (*checkbox confirmation*).
+- **Hak Akses & Pemisahan Wewenang (Separation of Duties)**:
+  - Endpoint `PUT|PATCH /api/v1/dashboard/settings/branches/{attendanceSetting}` diizinkan untuk `role:finance,admin,super_admin`.
+  - Role Finance dapat mengatur limit klaim & variansi cabang tanpa memiliki akses mengubah jadwal shift, koordinat GPS, atau radius absensi kantor (`attendance_settings`).
+  - Setiap perubahan limit cabang otomatis dicatat dalam `activity_logs` dengan kategori `COMPANY_SETTINGS`.
+- **Antarmuka Web (`ReceiptInbox.tsx`)**:
+  - Tab Pengaturan menyediakan Scope Selector: Pengaturan Global Perusahaan vs Pengaturan Per Cabang Kantor.
+  - Dilengkapi toggle "Gunakan Pengaturan Default Perusahaan" untuk mereset kustomisasi cabang secara instan.
+  - Tabel ringkasan limit seluruh cabang menampilkan status limit aktif, plafon nominal, batas variansi, serta tombol aksi cepat Edit dan Reset.
+  - Modal review struk dan tabel inbox secara dinamis mengidentifikasi nama cabang dan batas toleransi variansi yang berlaku untuk struk tersebut.
+
+### 8. Evaluasi & Roadmap Pengembangan Fitur Struk (Expense Management Evolution)
+
+Berdasarkan analisis kebutuhan operasional nyata (karyawan lapangan, manajer persetujuan, dan tim finance akuntansi), berikut adalah daftar fitur pengembangan lanjutan untuk sistem struk:
+
+#### A. Sisi Mobile (Flutter — Pengalaman Karyawan)
+1. **Klaim Bundling / Laporan Perjalanan Dinas (Expense Report)**:
+   - Mengelompokkan beberapa struk sekaligus (misal: 10 struk dinas luar kota 3 hari) ke dalam satu map pengajuan (*Report*).
+   - Manfaat: Karyawan tidak perlu mengajukan 10 kali terpisah, dan Finance dapat me-review & menyetujui sekaligus dalam satu bundel.
+2. **Multi-Page / Struk Panjang (Multi-Foto per Struk)**:
+   - Mendukung pengambilan 2–3 foto untuk satu transaksi struk yang sama.
+   - Berguna untuk: struk belanjaan supermarket/restoran yang panjang terlipat, serta tagihan hotel/faktur yang terdiri dari Lembar Rincian (Invoice) + Slip EDC/Kartu Kredit.
+3. **Smart Camera Auto-Crop & Edge Detection (Scanner Kertas Otomatis)**:
+   - Pemasangan deteksi tepi kertas dan koreksi sudut perspektif otomatis (seperti CamScanner) langsung di kamera Flutter.
+   - Mengurangi distorsi bayangan meja dan sudut miring sehingga akurasi Gemini OCR meningkat drastis.
+
+#### B. Sisi Web Dashboard (Finance & HRD Admin)
+1. **Penyelesaian Uang Muka / Kasbon Dinas (Cash Advance & Settlement)**:
+   - Alur pengajuan uang muka kerja (misal: Kasbon Rp 2.000.000 disetujui & ditransfer sebelum dinas).
+   - Setelah dinas, karyawan melampirkan struk realisasi (misal: Rp 1.850.000) $\rightarrow$ sistem otomatis menghitung sisa selisih pengembalian (*reimburse return balance*: Rp 150.000 kembali ke kasir).
+2. **Upload Bukti Transfer Bank ke Karyawan (Disbursement Proof Notification)**:
+   - Saat Finance menandai status struk menjadi `paid` (dicairkan), Finance dapat mengunggah file bukti transfer bank (PDF/JPG).
+   - Karyawan otomatis menerima notifikasi push mobile: *"Klaim Rp 450.000 telah ditransfer ke rekening BCA Anda. Ketuk untuk melihat bukti transfer"*.
+3. **Ekspor Jurnal Pengeluaran Akuntansi (General Ledger Integration)**:
+   - Format ekspor siap pakai (CSV/Excel) yang memetakan akun Akuntansi: Debit Beban (sesuai kategori struk) vs Kredit Kas/Bank Operasional.
+   - Memudahkan impor langsung ke software akuntansi seperti Accurate Online, Jurnal.id, SAP, atau Xero.
+
+#### C. Sisi Backend & Kecerdasan Buatan (AI & Automasi)
+1. **AI Policy Compliance: Deteksi Item Terlarang / Non-Klaim (Gemini OCR)**:
+   - Memanfaatkan kemampuan multimodal Gemini untuk membedah baris per baris (*itemized list*) pada struk belanja.
+   - Otomatis mendeteksi dan memberi flag merah pada struk yang menyisipkan barang terlarang / belanja pribadi (misal: rokok, alkohol, kosmetik, mainan) dalam nota operasional/makan.
+2. **Fast-Track Auto-Approval untuk Struk Mikro (Low-Risk Struk)**:
+   - Opsi konfigurasi otomatis menyetujui klaim kecil (misal: nominal $\le$ Rp 50.000 untuk parkir/tol/bensin motor) jika variance 0% dan tidak ada indikasi duplikat, guna menghemat waktu verifikasi manual tim finance.
+3. **SLA & Auto-Reminder Struk Menggantung (Aging Claims)**:
+   - Pengingat otomatis (email / push notification) kepada tim Finance cabang jika ada struk berstatus `submitted` yang belum ditinjau lebih dari 3 atau 7 hari kerja.
+
 > Urutan implementasi yang disarankan: **P0 → P1 → P2 → P3**. Mulai dari siklus
 > pembayaran & enforce anggaran karena keduanya berdampak langsung ke uang perusahaan.
+
 ### fiture depannya
 
 - buat web site terpisa untuk calon rekrutmen kerja.
@@ -2140,6 +2223,108 @@ Agar form pendaftaran dan pengubahan data karyawan tidak panjang dan membingungk
 > 2. Wajib ditambahkan ke logika validasi dan mapping di `UserController::bulkImport`.
 > 3. Wajib didaftarkan ke `TARGET_FIELDS` dan kamus `aliases` pada `ImportEmployeeModal.tsx` di frontend.
 > 4. Wajib disertakan dalam template download Excel/CSV (`downloadTemplate`).
+
+---
+
+## Seksi 14: Fitur Prioritas 1 (P1) — Multi-Foto Struk & Laporan Pengeluaran Dinas (Bundling)
+
+### A. Latar Belakang & Kebutuhan Bisnis
+Dalam proses operasional perusahaan dan audit keuangan:
+1. **Multi-Foto per Struk**: Karyawan seringkali memiliki bukti transaksi lebih dari 1 lembar fisik, misalnya:
+   - Foto 1 (Utama): Struk kasir / struk restoran / nota pembelanjaan (digunakan untuk ekstraksi OCR).
+   - Foto 2 (Tambahan): Slip EDC mesin gesek (bukti debit/kredit card / nomor otorisasi).
+   - Foto 3 (Tambahan): Nota rincian item, kwitansi manual bermaterai, atau bukti transfer QRIS.
+   Sebelumnya sistem hanya mendukung 1 foto per struk. Dengan fitur P1 ini, sistem mendukung hingga 3 foto lampiran tambahan tanpa mengganggu hasil ekstraksi OCR (OCR tetap memproses foto utama).
+2. **Laporan Pengeluaran Dinas (Expense Reports / Bundling)**: Saat perjalanan dinas, karyawan mengumpulkan banyak struk (tiket pesawat, taksi bandara, hotel, makan siang, bensin tol). Mengajukan dan menyetujui struk satu demi satu memakan waktu. Dengan fitur ini:
+   - Karyawan dapat mengelompokkan struk-struk dalam 1 bundle laporan dinas.
+   - Tim Finance di web dashboard dapat meninjau total pengeluaran dinas secara menyeluruh dan melakukan persetujuan/penolakan seluruh bundle hanya dalam satu kali klik.
+
+---
+
+### B. Arsitektur & Skema Database
+
+#### 1. Tabel `expense_reports`
+Migration: `2026_09_11_000003_create_expense_reports_table.php`
+- `id`: Bigint unsigned PK.
+- `company_id`: Foreign key ke `companies.id` (isolasi multi-tenant).
+- `user_id`: Foreign key ke `users.id` (karyawan pembuat bundle).
+- `report_number`: String (misal: `EXP-20260911-0001`).
+- `title`: String (judul laporan dinas, misal: "Perjalanan Dinas Surabaya Site Visit").
+- `purpose`: String / text nullable (tujuan pengeluaran dinas).
+- `start_date`: Date nullable.
+- `end_date`: Date nullable.
+- `total_claimed_amount`: Decimal(15, 2) default 0.
+- `total_approved_amount`: Decimal(15, 2) default 0.
+- `status`: Enum (`draft`, `submitted`, `approved`, `rejected`, `paid`) default `draft`.
+- `approved_by`: Foreign key ke `users.id` nullable (Finance/Admin yang approve).
+- `approved_at`: Timestamp nullable.
+- `rejection_reason`: Text nullable.
+- `notes`: Text nullable.
+
+#### 2. Tabel `receipts` (Relasi Bundle)
+Migration: `2026_09_11_000004_add_expense_report_id_to_receipts_table.php`
+- `expense_report_id`: Bigint unsigned nullable foreign key ke `expense_reports.id` (`onDelete('set null')`).
+- Jika struk berdiri sendiri (mandiri), `expense_report_id` bernilai `null` (100% backward compatible).
+
+#### 3. Tabel `receipt_images` (Dukungan Multi-Foto)
+- `receipt_id`: Foreign key ke `receipts.id`.
+- `file_path`: Path penyimpanan lokal privat (`receipts/{company_id}/{hash}.ext`).
+- `file_name`: Nama asli berkas (misal: `struk_kasir.jpg`, `slip_edc.jpg`).
+- `image_type`: Enum string (`primary`, `additional`, `thumbnail`).
+- Foto dengan `image_type = 'primary'` adalah berkas utama yang disalurkan ke OCR Gemini. Foto dengan `image_type = 'additional'` disajikan sebagai lampiran pendukung bagi reviewer Finance.
+
+---
+
+### C. Kontrak API Backend
+
+1. **Upload Multi-Foto Struk**:
+   - `POST /api/v1/employee/receipts` (Multipart form-data)
+     - `image`: File berkas utama struk (wajib).
+     - `additional_images[]`: Array berkas tambahan (opsional, maks 3 foto).
+     - `expense_report_id`: Integer ID bundle (opsional).
+     - `category`: String kategori struk.
+2. **Download & Stream Gambar Struk (Akses Aman Berautentikasi)**:
+   - `GET /api/v1/receipts/{id}/image?image_id={imageId}`
+     - Jika tanpa `image_id`: Mengembalikan gambar utama.
+     - Jika menyertakan `image_id`: Mengembalikan gambar spesifik dari tabel `receipt_images`.
+     - Melakukan pengecekan otorisasi ketat (`company_id` & ownership/finance role).
+3. **API Laporan Dinas Karyawan**:
+   - `GET /api/v1/employee/expense-reports`: Mengambil daftar bundle laporan dinas milik karyawan.
+   - `POST /api/v1/employee/expense-reports`: Membuat bundle baru (`title`, `purpose`, `start_date`, `end_date`, `receipt_ids`).
+   - `GET /api/v1/employee/expense-reports/{id}`: Detail bundle beserta daftar struk di dalamnya.
+   - `PUT /api/v1/employee/expense-reports/{id}`: Memperbarui draft bundle.
+   - `POST /api/v1/employee/expense-reports/{id}/submit`: Mengunci dan mengajukan bundle ke Finance.
+   - `DELETE /api/v1/employee/expense-reports/{id}`: Menghapus draft bundle (struk di dalamnya dilepaskan kembali menjadi unbundled).
+4. **API Dashboard Finance & Admin**:
+   - `GET /api/v1/dashboard/expense-reports`: Daftar seluruh bundle klaim masuk dengan filter cabang dan status.
+   - `GET /api/v1/dashboard/expense-reports/{id}`: Detail bundle untuk review persetujuan.
+   - `POST /api/v1/dashboard/expense-reports/{id}/approve`: Persetujuan seluruh bundle dan seluruh struk di dalamnya secara atomik.
+   - `POST /api/v1/dashboard/expense-reports/{id}/reject`: Penolakan bundle dengan alasan (`rejection_reason`).
+
+---
+
+### D. Antarmuka Pengguna (Frontend Web Dashboard & Mobile)
+
+1. **Dashboard Web (`expenseflow-web`)**:
+   - **Review Modal Multi-Foto (`ReceiptInbox.tsx`)**:
+     - Ditambahkan thumbnail switch selector (#1 Foto Utama, #2 Slip EDC, #3 Nota Tambahan) dengan badge tipe foto.
+     - Dilengkapi fullscreen lightbox multi-foto dengan tombol navigasi Prev/Next serta keyboard arrow support.
+   - **Tab Baru "Laporan Dinas (Bundling)"**:
+     - Tab terpisah di samping "Menunggu Review", "Disetujui", "Ditolak", dan "Dibayar".
+     - Menampilkan total struk, total nominal, periode dinas, cabang kantor, dan pembuat laporan.
+     - Modal "Review Bundle Laporan Dinas" menyajikan rincian seluruh struk terlampir dan tombol aksi:
+       - **"Setujui Seluruh Bundle"** (hijau): Meng-approve seluruh struk dalam satu aksi.
+       - **"Tolak Laporan"** (merah): Membuka input alasan penolakan dan menolak bundle.
+
+2. **Aplikasi Mobile Flutter (`expenseflow-mobile`)**:
+   - **Layar Step 1 Foto Struk (`submit_step1_screen.dart`)**:
+     - Pratinjau langsung foto utama struk dengan badge `Struk Utama (OCR)` dan tombol ganti foto.
+     - Bagian **"Lampiran Tambahan (Opsional)"**: Thumbnail lampiran horizontal dengan tombol hapus silang merah dan tombol `+ Tambah Slip EDC / Bukti Bayar` (maksimal 3 lampiran).
+     - Tombol aksi jelas: `Lanjut ke Verifikasi & OCR →`.
+   - **Layar Step 2 Verifikasi (`submit_step2_screen.dart`)**:
+     - Wadah foto dilengkapi chips switcher di bagian bawah jika memiliki foto tambahan, memungkinkan karyawan memeriksa kembali foto utama dan foto slip EDC sebelum submit.
+     - Otomatis mengunggah berkas utama + berkas tambahan secara multipart aman ke backend.
+
 
 
 

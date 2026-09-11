@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\API;
 
 use App\Http\Controllers\Controller;
+use App\Models\AttendanceSetting;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -48,7 +49,22 @@ class SettingsController extends Controller
     // ═══════════════════════════════════════════════════════════
     public function index(Request $request): JsonResponse
     {
-        $settings = $this->fetchSettings($request->user()->company_id);
+        $companyId = $request->user()->company_id;
+        $settings = $this->fetchSettings($companyId);
+
+        // Ambil data cabang-cabang kantor beserta limit khusus
+        $branchSettings = AttendanceSetting::where('company_id', $companyId)
+            ->select('id', 'office_name', 'variance_limit', 'max_claim_limit')
+            ->orderBy('office_name')
+            ->get()
+            ->map(function ($branch) {
+                return [
+                    'id'              => $branch->id,
+                    'office_name'     => $branch->office_name,
+                    'variance_limit'  => $branch->variance_limit !== null ? (int) $branch->variance_limit : null,
+                    'max_claim_limit' => $branch->max_claim_limit !== null ? (float) $branch->max_claim_limit : null,
+                ];
+            });
 
         return response()->json([
             'settings' => [
@@ -58,21 +74,26 @@ class SettingsController extends Controller
                 'threshold_two'    => $settings['threshold_two'],
                 'threshold_three'  => $settings['threshold_three'],
             ],
+            'branch_settings' => $branchSettings,
         ]);
     }
 
     // ═══════════════════════════════════════════════════════════
-    // update() — PUT simpan pengaturan (upsert per key)
+    // update() — PUT simpan pengaturan global perusahaan (upsert per key)
     //    PUT /api/v1/dashboard/settings
     // ═══════════════════════════════════════════════════════════
     public function update(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'variance_limit'   => 'required|numeric|min:0|max:100',
+            'variance_limit'   => 'required|integer|min:0|max:99',
             'max_claim_limit'  => 'required|numeric|min:0',
             'threshold_single' => 'required|string|max:255',
             'threshold_two'    => 'required|string|max:255',
             'threshold_three'  => 'required|string|max:255',
+        ], [
+            'variance_limit.integer' => 'Variance limit harus berupa angka bulat.',
+            'variance_limit.min'     => 'Variance limit tidak boleh kurang dari 0%.',
+            'variance_limit.max'     => 'Variance limit maksimal 2 digit angka (0-99%).',
         ]);
 
         $companyId = $request->user()->company_id;
@@ -99,5 +120,65 @@ class SettingsController extends Controller
         );
 
         return $this->index($request);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // updateBranch() — PUT / PATCH simpan limit khusus cabang kantor
+    //    PUT /api/v1/dashboard/settings/branches/{attendanceSetting}
+    // ═══════════════════════════════════════════════════════════
+    public function updateBranch(Request $request, AttendanceSetting $attendanceSetting): JsonResponse
+    {
+        $user = $request->user();
+        if ($attendanceSetting->company_id !== $user->company_id) {
+            return response()->json(['message' => 'Cabang kantor tidak ditemukan.'], 404);
+        }
+
+        $validated = $request->validate([
+            'variance_limit'  => 'nullable|integer|min:0|max:99',
+            'max_claim_limit' => 'nullable|numeric|min:0',
+        ], [
+            'variance_limit.integer'  => 'Variance limit harus berupa angka bulat.',
+            'variance_limit.min'      => 'Variance limit tidak boleh kurang dari 0%.',
+            'variance_limit.max'      => 'Variance limit maksimal 2 digit angka (0-99%).',
+            'max_claim_limit.numeric' => 'Limit klaim harus berupa angka nominal.',
+            'max_claim_limit.min'     => 'Limit klaim tidak boleh kurang dari 0.',
+        ]);
+
+        $oldValues = [
+            'variance_limit'  => $attendanceSetting->variance_limit,
+            'max_claim_limit' => $attendanceSetting->max_claim_limit,
+        ];
+
+        $attendanceSetting->update([
+            'variance_limit'  => array_key_exists('variance_limit', $validated) ? $validated['variance_limit'] : $attendanceSetting->variance_limit,
+            'max_claim_limit' => array_key_exists('max_claim_limit', $validated) ? $validated['max_claim_limit'] : $attendanceSetting->max_claim_limit,
+        ]);
+
+        $varDesc = $attendanceSetting->variance_limit !== null ? "{$attendanceSetting->variance_limit}%" : 'Default Perusahaan';
+        $claimDesc = $attendanceSetting->max_claim_limit !== null ? 'Rp ' . number_format($attendanceSetting->max_claim_limit, 0, ',', '.') : 'Default Perusahaan';
+
+        \App\Services\AuditLogger::log(
+            action: 'BRANCH_SETTINGS_UPDATED',
+            description: "Memperbarui konfigurasi limit cabang '{$attendanceSetting->office_name}': Variansi ({$varDesc}), Limit Klaim ({$claimDesc})",
+            category: \App\Services\AuditLogger::CATEGORY_SETTINGS,
+            severity: \App\Services\AuditLogger::SEVERITY_WARNING,
+            entityType: 'AttendanceSetting',
+            entityId: $attendanceSetting->id,
+            oldValues: $oldValues,
+            newValues: [
+                'variance_limit'  => $attendanceSetting->variance_limit,
+                'max_claim_limit' => $attendanceSetting->max_claim_limit,
+            ]
+        );
+
+        return response()->json([
+            'message' => "Pengaturan limit cabang '{$attendanceSetting->office_name}' berhasil diperbarui.",
+            'branch'  => [
+                'id'              => $attendanceSetting->id,
+                'office_name'     => $attendanceSetting->office_name,
+                'variance_limit'  => $attendanceSetting->variance_limit !== null ? (int) $attendanceSetting->variance_limit : null,
+                'max_claim_limit' => $attendanceSetting->max_claim_limit !== null ? (float) $attendanceSetting->max_claim_limit : null,
+            ],
+        ]);
     }
 }

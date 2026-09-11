@@ -6,6 +6,7 @@ import 'package:intl/date_symbol_data_local.dart';
 import 'package:provider/provider.dart';
 import 'presensi_provider.dart';
 import 'providers/auth_provider.dart';
+import 'providers/expense_report_provider.dart';
 import 'providers/receipt_provider.dart';
 import 'providers/shift_provider.dart';
 import 'screens/login_screen.dart';
@@ -30,6 +31,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => PresensiProvider()),
         ChangeNotifierProvider(create: (_) => ReceiptProvider()),
         ChangeNotifierProvider(create: (_) => ShiftProvider()),
+        ChangeNotifierProvider(create: (_) => ExpenseReportProvider()),
       ],
       child: const ExpenseFlowApp(),
     ),
@@ -41,7 +43,15 @@ class ExpenseFlowApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    bool hasReportProvider = false;
+    try {
+      Provider.of<ExpenseReportProvider>(context, listen: false);
+      hasReportProvider = true;
+    } catch (_) {
+      hasReportProvider = false;
+    }
+
+    final materialApp = MaterialApp(
       title: 'ExpenseFlow',
       debugShowCheckedModeBanner: false,
       localizationsDelegates: const [
@@ -70,6 +80,15 @@ class ExpenseFlowApp extends StatelessWidget {
       ),
       home: const _AppEntry(),
     );
+
+    if (!hasReportProvider) {
+      return ChangeNotifierProvider<ExpenseReportProvider>(
+        create: (_) => ExpenseReportProvider(),
+        child: materialApp,
+      );
+    }
+
+    return materialApp;
   }
 }
 

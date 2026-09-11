@@ -19,8 +19,12 @@ export interface Receipt {
   approvedAmount?: number;
   kategori: string;
   status: ReceiptStatus;
+  varianceFlag?: boolean;
+  variancePct?: number;
   tanggal: string;
   departemen: string;
+  cabang?: string;
+  cabangId?: number;
   imageUrl?: string; // URL endpoint untuk foto struk
   items?: ReceiptItem[];
   subtotal?: number;
@@ -48,6 +52,71 @@ export interface Receipt {
   bankName?: string;
   bankAccountNo?: string;
   bankAccountHolder?: string;
+  branchVarianceLimit?: number | null;
+  branchMaxClaimLimit?: number | null;
+  images?: ReceiptImage[];
+  expenseReportId?: number | null;
+  expenseReport?: {
+    id: number;
+    report_number: string;
+    title: string;
+    status: string;
+  } | null;
+}
+
+export interface ReceiptImage {
+  id: number;
+  receipt_id?: number;
+  file_path?: string;
+  image_path?: string;
+  image_type?: 'primary' | 'edc_slip' | 'detail' | 'other' | string;
+  file_name?: string;
+  file_size?: number;
+  mime_type?: string;
+}
+
+export type ExpenseReportStatus = 'draft' | 'submitted' | 'approved' | 'rejected' | 'paid';
+
+export interface ExpenseReport {
+  id: number;
+  company_id?: number;
+  user_id?: number;
+  attendance_setting_id?: number | null;
+  report_number: string;
+  reportNumber?: string;
+  title: string;
+  description?: string | null;
+  start_date?: string | null;
+  startDate?: string | null;
+  end_date?: string | null;
+  endDate?: string | null;
+  status: ExpenseReportStatus;
+  total_claimed_amount: number;
+  totalClaimedAmount?: number;
+  total_approved_amount?: number | null;
+  totalApprovedAmount?: number | null;
+  submitted_at?: string | null;
+  approved_at?: string | null;
+  rejection_reason?: string | null;
+  paid_at?: string | null;
+  userName?: string;
+  department?: string;
+  branchName?: string;
+  totalReceipts?: number;
+  user?: {
+    id: number;
+    name: string;
+    email: string;
+    department?: string;
+  };
+  office?: {
+    id: number;
+    office_name: string;
+  };
+  receipts_count?: number;
+  receipts?: any[];
+  created_at?: string;
+  updated_at?: string;
 }
 
 export interface StrukApproval {
@@ -61,6 +130,18 @@ export interface StrukApproval {
   waktu: string;
   catatan: string;
   tanggal?: string; // Format YYYY-MM-DD untuk filtering
+  cabang?: string;
+  cabangId?: number;
+  branchVarianceLimit?: number | null;
+  branchMaxClaimLimit?: number | null;
+  images?: ReceiptImage[];
+  expenseReportId?: number | null;
+  expenseReport?: {
+    id: number;
+    report_number: string;
+    title: string;
+    status: string;
+  } | null;
   approvedBy?: {
     id: string;
     name: string;
@@ -168,10 +249,18 @@ export interface NotificationItem {
   entityId?: number;
 }
 
+export interface BranchSetting {
+  id: number;
+  officeName: string;
+  varianceLimit: number | null;
+  maxClaimLimit: number | null;
+}
+
 export interface AppSettings {
   varianceLimit: number; // in %
   maxClaimLimit: number; // in IDR
   thresholdSingle: string;
   thresholdTwo: string;
   thresholdThree: string;
+  branchSettings?: BranchSetting[];
 }

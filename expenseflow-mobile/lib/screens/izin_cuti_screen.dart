@@ -45,7 +45,10 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
           unselectedLabelColor: Colors.white70,
           indicatorColor: Colors.white,
           indicatorWeight: 3,
-          labelStyle: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+          labelStyle: const TextStyle(
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
+          ),
           tabs: const [
             Tab(text: 'Riwayat'),
             Tab(text: 'Saldo Cuti'),
@@ -54,16 +57,12 @@ class _IzinCutiScreenState extends State<IzinCutiScreen>
       ),
       body: TabBarView(
         controller: _tabController,
-        children: const [
-          _RiwayatIzinTab(),
-          _SaldoCutiTab(),
-        ],
+        children: const [_RiwayatIzinTab(), _SaldoCutiTab()],
       ),
       floatingActionButton: FloatingActionButton.extended(
         heroTag: 'izin_cuti_fab',
         onPressed: () async {
-          final prov =
-              Provider.of<PresensiProvider>(context, listen: false);
+          final prov = Provider.of<PresensiProvider>(context, listen: false);
           await Navigator.push(
             context,
             MaterialPageRoute(builder: (_) => const AjukanIzinScreen()),
@@ -127,8 +126,7 @@ class _RiwayatIzinTab extends StatelessWidget {
               physics: const AlwaysScrollableScrollPhysics(),
               padding: const EdgeInsets.all(16),
               itemCount: leaves.length,
-              itemBuilder: (context, index) =>
-                  _LeaveCard(leave: leaves[index]),
+              itemBuilder: (context, index) => _LeaveCard(leave: leaves[index]),
             ),
     );
   }
@@ -162,8 +160,10 @@ class _LeaveCard extends StatelessWidget {
               children: [
                 // Tipe badge
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: typeStyle.bg,
                     borderRadius: BorderRadius.circular(8),
@@ -180,8 +180,10 @@ class _LeaveCard extends StatelessWidget {
                 ),
                 // Status badge
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 4,
+                  ),
                   decoration: BoxDecoration(
                     color: statusStyle.bg,
                     borderRadius: BorderRadius.circular(8),
@@ -201,8 +203,11 @@ class _LeaveCard extends StatelessWidget {
             const SizedBox(height: 12),
             Row(
               children: [
-                const Icon(Icons.calendar_today_outlined,
-                    size: 14, color: Color(0xFF546E7A)),
+                const Icon(
+                  Icons.calendar_today_outlined,
+                  size: 14,
+                  color: Color(0xFF546E7A),
+                ),
                 const SizedBox(width: 6),
                 Flexible(
                   child: Text(
@@ -217,8 +222,10 @@ class _LeaveCard extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 7,
+                    vertical: 2,
+                  ),
                   decoration: BoxDecoration(
                     color: const Color(0xFFE3F2FD),
                     borderRadius: BorderRadius.circular(6),
@@ -285,7 +292,9 @@ class _LeaveCard extends StatelessWidget {
     );
   }
 
-  ({String label, Color bg, Color border, Color text}) _statusStyle(String status) {
+  ({String label, Color bg, Color border, Color text}) _statusStyle(
+    String status,
+  ) {
     switch (status) {
       case 'approved':
         return (
@@ -394,16 +403,14 @@ class _SaldoCutiTab extends StatelessWidget {
           if (prov.loadingBalance && balances.isEmpty)
             const ShimmerLoading(
               child: Column(
-                children: [
-                  SkeletonLeaveCard(),
-                  SkeletonLeaveCard(),
-                ],
+                children: [SkeletonLeaveCard(), SkeletonLeaveCard()],
               ),
             )
           else
             ...balances.map((b) => _BalanceCard(balance: b)),
           const SizedBox(height: 20),
-          if (prov.leaveResetInfo != null && prov.leaveResetInfo!['leave_reset_date'] != null)
+          if (prov.leaveResetInfo != null &&
+              prov.leaveResetInfo!['leave_reset_date'] != null)
             Container(
               margin: const EdgeInsets.only(bottom: 12),
               padding: const EdgeInsets.all(12),
@@ -420,16 +427,30 @@ class _SaldoCutiTab extends StatelessWidget {
                   Expanded(
                     child: Builder(
                       builder: (context) {
-                        final dateStr = prov.leaveResetInfo!['leave_reset_date'].toString();
+                        final dateStr = prov.leaveResetInfo!['leave_reset_date']
+                            .toString();
                         final parts = dateStr.split('-');
                         String prettyDate = dateStr;
                         if (parts.length == 2) {
                           final int? month = int.tryParse(parts[0]);
                           final int? day = int.tryParse(parts[1]);
-                          if (month != null && day != null && month >= 1 && month <= 12) {
+                          if (month != null &&
+                              day != null &&
+                              month >= 1 &&
+                              month <= 12) {
                             const months = [
-                              'Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni',
-                              'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'
+                              'Januari',
+                              'Februari',
+                              'Maret',
+                              'April',
+                              'Mei',
+                              'Juni',
+                              'Juli',
+                              'Agustus',
+                              'September',
+                              'Oktober',
+                              'November',
+                              'Desember',
                             ];
                             prettyDate = '$day ${months[month - 1]}';
                           }
@@ -459,14 +480,12 @@ class _SaldoCutiTab extends StatelessWidget {
             child: const Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.info_outline,
-                    color: Color(0xFF1565C0), size: 18),
+                Icon(Icons.info_outline, color: Color(0xFF1565C0), size: 18),
                 SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     'Saldo cuti dipotong otomatis saat pengajuan disetujui HRD. Kuota dapat disesuaikan oleh HRD.',
-                    style:
-                        TextStyle(fontSize: 12, color: Color(0xFF0D47A1)),
+                    style: TextStyle(fontSize: 12, color: Color(0xFF0D47A1)),
                   ),
                 ),
               ],
@@ -532,10 +551,7 @@ class _BalanceCard extends StatelessWidget {
                           ),
                           const TextSpan(
                             text: ' / ',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.grey,
-                            ),
+                            style: TextStyle(fontSize: 14, color: Colors.grey),
                           ),
                           TextSpan(
                             text: '${balance.quota} hari',
@@ -551,7 +567,9 @@ class _BalanceCard extends StatelessWidget {
                   else
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 4),
+                        horizontal: 10,
+                        vertical: 4,
+                      ),
                       decoration: BoxDecoration(
                         color: const Color(0xFFECEFF1),
                         borderRadius: BorderRadius.circular(8),

@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class ReceiptImage extends Model
 {
     protected $fillable = [
-        'receipt_id', 'file_path', 'file_name', 'file_size', 'mime_type',
+        'receipt_id', 'file_path', 'file_name', 'file_size', 'mime_type', 'image_type',
     ];
 
     public function receipt(): BelongsTo

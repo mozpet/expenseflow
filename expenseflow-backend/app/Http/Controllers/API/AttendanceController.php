@@ -115,6 +115,23 @@ class AttendanceController extends Controller
         return now('Asia/Jakarta')->toDateString();
     }
 
+    /**
+     * Jalankan auto-checkout catch-up ringan (throttled) bila ada presensi tertinggal.
+     * Mencegah presensi menggantung jika server/cron sempat mati di jam pulang.
+     */
+    private function triggerAutoCheckoutCatchup(): void
+    {
+        try {
+            $lockKey = 'auto_checkout_catchup_throttle';
+            if (! \Illuminate\Support\Facades\Cache::has($lockKey)) {
+                \Illuminate\Support\Facades\Cache::put($lockKey, true, 60); // throttle 60 detik
+                \Illuminate\Support\Facades\Artisan::call('attendance:auto-checkout');
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Auto-checkout catchup failed: ' . $e->getMessage());
+        }
+    }
+
     // ─── Helper: ambil jadwal kerja efektif karyawan pada tanggal tertentu ────
     //     Mempertimbangkan shift khusus jika ada; fallback ke attendance_settings kantor.
     //     Delegasi ke ShiftController::resolveSchedule() agar logika terpusat.
@@ -994,6 +1011,8 @@ class AttendanceController extends Controller
     // 4c. today() — dashboard presensi hari ini untuk HRD
     public function today(Request $request): JsonResponse
     {
+        $this->triggerAutoCheckoutCatchup();
+
         $actor = $request->user();
         $today = $this->todayDate();
 
@@ -1019,7 +1038,23 @@ class AttendanceController extends Controller
         $attendancesYesterday = Attendance::where('date', $yesterday)
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
             ->get()
-            ->filter(function ($att) use ($today) {
+            ->filter(function ($att) use ($today, $employees) {
+                // HANYA presensi yang benar-benar shift lintas hari (cross-day)
+                $isCross = false;
+                if ($att->snap_source !== null) {
+                    $isCross = (bool) $att->snap_is_cross_day;
+                } else {
+                    $emp = $employees->firstWhere('id', $att->user_id);
+                    if ($emp) {
+                        $sch = \App\Http\Controllers\API\ShiftController::resolveSchedule($emp, (string) $att->date);
+                        $isCross = !empty($sch['is_cross_day']);
+                    }
+                }
+
+                if (!$isCross) {
+                    return false;
+                }
+
                 if (is_null($att->check_out_time)) return true;
                 
                 $checkoutCarbon = \Carbon\Carbon::parse($att->check_out_time)->timezone('Asia/Jakarta');
@@ -1075,7 +1110,8 @@ class AttendanceController extends Controller
 
             if ($att && $att->check_in_time) {
                 // Shift malam kemarin (cross-day)
-                $isCrossDay = \Carbon\Carbon::parse($att->date)->format('Y-m-d') === $yesterday;
+                $attDateStr = Carbon::parse($att->date)->format('Y-m-d');
+                $isCrossDay = $attDateStr === $yesterday;
                 $checkedIn[] = [
                     'user_id'               => $emp->id,
                     'name'                  => $emp->name,
@@ -1086,7 +1122,7 @@ class AttendanceController extends Controller
                     'check_out_time'        => $att->check_out_time,
                     'check_in_type'         => $att->check_in_type,
                     'status'                => $att->status,
-                    'shift_date'            => Carbon::parse($att->date)->format('Y-m-d'),
+                    'shift_date'            => $attDateStr,
                     'checkout_date'         => $isCrossDay ? $today : null,
                     'is_cross_day'          => $isCrossDay,
                 ];
@@ -5551,6 +5587,8 @@ class AttendanceController extends Controller
     //     Mengembalikan info checkout, overtime, dan jadwal auto-checkout.
     public function checkStatus(Request $request): JsonResponse
     {
+        $this->triggerAutoCheckoutCatchup();
+
         $user  = $request->user();
         $today = $this->todayDate();
 

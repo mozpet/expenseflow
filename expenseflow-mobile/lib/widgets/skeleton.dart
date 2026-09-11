@@ -297,3 +297,205 @@ class SkeletonLeaveCard extends StatelessWidget {
     );
   }
 }
+
+/// 5. Skeleton Expense Report Card (Khusus Kartu Laporan Dinas di Tab Riwayat)
+class SkeletonExpenseReportCard extends StatelessWidget {
+  const SkeletonExpenseReportCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: const Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Row(
+                children: [
+                  SkeletonBox(width: 16, height: 16, borderRadius: 4),
+                  SizedBox(width: 6),
+                  SkeletonBox(width: 110, height: 13, borderRadius: 4),
+                ],
+              ),
+              SkeletonBox(width: 65, height: 22, borderRadius: 6),
+            ],
+          ),
+          SizedBox(height: 10),
+          SkeletonBox(width: 220, height: 15, borderRadius: 4),
+          SizedBox(height: 8),
+          Row(
+            children: [
+              SkeletonBox(width: 14, height: 14, borderRadius: 3),
+              SizedBox(width: 6),
+              SkeletonBox(width: 140, height: 12, borderRadius: 4),
+              Spacer(),
+              SkeletonBox(width: 55, height: 20, borderRadius: 4),
+            ],
+          ),
+          Divider(height: 18),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              SkeletonBox(width: 100, height: 12, borderRadius: 4),
+              SkeletonBox(width: 90, height: 15, borderRadius: 4),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 6. Skeleton Receipt Item Card (Khusus Kartu Struk Terlampir di Laporan Dinas)
+class SkeletonReceiptItemCard extends StatelessWidget {
+  const SkeletonReceiptItemCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          SkeletonBox(width: 48, height: 48, borderRadius: 8),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SkeletonBox(width: 75, height: 11, borderRadius: 3),
+                SizedBox(height: 5),
+                SkeletonBox(width: 130, height: 13, borderRadius: 4),
+                SizedBox(height: 5),
+                SkeletonBox(width: 160, height: 11, borderRadius: 3),
+              ],
+            ),
+          ),
+          SizedBox(width: 8),
+          SkeletonBox(width: 75, height: 15, borderRadius: 4),
+        ],
+      ),
+    );
+  }
+}
+
+/// 7. Skeleton Expense Report Detail (Layar Penuh Rincian Laporan Dinas)
+class SkeletonExpenseReportDetail extends StatelessWidget {
+  const SkeletonExpenseReportDetail({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return ShimmerLoading(
+      child: SingleChildScrollView(
+        physics: const NeverScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Status banner shimmer
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: const Row(
+                children: [
+                  SkeletonBox(width: 24, height: 24, borderRadius: 6),
+                  SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        SkeletonBox(width: 140, height: 14, borderRadius: 4),
+                        SizedBox(height: 6),
+                        SkeletonBox(width: 220, height: 11, borderRadius: 4),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // Kartu Informasi Laporan
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.grey.shade200),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  SkeletonBox(width: 200, height: 16, borderRadius: 4),
+                  SizedBox(height: 8),
+                  Row(
+                    children: [
+                      SkeletonBox(width: 15, height: 15, borderRadius: 4),
+                      SizedBox(width: 6),
+                      SkeletonBox(width: 140, height: 12, borderRadius: 4),
+                    ],
+                  ),
+                  SizedBox(height: 12),
+                  SkeletonBox(width: 260, height: 12, borderRadius: 4),
+                  Divider(height: 24),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SkeletonBox(width: 60, height: 10, borderRadius: 3),
+                          SizedBox(height: 4),
+                          SkeletonBox(width: 110, height: 16, borderRadius: 4),
+                        ],
+                      ),
+                      SkeletonBox(width: 65, height: 24, borderRadius: 20),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
+
+            // Header Daftar Struk Terlampir
+            const Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                SkeletonBox(width: 160, height: 15, borderRadius: 4),
+                SkeletonBox(width: 80, height: 15, borderRadius: 4),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // 4x Skeleton Struk Items
+            const SkeletonReceiptItemCard(),
+            const SkeletonReceiptItemCard(),
+            const SkeletonReceiptItemCard(),
+            const SkeletonReceiptItemCard(),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

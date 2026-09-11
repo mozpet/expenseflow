@@ -1310,8 +1310,15 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) {
+        final media = MediaQuery.of(ctx);
+        final bottomInset = media.viewInsets.bottom;
+        final systemBottom = media.padding.bottom;
+        final safeBottom = bottomInset > 0
+            ? bottomInset + 16.0
+            : (systemBottom > 0 ? systemBottom + 16.0 : 24.0);
+
         return Container(
-          height: MediaQuery.of(ctx).size.height * 0.7,
+          height: media.size.height * 0.75,
           decoration: const BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -1352,7 +1359,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       );
                     }
                     return ListView(
-                      padding: const EdgeInsets.all(16),
+                      padding: EdgeInsets.fromLTRB(16, 16, 16, safeBottom),
                       children: [
                         // Kartu notifikasi pembatalan cuti bersama / cuti mandiri
                         ...cancellations.map((c) => Padding(

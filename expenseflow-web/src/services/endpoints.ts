@@ -58,11 +58,21 @@ export const authApi = {
 
 // ─── Receipts (struk) ───────────────────────────────────────
 export const receiptApi = {
-  // Inbox: struk submitted yang menunggu approval (paginated)
-  inbox: (forceRefresh = false) => apiGet('/dashboard/receipts', undefined, { forceRefresh }),
-  // Semua struk dengan filter status + summary
-  all: (status?: 'submitted' | 'approved' | 'rejected' | 'paid', forceRefresh = false) =>
-    apiGet('/dashboard/receipts/all', { status }, { forceRefresh }),
+  // Inbox: struk submitted yang menunggu approval (paginated, mendukung filter cabang)
+  inbox: (params?: { attendance_setting_id?: number | string; per_page?: number } | boolean, forceRefresh = false) => {
+    const isBool = typeof params === 'boolean';
+    const queryParams = isBool ? undefined : params;
+    const shouldRefresh = isBool ? params : forceRefresh;
+    return apiGet('/dashboard/receipts', queryParams, { forceRefresh: shouldRefresh });
+  },
+  // Semua struk dengan filter status + summary + cabang
+  all: (
+    filter?: 'submitted' | 'approved' | 'rejected' | 'paid' | { status?: string; attendance_setting_id?: number | string; per_page?: number },
+    forceRefresh = false
+  ) => {
+    const queryParams = typeof filter === 'string' ? { status: filter } : filter;
+    return apiGet('/dashboard/receipts/all', queryParams, { forceRefresh });
+  },
   show: (id: number | string) => apiGet(`/dashboard/receipts/${id}`),
   approve: (id: number | string, notes: string, approvedAmount?: number) =>
     apiPost(`/dashboard/receipts/${id}/approve`, {
@@ -81,22 +91,24 @@ export const receiptApi = {
       receipt_ids: receiptIds,
       ...payload,
     }),
-  exportDisbursement: (status: 'approved' | 'paid' = 'approved') =>
+  exportDisbursement: (status: 'approved' | 'paid' = 'approved', branchId?: number | string) =>
     apiDownload(
       '/dashboard/receipts/export-disbursement',
       `rekap-transfer-reimbursement-${status}-${new Date().toISOString().slice(0, 10)}.csv`,
-      { status }
+      { status, attendance_setting_id: branchId }
     ),
   reject: (id: number | string, notes: string) =>
     apiPost(`/dashboard/receipts/${id}/reject`, { notes }),
   // Fetch image as blob dan convert ke data URL untuk display di <img>
-  fetchImageAsDataUrl: async (id: number | string): Promise<string | null> => {
+  // Mendukung multi-foto per struk melalui parameter imageId / index
+  fetchImageAsDataUrl: async (id: number | string, imageId?: number | string): Promise<string | null> => {
     try {
       const headers: Record<string, string> = { 'X-Platform': 'web' };
       const token = getToken();
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const response = await fetch(`${BASE_URL}/dashboard/receipts/${id}/image`, { headers });
+      const query = imageId !== undefined ? `?image_id=${imageId}` : '';
+      const response = await fetch(`${BASE_URL}/dashboard/receipts/${id}/image${query}`, { headers });
       if (!response.ok) return null;
 
       const blob = await response.blob();
@@ -105,6 +117,17 @@ export const receiptApi = {
       return null;
     }
   },
+};
+
+// ─── Expense Reports (Laporan Pengeluaran Dinas / Bundling) ──
+export const expenseReportApi = {
+  list: (params?: { status?: string; attendance_setting_id?: number | string }, forceRefresh = false) =>
+    apiGet('/dashboard/expense-reports', params, { forceRefresh }),
+  show: (id: number | string) => apiGet(`/dashboard/expense-reports/${id}`),
+  approve: (id: number | string, notes?: string, approvedReceiptIds?: number[]) =>
+    apiPost(`/dashboard/expense-reports/${id}/approve`, { notes, approved_receipt_ids: approvedReceiptIds }),
+  reject: (id: number | string, notes: string) =>
+    apiPost(`/dashboard/expense-reports/${id}/reject`, { notes }),
 };
 
 // ─── Invoices ───────────────────────────────────────────────
@@ -644,7 +667,7 @@ export const deviceChangeApi = {
 // ─── Settings ───────────────────────────────────────────────
 export const settingsApi = {
   get: (forceRefresh = false) =>
-    apiGet<{ settings: any }>('/dashboard/settings', undefined, { forceRefresh }),
+    apiGet<{ settings: any; branch_settings?: any[] }>('/dashboard/settings', undefined, { forceRefresh }),
   clearCache: () => {
     invalidateCache('/dashboard/settings');
   },
@@ -654,7 +677,11 @@ export const settingsApi = {
     threshold_single: string;
     threshold_two: string;
     threshold_three: string;
-  }) => apiPut<{ settings: any }>('/dashboard/settings', payload),
+  }) => apiPut<{ settings: any; branch_settings?: any[] }>('/dashboard/settings', payload),
+  updateBranch: (branchId: number | string, payload: {
+    variance_limit: number | null;
+    max_claim_limit: number | null;
+  }) => apiPut<{ message: string; branch: any }>(`/dashboard/settings/branches/${branchId}`, payload),
 };
 
 // ─── Recruitment — HRD & Admin ──────────────────────────────

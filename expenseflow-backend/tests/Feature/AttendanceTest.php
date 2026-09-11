@@ -561,5 +561,52 @@ class AttendanceTest extends TestCase
         ->assertOk()
         ->assertJsonPath('attendance.check_out_type', 'wfh');
     }
+
+    public function test_unclosed_yesterday_daytime_shift_is_not_treated_as_active_cross_day_today(): void
+    {
+        $this->office();
+        $hrd = $this->user('hrd');
+        $emp = $this->user('employee');
+
+        // Freeze time to today at 09:00 WIB
+        Carbon::setTestNow(Carbon::parse('2026-09-10 09:00:00', 'Asia/Jakarta'));
+
+        // Employee checked in yesterday morning for daytime shift (08:00 - 17:00), no checkout (e.g. server was off)
+        $yesterday = '2026-09-09';
+        $attYesterday = \App\Models\Attendance::create([
+            'user_id' => $emp->id,
+            'company_id' => $this->company->id,
+            'date' => $yesterday,
+            'check_in_time' => '2026-09-09 08:15:00',
+            'check_in_type' => 'wfh',
+            'status' => 'present',
+            'snap_source' => 'office',
+            'snap_work_start_time' => '08:00:00',
+            'snap_work_end_time' => '17:00:00',
+            'snap_is_cross_day' => false,
+            'snap_is_off' => false,
+            'snap_grace_minutes' => 60,
+        ]);
+
+        // Clear catchup throttle cache
+        \Illuminate\Support\Facades\Cache::forget('auto_checkout_catchup_throttle');
+
+        // HRD calls today() dashboard
+        $response = $this->getJson('/api/v1/dashboard/attendance/today', $this->token($hrd))
+            ->assertOk();
+
+        $checkedInIds = collect($response->json('checked_in'))->pluck('user_id')->all();
+        $notCheckedInIds = collect($response->json('not_checked_in'))->pluck('user_id')->all();
+
+        // Employee should NOT be in checked_in as an active cross-day shift
+        $this->assertNotContains($emp->id, $checkedInIds);
+        // Employee should be in not_checked_in for today
+        $this->assertContains($emp->id, $notCheckedInIds);
+
+        // And the yesterday attendance should be auto-checked out by the catchup
+        $attYesterday->refresh();
+        $this->assertNotNull($attYesterday->check_out_time);
+        $this->assertTrue((bool) $attYesterday->is_auto_checkout);
+    }
 }
 

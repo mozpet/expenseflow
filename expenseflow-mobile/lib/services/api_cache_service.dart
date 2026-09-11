@@ -108,6 +108,16 @@ class ApiCacheService {
       pattern: RegExp(r'^/employee/receipts/\d+$'),
       ttl: const Duration(seconds: 30),
     ),
+    // 13. Daftar Laporan Pengeluaran Dinas Saya (20 detik)
+    EndpointCacheRule(
+      pattern: RegExp(r'^/employee/expense-reports$'),
+      ttl: const Duration(seconds: 20),
+    ),
+    // 14. Detail Laporan Pengeluaran Dinas (30 detik)
+    EndpointCacheRule(
+      pattern: RegExp(r'^/employee/expense-reports/\d+$'),
+      ttl: const Duration(seconds: 30),
+    ),
   ];
 
   // ─── Auto-Invalidation Registry ─────────────────────────────────────────────
@@ -166,6 +176,15 @@ class ApiCacheService {
     MutationInvalidationRule(
       pattern: RegExp(r'^/employee/receipts'),
       invalidates: [
+        '/employee/receipts',
+        '/employee/expense-reports',
+      ],
+    ),
+    // Buat / Update / Submit / Hapus / Tambah-Lepas Struk Laporan Pengeluaran Dinas
+    MutationInvalidationRule(
+      pattern: RegExp(r'^/employee/expense-reports'),
+      invalidates: [
+        '/employee/expense-reports',
         '/employee/receipts',
       ],
     ),

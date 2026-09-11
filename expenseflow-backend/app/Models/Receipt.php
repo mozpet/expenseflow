@@ -13,13 +13,25 @@ class Receipt extends Model
     use SoftDeletes;
 
     protected $fillable = [
-        'company_id', 'user_id', 'receipt_number', 'sha256_hash',
+        'company_id', 'user_id', 'attendance_setting_id', 'expense_report_id', 'receipt_number', 'sha256_hash',
         'image_path', 'vendor_name', 'total_amount', 'claimed_amount',
         'approved_amount', 'receipt_date', 'currency', 'status', 'ocr_status',
+        'ocr_raw_amount', 'ocr_raw_merchant', 'ocr_raw_date', 'ocr_raw_subtotal',
+        'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items', 'ocr_error', 'ocr_attempts',
+        'variance_flag', 'variance_pct', 'submitted_at',
         'notes', 'category', 'paid_at', 'paid_by', 'payment_method',
         'payment_ref_no', 'payment_proof_path', 'is_potential_duplicate',
         'duplicate_reference_id', 'duplicate_reason',
     ];
+
+    protected $appends = [
+        'display_merchant',
+    ];
+
+    public function getDisplayMerchantAttribute(): string
+    {
+        return !empty($this->vendor_name) ? $this->vendor_name : (!empty($this->ocr_raw_merchant) ? $this->ocr_raw_merchant : '—');
+    }
 
     protected function casts(): array
     {
@@ -41,6 +53,21 @@ class Receipt extends Model
             'is_potential_duplicate' => 'boolean',
             'ocr_attempts'           => 'integer',
         ];
+    }
+
+    protected static function booted(): void
+    {
+        static::saved(function (Receipt $receipt) {
+            if ($receipt->expense_report_id) {
+                ExpenseReport::find($receipt->expense_report_id)?->recalculateTotals();
+            }
+        });
+
+        static::deleted(function (Receipt $receipt) {
+            if ($receipt->expense_report_id) {
+                ExpenseReport::find($receipt->expense_report_id)?->recalculateTotals();
+            }
+        });
     }
 
     // ─── Immutable fields ───────────────────────────────────────
@@ -79,6 +106,16 @@ class Receipt extends Model
         return $this->belongsTo(User::class);
     }
 
+    public function office(): BelongsTo
+    {
+        return $this->belongsTo(AttendanceSetting::class, 'attendance_setting_id');
+    }
+
+    public function expenseReport(): BelongsTo
+    {
+        return $this->belongsTo(ExpenseReport::class);
+    }
+
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
@@ -107,22 +144,52 @@ class Receipt extends Model
     // ─── Auto-calculate variance flag & percentage ──────────
     public function recalculateVariance(): void
     {
-        $claimed  = (float) $this->claimed_amount;
+        $claimed   = (float) ($this->claimed_amount ?? $this->total_amount ?? 0);
         $ocrAmount = (float) $this->ocr_raw_amount;
 
-        if ($this->ocr_raw_amount !== null && $this->claimed_amount !== null && $ocrAmount > 0) {
-            $variancePct = abs($claimed - $ocrAmount) / $ocrAmount * 100;
+        if ($this->ocr_raw_amount !== null && $ocrAmount > 0 && $claimed > 0) {
+            $diff = abs($claimed - $ocrAmount);
+            $variancePct = ($diff / $ocrAmount) * 100;
 
-            $limit = (float) (DB::table('company_settings')
-                ->where('company_id', $this->company_id)
-                ->where('key', 'variance_limit')
-                ->value('value') ?? 10);
+            $limit = $this->getEffectiveVarianceLimit();
 
             $this->variance_pct  = round($variancePct, 2);
             $this->variance_flag = $variancePct > $limit;
 
-            static::withoutEvents(fn () => $this->save());
+            static::withoutEvents(fn () => $this->saveQuietly());
         }
+    }
+
+    /**
+     * Dapatkan effective variance limit (%) untuk struk ini.
+     * Prioritas:
+     * 1. Batas khusus cabang struk (attendance_setting_id).
+     * 2. Batas khusus cabang user pengaju (user.attendance_setting_id).
+     * 3. Batas global perusahaan (company_settings.variance_limit).
+     * 4. Default fallback 10%.
+     */
+    public function getEffectiveVarianceLimit(): float
+    {
+        $branchId = $this->attendance_setting_id ?? $this->user?->attendance_setting_id;
+        if ($branchId) {
+            $branchLimit = DB::table('attendance_settings')
+                ->where('id', $branchId)
+                ->where('company_id', $this->company_id)
+                ->value('variance_limit');
+
+            if ($branchLimit !== null && is_numeric($branchLimit) && (float) $branchLimit >= 0 && (float) $branchLimit <= 99) {
+                return (float) $branchLimit;
+            }
+        }
+
+        $limitVal = DB::table('company_settings')
+            ->where('company_id', $this->company_id)
+            ->where('key', 'variance_limit')
+            ->value('value');
+
+        return ($limitVal !== null && is_numeric($limitVal) && (float) $limitVal >= 0 && (float) $limitVal <= 99)
+            ? (float) $limitVal
+            : 10.0;
     }
 
     /**

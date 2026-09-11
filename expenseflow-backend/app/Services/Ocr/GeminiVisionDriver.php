@@ -38,7 +38,7 @@ class GeminiVisionDriver implements OcrDriverInterface
         }
 
         $mimeType = mime_content_type($fullPath) ?: 'image/jpeg';
-        $base64Image = base64_encode(file_get_contents($fullPath));
+        $base64Image = $this->prepareBase64Image($fullPath, $mimeType);
 
         $prompt = <<<PROMPT
 Anda adalah sistem AI pemeriksa dan verifikasi struk belanja/nota pengeluaran perusahaan yang sangat ketat dan akurat.
@@ -107,12 +107,12 @@ Kembalikan HANYA format JSON valid tanpa tanda markdown tambahan:
 }
 PROMPT;
 
-        $primaryModel = config('services.gemini.model') ?? env('GEMINI_MODEL', 'gemini-3.5-flash-lite');
+        $primaryModel = config('services.gemini.model') ?? env('GEMINI_MODEL', 'gemini-3.1-flash-lite');
         $candidateModels = array_values(array_unique(array_filter([
             $primaryModel,
-            'gemini-3.5-flash-lite',
             'gemini-3.1-flash-lite',
-            'gemini-3.5-flash',
+            'gemini-3.5-flash-lite',
+            'gemini-flash-lite-latest',
         ])));
 
         $payload = [
@@ -142,7 +142,7 @@ PROMPT;
             $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
             try {
-                $response = Http::timeout(10)
+                $response = Http::timeout(20)
                     ->withHeaders(['Content-Type' => 'application/json'])
                     ->post($url, $payload);
 
@@ -273,5 +273,74 @@ PROMPT;
             'date'     => ! empty($parsed['date']) ? (string) $parsed['date'] : $this->extractDate($rawText),
             'raw_text' => (string) $rawText,
         ];
+    }
+
+    /**
+     * Optimasi gambar struk sebelum dikirim ke Gemini:
+     * Resize ke resolusi ideal OCR (maks 1200px) & kompresi JPEG untuk mempercepat upload
+     * dan inferensi AI tanpa mengurangi keterbacaan teks/angka.
+     */
+    private function prepareBase64Image(string $fullPath, string &$mimeType): string
+    {
+        if (! extension_loaded('gd')) {
+            return base64_encode(file_get_contents($fullPath));
+        }
+
+        $imageInfo = @getimagesize($fullPath);
+        if (! $imageInfo) {
+            return base64_encode(file_get_contents($fullPath));
+        }
+
+        [$width, $height, $type] = $imageInfo;
+        $maxDim = 1200;
+
+        // Jika ukuran file sudah ringan (< 300 KB) dan dimensinya tidak terlalu besar, kirim langsung
+        if (filesize($fullPath) < 300 * 1024 && $width <= $maxDim && $height <= $maxDim) {
+            return base64_encode(file_get_contents($fullPath));
+        }
+
+        $src = match ($type) {
+            IMAGETYPE_JPEG => @imagecreatefromjpeg($fullPath),
+            IMAGETYPE_PNG  => @imagecreatefrompng($fullPath),
+            IMAGETYPE_WEBP => @imagecreatefromwebp($fullPath),
+            default        => null,
+        };
+
+        if (! $src) {
+            return base64_encode(file_get_contents($fullPath));
+        }
+
+        // Hitung skala baru jika dimensi melebihi maxDim
+        if ($width > $maxDim || $height > $maxDim) {
+            if ($width > $height) {
+                $newWidth = $maxDim;
+                $newHeight = (int) round($height * ($maxDim / $width));
+            } else {
+                $newHeight = $maxDim;
+                $newWidth = (int) round($width * ($maxDim / $height));
+            }
+        } else {
+            $newWidth = $width;
+            $newHeight = $height;
+        }
+
+        $dst = imagecreatetruecolor($newWidth, $newHeight);
+        $white = imagecolorallocate($dst, 255, 255, 255);
+        imagefilledrectangle($dst, 0, 0, $newWidth, $newHeight, $white);
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
+
+        ob_start();
+        imagejpeg($dst, null, 82);
+        $compressedData = ob_get_clean();
+
+        imagedestroy($src);
+        imagedestroy($dst);
+
+        if ($compressedData !== false && strlen($compressedData) > 0) {
+            $mimeType = 'image/jpeg';
+            return base64_encode($compressedData);
+        }
+
+        return base64_encode(file_get_contents($fullPath));
     }
 }

@@ -294,11 +294,15 @@ class ApiService {
 
   // ─── Struk / Receipt ──────────────────────────────────────
   /// Upload foto struk (multipart) dari bytes — jalan di web & mobile.
-  /// Backend dispatch OCR job otomatis.
+  /// Mendukung multi-foto (Slip EDC / Nota rincian) dan penautan laporan dinas.
+  /// Backend dispatch OCR job otomatis dari foto utama.
   static Future<Map<String, dynamic>> uploadReceipt(
     Uint8List imageBytes,
-    String fileName,
-  ) async {
+    String fileName, {
+    List<Uint8List>? additionalPhotos,
+    List<String>? additionalFileNames,
+    int? expenseReportId,
+  }) async {
     final token = await getToken();
     final uri = Uri.parse('${ApiConfig.baseUrl}/employee/receipts');
     final req = http.MultipartRequest('POST', uri)
@@ -310,6 +314,27 @@ class ApiService {
     req.files.add(
       http.MultipartFile.fromBytes('image', imageBytes, filename: fileName),
     );
+
+    // Lampiran foto tambahan (misal slip EDC / nota rincian)
+    if (additionalPhotos != null && additionalPhotos.isNotEmpty) {
+      for (int i = 0; i < additionalPhotos.length; i++) {
+        final fName = (additionalFileNames != null && i < additionalFileNames.length)
+            ? additionalFileNames[i]
+            : 'lampiran_${i + 1}.jpg';
+        req.files.add(
+          http.MultipartFile.fromBytes(
+            'additional_images[]',
+            additionalPhotos[i],
+            filename: fName,
+          ),
+        );
+      }
+    }
+
+    if (expenseReportId != null) {
+      req.fields['expense_report_id'] = expenseReportId.toString();
+    }
+
     // Kategori default — karyawan ganti sebelum submit via updateClaim
     req.fields['category'] = 'Lain-lain / Operasional';
 
@@ -337,6 +362,101 @@ class ApiService {
         ? data['retry_after'] as int
         : null;
     throw ApiException(msg, res.statusCode, data, retryAfter);
+  }
+
+  /// Foto ulang struk draf (replace foto & re-run OCR)
+  static Future<Map<String, dynamic>> retakeReceipt(
+    int receiptId,
+    Uint8List imageBytes,
+    String fileName,
+  ) async {
+    final token = await getToken();
+    final uri = Uri.parse('${ApiConfig.baseUrl}/employee/receipts/$receiptId/retake');
+    final req = http.MultipartRequest('POST', uri)
+      ..headers['Accept'] = 'application/json'
+      ..headers['X-Platform'] = 'mobile';
+    if (token != null && token.isNotEmpty) {
+      req.headers['Authorization'] = 'Bearer $token';
+    }
+    req.files.add(
+      http.MultipartFile.fromBytes('image', imageBytes, filename: fileName),
+    );
+
+    http.Response res;
+    try {
+      final streamed = await req.send().timeout(const Duration(seconds: 60));
+      res = await http.Response.fromStream(streamed);
+    } catch (e) {
+      throw ApiException('Tidak dapat terhubung ke server. Pastikan backend menyala.');
+    }
+
+    Map<String, dynamic> data = {};
+    if (res.body.isNotEmpty) {
+      try {
+        final decoded = jsonDecode(res.body);
+        if (decoded is Map<String, dynamic>) data = decoded;
+      } catch (_) {}
+    }
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      ApiCacheService.handleMutation('/employee/receipts');
+      return data;
+    }
+    final msg = (data['message'] as String?) ?? 'Gagal memperbarui foto struk (${res.statusCode}).';
+    throw ApiException(msg, res.statusCode, data);
+  }
+
+  /// Hapus draft struk
+  static Future<Map<String, dynamic>> deleteReceipt(int receiptId) async {
+    final res = await _request('DELETE', '/employee/receipts/$receiptId');
+    ApiCacheService.handleMutation('/employee/receipts');
+    return res;
+  }
+
+  // ─── Laporan Pengeluaran Dinas (Expense Reports) ───────────
+  static Future<List<dynamic>> getExpenseReports({bool forceRefresh = false}) async {
+    final res = await _request('GET', '/employee/expense-reports', forceRefresh: forceRefresh);
+    if (res['data'] is List) {
+      return res['data'] as List<dynamic>;
+    }
+    if (res['reports'] is List) {
+      return res['reports'] as List<dynamic>;
+    }
+    return [];
+  }
+
+  static Future<Map<String, dynamic>> createExpenseReport({
+    required String title,
+    String? purpose,
+    String? startDate,
+    String? endDate,
+    List<int>? receiptIds,
+  }) async {
+    final body = <String, dynamic>{'title': title};
+    if (purpose != null) body['purpose'] = purpose;
+    if (startDate != null) body['start_date'] = startDate;
+    if (endDate != null) body['end_date'] = endDate;
+    if (receiptIds != null) body['receipt_ids'] = receiptIds;
+    return _request('POST', '/employee/expense-reports', body: body);
+  }
+
+  static Future<Map<String, dynamic>> getExpenseReportDetail(int reportId, {bool forceRefresh = false}) async {
+    return _request('GET', '/employee/expense-reports/$reportId', forceRefresh: forceRefresh);
+  }
+
+  static Future<Map<String, dynamic>> submitExpenseReport(int reportId) async {
+    return _request('POST', '/employee/expense-reports/$reportId/submit');
+  }
+
+  static Future<Map<String, dynamic>> deleteExpenseReport(int reportId) async {
+    return _request('DELETE', '/employee/expense-reports/$reportId');
+  }
+
+  static Future<Map<String, dynamic>> addReceiptsToReport(int reportId, List<int> receiptIds) async {
+    return _request('POST', '/employee/expense-reports/$reportId/receipts', body: {'receipt_ids': receiptIds});
+  }
+
+  static Future<Map<String, dynamic>> removeReceiptFromReport(int reportId, int receiptId) async {
+    return _request('DELETE', '/employee/expense-reports/$reportId/receipts/$receiptId');
   }
 
   static Future<Map<String, dynamic>> getReceipt(int id, {bool forceRefresh = false}) async {
@@ -367,10 +487,6 @@ class ApiService {
 
   static Future<Map<String, dynamic>> submitReceipt(int id) async {
     return _request('POST', '/employee/receipts/$id/submit');
-  }
-
-  static Future<Map<String, dynamic>> deleteReceipt(int id) async {
-    return _request('DELETE', '/employee/receipts/$id');
   }
 
   // ─── Izin / Cuti ──────────────────────────────────────────

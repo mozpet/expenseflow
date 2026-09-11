@@ -42,9 +42,10 @@ class StatusScreen extends StatelessWidget {
                   Text(
                     'Pengajuan berhasil dikirim!',
                     style: TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.green),
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.green,
+                    ),
                   ),
                   SizedBox(height: 4),
                   Text(
@@ -56,7 +57,7 @@ class StatusScreen extends StatelessWidget {
             ),
             const SizedBox(height: 24),
 
-            if (receipt.isPotentialDuplicate) ...[
+            if (receipt.showDuplicateWarning) ...[
               Container(
                 margin: const EdgeInsets.only(bottom: 16),
                 padding: const EdgeInsets.all(12),
@@ -68,7 +69,11 @@ class StatusScreen extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.info_outline, color: Colors.purple, size: 20),
+                    const Icon(
+                      Icons.info_outline,
+                      color: Colors.purple,
+                      size: 20,
+                    ),
                     const SizedBox(width: 10),
                     Expanded(
                       child: Column(
@@ -84,8 +89,12 @@ class StatusScreen extends StatelessWidget {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            receipt.duplicateReason ?? 'Struk ini terdeteksi memiliki kemiripan dengan pengajuan lain. Finance akan memverifikasi bukti fisik transaksi.',
-                            style: const TextStyle(fontSize: 11, color: Color(0xFF7E22CE)),
+                            receipt.duplicateReason ??
+                                'Struk ini terdeteksi memiliki kemiripan dengan pengajuan lain. Finance akan memverifikasi bukti fisik transaksi.',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              color: Color(0xFF7E22CE),
+                            ),
                           ),
                         ],
                       ),
@@ -96,8 +105,10 @@ class StatusScreen extends StatelessWidget {
             ],
 
             // Ringkasan pengajuan
-            const Text('Ringkasan pengajuan',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            const Text(
+              'Ringkasan pengajuan',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
             const SizedBox(height: 12),
             Card(
               elevation: 0,
@@ -109,44 +120,59 @@ class StatusScreen extends StatelessWidget {
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
-                    _row('ID Pengajuan', receipt.receiptNumber,
-                        highlight: true),
+                    _row(
+                      'ID Pengajuan',
+                      receipt.receiptNumber,
+                      highlight: true,
+                    ),
                     const Divider(height: 24),
-                    _row('Nominal Klaim',
-                        receipt.claimedAmount != null
-                            ? formatCurrency(receipt.claimedAmount!)
-                            : (receipt.ocrRawAmount != null
-                                ? formatCurrency(double.tryParse(receipt.ocrRawAmount!) ?? 0)
+                    _row(
+                      'Nominal Klaim',
+                      receipt.claimedAmount != null
+                          ? formatCurrency(receipt.claimedAmount!)
+                          : (receipt.ocrRawAmount != null
+                                ? formatCurrency(
+                                    double.tryParse(receipt.ocrRawAmount!) ?? 0,
+                                  )
                                 : '-'),
-                        highlight: true),
+                      highlight: true,
+                    ),
                     const Divider(height: 24),
-                    _row('Merchant',
-                        receipt.ocrRawMerchant ?? receipt.vendorName ?? '-'),
+                    _row(
+                      'Merchant',
+                      receipt.ocrRawMerchant ?? receipt.vendorName ?? '-',
+                    ),
                     const Divider(height: 24),
                     _row('Tanggal struk', receipt.displayDate),
                     const Divider(height: 24),
                     _row('Kategori', receipt.category ?? '-'),
                     const Divider(height: 24),
-                    _row('Waktu submit',
-                        _formatDateTime(receipt.createdAt)),
+                    _row('Waktu submit', _formatDateTime(receipt.createdAt)),
                     const Divider(height: 24),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        const Text('Status',
-                            style: TextStyle(color: Colors.grey)),
+                        const Text(
+                          'Status',
+                          style: TextStyle(color: Colors.grey),
+                        ),
                         Container(
                           padding: const EdgeInsets.symmetric(
-                              horizontal: 10, vertical: 4),
+                            horizontal: 10,
+                            vertical: 4,
+                          ),
                           decoration: BoxDecoration(
                             color: const Color(0xFFFFF3E0),
                             borderRadius: BorderRadius.circular(6),
                           ),
-                          child: const Text('Menunggu Review',
-                              style: TextStyle(
-                                  color: Colors.orange,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 12)),
+                          child: const Text(
+                            'Menunggu Review',
+                            style: TextStyle(
+                              color: Colors.orange,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 12,
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -157,8 +183,10 @@ class StatusScreen extends StatelessWidget {
             const SizedBox(height: 24),
 
             // Audit trail
-            const Text('Audit trail',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+            const Text(
+              'Audit trail',
+              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
+            ),
             const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(16),
@@ -169,8 +197,12 @@ class StatusScreen extends StatelessWidget {
               ),
               child: Column(
                 children: [
-                  _timelineItem(true, 'Foto diupload & dikunci',
-                      'SHA-256 hash tersimpan permanen', isLast: false),
+                  _timelineItem(
+                    true,
+                    'Foto diupload & dikunci',
+                    'SHA-256 hash tersimpan permanen',
+                    isLast: false,
+                  ),
                   _timelineItem(
                     receipt.ocrStatus == 'done',
                     'OCR selesai diproses',
@@ -180,30 +212,36 @@ class StatusScreen extends StatelessWidget {
                     isLast: false,
                   ),
                   _timelineItem(
-                      true, 'Keterangan diisi karyawan',
-                      receipt.category ?? 'kategori & catatan',
-                      isLast: false),
+                    true,
+                    'Keterangan diisi karyawan',
+                    receipt.category ?? 'kategori & catatan',
+                    isLast: false,
+                  ),
                   _timelineItem(
-                      true, 'Dikirim ke finance',
-                      'menunggu review', isLast: true),
+                    true,
+                    'Dikirim ke finance',
+                    'menunggu review',
+                    isLast: true,
+                  ),
                 ],
               ),
             ),
             const SizedBox(height: 32),
 
             ElevatedButton(
-              onPressed: () =>
-                  Navigator.of(context).popUntil((r) => r.isFirst),
+              onPressed: () => Navigator.of(context).popUntil((r) => r.isFirst),
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF0088FF),
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 16),
                 shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(8)),
+                  borderRadius: BorderRadius.circular(8),
+                ),
               ),
-              child: const Text('Kembali ke Beranda',
-                  style: TextStyle(
-                      fontSize: 16, fontWeight: FontWeight.bold)),
+              child: const Text(
+                'Kembali ke Beranda',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         ),
@@ -224,9 +262,7 @@ class StatusScreen extends StatelessWidget {
             textAlign: TextAlign.end,
             style: TextStyle(
               fontWeight: FontWeight.bold,
-              color: highlight
-                  ? Colors.blue.shade800
-                  : Colors.black87,
+              color: highlight ? Colors.blue.shade800 : Colors.black87,
             ),
           ),
         ),
@@ -234,8 +270,12 @@ class StatusScreen extends StatelessWidget {
     );
   }
 
-  Widget _timelineItem(bool done, String title, String desc,
-      {required bool isLast}) {
+  Widget _timelineItem(
+    bool done,
+    String title,
+    String desc, {
+    required bool isLast,
+  }) {
     return Container(
       margin: const EdgeInsets.only(bottom: 4),
       child: Row(
@@ -252,8 +292,7 @@ class StatusScreen extends StatelessWidget {
                 ),
               ),
               if (!isLast)
-                Container(
-                    width: 2, height: 36, color: Colors.grey.shade300),
+                Container(width: 2, height: 36, color: Colors.grey.shade300),
             ],
           ),
           const SizedBox(width: 14),
@@ -261,13 +300,18 @@ class StatusScreen extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.bold, fontSize: 13)),
+                Text(
+                  title,
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 13,
+                  ),
+                ),
                 const SizedBox(height: 2),
-                Text(desc,
-                    style: const TextStyle(
-                        color: Colors.grey, fontSize: 11)),
+                Text(
+                  desc,
+                  style: const TextStyle(color: Colors.grey, fontSize: 11),
+                ),
                 const SizedBox(height: 12),
               ],
             ),
@@ -281,8 +325,18 @@ class StatusScreen extends StatelessWidget {
     try {
       final dt = DateTime.parse(iso).toLocal();
       const months = [
-        'Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun',
-        'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des',
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'Mei',
+        'Jun',
+        'Jul',
+        'Agu',
+        'Sep',
+        'Okt',
+        'Nov',
+        'Des',
       ];
       final h = dt.hour.toString().padLeft(2, '0');
       final m = dt.minute.toString().padLeft(2, '0');

@@ -6,16 +6,34 @@
 // tree, read text, and verify that the values of widget properties are correct.
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:cobain/main.dart';
+import 'package:cobain/presensi_provider.dart';
+import 'package:cobain/providers/auth_provider.dart';
+import 'package:cobain/providers/receipt_provider.dart';
+import 'package:cobain/providers/shift_provider.dart';
 
 void main() {
   testWidgets('ExpenseFlow login screen smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const ExpenseFlowApp());
+    SharedPreferences.setMockInitialValues({});
+
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => AuthProvider()),
+          ChangeNotifierProvider(create: (_) => PresensiProvider()),
+          ChangeNotifierProvider(create: (_) => ReceiptProvider()),
+          ChangeNotifierProvider(create: (_) => ShiftProvider()),
+        ],
+        child: const ExpenseFlowApp(),
+      ),
+    );
+    await tester.pumpAndSettle();
 
     // Verify that the login screen title is shown.
     expect(find.text('ExpenseFlow'), findsOneWidget);
-    expect(find.text('Login untuk karyawan'), findsOneWidget);
+    expect(find.text('Portal Presensi & Keuangan Karyawan'), findsOneWidget);
   });
 }

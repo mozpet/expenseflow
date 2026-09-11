@@ -38,6 +38,9 @@ class AttendanceSetting extends Model
         'default_leave_quota',
         'leave_reset_date',
         'last_leave_reset_on',
+        // limit klaim & toleransi variansi struk khusus cabang (null = fallback ke company_settings)
+        'variance_limit',
+        'max_claim_limit',
     ];
 
     protected function casts(): array
@@ -66,6 +69,8 @@ class AttendanceSetting extends Model
             'default_leave_quota'           => 'integer',
             // leave_reset_date string 'MM-DD' (anniversary tanpa tahun) — tidak di-cast date
             'last_leave_reset_on'           => 'date:Y-m-d',
+            'variance_limit'                => 'integer',
+            'max_claim_limit'               => 'decimal:2',
         ];
     }
 

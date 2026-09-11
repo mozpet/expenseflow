@@ -162,6 +162,72 @@ class ReceiptTest extends TestCase
         $this->assertDatabaseHas('activity_logs', ['action' => 'receipt_approved']);
     }
 
+    // ── 4b. Finance bisa approve jika selisih variance ≤ limit (peringatan kuning) ──
+    public function test_finance_bisa_approve_jika_variance_dibawah_atau_sama_dengan_limit(): void
+    {
+        $emp     = $this->user('employee');
+        $finance = $this->user('finance');
+        $receipt = $this->receipt($emp, [
+            'status'         => 'submitted',
+            'ocr_raw_amount' => 100000,
+            'claimed_amount' => 105000, // 5% selisih <= default limit 10%
+        ]);
+
+        $this->postJson("/api/v1/dashboard/receipts/{$receipt->id}/approve",
+            ['notes' => 'Disetujui selisih wajar'],
+            $this->token($finance)
+        )
+        ->assertOk()
+        ->assertJsonPath('receipt.status', 'approved');
+    }
+
+    // ── 4c. Finance TIDAK bisa approve jika selisih variance > limit (peringatan merah) ──
+    public function test_finance_tidak_bisa_approve_jika_variance_melebihi_limit(): void
+    {
+        $emp     = $this->user('employee');
+        $finance = $this->user('finance');
+        $receipt = $this->receipt($emp, [
+            'status'         => 'submitted',
+            'ocr_raw_amount' => 100000,
+            'claimed_amount' => 130000, // 30% selisih > limit 10%
+        ]);
+
+        $this->postJson("/api/v1/dashboard/receipts/{$receipt->id}/approve",
+            ['notes' => 'Coba approve'],
+            $this->token($finance)
+        )
+        ->assertStatus(422)
+        ->assertJsonPath('code', 'VARIANCE_LIMIT_EXCEEDED');
+
+        // Pastikan status tetap submitted di database
+        $this->assertEquals('submitted', $receipt->fresh()->status);
+    }
+
+    // ── 4d. Finance bisa approve jika nominal disesuaikan (partial approval) ke dalam batas limit ──
+    public function test_finance_bisa_approve_struk_variance_jika_nominal_disesuaikan_ke_ocr(): void
+    {
+        $emp     = $this->user('employee');
+        $finance = $this->user('finance');
+        $receipt = $this->receipt($emp, [
+            'status'         => 'submitted',
+            'ocr_raw_amount' => 100000,
+            'claimed_amount' => 130000, // Klaim 30% lebih tinggi
+        ]);
+
+        // Finance sesuaikan nominal yang disetujui menjadi 100.000 (sesuai OCR)
+        $this->postJson("/api/v1/dashboard/receipts/{$receipt->id}/approve",
+            [
+                'approved_amount' => 100000,
+                'notes'           => 'Disetujui sesuai nominal OCR',
+            ],
+            $this->token($finance)
+        )
+        ->assertOk()
+        ->assertJsonPath('receipt.status', 'approved');
+
+        $this->assertEquals(100000, (float) $receipt->fresh()->approved_amount);
+    }
+
     // ── 5. Karyawan tidak bisa akses struk milik orang lain ──────────
     public function test_karyawan_tidak_bisa_akses_struk_orang_lain(): void
     {
@@ -237,5 +303,65 @@ class ReceiptTest extends TestCase
             $this->token($emp)
         )->assertStatus(400)
          ->assertJsonPath('message', 'OCR gagal, isi data manual dulu.');
+    }
+
+    // ── 15. Foto ulang (retake) struk draf yang buram/gagal ───────────
+    public function test_karyawan_bisa_foto_ulang_struk_draf(): void
+    {
+        Queue::fake();
+        $emp     = $this->user('employee');
+        $receipt = $this->receipt($emp, [
+            'status'     => 'draft',
+            'ocr_status' => 'failed',
+            'ocr_error'  => 'Foto struk buram atau tidak terbaca jelas.',
+        ]);
+
+        $file = UploadedFile::fake()->image('nota_baru.jpg', 600, 800);
+
+        $response = $this->postJson(
+            "/api/v1/employee/receipts/{$receipt->id}/retake",
+            ['image' => $file],
+            $this->token($emp)
+        );
+
+        $response->assertStatus(200);
+        $response->assertJsonPath('message', 'Foto struk berhasil diperbarui. OCR sedang memproses ulang.');
+
+        $receipt->refresh();
+        $this->assertEquals('pending', $receipt->ocr_status);
+        $this->assertNull($receipt->ocr_error);
+
+        Queue::assertPushed(ProcessOcrJob::class, function ($job) use ($receipt) {
+            return $job->receiptId === $receipt->id;
+        });
+    }
+
+    public function test_struk_non_draf_tidak_bisa_difoto_ulang(): void
+    {
+        $emp     = $this->user('employee');
+        $receipt = $this->receipt($emp, ['status' => 'submitted']);
+
+        $file = UploadedFile::fake()->image('nota_baru.jpg', 600, 800);
+
+        $this->postJson(
+            "/api/v1/employee/receipts/{$receipt->id}/retake",
+            ['image' => $file],
+            $this->token($emp)
+        )->assertStatus(422);
+    }
+
+    public function test_karyawan_lain_tidak_bisa_foto_ulang_struk_orang_lain(): void
+    {
+        $emp1    = $this->user('employee');
+        $emp2    = $this->user('employee');
+        $receipt = $this->receipt($emp1, ['status' => 'draft']);
+
+        $file = UploadedFile::fake()->image('nota_baru.jpg', 600, 800);
+
+        $this->postJson(
+            "/api/v1/employee/receipts/{$receipt->id}/retake",
+            ['image' => $file],
+            $this->token($emp2)
+        )->assertStatus(403);
     }
 }

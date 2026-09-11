@@ -161,7 +161,7 @@ export default function App() {
 
   const loadSettings = useCallback(async (forceRefresh = false) => {
     const res = await settingsApi.get(forceRefresh);
-    setSettings(mapSettings(res.settings));
+    setSettings(mapSettings(res.settings, res.branch_settings));
   }, []);
 
   // Muat semua data awal saat user terautentikasi.
@@ -405,8 +405,16 @@ export default function App() {
       threshold_two: newSettings.thresholdTwo,
       threshold_three: newSettings.thresholdThree,
     });
-    setSettings(mapSettings(res.settings));
+    setSettings(mapSettings(res.settings, res.branch_settings));
     // audit log tidak perlu di-refresh dari sini — AuditLogView mengurus sendiri
+  };
+
+  const handleSaveBranchSettings = async (branchId: number, limits: { varianceLimit: number | null; maxClaimLimit: number | null }) => {
+    await settingsApi.updateBranch(branchId, {
+      variance_limit: limits.varianceLimit,
+      max_claim_limit: limits.maxClaimLimit,
+    });
+    await loadSettings(true);
   };
 
   // Refresh ulang data struk (inbox) — dipakai tombol Refresh di halaman Inbox Struk.
@@ -493,6 +501,7 @@ export default function App() {
             onBulkPay={handleBulkPayReceipts}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
+            onSaveBranchSettings={handleSaveBranchSettings}
             onRefresh={() => {
               refreshReceipts();
               refreshReceiptHistory();
@@ -513,6 +522,7 @@ export default function App() {
             onBulkPay={handleBulkPayReceipts}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
+            onSaveBranchSettings={handleSaveBranchSettings}
             onRefresh={() => {
               refreshReceipts();
               refreshReceiptHistory();
@@ -565,6 +575,7 @@ export default function App() {
             onAddAuditLog={handleAddAuditLogDirect}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
+            onSaveBranchSettings={handleSaveBranchSettings}
           />
         );
       case 'karyawan':
@@ -605,6 +616,7 @@ export default function App() {
             onReject={handleRejectReceipt}
             currentSettings={settings}
             onSaveSettings={handleSaveSettings}
+            onSaveBranchSettings={handleSaveBranchSettings}
             onRefresh={refreshReceipts}
             refreshing={refreshing}
           />

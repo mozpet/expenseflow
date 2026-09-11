@@ -83,11 +83,71 @@ class PhotoProvider extends ChangeNotifier {
     }
   }
 
+  // Foto lampiran tambahan (misal: Slip EDC / Nota Rincian)
+  final List<Uint8List> additionalBytes = [];
+  final List<String> additionalFileNames = [];
+
+  void addAdditionalPhoto(Uint8List photoBytes, String name) {
+    if (additionalBytes.length < 3) {
+      additionalBytes.add(photoBytes);
+      additionalFileNames.add(name);
+      notifyListeners();
+    }
+  }
+
+  void removeAdditionalPhoto(int index) {
+    if (index >= 0 && index < additionalBytes.length) {
+      additionalBytes.removeAt(index);
+      additionalFileNames.removeAt(index);
+      notifyListeners();
+    }
+  }
+
+  Future<void> pickAdditionalFromCamera() async {
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.camera,
+        maxWidth: 1280,
+        maxHeight: 1280,
+        imageQuality: 80,
+      );
+      if (picked != null) {
+        final b = await picked.readAsBytes();
+        final n = picked.name.contains('.') ? picked.name : 'lampiran_${additionalBytes.length + 1}.jpg';
+        addAdditionalPhoto(b, n);
+      }
+    } catch (e) {
+      error = 'Gagal mengambil foto tambahan: $e';
+      notifyListeners();
+    }
+  }
+
+  Future<void> pickAdditionalFromGallery() async {
+    try {
+      final XFile? picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1280,
+        maxHeight: 1280,
+        imageQuality: 80,
+      );
+      if (picked != null) {
+        final b = await picked.readAsBytes();
+        final n = picked.name.contains('.') ? picked.name : 'lampiran_${additionalBytes.length + 1}.jpg';
+        addAdditionalPhoto(b, n);
+      }
+    } catch (e) {
+      error = 'Gagal memilih foto tambahan: $e';
+      notifyListeners();
+    }
+  }
+
   void clear() {
     bytes    = null;
     fileName = null;
     isPdf    = false;
     error    = null;
+    additionalBytes.clear();
+    additionalFileNames.clear();
     notifyListeners();
   }
 }

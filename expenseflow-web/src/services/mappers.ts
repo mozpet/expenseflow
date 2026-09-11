@@ -10,6 +10,8 @@ import {
   AuditLog,
   NotificationItem,
   AppSettings,
+  ExpenseReport,
+  ExpenseReportStatus,
 } from '../types';
 import { receiptApi } from './endpoints';
 
@@ -77,7 +79,7 @@ function mapReceiptStatus(status: string, varianceFlag?: boolean): ReceiptStatus
   }
 }
 
-function parseReceiptItems(raw: any) {
+export function parseReceiptItems(raw: any) {
   if (!raw) return [];
   let list = raw;
   if (typeof raw === 'string') {
@@ -107,6 +109,12 @@ export function mapReceipt(r: any): Receipt {
   const tax = r.ocr_raw_tax !== null && r.ocr_raw_tax !== undefined ? num(r.ocr_raw_tax) : undefined;
   const discount = r.ocr_raw_discount !== null && r.ocr_raw_discount !== undefined ? num(r.ocr_raw_discount) : undefined;
 
+  const hasDiff = ocr > 0 && Math.abs(klaim - ocr) > 0.01;
+  const isVariance = Boolean(r.variance_flag);
+  const variancePct = r.variance_pct !== null && r.variance_pct !== undefined
+    ? num(r.variance_pct)
+    : (ocr > 0 ? Math.round((Math.abs(klaim - ocr) / ocr) * 10000) / 100 : undefined);
+
   return {
     id: String(r.id),
     karyawan,
@@ -118,9 +126,13 @@ export function mapReceipt(r: any): Receipt {
     klaim,
     approvedAmount,
     kategori: r.category ?? '—',
-    status: mapReceiptStatus(r.status, r.variance_flag),
+    status: mapReceiptStatus(r.status, isVariance),
+    varianceFlag: isVariance,
+    variancePct,
     tanggal: formatTanggal(r.receipt_date ?? r.submitted_at ?? r.created_at),
     departemen: r.user?.department ?? '—',
+    cabang: r.office?.office_name ?? r.user?.office?.office_name ?? '—',
+    cabangId: r.attendance_setting_id ? Number(r.attendance_setting_id) : (r.user?.attendance_setting_id ? Number(r.user.attendance_setting_id) : undefined),
     imageUrl: undefined, // Will be loaded asynchronously in component
     items: items.length > 0 ? items : undefined,
     subtotal,
@@ -157,6 +169,26 @@ export function mapReceipt(r: any): Receipt {
     bankName: r.user?.bank_name,
     bankAccountNo: r.user?.bank_account_no,
     bankAccountHolder: r.user?.bank_account_holder,
+    images: Array.isArray(r.images) ? r.images.map((img: any) => ({
+      id: Number(img.id),
+      receipt_id: img.receipt_id ? Number(img.receipt_id) : undefined,
+      file_path: String(img.file_path || ''),
+      file_name: String(img.file_name || ''),
+      file_size: img.file_size ? Number(img.file_size) : undefined,
+      mime_type: img.mime_type ? String(img.mime_type) : undefined,
+    })) : undefined,
+    expenseReportId: r.expense_report_id ? Number(r.expense_report_id) : null,
+    expenseReport: r.expense_report ? {
+      id: Number(r.expense_report.id),
+      report_number: String(r.expense_report.report_number || ''),
+      title: String(r.expense_report.title || ''),
+      status: String(r.expense_report.status || ''),
+    } : (r.expenseReport ? {
+      id: Number(r.expenseReport.id),
+      report_number: String(r.expenseReport.report_number || ''),
+      title: String(r.expenseReport.title || ''),
+      status: String(r.expenseReport.status || ''),
+    } : null),
   };
 }
 
@@ -192,6 +224,18 @@ export function mapReceiptToApproval(r: any): StrukApproval {
     waktu: formatWaktu(r.submitted_at ?? r.created_at),
     catatan: r.approvals?.[0]?.notes ?? r.rejection_reason ?? '—',
     tanggal: dateStr,
+    cabang: r.office?.office_name ?? r.user?.office?.office_name ?? '—',
+    cabangId: r.attendance_setting_id ? Number(r.attendance_setting_id) : (r.user?.attendance_setting_id ? Number(r.user.attendance_setting_id) : undefined),
+    branchVarianceLimit: (r.office?.variance_limit !== null && r.office?.variance_limit !== undefined)
+      ? Number(r.office.variance_limit)
+      : (r.user?.office?.variance_limit !== null && r.user?.office?.variance_limit !== undefined
+        ? Number(r.user.office.variance_limit)
+        : null),
+    branchMaxClaimLimit: (r.office?.max_claim_limit !== null && r.office?.max_claim_limit !== undefined)
+      ? Number(r.office.max_claim_limit)
+      : (r.user?.office?.max_claim_limit !== null && r.user?.office?.max_claim_limit !== undefined
+        ? Number(r.user.office.max_claim_limit)
+        : null),
     // Tambah detail approver dari response baru
     approvedBy: r.approved_by && {
       id: r.approved_by.id,
@@ -236,6 +280,26 @@ export function mapReceiptToApproval(r: any): StrukApproval {
     bankName: r.user?.bank_name,
     bankAccountNo: r.user?.bank_account_no,
     bankAccountHolder: r.user?.bank_account_holder,
+    images: Array.isArray(r.images) ? r.images.map((img: any) => ({
+      id: Number(img.id),
+      receipt_id: img.receipt_id ? Number(img.receipt_id) : undefined,
+      file_path: String(img.file_path || ''),
+      file_name: String(img.file_name || ''),
+      file_size: img.file_size ? Number(img.file_size) : undefined,
+      mime_type: img.mime_type ? String(img.mime_type) : undefined,
+    })) : undefined,
+    expenseReportId: r.expense_report_id ? Number(r.expense_report_id) : null,
+    expenseReport: r.expense_report ? {
+      id: Number(r.expense_report.id),
+      report_number: String(r.expense_report.report_number || ''),
+      title: String(r.expense_report.title || ''),
+      status: String(r.expense_report.status || ''),
+    } : (r.expenseReport ? {
+      id: Number(r.expenseReport.id),
+      report_number: String(r.expenseReport.report_number || ''),
+      title: String(r.expenseReport.title || ''),
+      status: String(r.expenseReport.status || ''),
+    } : null),
   };
 }
 
@@ -409,13 +473,24 @@ export function mapAuditLog(l: any): AuditLog {
 }
 
 // ─── Settings ───────────────────────────────────────────────
-export function mapSettings(s: any): AppSettings {
+export function mapSettings(s: any, branchSettingsRaw?: any[]): AppSettings {
+  const settingsObj = s?.settings ?? s;
+  const rawBranches = branchSettingsRaw ?? s?.branch_settings ?? [];
+
   return {
-    varianceLimit: num(s.variance_limit),
-    maxClaimLimit: num(s.max_claim_limit),
-    thresholdSingle: s.threshold_single ?? '',
-    thresholdTwo: s.threshold_two ?? '',
-    thresholdThree: s.threshold_three ?? '',
+    varianceLimit: num(settingsObj?.variance_limit),
+    maxClaimLimit: num(settingsObj?.max_claim_limit),
+    thresholdSingle: settingsObj?.threshold_single ?? '',
+    thresholdTwo: settingsObj?.threshold_two ?? '',
+    thresholdThree: settingsObj?.threshold_three ?? '',
+    branchSettings: Array.isArray(rawBranches)
+      ? rawBranches.map((b: any) => ({
+          id: num(b.id),
+          officeName: b.office_name ?? '',
+          varianceLimit: b.variance_limit !== null && b.variance_limit !== undefined ? num(b.variance_limit) : null,
+          maxClaimLimit: b.max_claim_limit !== null && b.max_claim_limit !== undefined ? num(b.max_claim_limit) : null,
+        }))
+      : undefined,
   };
 }
 
@@ -426,5 +501,52 @@ export function settingsToPayload(s: AppSettings) {
     threshold_single: s.thresholdSingle,
     threshold_two: s.thresholdTwo,
     threshold_three: s.thresholdThree,
+  };
+}
+
+// ─── Expense Report (Bundling Perjalanan Dinas) ──────────────
+export function mapExpenseReport(r: any): ExpenseReport {
+  const userName = r.user?.name || r.userName || 'Karyawan';
+  const department = r.user?.department || r.department || '';
+  const branchName = r.office?.office_name || r.branchName || 'Kantor Pusat';
+  const claimedAmt = num(r.total_claimed_amount ?? r.totalClaimedAmount ?? 0);
+  const approvedAmt = r.total_approved_amount !== null && r.total_approved_amount !== undefined
+    ? num(r.total_approved_amount)
+    : (r.totalApprovedAmount !== null && r.totalApprovedAmount !== undefined ? num(r.totalApprovedAmount) : null);
+  const receiptsList = Array.isArray(r.receipts) ? r.receipts : [];
+  const receiptsCount = num(r.receipts_count ?? r.totalReceipts ?? receiptsList.length);
+
+  return {
+    id: Number(r.id),
+    company_id: r.company_id ? Number(r.company_id) : undefined,
+    user_id: r.user_id ? Number(r.user_id) : undefined,
+    attendance_setting_id: r.attendance_setting_id ? Number(r.attendance_setting_id) : null,
+    report_number: String(r.report_number || r.reportNumber || ''),
+    reportNumber: String(r.report_number || r.reportNumber || ''),
+    title: String(r.title || 'Laporan Pengeluaran'),
+    description: r.description ?? null,
+    start_date: r.start_date || r.startDate || null,
+    startDate: r.start_date ? formatTanggal(r.start_date) : (r.startDate || '—'),
+    end_date: r.end_date || r.endDate || null,
+    endDate: r.end_date ? formatTanggal(r.end_date) : (r.endDate || '—'),
+    status: (r.status as ExpenseReportStatus) || 'draft',
+    total_claimed_amount: claimedAmt,
+    totalClaimedAmount: claimedAmt,
+    total_approved_amount: approvedAmt,
+    totalApprovedAmount: approvedAmt,
+    submitted_at: r.submitted_at || null,
+    approved_at: r.approved_at || null,
+    rejection_reason: r.rejection_reason || null,
+    paid_at: r.paid_at || null,
+    userName,
+    department,
+    branchName,
+    totalReceipts: receiptsCount,
+    receipts_count: receiptsCount,
+    user: r.user,
+    office: r.office,
+    receipts: receiptsList,
+    created_at: r.created_at,
+    updated_at: r.updated_at,
   };
 }

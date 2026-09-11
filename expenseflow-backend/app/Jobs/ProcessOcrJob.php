@@ -119,6 +119,27 @@ class ProcessOcrJob implements ShouldQueue
             $updates['ocr_raw_items'] = json_encode($ocrResult['items']);
         }
 
+        // Pre-fill claimed_amount & total_amount jika masih kosong (disatukan dalam 1 update query)
+        $ocrAmount = $ocrResult['amount'] ?? null;
+        if ($receipt->claimed_amount === null && $ocrAmount !== null) {
+            $updates['claimed_amount'] = $ocrAmount;
+        }
+        if ($receipt->total_amount === null && $ocrAmount !== null) {
+            $updates['total_amount'] = $ocrAmount;
+        }
+
+        // Pre-fill vendor_name jika masih kosong dari OCR merchant
+        $ocrMerchant = $ocrResult['merchant'] ?? null;
+        if (($receipt->vendor_name === null || trim($receipt->vendor_name) === '') && ! empty($ocrMerchant)) {
+            $updates['vendor_name'] = $ocrMerchant;
+        }
+
+        // Pre-fill receipt_date jika masih kosong dari OCR date
+        $ocrDate = $ocrResult['date'] ?? null;
+        if ($receipt->receipt_date === null && ! empty($ocrDate)) {
+            $updates['receipt_date'] = $ocrDate;
+        }
+
         $updates['ocr_status']   = 'done';
         $updates['ocr_attempts'] = $this->attempts();
         $updates['ocr_error']    = null;
@@ -126,20 +147,6 @@ class ProcessOcrJob implements ShouldQueue
 
         if (! empty($updates)) {
             DB::table('receipts')->where('id', $receipt->id)->update($updates);
-        }
-
-        // ─── Pre-fill claimed_amount & total_amount jika masih kosong ──────────
-        $receipt->refresh();
-        $fillData = [];
-        if ($receipt->claimed_amount === null && $receipt->ocr_raw_amount !== null) {
-            $fillData['claimed_amount'] = $receipt->ocr_raw_amount;
-        }
-        if ($receipt->total_amount === null && $receipt->ocr_raw_amount !== null) {
-            $fillData['total_amount'] = $receipt->ocr_raw_amount;
-        }
-        if (! empty($fillData)) {
-            $fillData['updated_at'] = $now;
-            DB::table('receipts')->where('id', $receipt->id)->update($fillData);
         }
 
         // Hitung ulang variance flag & deteksi potensi duplikat

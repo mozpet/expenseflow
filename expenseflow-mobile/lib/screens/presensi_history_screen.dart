@@ -676,9 +676,11 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                               ],
                             )
                           : ListView.builder(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 16.0,
-                                vertical: 8.0,
+                              padding: const EdgeInsets.fromLTRB(
+                                16.0,
+                                8.0,
+                                16.0,
+                                80.0,
                               ),
                               physics: const AlwaysScrollableScrollPhysics(),
                               itemCount: filtered.length,
@@ -1134,7 +1136,25 @@ class _OvertimeClaimBottomSheetState extends State<_OvertimeClaimBottomSheet> {
     final isApproved = record.overtimeStatus == 'approved';
     final isRejected = record.overtimeStatus == 'rejected';
 
+    final media = MediaQuery.of(context);
+    final bottomInset = media.viewInsets.bottom;
+    final systemBottomPadding = media.padding.bottom;
+
+    // Adaptif terhadap HP dengan navbar sistem (3-tombol) dan tanpa navbar (navigasi gestur / edge-to-edge):
+    // - Jika keyboard muncul (bottomInset > 0): naikkan konten di atas keyboard + 16dp
+    // - Jika keyboard tertutup:
+    //   - HP dengan tombol navbar sistem (systemBottomPadding > 0, umumnya ~48dp):
+    //     tambahkan systemBottomPadding + 16dp agar tombol "Tidak, Hapus Lembur" melayang aman di atas bar navigasi
+    //   - HP tanpa navbar / navigasi gestur (systemBottomPadding == 0):
+    //     beri padding aman 24dp dari batas bawah layar
+    final safeBottom = bottomInset > 0
+        ? bottomInset + 16.0
+        : (systemBottomPadding > 0 ? systemBottomPadding + 16.0 : 24.0);
+
     return Container(
+      constraints: BoxConstraints(
+        maxHeight: media.size.height * 0.9,
+      ),
       decoration: const BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
@@ -1143,9 +1163,10 @@ class _OvertimeClaimBottomSheetState extends State<_OvertimeClaimBottomSheet> {
         left: 20,
         right: 20,
         top: 12,
-        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        bottom: safeBottom,
       ),
       child: SingleChildScrollView(
+        physics: const BouncingScrollPhysics(),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,

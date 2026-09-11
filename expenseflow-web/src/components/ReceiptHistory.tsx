@@ -27,12 +27,13 @@ import {
   Building2,
   CreditCard,
 } from 'lucide-react';
-import { receiptApi } from '../services/endpoints';
+import { receiptApi, attendanceApi } from '../services/endpoints';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
 
 interface ReceiptHistoryProps {
   approvals: StrukApproval[];
+  offices?: { id: number; office_name: string }[];
   onPay?: (id: string, payload: { payment_method: string; payment_ref_no?: string }) => Promise<void> | void;
   onBulkPay?: (ids: string[], payload: { payment_method: string; payment_ref_no?: string }) => Promise<void> | void;
   onRefresh?: () => void;
@@ -41,6 +42,7 @@ interface ReceiptHistoryProps {
 
 export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
   approvals,
+  offices: propOffices,
   onPay,
   onBulkPay,
   onRefresh,
@@ -48,6 +50,29 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('semua');
+  const [selectedBranch, setSelectedBranch] = useState<string>('all');
+  const [offices, setOffices] = useState<{ id: number; office_name: string }[]>(propOffices || []);
+
+  // Fetch offices if not provided via props (Finance read-only access)
+  useEffect(() => {
+    if (!propOffices || propOffices.length === 0) {
+      attendanceApi.settings.list()
+        .then((res: any) => {
+          const list = res?.settings ?? [];
+          if (Array.isArray(list) && list.length > 0) {
+            setOffices(list);
+          }
+        })
+        .catch(() => { });
+    }
+  }, [propOffices]);
+
+  useEffect(() => {
+    if (propOffices && propOffices.length > 0) {
+      setOffices(propOffices);
+    }
+  }, [propOffices]);
+
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
@@ -163,7 +188,7 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
   };
 
   const handleExportBankTransfer = () => {
-    receiptApi.exportDisbursement('approved');
+    receiptApi.exportDisbursement('approved', selectedBranch !== 'all' ? selectedBranch : undefined);
   };
 
   const [currentPage, setCurrentPage] = useState(1);
@@ -177,7 +202,19 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
     }).format(val);
   };
 
-  const filteredApprovals = approvals.filter(a => {
+  const branchApprovals = approvals.filter(a => {
+    if (selectedBranch === 'all') return true;
+    const branchIdStr = String(selectedBranch);
+    if (a.cabangId !== undefined && a.cabangId !== null) {
+      return String(a.cabangId) === branchIdStr;
+    }
+    if (a.cabang) {
+      return offices.some(o => String(o.id) === branchIdStr && o.office_name.toLowerCase() === a.cabang?.toLowerCase());
+    }
+    return false;
+  });
+
+  const filteredApprovals = branchApprovals.filter(a => {
     const matchesSearch = !debouncedSearch ||
            a.karyawan.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
            a.merchant.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
@@ -199,7 +236,7 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
   useEffect(() => {
     setCurrentPage(1);
     setSelectedIds([]);
-  }, [debouncedSearch, statusFilter, startDate, endDate, perPage]);
+  }, [debouncedSearch, statusFilter, startDate, endDate, perPage, selectedBranch]);
 
   const totalPages = Math.max(1, Math.ceil(filteredApprovals.length / perPage));
   const paginatedApprovals = filteredApprovals.slice((currentPage - 1) * perPage, currentPage * perPage);
@@ -234,7 +271,30 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
           </div>
 
           <div className="flex gap-2 w-full sm:w-auto flex-wrap items-center">
-            <div className="relative flex-1 sm:w-56 shrink-0">
+            {/* Filter Cabang Dropdown */}
+            <div className="relative w-full sm:w-44 shrink-0">
+              <Building2 className="absolute left-2.5 top-2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+              <select
+                value={selectedBranch}
+                onChange={(e) => setSelectedBranch(e.target.value)}
+                className="w-full pl-8 pr-7 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer appearance-none truncate"
+                title="Filter Riwayat berdasarkan Cabang Kantor"
+              >
+                <option value="all">Semua Cabang {offices.length > 0 ? `(${offices.length})` : ''}</option>
+                {offices.map((office) => (
+                  <option key={office.id} value={String(office.id)}>
+                    {office.office_name}
+                  </option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-slate-400">
+                <svg className="fill-current h-3.5 w-3.5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
+                  <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"/>
+                </svg>
+              </div>
+            </div>
+
+            <div className="relative flex-1 sm:w-52 shrink-0">
               <Search className="absolute left-3 top-2 w-3.5 h-3.5 text-slate-400" />
               <input
                 type="text"
@@ -289,10 +349,10 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
         {/* Tab status filter */}
         <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800 mb-4">
           {[
-            { key: 'semua', label: 'Semua Riwayat', count: approvals.length },
-            { key: 'disetujui', label: 'Menunggu Cair / Transfer', count: approvals.filter(a => a.keputusan === 'Disetujui').length },
-            { key: 'dibayar', label: 'Sudah Dibayar', count: approvals.filter(a => a.keputusan === 'Dibayar').length },
-            { key: 'ditolak', label: 'Ditolak', count: approvals.filter(a => a.keputusan === 'Ditolak').length },
+            { key: 'semua', label: 'Semua Riwayat', count: branchApprovals.length },
+            { key: 'disetujui', label: 'Menunggu Cair / Transfer', count: branchApprovals.filter(a => a.keputusan === 'Disetujui').length },
+            { key: 'dibayar', label: 'Sudah Dibayar', count: branchApprovals.filter(a => a.keputusan === 'Dibayar').length },
+            { key: 'ditolak', label: 'Ditolak', count: branchApprovals.filter(a => a.keputusan === 'Ditolak').length },
           ].map((t) => (
             <button
               key={t.key}
@@ -405,11 +465,19 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                           </div>
                           <div>
                             <span className="text-xs font-semibold text-slate-800 dark:text-slate-200 block">{item.karyawan}</span>
-                            {item.bankName && item.bankAccountNo && (
-                              <span className="text-[10px] text-slate-400 font-mono">
-                                {item.bankName} - {item.bankAccountNo}
-                              </span>
-                            )}
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {item.cabang && (
+                                <span className="inline-flex items-center gap-0.5 text-[9.5px] font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-1 py-0.2 rounded">
+                                  <Building2 className="w-2.5 h-2.5 shrink-0" />
+                                  <span className="truncate max-w-[90px]">{item.cabang}</span>
+                                </span>
+                              )}
+                              {item.bankName && item.bankAccountNo && (
+                                <span className="text-[10px] text-slate-400 font-mono">
+                                  {item.bankName} - {item.bankAccountNo}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -682,6 +750,13 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.karyawan}</span>
                 </div>
                 <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Cabang Kantor</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Building2 className="w-3 h-3 text-indigo-500 shrink-0" />
+                    {selectedApproval.cabang || 'Kantor Pusat / Belum Diatur'}
+                  </span>
+                </div>
+                <div>
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Merchant Toko</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.merchant}</span>
                 </div>
@@ -694,7 +769,7 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                     {selectedApproval.keputusan}
                   </span>
                 </div>
-                <div>
+                <div className="col-span-2">
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Diproses Oleh</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.diprosesOleh}</span>
                 </div>
@@ -874,6 +949,15 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                   <span className="text-slate-400">Karyawan:</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{disburseTarget.karyawan}</span>
                 </div>
+                {disburseTarget.cabang && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-slate-400">Cabang Kantor:</span>
+                    <span className="inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 dark:text-indigo-400">
+                      <Building2 className="w-3 h-3" />
+                      {disburseTarget.cabang}
+                    </span>
+                  </div>
+                )}
                 <div className="flex justify-between">
                   <span className="text-slate-400">Nominal Transfer:</span>
                   <span className="font-mono font-bold text-emerald-600 dark:text-emerald-400 text-sm">

@@ -72,34 +72,85 @@ class ReceiptController extends Controller
     public function store(Request $request): JsonResponse
     {
         $request->validate([
-            'image'    => 'required|file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240', // max 10 MB
-            'category' => 'required|string|max:100',
-            'notes'    => 'nullable|string|max:1000',
+            'image'               => 'required_without:images|file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240', // max 10 MB
+            'images'              => 'nullable|array|max:5',
+            'images.*'            => 'file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240',
+            'additional_images'   => 'nullable|array|max:5',
+            'additional_images.*' => 'file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240',
+            'expense_report_id'   => 'nullable|integer|exists:expense_reports,id',
+            'category'            => 'required|string|max:100',
+            'notes'               => 'nullable|string|max:1000',
         ]);
 
         $user      = $request->user();
         $companyId = $user->company_id;
-        $file      = $request->file('image');
 
-        // Hitung SHA-256 hash SEBELUM simpan (immutable)
-        $sha256 = hash('sha256', file_get_contents($file->getRealPath()));
+        // Ambil file utama
+        if ($request->hasFile('image')) {
+            $primaryFile = $request->file('image');
+        } elseif ($request->hasFile('images') && count($request->file('images')) > 0) {
+            $primaryFile = $request->file('images')[0];
+        } else {
+            return response()->json(['message' => 'Gambar struk wajib diunggah.'], 422);
+        }
 
-        // Simpan file ke storage/app/receipts/
-        $imagePath = $file->store('receipts');
+        // Ambil file lampiran tambahan jika ada
+        $additionalFiles = [];
+        if ($request->hasFile('additional_images')) {
+            $additionalFiles = $request->file('additional_images');
+        } elseif ($request->hasFile('images') && count($request->file('images')) > 1) {
+            $allImages = $request->file('images');
+            $additionalFiles = array_slice($allImages, 1);
+        }
+
+        // Hitung SHA-256 hash SEBELUM simpan (immutable) dari file utama
+        $sha256 = hash('sha256', file_get_contents($primaryFile->getRealPath()));
+
+        // Simpan file utama ke storage/app/receipts/
+        $imagePath = $primaryFile->store('receipts');
 
         // Buat receipt — field nominal/tanggal kosong dulu, diisi OCR
         $receipt = Receipt::create([
-            'company_id'     => $companyId,
-            'user_id'        => $user->id,
-            'receipt_number' => $this->generateReceiptNumber(),
-            'sha256_hash'    => $sha256,
-            'image_path'     => $imagePath,
-            'currency'       => 'IDR',
-            'status'         => 'draft',
-            'ocr_status'     => 'pending',
-            'category'       => $request->category,
-            'notes'          => $request->notes,
+            'company_id'            => $companyId,
+            'user_id'               => $user->id,
+            'attendance_setting_id' => $user->attendance_setting_id,
+            'expense_report_id'     => $request->expense_report_id,
+            'receipt_number'        => $this->generateReceiptNumber(),
+            'sha256_hash'           => $sha256,
+            'image_path'            => $imagePath,
+            'currency'              => 'IDR',
+            'status'                => 'draft',
+            'ocr_status'            => 'pending',
+            'category'              => $request->category,
+            'notes'                 => $request->notes,
         ]);
+
+        // Simpan foto utama ke tabel receipt_images
+        $receipt->images()->create([
+            'file_path'  => $imagePath,
+            'file_name'  => $primaryFile->getClientOriginalName() ?: basename($imagePath),
+            'file_size'  => $primaryFile->getSize(),
+            'mime_type'  => $primaryFile->getMimeType(),
+            'image_type' => 'primary',
+        ]);
+
+        // Simpan setiap foto lampiran tambahan ke tabel receipt_images
+        foreach ($additionalFiles as $extraFile) {
+            if ($extraFile && $extraFile->isValid()) {
+                $extraPath = $extraFile->store('receipts');
+                $receipt->images()->create([
+                    'file_path'  => $extraPath,
+                    'file_name'  => $extraFile->getClientOriginalName() ?: basename($extraPath),
+                    'file_size'  => $extraFile->getSize(),
+                    'mime_type'  => $extraFile->getMimeType(),
+                    'image_type' => 'additional',
+                ]);
+            }
+        }
+
+        if ($receipt->expense_report_id) {
+            $receipt->expenseReport?->recalculateTotals();
+        }
 
         // Dispatch OCR job ke queue — semua ocr_raw_* + claimed_amount diisi di sini
         ProcessOcrJob::dispatch($receipt->id);
@@ -109,13 +160,17 @@ class ReceiptController extends Controller
 
         $this->logActivity($user->id, $companyId, 'receipt_uploaded', 'Upload struk ' . $receipt->receipt_number, $receipt->id, 'receipt', $receipt->id);
 
+        $receiptData = $receipt->only([
+            'id', 'receipt_number', 'sha256_hash', 'image_path',
+            'status', 'ocr_status', 'category', 'notes',
+            'is_potential_duplicate', 'duplicate_reference_id', 'duplicate_reason',
+            'expense_report_id',
+        ]);
+        $receiptData['images'] = $receipt->images()->select('id', 'receipt_id', 'file_path', 'file_name', 'file_size', 'mime_type', 'image_type')->get();
+
         return response()->json([
             'message' => 'Struk berhasil diunggah. OCR sedang diproses.',
-            'receipt' => $receipt->only([
-                'id', 'receipt_number', 'sha256_hash', 'image_path',
-                'status', 'ocr_status', 'category', 'notes',
-                'is_potential_duplicate', 'duplicate_reference_id', 'duplicate_reason',
-            ]),
+            'receipt' => $receiptData,
         ], 201);
     }
 
@@ -168,6 +223,9 @@ class ReceiptController extends Controller
         // Hitung ulang variance jika claimed_amount diubah
         if (isset($validated['claimed_amount'])) {
             $receipt->refresh()->recalculateVariance();
+            if ($receipt->expense_report_id) {
+                $receipt->expenseReport?->recalculateTotals();
+            }
         }
 
         $this->logActivity($request->user()->id, $receipt->company_id, 'receipt_updated', 'Update klaim ' . $receipt->receipt_number, $receipt->id, 'receipt', $receipt->id);
@@ -187,11 +245,24 @@ class ReceiptController extends Controller
     {
         $companyId = $user->company_id;
 
-        // 1. Cek max_claim_limit per transaksi dari company_settings
-        $maxPerClaim = (float) (DB::table('company_settings')
-            ->where('company_id', $companyId)
-            ->where('key', 'max_claim_limit')
-            ->value('value') ?? 0);
+        // 1. Cek max_claim_limit per transaksi: prioritaskan batas khusus cabang karyawan jika ada
+        $maxPerClaim = null;
+        if ($user->attendance_setting_id) {
+            $branchLimit = DB::table('attendance_settings')
+                ->where('id', $user->attendance_setting_id)
+                ->where('company_id', $companyId)
+                ->value('max_claim_limit');
+            if ($branchLimit !== null && (float) $branchLimit > 0) {
+                $maxPerClaim = (float) $branchLimit;
+            }
+        }
+
+        if ($maxPerClaim === null) {
+            $maxPerClaim = (float) (DB::table('company_settings')
+                ->where('company_id', $companyId)
+                ->where('key', 'max_claim_limit')
+                ->value('value') ?? 0);
+        }
 
         if ($maxPerClaim > 0 && $claimedAmount > $maxPerClaim) {
             return response()->json([
@@ -276,7 +347,7 @@ class ReceiptController extends Controller
 
             if ($receipt->total_amount === null || $receipt->receipt_date === null) {
                 return response()->json([
-                    'message' => 'OCR gagal membaca struk. Silakan lengkapi data manual terlebih dahulu.',
+                    'message' => 'OCR gagal, isi data manual dulu.',
                 ], 400);
             }
         }
@@ -317,6 +388,92 @@ class ReceiptController extends Controller
                 'is_potential_duplicate' => $receipt->is_potential_duplicate,
                 'duplicate_reference_id' => $receipt->duplicate_reference_id,
             ],
+        ]);
+    }
+
+    // ═══════════════════════════════════════════════════════════
+    // 3a. retake() — foto ulang struk draf (replace foto & re-run OCR)
+    // ═══════════════════════════════════════════════════════════
+    public function retake(Request $request, Receipt $receipt): JsonResponse
+    {
+        if ($receipt->user_id !== $request->user()->id) {
+            return response()->json(['message' => 'Anda bukan pemilik struk ini.'], 403);
+        }
+
+        if ($receipt->status !== 'draft') {
+            return response()->json(['message' => 'Hanya struk berstatus draft yang bisa difoto ulang.'], 422);
+        }
+
+        $request->validate([
+            'image' => 'required|file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240',
+        ]);
+
+        $file = $request->file('image');
+        $sha256 = hash('sha256', file_get_contents($file->getRealPath()));
+
+        // Hapus file fisik lama jika ada di storage/app/receipts/
+        if ($receipt->image_path && Storage::exists($receipt->image_path)) {
+            Storage::delete($receipt->image_path);
+        }
+
+        $newPath = $file->store('receipts');
+
+        // Update receipt dan reset status OCR
+        $receipt->update([
+            'image_path'        => $newPath,
+            'sha256_hash'       => $sha256,
+            'ocr_status'        => 'pending',
+            'ocr_error'         => null,
+            'ocr_raw_amount'    => null,
+            'ocr_raw_merchant'  => null,
+            'ocr_raw_date'      => null,
+            'ocr_raw_subtotal'  => null,
+            'ocr_raw_tax'       => null,
+            'ocr_raw_discount'  => null,
+            'ocr_raw_items'     => null,
+            'claimed_amount'    => null,
+            'total_amount'      => null,
+            'vendor_name'       => null,
+            'receipt_date'      => null,
+        ]);
+
+        // Update atau create receipt_images primary
+        $primaryImage = $receipt->images()->where('image_type', 'primary')->first();
+        if ($primaryImage) {
+            $primaryImage->update([
+                'file_path' => $newPath,
+                'file_name' => $file->getClientOriginalName() ?: basename($newPath),
+                'file_size' => $file->getSize(),
+                'mime_type' => $file->getMimeType(),
+            ]);
+        } else {
+            $receipt->images()->create([
+                'file_path'  => $newPath,
+                'file_name'  => $file->getClientOriginalName() ?: basename($newPath),
+                'file_size'  => $file->getSize(),
+                'mime_type'  => $file->getMimeType(),
+                'image_type' => 'primary',
+            ]);
+        }
+
+        // Dispatch OCR ulang
+        ProcessOcrJob::dispatch($receipt->id);
+
+        $receipt->detectPotentialDuplicate();
+
+        $this->logActivity(
+            $request->user()->id,
+            $receipt->company_id,
+            'receipt_retaken',
+            'Foto ulang struk ' . $receipt->receipt_number,
+            $receipt->id,
+            'receipt',
+            $receipt->id
+        );
+
+        return response()->json([
+            'message' => 'Foto struk berhasil diperbarui. OCR sedang memproses ulang.',
+            'receipt' => $receipt->fresh(),
         ]);
     }
 
@@ -367,6 +524,21 @@ class ReceiptController extends Controller
         $approvedAmount = $request->has('approved_amount') && $request->approved_amount !== null
             ? (float) $request->approved_amount
             : $claimed;
+
+        $ocrAmount = (float) $receipt->ocr_raw_amount;
+        if ($receipt->ocr_raw_amount !== null && $ocrAmount > 0) {
+            $limit = $receipt->getEffectiveVarianceLimit();
+
+            $diff = abs($approvedAmount - $ocrAmount);
+            $varPct = ($diff / $ocrAmount) * 100;
+
+            if ($varPct > $limit) {
+                return response()->json([
+                    'message' => 'Struk tidak dapat disetujui karena nominal melebihi batas toleransi Variance Limit (' . $limit . '%). Selisih saat ini: ' . round($varPct, 1) . '%. Silakan tolak pengajuan atau sesuaikan nominal persetujuan sesuai struk fisik.',
+                    'code'    => 'VARIANCE_LIMIT_EXCEEDED',
+                ], 422);
+            }
+        }
 
         if ($approvedAmount < $claimed && empty($request->notes)) {
             return response()->json([
@@ -453,18 +625,51 @@ class ReceiptController extends Controller
             return response()->json(['message' => 'Tidak ada struk berstatus submitted yang dapat disetujui.'], 422);
         }
 
+        $companyLimitVal = DB::table('company_settings')
+            ->where('company_id', $companyId)
+            ->where('key', 'variance_limit')
+            ->value('value');
+        $defaultCompanyLimit = ($companyLimitVal !== null && is_numeric($companyLimitVal) && (float)$companyLimitVal >= 0 && (float)$companyLimitVal <= 99)
+            ? (float)$companyLimitVal
+            : 10.0;
+
+        // Cache branch limits to avoid redundant DB queries in loop
+        $branchLimits = DB::table('attendance_settings')
+            ->where('company_id', $companyId)
+            ->whereNotNull('variance_limit')
+            ->pluck('variance_limit', 'id')
+            ->toArray();
+
         $approvedCount = 0;
+        $skippedVarianceCount = 0;
 
-        DB::transaction(function () use ($receipts, $user, $request, &$approvedCount) {
-            // Hapus notifikasi pending struk untuk para approver
-            DB::table('notifications')
-                ->where('entity_type', 'receipt')
-                ->whereIn('entity_id', $receipts->pluck('id'))
-                ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
-                ->delete();
-
+        DB::transaction(function () use ($receipts, $user, $request, $defaultCompanyLimit, $branchLimits, &$approvedCount, &$skippedVarianceCount) {
             foreach ($receipts as $receipt) {
                 $claimed = (float) ($receipt->claimed_amount ?: $receipt->total_amount);
+                $ocrAmount = (float) $receipt->ocr_raw_amount;
+
+                // Hitung effective limit untuk struk ini (cabang struk / default company)
+                $branchId = $receipt->attendance_setting_id;
+                $effectiveLimit = ($branchId && isset($branchLimits[$branchId]))
+                    ? (float) $branchLimits[$branchId]
+                    : $defaultCompanyLimit;
+
+                // Jangan setujui struk yang melebihi batas Variance Limit
+                if ($receipt->ocr_raw_amount !== null && $ocrAmount > 0) {
+                    $diff = abs($claimed - $ocrAmount);
+                    $varPct = ($diff / $ocrAmount) * 100;
+                    if ($varPct > $effectiveLimit) {
+                        $skippedVarianceCount++;
+                        continue;
+                    }
+                }
+
+                // Hapus notifikasi pending struk untuk para approver
+                DB::table('notifications')
+                    ->where('entity_type', 'receipt')
+                    ->where('entity_id', $receipt->id)
+                    ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
+                    ->delete();
 
                 $receipt->update([
                     'status'          => 'approved',
@@ -498,9 +703,15 @@ class ReceiptController extends Controller
             }
         });
 
+        $msg = "{$approvedCount} struk berhasil disetujui.";
+        if ($skippedVarianceCount > 0) {
+            $msg .= " ({$skippedVarianceCount} struk dilewati karena melebihi batas Variance Limit {$limit}%).";
+        }
+
         return response()->json([
-            'message'        => "{$approvedCount} struk berhasil disetujui.",
+            'message'        => $msg,
             'approved_count' => $approvedCount,
+            'skipped_count'  => $skippedVarianceCount,
         ]);
     }
 
@@ -630,13 +841,36 @@ class ReceiptController extends Controller
     public function exportDisbursement(Request $request)
     {
         $companyId = $request->user()->company_id;
-        $status = $request->query('status', 'approved');
+        $status    = $request->query('status', 'approved');
+        $branchId  = $request->query('attendance_setting_id') ?? $request->query('branch_id');
 
-        $receipts = Receipt::where('company_id', $companyId)
-            ->where('status', $status)
-            ->with(['user:id,name,employee_code,department,bank_name,bank_account_no,bank_account_holder'])
-            ->orderBy('user_id')
-            ->get();
+        $query = Receipt::where('company_id', $companyId)
+            ->where('status', $status);
+
+        if ($branchId !== null && $branchId !== '' && $branchId !== 'all') {
+            if ($branchId === 'none' || $branchId === 'tanpa_cabang') {
+                $query->where(function ($q) {
+                    $q->whereNull('attendance_setting_id')
+                      ->whereDoesntHave('user', fn ($uq) => $uq->whereNotNull('attendance_setting_id'));
+                });
+            } else {
+                $query->where(function ($q) use ($branchId) {
+                    $q->where('attendance_setting_id', $branchId)
+                      ->orWhere(function ($sub) use ($branchId) {
+                          $sub->whereNull('attendance_setting_id')
+                              ->whereHas('user', fn ($uq) => $uq->where('attendance_setting_id', $branchId));
+                      });
+                });
+            }
+        }
+
+        $receipts = $query->with([
+            'user:id,name,employee_code,department,bank_name,bank_account_no,bank_account_holder,attendance_setting_id',
+            'user.office:id,office_name',
+            'office:id,office_name',
+        ])
+        ->orderBy('user_id')
+        ->get();
 
         $filename = 'rekap_transfer_reimbursement_' . now()->format('Ymd_His') . '.csv';
 
@@ -656,6 +890,7 @@ class ReceiptController extends Controller
                 'Kode Karyawan',
                 'Nama Karyawan',
                 'Departemen',
+                'Cabang Kantor',
                 'Nama Bank',
                 'Nomor Rekening',
                 'Nama Pemilik Rekening',
@@ -670,12 +905,14 @@ class ReceiptController extends Controller
             foreach ($receipts as $r) {
                 $u = $r->user;
                 $approvedVal = (float) ($r->approved_amount ?: $r->claimed_amount ?: $r->total_amount);
+                $branchName = $r->office?->office_name ?? $u?->office?->office_name ?? '—';
 
                 fputcsv($file, [
                     $no++,
                     $u->employee_code ?? '—',
                     $u->name ?? '—',
                     $u->department ?? '—',
+                    $branchName,
                     $u->bank_name ?? '—',
                     $u->bank_account_no ? "'" . $u->bank_account_no : '—',
                     $u->bank_account_holder ?? $u->name ?? '—',
@@ -768,17 +1005,32 @@ class ReceiptController extends Controller
             return response()->json(['message' => 'Struk tidak ditemukan di perusahaan Anda.'], 403);
         }
 
-        if (! $receipt->image_path || ! Storage::disk('local')->exists($receipt->image_path)) {
+        // Cek apakah meminta foto lampiran tertentu via image_id atau index
+        $targetPath = $receipt->image_path;
+        if ($request->has('image_id')) {
+            $targetImage = $receipt->images()->where('id', $request->query('image_id'))->first();
+            if ($targetImage && $targetImage->file_path) {
+                $targetPath = $targetImage->file_path;
+            }
+        } elseif ($request->has('index') && is_numeric($request->query('index'))) {
+            $idx = (int) $request->query('index');
+            $targetImage = $receipt->images()->skip($idx)->first();
+            if ($targetImage && $targetImage->file_path) {
+                $targetPath = $targetImage->file_path;
+            }
+        }
+
+        if (! $targetPath || ! Storage::disk('local')->exists($targetPath)) {
             return response()->json(['message' => 'File foto struk tidak ditemukan.'], 404);
         }
 
         // PDF: langsung stream, tidak perlu konversi WebP
-        if (str_ends_with(strtolower($receipt->image_path), '.pdf')) {
-            $fullPath = Storage::disk('local')->path($receipt->image_path);
+        if (str_ends_with(strtolower($targetPath), '.pdf')) {
+            $fullPath = Storage::disk('local')->path($targetPath);
             return response()->file($fullPath, ['Content-Type' => 'application/pdf']);
         }
 
-        return $this->serveImageAsWebP($receipt->image_path);
+        return $this->serveImageAsWebP($targetPath);
     }
 
     // ─── Helper: Serve image as WebP untuk ringan/cepat di web ────
@@ -829,8 +1081,12 @@ class ReceiptController extends Controller
         }
 
         $receipt->load([
+            'office:id,office_name',
+            'expenseReport:id,report_number,title,status',
+            'images:id,receipt_id,file_path,file_name,file_size,mime_type,image_type',
             'approvals.user:id,name,role',
-            'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder',
+            'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder,attendance_setting_id',
+            'user.office:id,office_name',
             'paidBy:id,name,email,role',
             'duplicateReference:id,receipt_number,total_amount,receipt_date',
         ]);
@@ -839,8 +1095,13 @@ class ReceiptController extends Controller
             'receipt' => [
                 'id'                     => $receipt->id,
                 'receipt_number'         => $receipt->receipt_number,
+                'attendance_setting_id' => $receipt->attendance_setting_id,
+                'expense_report_id'      => $receipt->expense_report_id,
+                'expense_report'         => $receipt->expenseReport,
+                'office'                 => $receipt->office,
                 'sha256_hash'            => $receipt->sha256_hash,
                 'image_path'             => $receipt->image_path,
+                'images'                 => $receipt->images,
                 'vendor_name'            => $receipt->vendor_name,
                 'total_amount'           => $receipt->total_amount,
                 'claimed_amount'         => $receipt->claimed_amount,
@@ -894,9 +1155,10 @@ class ReceiptController extends Controller
                 'claimed_amount', 'approved_amount', 'ocr_raw_amount', 'ocr_raw_subtotal',
                 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items', 'ocr_raw_merchant',
                 'ocr_raw_date', 'receipt_date', 'status', 'submitted_at', 'paid_at',
-                'payment_method', 'payment_ref_no', 'ocr_status',
+                'payment_method', 'payment_ref_no', 'ocr_status', 'ocr_error',
                 'category', 'notes', 'variance_flag', 'variance_pct',
                 'is_potential_duplicate', 'duplicate_reference_id', 'duplicate_reason', 'created_at',
+                'expense_report_id', 'image_path',
             ])
             ->selectRaw(
                 "(SELECT notes FROM receipt_approvals WHERE receipt_id = receipts.id AND status = 'rejected' ORDER BY id DESC LIMIT 1) as rejection_reason"
@@ -913,73 +1175,124 @@ class ReceiptController extends Controller
     public function inbox(Request $request): JsonResponse
     {
         $companyId = $request->user()->company_id;
+        $branchId  = $request->query('attendance_setting_id') ?? $request->query('branch_id');
+        $limit     = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
-        $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
+        $query = Receipt::where('company_id', $companyId)
+            ->where('status', 'submitted');
 
-        $receipts = Receipt::where('company_id', $companyId)
-            ->where('status', 'submitted')
-            ->with([
-                'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder',
-                'duplicateReference:id,receipt_number,total_amount,receipt_date,image_path,user_id',
-                'duplicateReference.user:id,name,email,department',
-            ])
-            ->select([
-                'id', 'user_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
-                'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
-                'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
-                'receipt_date', 'status', 'ocr_status', 'category', 'notes',
-                'variance_flag', 'variance_pct', 'is_potential_duplicate',
-                'duplicate_reference_id', 'duplicate_reason', 'submitted_at', 'created_at',
-            ])
-            ->latest()
-            ->paginate($limit);
+        if ($branchId !== null && $branchId !== '' && $branchId !== 'all') {
+            if ($branchId === 'none' || $branchId === 'tanpa_cabang') {
+                $query->where(function ($q) {
+                    $q->whereNull('attendance_setting_id')
+                      ->whereDoesntHave('user', fn ($uq) => $uq->whereNotNull('attendance_setting_id'));
+                });
+            } else {
+                $query->where(function ($q) use ($branchId) {
+                    $q->where('attendance_setting_id', $branchId)
+                      ->orWhere(function ($sub) use ($branchId) {
+                          $sub->whereNull('attendance_setting_id')
+                              ->whereHas('user', fn ($uq) => $uq->where('attendance_setting_id', $branchId));
+                      });
+                });
+            }
+        }
+
+        $receipts = $query->with([
+            'office:id,office_name,variance_limit,max_claim_limit',
+            'expenseReport:id,report_number,title,status',
+            'images:id,receipt_id,file_path,file_name,file_size,mime_type,image_type',
+            'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder,attendance_setting_id',
+            'user.office:id,office_name,variance_limit,max_claim_limit',
+            'duplicateReference:id,receipt_number,total_amount,receipt_date,image_path,user_id,attendance_setting_id',
+            'duplicateReference.user:id,name,email,department,attendance_setting_id',
+            'duplicateReference.user.office:id,office_name,variance_limit,max_claim_limit',
+            'duplicateReference.office:id,office_name,variance_limit,max_claim_limit',
+        ])
+        ->select([
+            'id', 'company_id', 'user_id', 'attendance_setting_id', 'expense_report_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
+            'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
+            'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
+            'receipt_date', 'status', 'ocr_status', 'category', 'notes',
+            'variance_flag', 'variance_pct', 'is_potential_duplicate',
+            'duplicate_reference_id', 'duplicate_reason', 'submitted_at', 'created_at',
+        ])
+        ->latest()
+        ->paginate($limit);
 
         return response()->json($receipts);
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 9. dashboardReceipts() — list SEMUA struk dengan filter status
-    //    GET /api/v1/dashboard/receipts/all?status=submitted|approved|rejected|paid
+    // 9. dashboardReceipts() — list SEMUA struk dengan filter status & cabang
+    //    GET /api/v1/dashboard/receipts/all?status=submitted|approved|rejected|paid&attendance_setting_id=
     // ═══════════════════════════════════════════════════════════
     public function dashboardReceipts(Request $request): JsonResponse
     {
         $companyId = $request->user()->company_id;
         $status    = $request->query('status');
+        $branchId  = $request->query('attendance_setting_id') ?? $request->query('branch_id');
         $limit     = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         // Valid status values
         $validStatuses = ['submitted', 'approved', 'rejected', 'paid'];
 
-        $query = Receipt::where('company_id', $companyId)
-            ->with([
-                'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder',
-                'approvals.user:id,name,email,role',
-                'paidBy:id,name,email,role',
-                'duplicateReference:id,receipt_number,total_amount,receipt_date,image_path,user_id',
-                'duplicateReference.user:id,name,email,department',
-            ])
-            ->select([
-                'id', 'user_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
-                'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
-                'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
-                'receipt_date', 'status', 'ocr_status', 'category', 'notes',
-                'variance_flag', 'variance_pct', 'is_potential_duplicate',
-                'duplicate_reference_id', 'duplicate_reason', 'paid_at', 'paid_by', 'payment_method',
-                'payment_ref_no', 'submitted_at', 'created_at',
-            ]);
+        $query = Receipt::where('company_id', $companyId);
+
+        if ($branchId !== null && $branchId !== '' && $branchId !== 'all') {
+            if ($branchId === 'none' || $branchId === 'tanpa_cabang') {
+                $query->where(function ($q) {
+                    $q->whereNull('attendance_setting_id')
+                      ->whereDoesntHave('user', fn ($uq) => $uq->whereNotNull('attendance_setting_id'));
+                });
+            } else {
+                $query->where(function ($q) use ($branchId) {
+                    $q->where('attendance_setting_id', $branchId)
+                      ->orWhere(function ($sub) use ($branchId) {
+                          $sub->whereNull('attendance_setting_id')
+                              ->whereHas('user', fn ($uq) => $uq->where('attendance_setting_id', $branchId));
+                      });
+                });
+            }
+        }
+
+        $receiptsQuery = clone $query;
 
         // Filter by status jika parameter diberikan dan valid
         if ($status && in_array($status, $validStatuses)) {
-            $query->where('status', $status);
+            $receiptsQuery->where('status', $status);
         } else {
             // Default: tampilkan submitted + approved + rejected + paid (bukan draft)
-            $query->whereIn('status', $validStatuses);
+            $receiptsQuery->whereIn('status', $validStatuses);
         }
 
-        $receipts = $query->latest()->paginate($limit);
+        $receipts = $receiptsQuery->with([
+            'office:id,office_name,variance_limit,max_claim_limit',
+            'expenseReport:id,report_number,title,status',
+            'images:id,receipt_id,file_path,file_name,file_size,mime_type,image_type',
+            'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder,attendance_setting_id',
+            'user.office:id,office_name,variance_limit,max_claim_limit',
+            'approvals.user:id,name,email,role',
+            'paidBy:id,name,email,role',
+            'duplicateReference:id,receipt_number,total_amount,receipt_date,image_path,user_id,attendance_setting_id',
+            'duplicateReference.user:id,name,email,department,attendance_setting_id',
+            'duplicateReference.user.office:id,office_name,variance_limit,max_claim_limit',
+            'duplicateReference.office:id,office_name,variance_limit,max_claim_limit',
+        ])
+        ->select([
+            'id', 'company_id', 'user_id', 'attendance_setting_id', 'expense_report_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
+            'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
+            'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
+            'receipt_date', 'status', 'ocr_status', 'category', 'notes',
+            'variance_flag', 'variance_pct', 'is_potential_duplicate',
+            'duplicate_reference_id', 'duplicate_reason', 'paid_at', 'paid_by', 'payment_method',
+            'payment_ref_no', 'submitted_at', 'created_at',
+        ])
+        ->latest()
+        ->paginate($limit);
 
-        // Tambahkan ringkasan jumlah per status
-        $summary = Receipt::where('company_id', $companyId)
+        // Ringkasan jumlah per status (memperhatikan filter cabang jika ada)
+        $summary = $query
             ->whereIn('status', $validStatuses)
             ->selectRaw('status, COUNT(*) as total')
             ->groupBy('status')

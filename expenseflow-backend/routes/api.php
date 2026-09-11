@@ -4,6 +4,7 @@ use App\Http\Controllers\API\ActivityLogController;
 use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\AuthController;
 use App\Http\Controllers\API\ForgotPasswordController;
+use App\Http\Controllers\API\ExpenseReportController;
 use App\Http\Controllers\API\InvoiceController;
 use App\Http\Controllers\API\NotificationController;
 use App\Http\Controllers\API\PublicRecruitmentController;
@@ -96,9 +97,20 @@ Route::prefix('v1')->group(function () {
                 Route::get('/receipts', [ReceiptController::class, 'myReceipts']);
                 Route::get('/receipts/{receipt}', [ReceiptController::class, 'show']);
                 Route::patch('/receipts/{receipt}/claim', [ReceiptController::class, 'updateClaim']);
+                Route::post('/receipts/{receipt}/retake', [ReceiptController::class, 'retake']);
+                Route::get('/receipts/{receipt}/image', [ReceiptController::class, 'image']);
                 Route::post('/receipts/{receipt}/submit', [ReceiptController::class, 'submit']);
                 Route::delete('/receipts/{receipt}', [ReceiptController::class, 'destroy']);
             });
+
+            // Laporan Pengeluaran Dinas (Expense Reports / Bundling)
+            Route::get('/expense-reports', [ExpenseReportController::class, 'index']);
+            Route::post('/expense-reports', [ExpenseReportController::class, 'store']);
+            Route::get('/expense-reports/{expenseReport}', [ExpenseReportController::class, 'show']);
+            Route::post('/expense-reports/{expenseReport}/receipts', [ExpenseReportController::class, 'addReceipts']);
+            Route::delete('/expense-reports/{expenseReport}/receipts/{receipt}', [ExpenseReportController::class, 'removeReceipt']);
+            Route::post('/expense-reports/{expenseReport}/submit', [ExpenseReportController::class, 'submit']);
+            Route::delete('/expense-reports/{expenseReport}', [ExpenseReportController::class, 'destroy']);
 
             // Jadwal shift karyawan
             Route::get('/my-schedule', [ShiftController::class, 'mySchedule']);
@@ -122,6 +134,12 @@ Route::prefix('v1')->group(function () {
                 Route::post('/receipts/{receipt}/reject', [ReceiptController::class, 'reject']);
                 Route::post('/receipts/{receipt}/pay', [ReceiptController::class, 'disburse']);
 
+                // Expense Reports (Bundling Laporan Dinas)
+                Route::get('/expense-reports', [ExpenseReportController::class, 'dashboardIndex']);
+                Route::get('/expense-reports/{expenseReport}', [ExpenseReportController::class, 'show']);
+                Route::post('/expense-reports/{expenseReport}/approve', [ExpenseReportController::class, 'approve']);
+                Route::post('/expense-reports/{expenseReport}/reject', [ExpenseReportController::class, 'reject']);
+
                 // Vendor management
                 Route::get('/vendors', [VendorController::class, 'index']);
                 Route::post('/vendors', [VendorController::class, 'store']);
@@ -138,6 +156,7 @@ Route::prefix('v1')->group(function () {
                 // Pengaturan threshold & batas klaim (Finance Rules)
                 Route::get('/settings', [SettingsController::class, 'index']);
                 Route::match(['put', 'patch'], '/settings', [SettingsController::class, 'update']);
+                Route::match(['put', 'patch'], '/settings/branches/{attendanceSetting}', [SettingsController::class, 'updateBranch']);
             });
 
             // ─── Fitur Bersama (Finance, HRD, Admin, Super Admin) ───────────────
@@ -152,6 +171,10 @@ Route::prefix('v1')->group(function () {
 
             // Sinkronisasi status/versi data untuk Smart Cache
             Route::get('/sync-versions', [SyncVersionController::class, 'index']);
+
+            // Daftar kantor / cabang perusahaan (read-only untuk filter struk & fitur bersama)
+            Route::get('/attendance/settings', [AttendanceController::class, 'listSettings']);
+            Route::get('/offices', [AttendanceController::class, 'listSettings']);
         });
 
     // Super Admin / HRD / Admin routes — akses penuh
@@ -171,39 +194,44 @@ Route::prefix('v1')->group(function () {
             });
         });
 
-    // Attendance — manajemen oleh HRD / Admin / Super Admin (web dashboard)
-    Route::middleware(['auth:sanctum', 'role:hrd,admin,super_admin', 'company'])
+    // Attendance — manajemen web dashboard
+    Route::middleware(['auth:sanctum', 'company'])
         ->prefix('dashboard/attendance')
         ->group(function () {
-            Route::get('/users', [AttendanceController::class, 'listUsers']);
-            Route::post('/users/{id}/toggle-wfh', [AttendanceController::class, 'toggleWfh']);
-            Route::post('/users/{id}/toggle-radius', [AttendanceController::class, 'toggleRadius']);
-            Route::get('/leaves', [AttendanceController::class, 'listLeaves']);
-            Route::get('/leaves/{leave}/document', [AttendanceController::class, 'leaveDocument']);
-            Route::post('/leaves/{id}/approve', [AttendanceController::class, 'approveLeave']);
-            Route::post('/leaves/{id}/reject', [AttendanceController::class, 'rejectLeave']);
+            // Daftar kantor / cabang perusahaan (read-only untuk filter struk & fitur bersama: Finance, HRD, Admin, Super Admin)
+            Route::get('/settings', [AttendanceController::class, 'listSettings'])
+                ->middleware('role:finance,hrd,admin,super_admin');
 
-            // Semua karyawan (tanpa pagination) untuk dropdown pengecualian libur
-            Route::get('/users/all', [AttendanceController::class, 'listAllUsers']);
+            // Fitur manajemen presensi khusus HRD, Admin, Super Admin
+            Route::middleware('role:hrd,admin,super_admin')->group(function () {
+                Route::get('/users', [AttendanceController::class, 'listUsers']);
+                Route::post('/users/{id}/toggle-wfh', [AttendanceController::class, 'toggleWfh']);
+                Route::post('/users/{id}/toggle-radius', [AttendanceController::class, 'toggleRadius']);
+                Route::get('/leaves', [AttendanceController::class, 'listLeaves']);
+                Route::get('/leaves/{leave}/document', [AttendanceController::class, 'leaveDocument']);
+                Route::post('/leaves/{id}/approve', [AttendanceController::class, 'approveLeave']);
+                Route::post('/leaves/{id}/reject', [AttendanceController::class, 'rejectLeave']);
 
-            // Dashboard hari ini & rekap
-            Route::get('/today', [AttendanceController::class, 'today']);
-            Route::get('/summary', [AttendanceController::class, 'monthlySummary']);
-            Route::get('/report', [AttendanceController::class, 'reportAttendance']);
-            Route::get('/report/export', [AttendanceController::class, 'exportReport']);
+                // Semua karyawan (tanpa pagination) untuk dropdown pengecualian libur
+                Route::get('/users/all', [AttendanceController::class, 'listAllUsers']);
 
-            // Saldo / kuota cuti
-            Route::get('/leave-balances', [AttendanceController::class, 'listLeaveBalances']);
-            Route::post('/leave-balances', [AttendanceController::class, 'setLeaveBalance']);
-            Route::get('/leave-balance-history', [AttendanceController::class, 'listLeaveBalanceHistories']);
+                // Dashboard hari ini & rekap
+                Route::get('/today', [AttendanceController::class, 'today']);
+                Route::get('/summary', [AttendanceController::class, 'monthlySummary']);
+                Route::get('/report', [AttendanceController::class, 'reportAttendance']);
+                Route::get('/report/export', [AttendanceController::class, 'exportReport']);
 
-            // CRUD pengaturan kantor (lokasi & radius presensi)
-            Route::get('/settings', [AttendanceController::class, 'listSettings']);
-            Route::post('/settings', [AttendanceController::class, 'storeSettings']);
-            Route::get('/settings/{attendanceSetting}', [AttendanceController::class, 'showSettings']);
-            Route::match(['put', 'patch'], '/settings/{attendanceSetting}', [AttendanceController::class, 'updateSettings']);
-            Route::delete('/settings/{attendanceSetting}', [AttendanceController::class, 'destroySettings']);
-            Route::post('/settings/{id}/reset-leave-balances', [AttendanceController::class, 'resetOfficeLeaveBalances']);
+                // Saldo / kuota cuti
+                Route::get('/leave-balances', [AttendanceController::class, 'listLeaveBalances']);
+                Route::post('/leave-balances', [AttendanceController::class, 'setLeaveBalance']);
+                Route::get('/leave-balance-history', [AttendanceController::class, 'listLeaveBalanceHistories']);
+
+                // CRUD pengaturan kantor (lokasi & radius presensi) — mutasi hanya HRD / Admin / Super Admin
+                Route::post('/settings', [AttendanceController::class, 'storeSettings']);
+                Route::get('/settings/{attendanceSetting}', [AttendanceController::class, 'showSettings']);
+                Route::match(['put', 'patch'], '/settings/{attendanceSetting}', [AttendanceController::class, 'updateSettings']);
+                Route::delete('/settings/{attendanceSetting}', [AttendanceController::class, 'destroySettings']);
+                Route::post('/settings/{id}/reset-leave-balances', [AttendanceController::class, 'resetOfficeLeaveBalances']);
 
             // Kalender libur nasional / cuti bersama perusahaan
             Route::get('/holidays/preview-national', [AttendanceController::class, 'previewNationalHolidays']);
@@ -265,6 +293,7 @@ Route::prefix('v1')->group(function () {
             Route::match(['put', 'patch'], '/shift-patterns/{id}', [ShiftController::class, 'patternUpdate']);
             Route::delete('/shift-patterns/{id}', [ShiftController::class, 'patternDestroy']);
         });
+    });
 
     // Presensi check-in/out — hanya karyawan yang attendance_enabled = true (gerbang WFH)
     Route::middleware(['auth:sanctum', 'company', 'attendance_access'])
