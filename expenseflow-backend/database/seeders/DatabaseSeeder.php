@@ -260,6 +260,9 @@ class DatabaseSeeder extends Seeder
         // ─── 12. Libur nasional 2026 ─────────────────────────────
         $this->call(HolidaySeeder::class);
 
+        // ─── 13. Data Pribadi & K3 Dummy ──────────────────────────
+        $this->call(DummyPersonalDataSeeder::class);
+
         $this->command?->info('✅ Dataset dummy siap (termasuk presensi & libur nasional). Password semua user: "password".');
         $this->command?->info('   Kantor: -6.200000, 106.816667 (radius 100m). Employee budi & siti: attendance_enabled = true.');
     }

@@ -7,6 +7,7 @@ import {
   apiPut,
   apiPatch,
   apiDelete,
+  apiUpload,
   apiDownload,
   apiViewFile,
   setToken,
@@ -230,7 +231,13 @@ export const userApi = {
   create: (payload: Record<string, unknown>) => apiPost('/admin/users', payload),
   update: (id: number | string, payload: Record<string, unknown>) =>
     apiPut(`/admin/users/${id}`, payload),
-  deactivate: (id: number | string) => apiPatch(`/admin/users/${id}/deactivate`),
+  deactivate: (id: number | string, data?: {
+    exit_date?: string;
+    exit_reason?: string;
+    exit_notes?: string;
+    severance_status?: string;
+    clearance_status?: string;
+  }) => apiPatch(`/admin/users/${id}/deactivate`, data),
   activate: (id: number | string) => apiPatch(`/admin/users/${id}/activate`),
   destroy: (id: number | string) => apiDelete<{ message: string }>(`/admin/users/${id}`),
   bulkImport: (payload: BulkImportPayload) =>
@@ -738,6 +745,62 @@ export const syncApi = {
       { cache: false },
     ),
 };
+
+// ─── Berkas Digital Karyawan (User Documents) ────────────────
+export interface UserDocument {
+  id: number;
+  company_id: number;
+  user_id: number;
+  document_type: 'ktp' | 'kartu_keluarga' | 'npwp' | 'buku_tabungan' | 'kontrak_kerja' | 'ijazah' | 'sertifikat' | 'lainnya';
+  title: string | null;
+  file_path: string;
+  file_name: string;
+  file_size: number;
+  file_size_formatted?: string;
+  mime_type: string;
+  is_pdf?: boolean;
+  is_image?: boolean;
+  uploaded_by?: number | null;
+  uploader?: {
+    id: number;
+    name: string;
+    role: string;
+  } | null;
+  notes?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface UserDocumentsResponse {
+  success: boolean;
+  user: {
+    id: number;
+    name: string;
+    employee_code: string;
+  };
+  documents: UserDocument[];
+}
+
+export const userDocumentApi = {
+  list: (userId: number | string) =>
+    apiGet<UserDocumentsResponse>(`/admin/users/${userId}/documents`, undefined, { cache: false }),
+
+  upload: (userId: number | string, formData: FormData) =>
+    apiUpload<{ success: boolean; message: string; document: UserDocument }>(`/admin/users/${userId}/documents`, formData),
+
+  delete: (userId: number | string, documentId: number | string) =>
+    apiDelete<{ success: boolean; message: string }>(`/admin/users/${userId}/documents/${documentId}`),
+
+  download: (userId: number | string, documentId: number | string, fileName: string) =>
+    apiDownload(`/admin/users/${userId}/documents/${documentId}/download`, fileName),
+
+  streamUrl: (userId: number | string, documentId: number | string) =>
+    `${BASE_URL}/admin/users/${userId}/documents/${documentId}/stream`,
+
+  viewFile: async (userId: number | string, documentId: number | string, title?: string) =>
+    apiViewFile(`/admin/users/${userId}/documents/${documentId}/stream`, title || 'Dokumen Karyawan'),
+};
+
 
 
 

@@ -12,12 +12,18 @@ use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['company_id', 'employee_code', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions'])]
+#[Fillable(['company_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
-    /** @use HasFactory<UserFactory> */
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
+
+    /**
+     * The accessors to append to the model's array and JSON form.
+     *
+     * @var array<int, string>
+     */
+    protected $appends = ['age'];
 
     /**
      * Get the attributes that should be cast.
@@ -31,6 +37,7 @@ class User extends Authenticatable
             'password'             => 'hashed',
             'is_active'            => 'boolean',
             'attendance_enabled'   => 'boolean',
+            'overtime_enabled'     => 'boolean',
             'wfh_enabled'          => 'boolean',
             'radius_enabled'       => 'boolean',
             'monthly_claim_limit'  => 'decimal:2',
@@ -39,9 +46,11 @@ class User extends Authenticatable
             'is_pregnant'              => 'boolean',
             'is_domicile_same_as_ktp'  => 'boolean',
             'number_of_dependents'     => 'integer',
+            'graduation_year'          => 'integer',
             'joined_date'              => 'date:Y-m-d',
             'contract_start_date'      => 'date:Y-m-d',
             'contract_end_date'        => 'date:Y-m-d',
+            'exit_date'                => 'date:Y-m-d',
         ];
     }
 
@@ -96,4 +105,11 @@ class User extends Authenticatable
     {
         return $this->hasMany(UserShift::class);
     }
+
+    /** Berkas digital karyawan (user_documents). */
+    public function documents()
+    {
+        return $this->hasMany(UserDocument::class);
+    }
 }
+

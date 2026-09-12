@@ -4010,7 +4010,6 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
 
   useEffect(() => { loadOffices(); loadShifts(); loadPatterns(); }, [loadOffices, loadShifts, loadPatterns]);
   useEffect(() => { if (tab === 'roster') loadRoster(); }, [tab, loadRoster]);
-  useEffect(() => { if (tab === 'patterns') loadPatterns(); }, [tab, loadPatterns]);
   useEffect(() => { if (tab === 'kalender') loadCalendar(); }, [tab, loadCalendar]);
 
   // ─── Aksi Pola Rotasi ───────────────────────────────────────

@@ -41,6 +41,13 @@ export const ENDPOINT_CACHE_RULES: EndpointCacheRule[] = [
     swr: false,
     tags: ['shifts'],
   },
+  // 2b. Pola Rotasi Shift (TTL 5 Menit, SWR: false)
+  {
+    pattern: /^\/dashboard\/attendance\/shift-patterns(\/\d+(\/users)?)?$/,
+    ttl: 5 * 60 * 1000,
+    swr: false,
+    tags: ['shifts', 'shift-patterns'],
+  },
   // 3. Master Vendor (TTL 5 Menit, SWR: false)
   {
     pattern: /^\/dashboard\/vendors(\/\d+)?$/,

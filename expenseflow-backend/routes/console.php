@@ -23,6 +23,13 @@ Schedule::command('attendance:auto-decline-collective-leave')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Kirim notifikasi FCM & dering cuti bersama saat memasuki H-7 s/d Hari H (berbarengan).
+// Berjalan secara berkala agar notifikasi langsung terkirim tepat saat hari H-7 tiba.
+Schedule::command('attendance:notify-collective-leaves')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // Reset otomatis saldo cuti tahunan per kantor (anniversary leave_reset_date).
 // Berjalan setiap hari jam 00:03 — command sendiri yang memutuskan apakah ada
 // kantor yang anniversary-nya sudah/sedang jatuh tempo (catch-up bila server mati).

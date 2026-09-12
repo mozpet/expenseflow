@@ -52,6 +52,29 @@ class FcmService
     }
 
     /**
+     * Hitung clock drift (selisih waktu) antara server lokal dan server Google.
+     * Google OAuth2 mewajibkan iat dan exp berada dalam rentang waktu UTC yang valid.
+     */
+    private function getClockOffset(): int
+    {
+        return Cache::remember('fcm_google_clock_offset', 3600, function () {
+            try {
+                $response = Http::timeout(3)->head('https://oauth2.googleapis.com/token');
+                $dateHeader = $response->header('Date');
+                if ($dateHeader) {
+                    $googleTime = strtotime($dateHeader);
+                    if ($googleTime) {
+                        return $googleTime - time();
+                    }
+                }
+            } catch (\Throwable $e) {
+                Log::debug('FCM v1: Tidak dapat mengambil header Date dari Google: ' . $e->getMessage());
+            }
+            return 0;
+        });
+    }
+
+    /**
      * Dapatkan OAuth2 Access Token untuk Google Firebase Cloud Messaging API.
      */
     private function getAccessToken(): ?string
@@ -64,7 +87,8 @@ class FcmService
             }
 
             try {
-                $now = time();
+                $offset = $this->getClockOffset();
+                $now = time() + $offset;
                 $header = json_encode(['alg' => 'RS256', 'typ' => 'JWT']);
                 $claims = json_encode([
                     'iss'   => $credentials['client_email'],

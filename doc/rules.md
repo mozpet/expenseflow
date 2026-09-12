@@ -15,7 +15,7 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
 - **Queue**    : Laravel Queue (driver: database)
 - **Storage**  : Local disk (`storage/app/private/`), nanti R2
 - **Auth**     : Sanctum token — mobile TANPA expiry (tetap login sampai Logout), web expired 24 jam
-- **Rate Limit**: Login 5 attempts/menit/email + 120 attempts/menit/IP (retry_after di-clamp ≤ 60s)
+- **Rate Limit**: Berjenjang (Tiered) — Login (5/min/email + 120/min/IP), General Read (120/min/user), Actions/Presensi (45/min/user), Heavy File/OCR/Export (15/min/user)
 
 ## Status Saat Ini
 - Frontend Flutter : SELESAI
@@ -2325,6 +2325,104 @@ Migration: `2026_09_11_000004_add_expense_report_id_to_receipts_table.php`
      - Wadah foto dilengkapi chips switcher di bagian bawah jika memiliki foto tambahan, memungkinkan karyawan memeriksa kembali foto utama dan foto slip EDC sebelum submit.
      - Otomatis mengunggah berkas utama + berkas tambahan secara multipart aman ke backend.
 
+---
 
+# Rencana Implementasi: Sistem Rate Limiting Berjenjang (Tiered Rate Limiter)
 
+## 1. Latar Belakang & Urgensi Kebutuhan
+Saat ini sistem rate limiting ExpenseFlow baru diterapkan pada pintu autentikasi publik (`POST /login` dan `auth/forgot-password/*`), sementara endpoint di dalam aplikasi (pasca-login) belum dilindungi oleh rate limiter berjenjang.
+
+### Risiko Tanpa Rate Limiting Internal:
+1. **Pencegahan Race Condition & Dobel Submit**:
+   - Mencegah dobel transaksi akibat karyawan menekan tombol *"Clock-in Presensi"* atau *"Klaim Reimbursement"* berkali-kali secara simultan saat koneksi lambat.
+2. **Perlindungan Terhadap Kebocoran Data (Scraping Protection)**:
+   - Mencegah akun internal yang disalahgunakan atau karyawan bermaksud buruk melakukan scraping masal ribuan data NIK, nomor rekening, slip gaji, atau foto KTP dalam hitungan detik.
+3. **Mencegah Kehabisan Sumber Daya Server (Resource Starvation)**:
+   - Fitur komputasi berat seperti **Scan OCR Struk AI**, **Upload Dokumen Karyawan 10MB**, **Ekspor Excel/PDF**, dan **Bulk Import Karyawan CSV** memerlukan CPU & RAM tinggi. Spam pada endpoint ini dapat mengakibatkan Out-Of-Memory (OOM) dan server down bagi seluruh pengguna lain.
+4. **Mitigasi Bug Infinite Polling Loop**:
+   - Melindungi backend jika terjadi kesalahan logika perulangan (polling loop tanpa jeda) pada aplikasi mobile Flutter atau peramban web React.
+
+---
+
+## 2. Prinsip Arsitektur: User-Based Rate Limiting (Bukan IP-Based)
+Pada pengguna yang sudah terautentikasi (`auth:sanctum`), kuota rate limiting **WAJIB dihitung berdasarkan `user_id` (`$request->user()->id`)**, BUKAN berdasarkan IP Address.
+
+> ⚠️ **Catatan Penting Masalah IP Publik Kantor (NAT / CGNAT):**  
+> Banyak kantor cabang menggunakan 1 koneksi Wi-Fi bersama (1 alamat IP publik keluar). Jika rate limit internal dihitung per IP, seluruh karyawan di kantor tersebut akan saling menghabiskan kuota request satu sama lain, sehingga operasional kantor dapat terhenti mendadak dengan status HTTP 429.
+
+---
+
+## 3. Matriks 4 Tingkatan Rate Limiter (Tiered Limit Matrix)
+
+| Kategori (Tier) | Limit Standar | Kunci Pembatas (Key) | Karakteristik Beban & Contoh Endpoint |
+|---|---|---|---|
+| **Tier 1: General & Navigation (Read)** | **120 request / menit** *(Burst toleran s.d 2-3 req/detik)* | `$user->id` (fallback: `ip`) | Operasi baca ringan, paginasi, dashboard widget, notifikasi, dan pencarian:<br>• `GET /dashboard/receipts`<br>• `GET /admin/users`<br>• `GET /notifications`<br>• `GET /employee/my-schedule` |
+| **Tier 2: Actions & Mutations (Write)** | **45 request / menit** | `$user->id` | Aksi perubahan data bisnis, approval, submit transaksi, dan presensi:<br>• `POST /attendance/check-in` & `check-out`<br>• `POST /receipts/{id}/claim`<br>• `POST /receipts/{id}/approve` & `reject`<br>• `POST /admin/users` & `PUT /admin/users/{id}`<br>• `PATCH /admin/users/{id}/deactivate` |
+| **Tier 3: Heavy Resource & Processing** | **15 request / menit** | `$user->id` | Pemrosesan berkas besar, OCR AI, ekspor spreadsheet, dan bulk import:<br>• `POST /employee/receipts` (Upload & OCR Struk)<br>• `POST /admin/users/{id}/documents` (Upload Berkas 10MB)<br>• `POST /admin/users/bulk-import` (Parsing CSV Karyawan)<br>• `GET /dashboard/receipts/export-disbursement` (Export CSV/Excel)<br>• `GET /attendance/export` |
+| **Tier 4: Public Auth & Security** | **5 request / menit** *(Login IP: 120/menit)* | `email` + `ip` | Pintu masuk sensitif sebelum login:<br>• `POST /login` (5/min/email + 120/min/IP)<br>• `POST /auth/forgot-password/send-otp` (5 req / 10 min)<br>• `POST /auth/forgot-password/verify-otp` (10 req / 5 min) |
+
+---
+
+## 4. Standar Respons Kesalahan (HTTP 429 Too Many Requests)
+Semua pembatasan yang terpicu harus menghasilkan respons JSON seragam dengan header HTTP standar:
+
+### Format JSON Respons:
+```json
+{
+  "message": "Terlalu banyak permintaan. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+  "retry_after_seconds": 30
+}
+```
+
+### HTTP Headers:
+* `Retry-After`: Jumlah detik yang harus ditunggu klien sebelum request berikutnya diperbolehkan (di-clamp maksimal 60 detik untuk kenyamanan pengguna).
+* `X-RateLimit-Limit`: Batas maksimum request dalam jendela waktu berjalan.
+* `X-RateLimit-Remaining`: Sisa kuota request yang masih tersedia.
+
+> **Status Implementasi (2026-09-12):** SELESAI ✅  
+> - **Backend Laravel (`routes/api.php` & `bootstrap/app.php`)**: Seluruh named limiter (Tier 1 `api`, Tier 2 `actions`, Tier 3 `heavy`, Tier 4 `login` & `otp_*`) serta handler global `ThrottleRequestsException` seragam menghasilkan payload JSON di atas beserta header `Retry-After` (clamped ≤ 60s), `X-RateLimit-Limit`, dan `X-RateLimit-Remaining`.
+> - **Frontend Web (`expenseflow-web/src/services/api.ts`)**: `apiFetch` memprioritaskan pembacaan `retry_after_seconds` dan menampilkan pesan cooldown yang ramah pengguna.
+> - **Mobile Flutter (`expenseflow-mobile/lib/services/api_service.dart`)**: Parsing exception memprioritaskan `retry_after_seconds`.
+> - **Pengujian Otomatis (`tests/Feature/ApiRateLimiterTest.php`)**: Seluruh 6 test case lulus 100% memvalidasi limit Tier 1–4, struktur respons, dan clamping header.
+
+---
+
+## 5. Rencana Penerapan Teknis (Implementation Steps)
+
+### Langkah 1: Registrasi Named Rate Limiter di Backend Laravel
+Dikonfigurasikan pada `app/Providers/AppServiceProvider.php` atau `routes/api.php`:
+1. `RateLimiter::for('api', ...)`: Limit 120/menit by user ID.
+2. `RateLimiter::for('actions', ...)`: Limit 45/menit by user ID.
+3. `RateLimiter::for('heavy', ...)`: Limit 15/menit by user ID.
+4. Respon kustom 429 menggunakan helper closure terstandar dengan header `Retry-After`.
+
+### Langkah 2: Penerapan Middleware pada Rute `routes/api.php`
+* Mengelompokkan route prefix `v1/employee` dan `v1/dashboard` di bawah middleware umum `throttle:api`.
+* Menambahkan middleware spesifik `throttle:actions` pada route-route mutasi transaksi (presensi, klaim, create user, dll).
+* Menambahkan middleware spesifik `throttle:heavy` pada route unggah foto OCR, berkas dokumen, bulk import, dan ekspor data.
+
+### Langkah 3: Penanganan di Frontend Web (`expenseflow-web/src/services/api.ts`)
+* Menambahkan penanganan status kode `429` di fungsi `apiFetch`:
+  - Mengambil header `Retry-After`.
+  - Melemparkan pesan error yang ramah pengguna: *"Aktivitas terlalu cepat. Mohon tunggu {detik} detik sebelum mencoba kembali."*
+  - Menampilkan toast alert peringatan tanpa me-logout pengguna.
+
+### Langkah 4: Penanganan di Mobile Flutter (`expenseflow-mobile`)
+* Menambahkan interceptor Dio untuk status `429`:
+  - Menampilkan snackbar informatif dengan durasi sesuai `retry_after`.
+  - Mencegah spam tombol dengan men-disable tombol submit sementara selama cooldown.
+
+---
+
+## 6. Skenario Pengujian & Verifikasi (Testing Checklist)
+1. **Uji Beban Normal (General Navigation)**: ✅ *LULUS*
+   - Melakukan 50 request navigasi halaman dalam 30 detik -> Mengembalikan status `200 OK` tanpa blokir (`test_checklist_1_general_navigation_normal_load_under_limit`).
+2. **Uji Batas Tindakan (Actions Throttling)**: ✅ *LULUS*
+   - Melakukan spam clock-in/approval 50 kali dalam 10 detik -> Request ke-46 menghasilkan status `429 Too Many Requests` (`test_checklist_2_actions_throttling_triggers_at_46th_request`).
+3. **Uji Batas Fitur Berat (Heavy Throttling)**: ✅ *LULUS*
+   - Melakukan loop upload berkas/export 16 kali beruntun -> Request ke-16 ditolak dengan status `429` dan payload seragam (`test_checklist_3_heavy_throttling_triggers_at_16th_request`).
+4. **Uji Independensi Antar-User (Multi-Tenant IP Test)**: ✅ *LULUS*
+   - User A dan User B login dari IP publik yang sama (`103.20.188.42`).
+   - User A menghabiskan kuota request Tier 3 miliknya hingga 429.
+   - User B melakukan request Tier 3 -> Tetap berhasil `200/422` (bukan 429), membuktikan kuota terikat ke `user_id`, bukan IP (`test_checklist_4_multi_tenant_ip_user_independence`).
 

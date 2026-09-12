@@ -72,11 +72,11 @@ class ReceiptController extends Controller
     public function store(Request $request): JsonResponse
     {
         $request->validate([
-            'image'               => 'required_without:images|file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240', // max 10 MB
+            'image'               => 'required_without:images|file|mimes:jpeg,jpg,png,webp|max:5120', // max 5 MB
             'images'              => 'nullable|array|max:5',
-            'images.*'            => 'file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240',
+            'images.*'            => 'file|mimes:jpeg,jpg,png,webp|max:5120',
             'additional_images'   => 'nullable|array|max:5',
-            'additional_images.*' => 'file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240',
+            'additional_images.*' => 'file|mimes:jpeg,jpg,png,webp|max:5120',
             'expense_report_id'   => 'nullable|integer|exists:expense_reports,id',
             'category'            => 'required|string|max:100',
             'notes'               => 'nullable|string|max:1000',
@@ -181,6 +181,13 @@ class ReceiptController extends Controller
     // ═══════════════════════════════════════════════════════════
     public function updateClaim(Request $request, Receipt $receipt): JsonResponse
     {
+        $lock = \Illuminate\Support\Facades\Cache::lock("receipt_action_{$receipt->id}", 10);
+        if (!$lock->get()) {
+            return response()->json(['message' => 'Struk sedang diproses. Silakan coba lagi.'], 409);
+        }
+
+        try {
+
         if ($receipt->user_id !== $request->user()->id) {
             return response()->json(['message' => 'Anda bukan pemilik struk ini.'], 403);
         }
@@ -238,6 +245,10 @@ class ReceiptController extends Controller
                 'variance_flag', 'variance_pct',
             ]),
         ]);
+        
+        } finally {
+            $lock->release();
+        }
     }
 
     // ─── Helper: validasi batas klaim per-transaksi & plafon bulanan ─────
@@ -405,7 +416,7 @@ class ReceiptController extends Controller
         }
 
         $request->validate([
-            'image' => 'required|file|mimes:jpeg,jpg,png,gif,webp,pdf|max:10240',
+            'image' => 'required|file|mimes:jpeg,jpg,png,webp|max:5120',
         ]);
 
         $file = $request->file('image');
@@ -514,6 +525,13 @@ class ReceiptController extends Controller
     // ═══════════════════════════════════════════════════════════
     public function approve(Request $request, Receipt $receipt): JsonResponse
     {
+        $lock = \Illuminate\Support\Facades\Cache::lock("receipt_action_{$receipt->id}", 10);
+        if (!$lock->get()) {
+            return response()->json(['message' => 'Struk sedang diproses. Silakan coba lagi.'], 409);
+        }
+
+        try {
+
         if (! in_array($receipt->status, ['submitted', 'pending'])) {
             return response()->json(['message' => 'Hanya struk submitted yang bisa diapprove.'], 403);
         }
@@ -599,6 +617,10 @@ class ReceiptController extends Controller
             ],
             'approved_at' => now()->toIso8601String(),
         ]);
+        
+        } finally {
+            $lock->release();
+        }
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -727,7 +749,7 @@ class ReceiptController extends Controller
         $request->validate([
             'payment_method' => ['required', Rule::in(['bank_transfer', 'cash', 'payroll'])],
             'payment_ref_no' => 'nullable|string|max:100',
-            'payment_proof'  => 'nullable|file|mimes:jpeg,jpg,png,pdf|max:5120',
+            'payment_proof'  => 'nullable|file|mimes:jpeg,jpg,png,webp|max:5120',
         ]);
 
         $user = $request->user();
@@ -935,6 +957,13 @@ class ReceiptController extends Controller
     // ═══════════════════════════════════════════════════════════
     public function reject(Request $request, Receipt $receipt): JsonResponse
     {
+        $lock = \Illuminate\Support\Facades\Cache::lock("receipt_action_{$receipt->id}", 10);
+        if (!$lock->get()) {
+            return response()->json(['message' => 'Struk sedang diproses. Silakan coba lagi.'], 409);
+        }
+
+        try {
+
         if (! in_array($receipt->status, ['submitted', 'pending'])) {
             return response()->json(['message' => 'Hanya struk submitted yang bisa direject.'], 403);
         }
@@ -984,6 +1013,10 @@ class ReceiptController extends Controller
             'rejected_at' => now()->toIso8601String(),
             'rejection_reason' => $request->notes,
         ]);
+        
+        } finally {
+            $lock->release();
+        }
     }
 
     // ═══════════════════════════════════════════════════════════

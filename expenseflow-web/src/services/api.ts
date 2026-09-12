@@ -34,7 +34,7 @@ export {
 
 const BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
-  'http://localhost:8000/api/v1';
+  'https://0586-2001-448a-2018-b34-947e-aa07-683b-20e9.ngrok-free.app/api/v1';
 
 const TOKEN_KEY = 'expenseflow_token';
 const USER_KEY = 'expenseflow_user';
@@ -172,8 +172,24 @@ async function executeFetch<T = any>(
   }
 
   if (!res.ok) {
-    const message =
+    let message =
       (data && (data.message || data.error)) || `Permintaan gagal (${res.status}).`;
+      
+    if (res.status === 429) {
+      let retryAfter = 60;
+      if (data?.retry_after_seconds) {
+        retryAfter = data.retry_after_seconds;
+      } else if (data?.retry_after) {
+        retryAfter = data.retry_after;
+      } else {
+        const headerRetry = res.headers.get('Retry-After');
+        if (headerRetry) retryAfter = parseInt(headerRetry, 10) || 60;
+      }
+      message =
+        (data && data.message) ||
+        `Aktivitas terlalu cepat. Mohon tunggu ${retryAfter} detik sebelum mencoba kembali.`;
+    }
+
     throw new ApiError(message, res.status, data);
   }
 

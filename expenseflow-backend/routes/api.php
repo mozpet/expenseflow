@@ -14,39 +14,53 @@ use App\Http\Controllers\API\SettingsController;
 use App\Http\Controllers\API\ShiftController;
 use App\Http\Controllers\API\SyncVersionController;
 use App\Http\Controllers\API\UserController;
+use App\Http\Controllers\API\UserDocumentController;
 use App\Http\Controllers\API\VendorController;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 
-// Rate limiter untuk login: dua batasan jalan serentak.
-//   - Per akun: 5 percobaan per menit (dibedakan per email)  → penjaga anti brute-force utama
-//   - Per IP  : 120 percobaan per menit (sangat longgar untuk kantor NAT & CGNAT seluler)
-// Request diblokir (429) jika SALAH SATU batasan terlampaui.
-// Response custom menyertakan retry_after (detik) agar web & mobile bisa
-// menampilkan waktu tunggu dengan andal.
-//
-// PENGAMAN: nilai `retry_after` dari header DICLAMP ke `$window` detik.
-// Rate limiter seharusnya mengembalikan sisa window (<=60s), tetapi bila
-// cache/timer korup (pernah terjadi: mengembalikan ~74.000 detik / 20 jam),
-// clamp memastikan user tidak dikunci login lebih dari durasi window itu.
-// Batas percobaan tetap berlaku penuh (5/menit email, 120/menit IP).
-$loginErrorResponse = function (Request $request, array $headers, int $window) {
+// === STANDAR RESPONS KESALAHAN HTTP 429 (BAGIAN 4 RULES.MD) ===
+// Format respons JSON seragam dengan header HTTP standar:
+//   - message: Pesan ramah dalam Bahasa Indonesia
+//   - retry_after_seconds: Waktu tunggu dalam detik (di-clamp <= 60 detik)
+//   - retry_after: Alias kompatibilitas klien
+//   - rate_limit: true
+// Headers:
+//   - Retry-After: Detik tunggu di-clamp <= 60 detik
+//   - X-RateLimit-Limit & X-RateLimit-Remaining: Diteruskan dari Laravel RateLimiter
+$buildRateLimitResponse = function (string $message, array $headers, int $window = 60) {
     $raw = (int) ($headers['Retry-After'] ?? 0);
-    $seconds = max(1, min($raw > 0 ? $raw : $window, $window));
-    $minutes = max(1, (int) ceil($seconds / 60));
+    $seconds = max(1, min($raw > 0 ? $raw : $window, 60));
 
     $clampedHeaders = $headers;
     $clampedHeaders['Retry-After'] = (string) $seconds;
 
     return response()->json([
-        'message'     => "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
-        'retry_after' => $seconds,
-        'rate_limit'  => true,
+        'message'             => $message,
+        'retry_after_seconds' => $seconds,
+        'retry_after'         => $seconds,
+        'rate_limit'          => true,
     ], 429, $clampedHeaders);
 };
 
+// Rate limiter untuk login: dua batasan jalan serentak.
+//   - Per akun: 5 percobaan per menit (dibedakan per email)  → penjaga anti brute-force utama
+//   - Per IP  : 120 percobaan per menit (sangat longgar untuk kantor NAT & CGNAT seluler)
+$loginErrorResponse = function (Request $request, array $headers, int $window) use ($buildRateLimitResponse) {
+    $raw = (int) ($headers['Retry-After'] ?? 0);
+    $seconds = max(1, min($raw > 0 ? $raw : $window, 60));
+    $minutes = max(1, (int) ceil($seconds / 60));
+
+    return $buildRateLimitResponse(
+        "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
+        $headers,
+        60
+    );
+};
+
+// === RATE LIMITER TIER 4: Public Auth & Security ===
 RateLimiter::for('login', function (Request $request) use ($loginErrorResponse) {
     $email = (string) $request->input('email'); // fallback aman ke string kosong
 
@@ -58,6 +72,85 @@ RateLimiter::for('login', function (Request $request) use ($loginErrorResponse) 
             ->by($request->ip())
             ->response(fn (Request $req, array $h) => $loginErrorResponse($req, $h, 60)),
     ];
+});
+
+// Tier 4: Forgot Password OTP Flow
+RateLimiter::for('otp_send', function (Request $request) use ($buildRateLimitResponse) {
+    $key = (string) ($request->input('email') ?: $request->ip());
+
+    return Limit::perMinutes(10, 5)
+        ->by($key)
+        ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
+            "Terlalu banyak permintaan OTP. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            $h,
+            60
+        ));
+});
+
+RateLimiter::for('otp_verify', function (Request $request) use ($buildRateLimitResponse) {
+    $key = (string) ($request->input('email') ?: $request->ip());
+
+    return Limit::perMinutes(5, 10)
+        ->by($key)
+        ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
+            "Terlalu banyak percobaan verifikasi OTP. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            $h,
+            60
+        ));
+});
+
+RateLimiter::for('otp_reset', function (Request $request) use ($buildRateLimitResponse) {
+    $key = (string) ($request->input('email') ?: $request->ip());
+
+    return Limit::perMinutes(10, 5)
+        ->by($key)
+        ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
+            "Terlalu banyak permintaan reset password. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            $h,
+            60
+        ));
+});
+
+// === RATE LIMITER TIER 1: General & Navigation (Read) ===
+// 120 request / menit per user_id (fallback ke IP jika belum login)
+RateLimiter::for('api', function (Request $request) use ($buildRateLimitResponse) {
+    $key = $request->user() ? (string) $request->user()->id : $request->ip();
+
+    return Limit::perMinute(120)
+        ->by($key)
+        ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
+            "Terlalu banyak permintaan. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            $h,
+            60
+        ));
+});
+
+// === RATE LIMITER TIER 2: Actions & Mutations (Write) ===
+// 45 request / menit per user_id (fallback ke IP jika belum login)
+RateLimiter::for('actions', function (Request $request) use ($buildRateLimitResponse) {
+    $key = $request->user() ? (string) $request->user()->id : $request->ip();
+
+    return Limit::perMinute(45)
+        ->by($key)
+        ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
+            "Terlalu banyak aksi. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            $h,
+            60
+        ));
+});
+
+// === RATE LIMITER TIER 3: Heavy Resource & Processing ===
+// 15 request / menit per user_id (fallback ke IP jika belum login)
+RateLimiter::for('heavy', function (Request $request) use ($buildRateLimitResponse) {
+    $key = $request->user() ? (string) $request->user()->id : $request->ip();
+
+    return Limit::perMinute(15)
+        ->by($key)
+        ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
+            "Terlalu banyak pemrosesan berat. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            $h,
+            60
+        ));
 });
 
 Route::prefix('v1')->group(function () {
@@ -72,31 +165,31 @@ Route::prefix('v1')->group(function () {
     Route::post('/login', [AuthController::class, 'login'])
         ->middleware('throttle:login');
 
-    // Forgot Password OTP flow — public (rate limited)
+    // Forgot Password OTP flow — public (rate limited Tier 4)
     Route::prefix('auth/forgot-password')->group(function () {
         Route::post('/send-otp', [ForgotPasswordController::class, 'sendOtp'])
-            ->middleware('throttle:5,10'); // Max 5 request / 10 menit per IP
+            ->middleware('throttle:otp_send'); // Max 5 request / 10 menit
         Route::post('/verify-otp', [ForgotPasswordController::class, 'verifyOtp'])
-            ->middleware('throttle:10,5'); // Max 10 verifikasi / 5 menit per IP
+            ->middleware('throttle:otp_verify'); // Max 10 verifikasi / 5 menit
         Route::post('/reset', [ForgotPasswordController::class, 'resetPassword'])
-            ->middleware('throttle:5,10');
+            ->middleware('throttle:otp_reset');
     });
 
     // Auth — authenticated
-    Route::middleware('auth:sanctum')->group(function () {
+    Route::middleware(['auth:sanctum', 'throttle:api'])->group(function () {
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/me', [AuthController::class, 'me']);
     });
 
     // Receipt mobile — semua role boleh scan & submit struk via mobile
-    Route::middleware(['auth:sanctum', 'company'])
+    Route::middleware(['auth:sanctum', 'throttle:api', 'company'])
         ->prefix('employee')
         ->group(function () {
             Route::middleware('receipt_access')->group(function () {
-                Route::post('/receipts', [ReceiptController::class, 'store']);
+                Route::post('/receipts', [ReceiptController::class, 'store'])->middleware('throttle:heavy');
                 Route::get('/receipts', [ReceiptController::class, 'myReceipts']);
                 Route::get('/receipts/{receipt}', [ReceiptController::class, 'show']);
-                Route::patch('/receipts/{receipt}/claim', [ReceiptController::class, 'updateClaim']);
+                Route::patch('/receipts/{receipt}/claim', [ReceiptController::class, 'updateClaim'])->middleware('throttle:actions');
                 Route::post('/receipts/{receipt}/retake', [ReceiptController::class, 'retake']);
                 Route::get('/receipts/{receipt}/image', [ReceiptController::class, 'image']);
                 Route::post('/receipts/{receipt}/submit', [ReceiptController::class, 'submit']);
@@ -117,7 +210,7 @@ Route::prefix('v1')->group(function () {
         });
 
     // Finance / HRD / Admin / Super Admin routes — hanya web
-    Route::middleware(['auth:sanctum', 'role:finance,hrd,admin,super_admin', 'company'])
+    Route::middleware(['auth:sanctum', 'throttle:api', 'role:finance,hrd,admin,super_admin', 'company'])
         ->prefix('dashboard')
         ->group(function () {
             // ─── Fitur Finance (Khusus Finance, Admin, Super Admin — HRD Dikecualikan) ───
@@ -125,14 +218,14 @@ Route::prefix('v1')->group(function () {
                 // Receipt approval & disbursement
                 Route::get('/receipts', [ReceiptController::class, 'inbox']);
                 Route::get('/receipts/all', [ReceiptController::class, 'dashboardReceipts']);
-                Route::post('/receipts/bulk-approve', [ReceiptController::class, 'bulkApprove']);
-                Route::post('/receipts/bulk-pay', [ReceiptController::class, 'bulkDisburse']);
-                Route::get('/receipts/export-disbursement', [ReceiptController::class, 'exportDisbursement']);
+                Route::post('/receipts/bulk-approve', [ReceiptController::class, 'bulkApprove'])->middleware('throttle:actions');
+                Route::post('/receipts/bulk-pay', [ReceiptController::class, 'bulkDisburse'])->middleware('throttle:actions');
+                Route::get('/receipts/export-disbursement', [ReceiptController::class, 'exportDisbursement'])->middleware('throttle:heavy');
                 Route::get('/receipts/{receipt}', [ReceiptController::class, 'show']);
                 Route::get('/receipts/{receipt}/image', [ReceiptController::class, 'image']);
-                Route::post('/receipts/{receipt}/approve', [ReceiptController::class, 'approve']);
-                Route::post('/receipts/{receipt}/reject', [ReceiptController::class, 'reject']);
-                Route::post('/receipts/{receipt}/pay', [ReceiptController::class, 'disburse']);
+                Route::post('/receipts/{receipt}/approve', [ReceiptController::class, 'approve'])->middleware('throttle:actions');
+                Route::post('/receipts/{receipt}/reject', [ReceiptController::class, 'reject'])->middleware('throttle:actions');
+                Route::post('/receipts/{receipt}/pay', [ReceiptController::class, 'disburse'])->middleware('throttle:actions');
 
                 // Expense Reports (Bundling Laporan Dinas)
                 Route::get('/expense-reports', [ExpenseReportController::class, 'dashboardIndex']);
@@ -178,24 +271,31 @@ Route::prefix('v1')->group(function () {
         });
 
     // Super Admin / HRD / Admin routes — akses penuh
-    Route::middleware(['auth:sanctum', 'role:hrd,admin,super_admin', 'company'])
+    Route::middleware(['auth:sanctum', 'throttle:api', 'role:hrd,admin,super_admin', 'company'])
         ->prefix('admin')
         ->group(function () {
             // Manajemen karyawan — HRD boleh lihat daftar, tapi ubah/buat/nonaktifkan
             // akun hanya admin & super_admin (cegah privilege escalation oleh HRD).
             Route::get('/users', [UserController::class, 'index']);
             Route::middleware('role:admin,super_admin')->group(function () {
-                Route::post('/users', [UserController::class, 'store']);
-                Route::post('/users/bulk-import', [UserController::class, 'bulkImport']);
-                Route::put('/users/{user}', [UserController::class, 'update']);
-                Route::patch('/users/{user}/deactivate', [UserController::class, 'deactivate']);
-                Route::patch('/users/{user}/activate', [UserController::class, 'activate']);
+                Route::post('/users', [UserController::class, 'store'])->middleware('throttle:actions');
+                Route::post('/users/bulk-import', [UserController::class, 'bulkImport'])->middleware('throttle:heavy');
+                Route::put('/users/{user}', [UserController::class, 'update'])->middleware('throttle:actions');
+                Route::patch('/users/{user}/deactivate', [UserController::class, 'deactivate'])->middleware('throttle:actions');
+                Route::patch('/users/{user}/activate', [UserController::class, 'activate'])->middleware('throttle:actions');
                 Route::delete('/users/{user}', [UserController::class, 'destroy']);
             });
+
+            // Pengarsipan Berkas Digital Karyawan (user_documents)
+            Route::get('/users/{userId}/documents', [UserDocumentController::class, 'index']);
+            Route::post('/users/{userId}/documents', [UserDocumentController::class, 'store'])->middleware('throttle:heavy');
+            Route::get('/users/{userId}/documents/{documentId}/stream', [UserDocumentController::class, 'stream']);
+            Route::get('/users/{userId}/documents/{documentId}/download', [UserDocumentController::class, 'download']);
+            Route::delete('/users/{userId}/documents/{documentId}', [UserDocumentController::class, 'destroy']);
         });
 
     // Attendance — manajemen web dashboard
-    Route::middleware(['auth:sanctum', 'company'])
+    Route::middleware(['auth:sanctum', 'throttle:api', 'company'])
         ->prefix('dashboard/attendance')
         ->group(function () {
             // Daftar kantor / cabang perusahaan (read-only untuk filter struk & fitur bersama: Finance, HRD, Admin, Super Admin)
@@ -219,7 +319,7 @@ Route::prefix('v1')->group(function () {
                 Route::get('/today', [AttendanceController::class, 'today']);
                 Route::get('/summary', [AttendanceController::class, 'monthlySummary']);
                 Route::get('/report', [AttendanceController::class, 'reportAttendance']);
-                Route::get('/report/export', [AttendanceController::class, 'exportReport']);
+                Route::get('/report/export', [AttendanceController::class, 'exportReport'])->middleware('throttle:heavy');
 
                 // Saldo / kuota cuti
                 Route::get('/leave-balances', [AttendanceController::class, 'listLeaveBalances']);
@@ -296,17 +396,17 @@ Route::prefix('v1')->group(function () {
     });
 
     // Presensi check-in/out — hanya karyawan yang attendance_enabled = true (gerbang WFH)
-    Route::middleware(['auth:sanctum', 'company', 'attendance_access'])
+    Route::middleware(['auth:sanctum', 'throttle:api', 'company', 'attendance_access'])
         ->prefix('attendance')
         ->group(function () {
-            Route::post('/check-in', [AttendanceController::class, 'checkIn']);
-            Route::post('/check-out', [AttendanceController::class, 'checkOut']);
+            Route::post('/check-in', [AttendanceController::class, 'checkIn'])->middleware('throttle:actions');
+            Route::post('/check-out', [AttendanceController::class, 'checkOut'])->middleware('throttle:actions');
         });
 
     // Status, riwayat presensi & cuti/izin — semua karyawan, tanpa gerbang attendance_access.
     // Karyawan onsite (WFH OFF) tetap bisa baca status WFH/presensi & riwayat presensinya sendiri
     // (misalnya presensi kantor yang dicatat via hardware).
-    Route::middleware(['auth:sanctum', 'company'])
+    Route::middleware(['auth:sanctum', 'throttle:api', 'company'])
         ->prefix('attendance')
         ->group(function () {
             Route::get('/status', [AttendanceController::class, 'checkStatus']);
@@ -347,7 +447,7 @@ Route::prefix('v1')->group(function () {
 
 
     // ── Rekrutmen — HRD / Admin / Super Admin ────────────────────────────────
-    Route::middleware(['auth:sanctum', 'role:hrd,admin,super_admin', 'company'])
+    Route::middleware(['auth:sanctum', 'throttle:api', 'role:hrd,admin,super_admin', 'company'])
         ->prefix('recruitment')
         ->group(function () {
             // Manajemen lowongan

@@ -348,7 +348,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         final dept = (user?.department?.isNotEmpty == true)
             ? user!.department!
             : 'No Department';
-        final totalUnread = presensiProv.unreadNotificationCount;
+        final totalUnread = presensiProv.unreadNotificationCount + (shiftProv.hasShiftUpdate ? 1 : 0);
 
         return SafeArea(
           child: RefreshIndicator(
@@ -478,11 +478,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                   ),
                   const SizedBox(height: 20),
 
-                  // ─── Banner Sistem (Bila Aktif) ─────────────────────
-                  if (shiftProv.hasShiftUpdate) ...[
-                    _buildShiftUpdateBanner(shiftProv),
-                    const SizedBox(height: 14),
-                  ],
+
 
                   // ─── Card Utama: Status Presensi Hari Ini ────────────
                   _buildAttendanceCard(presensiProv),
@@ -1305,6 +1301,8 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _showCollectiveLeavesBottomSheet(BuildContext context) {
+    Provider.of<PresensiProvider>(context, listen: false)
+        .fetchCollectiveLeaves(forceRefresh: true);
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -1346,11 +1344,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ),
               const Divider(height: 1),
               Expanded(
-                child: Consumer<PresensiProvider>(
-                  builder: (context, presensiProv, _) {
+                child: Consumer2<PresensiProvider, ShiftProvider>(
+                  builder: (context, presensiProv, shiftProv, _) {
                     final banners = presensiProv.activeCollectiveLeaveBanners;
                     final cancellations = presensiProv.leaveCancellations;
-                    if (banners.isEmpty && cancellations.isEmpty) {
+                    final hasShiftUpdate = shiftProv.hasShiftUpdate;
+                    if (banners.isEmpty && cancellations.isEmpty && !hasShiftUpdate) {
                       return const Center(
                         child: Text(
                           'Tidak ada pesan baru.',
@@ -1361,7 +1360,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     return ListView(
                       padding: EdgeInsets.fromLTRB(16, 16, 16, safeBottom),
                       children: [
-                        // Kartu notifikasi pembatalan cuti bersama / cuti mandiri
+                        // Kartu notifikasi pembaruan jadwal shift
+                        if (hasShiftUpdate) ...[
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: _buildShiftUpdateBanner(shiftProv),
+                          ),
+                        ],
+                        // Kartu notifikasi pembatalan cuti bersama / cuti mandiri / libur perusahaan
                         ...cancellations.map((c) => Padding(
                           padding: const EdgeInsets.only(bottom: 16),
                           child: _buildCancellationBanner(presensiProv, c),
@@ -1383,15 +1389,35 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
   }
 
-  // ─── Banner: pemberitahuan cuti bersama / cuti mandiri dibatalkan ───
+  // ─── Banner: pemberitahuan cuti bersama / cuti mandiri dibatalkan / libur perusahaan ───
   Widget _buildCancellationBanner(
     PresensiProvider prov,
     LeaveCancellationRecord c,
   ) {
+    final bool isCompanyHoliday = c.type == 'company_holiday_announced';
+    final bool isCompanyHolidayCancelled = c.type == 'company_holiday_cancelled';
     final bool isCollective = c.type == 'collective_leave_cancelled';
-    final Color headerColor = isCollective ? const Color(0xFFC62828) : const Color(0xFFD84315);
-    final Color bgColor = isCollective ? const Color(0xFFFDECEA) : const Color(0xFFFBE9E7);
-    final Color borderColor = isCollective ? const Color(0xFFEF9A9A) : const Color(0xFFFFCCBC);
+
+    final Color headerColor = isCompanyHoliday
+        ? const Color(0xFF1E88E5)
+        : (isCompanyHolidayCancelled || isCollective
+            ? const Color(0xFFC62828)
+            : const Color(0xFFD84315));
+    final Color bgColor = isCompanyHoliday
+        ? const Color(0xFFEFF6FF)
+        : (isCompanyHolidayCancelled || isCollective
+            ? const Color(0xFFFDECEA)
+            : const Color(0xFFFBE9E7));
+    final Color borderColor = isCompanyHoliday
+        ? const Color(0xFFBFDBFE)
+        : (isCompanyHolidayCancelled || isCollective
+            ? const Color(0xFFEF9A9A)
+            : const Color(0xFFFFCCBC));
+    final IconData headerIcon = isCompanyHoliday
+        ? Icons.celebration_rounded
+        : (isCompanyHolidayCancelled
+            ? Icons.event_busy_rounded
+            : (isCollective ? Icons.event_busy : Icons.cancel_outlined));
 
     return Container(
       width: double.infinity,
@@ -1407,7 +1433,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           Row(
             children: [
               Icon(
-                isCollective ? Icons.event_busy : Icons.cancel_outlined,
+                headerIcon,
                 color: headerColor,
                 size: 22,
               ),
@@ -1453,13 +1479,21 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(Icons.info_outline, size: 16, color: headerColor),
+                Icon(
+                  Icons.info_outline,
+                  size: 16,
+                  color: headerColor,
+                ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
                     c.message.isNotEmpty
                         ? c.message
-                        : 'Cuti bersama dibatalkan oleh HRD. Saldo cuti Anda telah dikembalikan.',
+                        : (isCompanyHoliday
+                            ? 'Hari libur perusahaan telah ditetapkan oleh manajemen.'
+                            : (isCompanyHolidayCancelled
+                                ? 'Hari libur perusahaan telah dibatalkan oleh HRD.'
+                                : 'Cuti bersama dibatalkan oleh HRD. Saldo cuti Anda telah dikembalikan.')),
                     style: const TextStyle(
                       fontSize: 12,
                       height: 1.4,
@@ -1485,7 +1519,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ),
               onPressed: () => prov.dismissCancellation(c.id),
               child: const Text(
-                'Mengerti',
+                'Saya Mengerti',
                 style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold),
               ),
             ),

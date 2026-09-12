@@ -2725,8 +2725,19 @@ class AttendanceController extends Controller
             ], 422);
         }
 
+        $oldOvertimeEnabled = (bool) $attendanceSetting->overtime_enabled;
+
         $attendanceSetting->update($data);
 
+        // Jika pengaturan hak lembur (overtime_enabled) tingkat kantor berubah, cascade/timpa semua karyawan di kantor ini
+        if (array_key_exists('overtime_enabled', $data)) {
+            $newOvertimeEnabled = (bool) $data['overtime_enabled'];
+            if ($oldOvertimeEnabled !== $newOvertimeEnabled) {
+                DB::table('users')
+                    ->where('attendance_setting_id', $attendanceSetting->id)
+                    ->update(['overtime_enabled' => $newOvertimeEnabled]);
+            }
+        }
         $this->logActivity(
             $request->user()->id,
             $attendanceSetting->company_id,
@@ -4854,6 +4865,13 @@ class AttendanceController extends Controller
 
         $user = $request->user();
 
+        $lock = \Illuminate\Support\Facades\Cache::lock("checkin_{$user->id}", 10);
+        if (!$lock->get()) {
+            return response()->json(['message' => 'Permintaan check-in sedang diproses. Silakan tunggu sebentar.'], 409);
+        }
+
+        try {
+
         // ─── Validasi Device Binding (anti titip absen lewat HP rekan) ───────
         if ($request->header('X-Platform') === 'mobile' && config('app.device_binding_enabled', true)) {
             $reqDeviceId   = $request->header('X-Device-Id') ?? $request->input('device_id');
@@ -5129,6 +5147,10 @@ class AttendanceController extends Controller
             'reminder_at'      => $reminderAt,
             'auto_checkout_at' => $autoCheckoutAt,
         ], 201);
+        
+        } finally {
+            $lock->release();
+        }
     }
 
     // 7. checkOut() — presensi pulang
@@ -5148,6 +5170,13 @@ class AttendanceController extends Controller
         }
 
         $user  = $request->user();
+
+        $lock = \Illuminate\Support\Facades\Cache::lock("checkout_{$user->id}", 10);
+        if (!$lock->get()) {
+            return response()->json(['message' => 'Permintaan check-out sedang diproses. Silakan tunggu sebentar.'], 409);
+        }
+
+        try {
 
         // ─── Validasi Device Binding (anti titip absen lewat HP rekan) ───────
         if ($request->header('X-Platform') === 'mobile' && config('app.device_binding_enabled', true)) {
@@ -5373,6 +5402,10 @@ class AttendanceController extends Controller
                 'work_minutes', 'overtime_minutes', 'is_holiday',
             ]),
         ]);
+        
+        } finally {
+            $lock->release();
+        }
     }
 
     // ─── Helper: hitung menit lembur saat check-out ──────────────
@@ -5392,8 +5425,15 @@ class AttendanceController extends Controller
         $schedule = $schedule ?? $this->getWorkSchedule($user, $date);
         $office   = $schedule['office'];
 
-        // Tanpa setting kantor atau lembur dimatikan → tidak ada lembur.
-        if (! $office || ! $office->overtime_enabled) {
+        // Cek pengaturan karyawan (utama).
+        // Jika karyawan OFF, tidak bisa lembur.
+        if (isset($user->overtime_enabled) && ! $user->overtime_enabled) {
+            return 0;
+        }
+
+        // Karyawan di-set ON, maka abaikan $office->overtime_enabled.
+        // Tapi tetap butuh data office untuk batas minimum lembur.
+        if (! $office) {
             return 0;
         }
 
@@ -6659,7 +6699,7 @@ class AttendanceController extends Controller
             'end_date'   => 'required|date|after_or_equal:start_date',
             'reason'     => 'required|string|max:1000',
             // Surat dokter WAJIB untuk jenis 'sakit' — foto/gambar atau PDF, maks 10 MB.
-            'document'   => 'required_if:leave_type,sakit|file|mimes:jpeg,jpg,png,webp,gif,pdf|max:10240',
+            'document'   => 'required_if:leave_type,sakit|file|mimes:jpeg,jpg,png,webp,pdf|max:10240',
         ], [
             'document.required_if' => 'Surat dokter wajib dilampirkan untuk pengajuan sakit.',
             'document.mimes'       => 'Surat dokter harus berupa gambar (JPG/PNG/WEBP) atau PDF.',

@@ -369,6 +369,9 @@ function resolveNotifTarget(type: string, entityType?: string): { targetPage?: s
   const t = (type || '').toLowerCase();
   const e = (entityType || '').toLowerCase();
 
+  if (t.includes('holiday') || e === 'holiday') {
+    return { targetPage: 'presensi', targetLabel: 'Hari Libur' };
+  }
   if (t.includes('leave') || t.includes('cuti') || t.includes('izin') || t.includes('sakit') || e === 'leave' || e === 'leave_request') {
     return { targetPage: 'presensi', targetLabel: 'Presensi & Cuti' };
   }

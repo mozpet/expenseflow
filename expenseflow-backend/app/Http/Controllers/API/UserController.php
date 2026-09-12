@@ -65,6 +65,10 @@ class UserController extends Controller
                 'domicile_address', 'is_domicile_same_as_ktp',
                 'religion', 'marital_status', 'number_of_dependents',
                 'blood_type', 'medical_conditions',
+                // Prioritas 2 - Latar Belakang Pendidikan
+                'education_level', 'institution_name', 'major', 'graduation_year',
+                // Prioritas 3 - Data Terminasi & Offboarding
+                'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status',
                 'created_at', 'updated_at',
             ])
             ->latest()
@@ -80,6 +84,10 @@ class UserController extends Controller
     public function store(Request $request): JsonResponse
     {
         $companyId = $request->user()->company_id;
+
+        if ($request->has('identity_number') && trim((string) $request->identity_number) === '') {
+            $request->merge(['identity_number' => null]);
+        }
 
         $validated = $request->validate([
             'name'                  => 'required|string|max:255',
@@ -100,6 +108,7 @@ class UserController extends Controller
                 Rule::exists('attendance_settings', 'id')->where('company_id', $companyId),
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
+            'overtime_enabled'      => 'nullable|boolean',
             // Tipe hubungan kerja
             'employment_type'       => ['nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
             'joined_date'           => 'nullable|date',
@@ -111,7 +120,7 @@ class UserController extends Controller
             'bank_account_holder'   => 'nullable|string|max:150',
             // Prioritas 1 — Kontak Darurat
             'emergency_contact_name'     => 'nullable|string|max:150',
-            'emergency_contact_relation' => ['nullable', Rule::in(['Orang Tua', 'Suami/Istri', 'Saudara', 'Anak', 'Lainnya'])],
+            'emergency_contact_relation' => 'nullable|string|max:50',
             'emergency_contact_phone'    => 'nullable|string|max:20',
             'emergency_contact_address'  => 'nullable|string|max:500',
             // Prioritas 1 — Alamat KTP & Domisili
@@ -128,6 +137,11 @@ class UserController extends Controller
             // Prioritas 1 — K3 & Medis
             'blood_type'                 => ['nullable', Rule::in(['A', 'B', 'AB', 'O', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])],
             'medical_conditions'         => 'nullable|string|max:1000',
+            // Prioritas 2 — Latar Belakang Pendidikan
+            'education_level'            => 'nullable|string|max:50',
+            'institution_name'           => 'nullable|string|max:150',
+            'major'                      => 'nullable|string|max:100',
+            'graduation_year'            => 'nullable|integer|min:1950|max:2100',
         ]);
 
         $gender = null;
@@ -135,6 +149,8 @@ class UserController extends Controller
             $g = strtolower(trim($validated['gender']));
             $gender = in_array($g, ['perempuan', 'female', 'p']) ? 'Perempuan' : 'Laki-laki';
         }
+
+        $identityNumber = !empty($validated['identity_number']) ? trim($validated['identity_number']) : null;
 
         $user = User::create([
             'company_id'            => $companyId,
@@ -144,13 +160,14 @@ class UserController extends Controller
             'password'              => Hash::make($validated['password']),
             'role'                  => $validated['role'],
             'department'            => $validated['department'] ?? null,
-            'identity_number'       => $validated['identity_number'] ?? null,
+            'identity_number'       => $identityNumber,
             'phone'                 => $validated['phone'] ?? null,
             'gender'                => $gender,
             'birth_place'           => $validated['birth_place'] ?? null,
             'birth_date'            => $validated['birth_date'] ?? null,
             'is_pregnant'           => $gender === 'Perempuan' ? (bool) ($validated['is_pregnant'] ?? false) : false,
             'attendance_setting_id' => $validated['attendance_setting_id'] ?? null,
+            'overtime_enabled'      => $validated['overtime_enabled'] ?? true,
             'monthly_claim_limit'   => $validated['monthly_claim_limit'] ?? null,
             'is_active'             => true,
             'employment_type'       => $validated['employment_type'] ?? null,
@@ -176,6 +193,11 @@ class UserController extends Controller
             'number_of_dependents'       => $validated['number_of_dependents'] ?? 0,
             'blood_type'                 => $validated['blood_type'] ?? null,
             'medical_conditions'         => $validated['medical_conditions'] ?? null,
+            // Prioritas 2 - Latar Belakang Pendidikan
+            'education_level'            => $validated['education_level'] ?? null,
+            'institution_name'           => $validated['institution_name'] ?? null,
+            'major'                      => $validated['major'] ?? null,
+            'graduation_year'            => $validated['graduation_year'] ?? null,
         ]);
 
         AuditLogger::log(
@@ -188,7 +210,7 @@ class UserController extends Controller
             newValues: $user->only([
                 'employee_code', 'name', 'email', 'role', 'department', 'phone',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'identity_number', 'monthly_claim_limit', 'employment_type',
+                'identity_number', 'monthly_claim_limit', 'overtime_enabled', 'employment_type',
                 'joined_date', 'contract_start_date', 'contract_end_date',
                 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',
@@ -197,6 +219,7 @@ class UserController extends Controller
                 'domicile_address', 'is_domicile_same_as_ktp',
                 'religion', 'marital_status', 'number_of_dependents',
                 'blood_type', 'medical_conditions',
+                'education_level', 'institution_name', 'major', 'graduation_year',
             ])
         );
 
@@ -205,7 +228,7 @@ class UserController extends Controller
             'user'    => $user->only([
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
+                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
                 'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',
@@ -214,6 +237,7 @@ class UserController extends Controller
                 'domicile_address', 'is_domicile_same_as_ktp',
                 'religion', 'marital_status', 'number_of_dependents',
                 'blood_type', 'medical_conditions',
+                'education_level', 'institution_name', 'major', 'graduation_year',
             ]),
         ], 201);
     }
@@ -229,6 +253,10 @@ class UserController extends Controller
         // Cegah admin mengubah akun super_admin.
         if ($deny = $this->denyIfProtectedTarget($actor, $user)) {
             return $deny;
+        }
+
+        if ($request->has('identity_number') && trim((string) $request->identity_number) === '') {
+            $request->merge(['identity_number' => null]);
         }
 
         $validated = $request->validate([
@@ -250,6 +278,7 @@ class UserController extends Controller
                 Rule::exists('attendance_settings', 'id')->where('company_id', $user->company_id),
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
+            'overtime_enabled'      => 'sometimes|nullable|boolean',
             // Tipe hubungan kerja
             'employment_type'       => ['sometimes', 'nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
             'joined_date'           => 'sometimes|nullable|date',
@@ -278,6 +307,17 @@ class UserController extends Controller
             // Prioritas 1 — K3 & Medis
             'blood_type'                 => ['sometimes', 'nullable', Rule::in(['A', 'B', 'AB', 'O', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'])],
             'medical_conditions'         => 'sometimes|nullable|string|max:1000',
+            // Prioritas 2 — Latar Belakang Pendidikan
+            'education_level'            => 'sometimes|nullable|string|max:50',
+            'institution_name'           => 'sometimes|nullable|string|max:150',
+            'major'                      => 'sometimes|nullable|string|max:100',
+            'graduation_year'            => 'sometimes|nullable|integer|min:1950|max:2100',
+            // Prioritas 3 — Data Terminasi & Offboarding
+            'exit_date'                  => 'sometimes|nullable|date',
+            'exit_reason'                => 'sometimes|nullable|string|max:100',
+            'exit_notes'                 => 'sometimes|nullable|string|max:2000',
+            'severance_status'           => 'sometimes|nullable|string|max:50',
+            'clearance_status'           => 'sometimes|nullable|string|max:50',
         ]);
 
         // Hanya super_admin yang boleh menetapkan role super_admin (cegah escalation).
@@ -305,7 +345,7 @@ class UserController extends Controller
         $original = $user->only([
             'name', 'email', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant',
             'role', 'department', 'employee_code',
-            'identity_number', 'attendance_setting_id', 'monthly_claim_limit',
+            'identity_number', 'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled',
             'employment_type', 'joined_date', 'contract_start_date',
             'contract_end_date', 'bank_name', 'bank_account_no', 'bank_account_holder',
             'emergency_contact_name', 'emergency_contact_relation',
@@ -314,6 +354,8 @@ class UserController extends Controller
             'domicile_address', 'is_domicile_same_as_ktp',
             'religion', 'marital_status', 'number_of_dependents',
             'blood_type', 'medical_conditions',
+            'education_level', 'institution_name', 'major', 'graduation_year',
+            'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status',
         ]);
 
         $user->update($validated);
@@ -347,7 +389,7 @@ class UserController extends Controller
             'user'    => $user->only([
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'company_id',
+                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
                 'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',
@@ -356,12 +398,14 @@ class UserController extends Controller
                 'domicile_address', 'is_domicile_same_as_ktp',
                 'religion', 'marital_status', 'number_of_dependents',
                 'blood_type', 'medical_conditions',
+                'education_level', 'institution_name', 'major', 'graduation_year',
+                'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status',
             ]),
         ]);
     }
 
     /**
-     * Nonaktifkan akun karyawan — set is_active = false + revoke token.
+     * Nonaktifkan akun karyawan — set is_active = false + simpan data terminasi/offboarding + revoke token.
      * PATCH /api/v1/admin/users/{user}/deactivate
      */
     public function deactivate(Request $request, User $user): JsonResponse
@@ -380,24 +424,53 @@ class UserController extends Controller
             ], 403);
         }
 
-        $user->update(['is_active' => false]);
+        $validated = $request->validate([
+            'exit_date'        => 'nullable|date',
+            'exit_reason'      => 'nullable|string|max:100',
+            'exit_notes'       => 'nullable|string|max:2000',
+            'severance_status' => 'nullable|string|max:50',
+            'clearance_status' => 'nullable|string|max:50',
+        ]);
+
+        $exitReason = !empty($validated['exit_reason']) ? trim($validated['exit_reason']) : 'Nonaktif / Keluar';
+        $exitDate = !empty($validated['exit_date']) ? $validated['exit_date'] : now()->toDateString();
+
+        $user->update([
+            'is_active'        => false,
+            'exit_date'        => $exitDate,
+            'exit_reason'      => $exitReason,
+            'exit_notes'       => $validated['exit_notes'] ?? null,
+            'severance_status' => $validated['severance_status'] ?? null,
+            'clearance_status' => $validated['clearance_status'] ?? null,
+        ]);
 
         // Cabut semua token yang aktif
         $user->tokens()->delete();
 
         AuditLogger::log(
             action: 'EMPLOYEE_DEACTIVATED',
-            description: "Menonaktifkan akun karyawan {$user->name} ({$user->email})",
+            description: "Menonaktifkan / terminasi akun karyawan {$user->name} ({$user->email}). Alasan: {$exitReason}",
             category: AuditLogger::CATEGORY_HR,
             severity: AuditLogger::SEVERITY_WARNING,
             entityType: 'User',
             entityId: $user->id,
             oldValues: ['is_active' => true],
-            newValues: ['is_active' => false]
+            newValues: [
+                'is_active'        => false,
+                'exit_date'        => $user->exit_date,
+                'exit_reason'      => $user->exit_reason,
+                'exit_notes'       => $user->exit_notes,
+                'severance_status' => $user->severance_status,
+                'clearance_status' => $user->clearance_status,
+            ]
         );
 
         return response()->json([
             'message' => 'Akun karyawan berhasil dinonaktifkan.',
+            'user'    => $user->only([
+                'id', 'name', 'email', 'is_active', 'exit_date', 'exit_reason',
+                'exit_notes', 'severance_status', 'clearance_status',
+            ]),
         ]);
     }
 
@@ -412,7 +485,10 @@ class UserController extends Controller
             return $deny;
         }
 
-        $user->update(['is_active' => true]);
+        $user->update([
+            'is_active' => true,
+            'exit_date' => null,
+        ]);
 
         AuditLogger::log(
             action: 'EMPLOYEE_ACTIVATED',
@@ -422,11 +498,14 @@ class UserController extends Controller
             entityType: 'User',
             entityId: $user->id,
             oldValues: ['is_active' => false],
-            newValues: ['is_active' => true]
+            newValues: ['is_active' => true, 'exit_date' => null]
         );
 
         return response()->json([
             'message' => 'Akun karyawan berhasil diaktifkan kembali.',
+            'user'    => $user->only([
+                'id', 'name', 'email', 'is_active', 'exit_date',
+            ]),
         ]);
     }
 
@@ -525,6 +604,11 @@ class UserController extends Controller
             'users.*.number_of_dependents'       => 'nullable|integer|min:0|max:20',
             'users.*.blood_type'                 => 'nullable|string',
             'users.*.medical_conditions'         => 'nullable|string|max:1000',
+            // Prioritas 2 — Latar Belakang Pendidikan
+            'users.*.education_level'            => 'nullable|string|max:50',
+            'users.*.institution_name'           => 'nullable|string|max:150',
+            'users.*.major'                      => 'nullable|string|max:100',
+            'users.*.graduation_year'            => 'nullable|integer|min:1950|max:2100',
             'default_password'               => 'nullable|string|min:6',
             'default_role'                   => 'nullable|string',
             'default_attendance_setting_id'  => 'nullable|integer',
@@ -532,6 +616,7 @@ class UserController extends Controller
             'default_wfh_enabled'            => 'nullable|boolean',
             'default_attendance_enabled'     => 'nullable|boolean',
             'default_radius_enabled'         => 'nullable|boolean',
+            'default_overtime_enabled'       => 'nullable|boolean',
         ]);
 
         $defaultPassword = $request->input('default_password') ?: 'Karyawan123!';
@@ -547,6 +632,7 @@ class UserController extends Controller
         $defaultWfhEnabled = $request->boolean('default_wfh_enabled', false);
         $defaultAttendanceEnabled = $request->boolean('default_attendance_enabled', true);
         $defaultRadiusEnabled = $request->boolean('default_radius_enabled', false);
+        $defaultOvertimeEnabled = $request->boolean('default_overtime_enabled', true);
 
         // Ambil data referensi kantor yang valid untuk perusahaan ini
         $validOfficeIds = AttendanceSetting::where('company_id', $companyId)->pluck('id')->flip()->toArray();
@@ -746,6 +832,7 @@ class UserController extends Controller
                     'attendance_enabled'    => $defaultAttendanceEnabled,
                     'wfh_enabled'           => $defaultWfhEnabled,
                     'radius_enabled'        => $defaultRadiusEnabled,
+                    'overtime_enabled'      => $defaultOvertimeEnabled,
                     'employment_type'       => $employmentType,
                     'joined_date'           => $joinedDate,
                     'contract_start_date'   => $contractStart,
@@ -769,6 +856,11 @@ class UserController extends Controller
                     'number_of_dependents'       => isset($row['number_of_dependents']) && is_numeric($row['number_of_dependents']) ? (int) $row['number_of_dependents'] : 0,
                     'blood_type'                 => $bloodType,
                     'medical_conditions'         => !empty($row['medical_conditions']) ? trim($row['medical_conditions']) : null,
+                    // Prioritas 2 — Latar Belakang Pendidikan
+                    'education_level'            => !empty($row['education_level']) ? trim($row['education_level']) : null,
+                    'institution_name'           => !empty($row['institution_name']) ? trim($row['institution_name']) : null,
+                    'major'                      => !empty($row['major']) ? trim($row['major']) : null,
+                    'graduation_year'            => isset($row['graduation_year']) && is_numeric($row['graduation_year']) ? (int) $row['graduation_year'] : null,
                 ]);
 
                 // Inisialisasi saldo cuti jika disediakan

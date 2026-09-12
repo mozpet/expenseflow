@@ -328,6 +328,13 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
   const handleFile = async (selectedFile: File) => {
     setReadError(null);
     setIsReadingFile(true);
+
+    if (selectedFile.size > 2 * 1024 * 1024) {
+      setReadError('Ukuran file maksimal 2 MB.');
+      setIsReadingFile(false);
+      return;
+    }
+
     setFileName(selectedFile.name);
     setFile(selectedFile);
 

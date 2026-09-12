@@ -41,11 +41,13 @@ import {
   Heart,
   MapPin,
   ChevronLeft,
-  PhoneCall
+  PhoneCall,
+  GraduationCap,
+  UserX
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmationDialog } from './ConfirmationDialog';
-import { userApi, attendanceApi } from '../services/endpoints';
+import { userApi, attendanceApi, userDocumentApi, UserDocument } from '../services/endpoints';
 import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
@@ -126,6 +128,9 @@ interface Employee {
   emergencyContactPhone?: string | null;
   emergencyContactAddress?: string | null;
   ktpAddress?: string | null;
+  ktpCity?: string | null;
+  ktpProvince?: string | null;
+  ktpPostalCode?: string | null;
   domicileAddress?: string | null;
   isDomicileSameAsKtp?: boolean;
 
@@ -139,6 +144,19 @@ interface Employee {
   // Prioritas 1 — BPJS Tambahan
   hasJkk?: boolean;
   hasJkm?: boolean;
+
+  // Prioritas 2 — Latar Belakang Pendidikan
+  educationLevel?: string | null;
+  institutionName?: string | null;
+  major?: string | null;
+  graduationYear?: number | string | null;
+
+  // Prioritas 3 — Data Terminasi & Offboarding
+  exitDate?: string | null;
+  exitReason?: string | null;
+  exitNotes?: string | null;
+  severanceStatus?: string | null;
+  clearanceStatus?: string | null;
 }
 
 // Kantor perusahaan (dari attendance_settings) untuk dropdown penempatan.
@@ -184,7 +202,15 @@ function mapEmployee(u: any): Employee {
     birthPlace: u.birth_place ?? null,
     birthDate: u.birth_date ? String(u.birth_date).slice(0, 10) : null,
     isPregnant: Boolean(u.is_pregnant),
-    age: u.birth_date ? Math.floor((new Date().getTime() - new Date(u.birth_date).getTime()) / (365.25 * 24 * 60 * 60 * 1000)) : null,
+    age: (typeof u.age === 'number') ? u.age : (u.birth_date ? (() => {
+      const b = new Date(u.birth_date);
+      if (isNaN(b.getTime())) return null;
+      const t = new Date();
+      let a = t.getFullYear() - b.getFullYear();
+      const m = t.getMonth() - b.getMonth();
+      if (m < 0 || (m === 0 && t.getDate() < b.getDate())) a--;
+      return a >= 0 ? a : null;
+    })() : null),
     employmentType: u.employment_type ?? null,
     joinedDate: u.joined_date ?? null,
     contractStartDate: u.contract_start_date ?? null,
@@ -209,12 +235,15 @@ function mapEmployee(u: any): Employee {
     bpjsKetenagakerjaanEnabled: u.bpjs_ketenagakerjaan_enabled !== false,
     hasJht: u.has_jht !== false,
     hasJp: u.has_jp !== false,
-    overtimeEligible: u.overtime_eligible !== false,
+    overtimeEligible: u.overtime_enabled !== false,
     emergencyContactName: u.emergency_contact_name ?? null,
     emergencyContactRelation: u.emergency_contact_relation ?? null,
     emergencyContactPhone: u.emergency_contact_phone ?? null,
     emergencyContactAddress: u.emergency_contact_address ?? null,
     ktpAddress: u.ktp_address ?? null,
+    ktpCity: u.ktp_city ?? null,
+    ktpProvince: u.ktp_province ?? null,
+    ktpPostalCode: u.ktp_postal_code ?? null,
     domicileAddress: u.domicile_address ?? null,
     isDomicileSameAsKtp: u.is_domicile_same_as_ktp !== false,
     religion: u.religion ?? null,
@@ -224,6 +253,15 @@ function mapEmployee(u: any): Employee {
     medicalConditions: u.medical_conditions ?? null,
     hasJkk: u.has_jkk !== false,
     hasJkm: u.has_jkm !== false,
+    educationLevel: u.education_level ?? null,
+    institutionName: u.institution_name ?? null,
+    major: u.major ?? null,
+    graduationYear: u.graduation_year ?? null,
+    exitDate: u.exit_date ?? null,
+    exitReason: u.exit_reason ?? null,
+    exitNotes: u.exit_notes ?? null,
+    severanceStatus: u.severance_status ?? null,
+    clearanceStatus: u.clearance_status ?? null,
   };
 }
 
@@ -365,7 +403,7 @@ export const KaryawanManagement: React.FC<{
     const dummyBank = dummyBanks[seed % dummyBanks.length];
     const dummyAccountNo = `${1000000000 + (seed * 8374932) % 9000000000}`;
     const dummyNpwp = `${1000000000000000 + (seed * 739281729481) % 9000000000000000}`.replace(/(\d{2})(\d{3})(\d{3})(\d{1})(\d{3})(\d{3})/, '$1.$2.$3.$4-$5.$6');
-    const dummyNikKtp = emp.nikKtp || `${3171000000000000 + (seed * 9472918) % 9000000000000}`;
+    const realNikKtp = emp.nikKtp || null;
 
     const baseSalaryMap: Record<string, number> = {
       super_admin: 22000000,
@@ -389,9 +427,20 @@ export const KaryawanManagement: React.FC<{
     const dummyBpjsKes = emp.bpjsKesehatanNo || `000${1234567890 + seed * 37}`;
     const dummyBpjsTk = emp.bpjsKetenagakerjaanNo || `220${12345678 + seed * 19}`;
 
+    const calculatedEmpAge = (typeof emp.age === 'number') ? emp.age : (emp.birthDate ? (() => {
+      const b = new Date(emp.birthDate);
+      if (isNaN(b.getTime())) return null;
+      const t = new Date();
+      let a = t.getFullYear() - b.getFullYear();
+      const m = t.getMonth() - b.getMonth();
+      if (m < 0 || (m === 0 && t.getDate() < b.getDate())) a--;
+      return a >= 0 ? a : null;
+    })() : null);
+
     return {
       ...emp,
-      nikKtp: dummyNikKtp,
+      age: calculatedEmpAge,
+      nikKtp: realNikKtp,
       bankName: emp.bankName || dummyBank,
       bankAccountNo: emp.bankAccountNo || dummyAccountNo,
       bankAccountHolder: emp.bankAccountHolder || emp.nama,
@@ -428,8 +477,20 @@ export const KaryawanManagement: React.FC<{
       emergencyContactPhone: emp.emergencyContactPhone || '—',
       emergencyContactAddress: emp.emergencyContactAddress || '—',
       ktpAddress: emp.ktpAddress || '—',
+      ktpCity: emp.ktpCity || '',
+      ktpProvince: emp.ktpProvince || '',
+      ktpPostalCode: emp.ktpPostalCode || '',
       domicileAddress: emp.domicileAddress || (emp.isDomicileSameAsKtp ? (emp.ktpAddress || '—') : '—'),
       isDomicileSameAsKtp: emp.isDomicileSameAsKtp ?? true,
+      educationLevel: emp.educationLevel || null,
+      institutionName: emp.institutionName || null,
+      major: emp.major || null,
+      graduationYear: emp.graduationYear || null,
+      exitDate: emp.exitDate || null,
+      exitReason: emp.exitReason || null,
+      exitNotes: emp.exitNotes || null,
+      severanceStatus: emp.severanceStatus || null,
+      clearanceStatus: emp.clearanceStatus || null,
     };
   };
 
@@ -491,6 +552,9 @@ export const KaryawanManagement: React.FC<{
 
     // Prioritas 1 — Alamat KTP & Domisili
     ktpAddress: '',
+    ktpCity: '',
+    ktpProvince: '',
+    ktpPostalCode: '',
     domicileAddress: '',
     isDomicileSameAsKtp: true,
 
@@ -500,11 +564,23 @@ export const KaryawanManagement: React.FC<{
     numberOfDependents: 0 as number | '',
     bloodType: '',
     medicalConditions: '',
+    educationLevel: '',
+    institutionName: '',
+    major: '',
+    graduationYear: '',
+    exitDate: '',
+    exitReason: '',
+    exitNotes: '',
+    severanceStatus: '',
+    clearanceStatus: '',
   });
 
   const [nonaktifEmployee, setNonaktifEmployee] = useState<Employee | null>(null);
   const [nonaktifForm, setNonaktifForm] = useState({
-    alasan: '',
+    exitDate: new Date().toISOString().split('T')[0],
+    alasan: 'Resign / Mengundurkan Diri Sukarela',
+    severanceStatus: 'Tidak Ada Pesangon',
+    clearanceStatus: 'Selesai (Completed)',
     catatan: ''
   });
   const [showProgressNonaktif, setShowProgressNonaktif] = useState(false);
@@ -569,6 +645,9 @@ export const KaryawanManagement: React.FC<{
 
     // Prioritas 1 — Alamat KTP & Domisili
     ktpAddress: '',
+    ktpCity: '',
+    ktpProvince: '',
+    ktpPostalCode: '',
     domicileAddress: '',
     isDomicileSameAsKtp: true,
 
@@ -578,7 +657,15 @@ export const KaryawanManagement: React.FC<{
     numberOfDependents: 0 as number | '',
     bloodType: '',
     medicalConditions: '',
+    educationLevel: '',
+    institutionName: '',
+    major: '',
+    graduationYear: '',
+
+    // Fitur 4 — Berkas Digital Karyawan (Pending Uploads)
+    pendingDocuments: {} as Record<string, File>,
   });
+
 
   // Reusable General Confirmation Dialog state
   const [confirmDialog, setConfirmDialog] = useState<{
@@ -699,6 +786,15 @@ export const KaryawanManagement: React.FC<{
       return;
     }
 
+    if (
+      (addForm.employmentType === 'PKWT' || addForm.employmentType === 'Probation' || addForm.employmentType === 'Internship') &&
+      addForm.contractStartDate && addForm.contractEndDate &&
+      addForm.contractEndDate < addForm.contractStartDate
+    ) {
+      alert('Tanggal berakhir kontrak tidak boleh lebih awal dari tanggal mulai kontrak!');
+      return;
+    }
+
     handleOpenConfirm({
       isOpen: true,
       title: 'Konfirmasi Karyawan Baru',
@@ -708,7 +804,7 @@ export const KaryawanManagement: React.FC<{
       onConfirm: async () => {
         setSubmitting(true);
         try {
-          await userApi.create({
+          const createdRes = await userApi.create({
             name: addForm.nama,
             email: addForm.email,
             password: addForm.password,
@@ -722,6 +818,7 @@ export const KaryawanManagement: React.FC<{
             department: addForm.dept || undefined,
             attendance_setting_id: addForm.officeId === '' ? null : addForm.officeId,
             monthly_claim_limit: addForm.limit === '' || addForm.limit === null ? null : addForm.limit,
+            overtime_enabled: addForm.overtimeEligible,
             employment_type: addForm.employmentType || null,
             joined_date: addForm.joinedDate || null,
             contract_start_date: addForm.employmentType === 'PKWT' ? (addForm.contractStartDate || null) : null,
@@ -735,6 +832,9 @@ export const KaryawanManagement: React.FC<{
             emergency_contact_phone: addForm.emergencyContactPhone || undefined,
             emergency_contact_address: addForm.emergencyContactAddress || undefined,
             ktp_address: addForm.ktpAddress || undefined,
+            ktp_city: addForm.ktpCity?.trim() || undefined,
+            ktp_province: addForm.ktpProvince?.trim() || undefined,
+            ktp_postal_code: addForm.ktpPostalCode?.trim() || undefined,
             domicile_address: addForm.isDomicileSameAsKtp ? (addForm.ktpAddress || undefined) : (addForm.domicileAddress || undefined),
             is_domicile_same_as_ktp: addForm.isDomicileSameAsKtp,
             religion: addForm.religion || undefined,
@@ -742,7 +842,29 @@ export const KaryawanManagement: React.FC<{
             number_of_dependents: addForm.numberOfDependents !== '' ? Number(addForm.numberOfDependents) : 0,
             blood_type: addForm.bloodType || undefined,
             medical_conditions: addForm.medicalConditions || undefined,
+            education_level: addForm.educationLevel || undefined,
+            institution_name: addForm.institutionName?.trim() || undefined,
+            major: addForm.major?.trim() || undefined,
+            graduation_year: addForm.graduationYear ? Number(addForm.graduationYear) : undefined,
           });
+
+          // Fitur 4: Unggah berkas dokumen yang dipilih (jika ada)
+          const newUserId = (createdRes as any)?.user?.id;
+          if (newUserId && addForm.pendingDocuments && Object.keys(addForm.pendingDocuments).length > 0) {
+            for (const [docType, file] of Object.entries(addForm.pendingDocuments)) {
+              if (file instanceof File) {
+                const fd = new FormData();
+                fd.append('file', file);
+                fd.append('document_type', docType);
+                try {
+                  await userDocumentApi.upload(newUserId, fd);
+                } catch (docErr) {
+                  console.warn('Gagal mengunggah dokumen digital untuk karyawan baru:', docType, docErr);
+                }
+              }
+            }
+          }
+
           await loadEmployees();
           onAddAuditLog('Karyawan Baru Terdaftar', `Menambahkan karyawan baru: ${addForm.nama} - Role: ${addForm.role}`, 'bg-indigo-600');
           onAddNotification('new', 'Karyawan Baru Ditambahkan', `Akun untuk ${addForm.nama} berhasil didaftarkan.`);
@@ -789,12 +911,14 @@ export const KaryawanManagement: React.FC<{
             hasJkk: true,
             hasJkm: true,
             overtimeEligible: true,
-
             emergencyContactName: '',
             emergencyContactRelation: 'Keluarga',
             emergencyContactPhone: '',
             emergencyContactAddress: '',
             ktpAddress: '',
+            ktpCity: '',
+            ktpProvince: '',
+            ktpPostalCode: '',
             domicileAddress: '',
             isDomicileSameAsKtp: true,
             religion: 'Islam',
@@ -802,8 +926,14 @@ export const KaryawanManagement: React.FC<{
             numberOfDependents: 0,
             bloodType: '',
             medicalConditions: '',
+            educationLevel: '',
+            institutionName: '',
+            major: '',
+            graduationYear: '',
+            pendingDocuments: {} as Record<string, File>,
           });
           setFormTab('work');
+
           setViewMode('list');
         } catch (err) {
           reportApiError(err, 'Gagal menambahkan karyawan.');
@@ -867,6 +997,9 @@ export const KaryawanManagement: React.FC<{
 
       // Prioritas 1 — Alamat KTP & Domisili
       ktpAddress: emp.ktpAddress || '',
+      ktpCity: emp.ktpCity || '',
+      ktpProvince: emp.ktpProvince || '',
+      ktpPostalCode: emp.ktpPostalCode || '',
       domicileAddress: emp.domicileAddress || '',
       isDomicileSameAsKtp: emp.isDomicileSameAsKtp ?? true,
 
@@ -876,6 +1009,15 @@ export const KaryawanManagement: React.FC<{
       numberOfDependents: emp.numberOfDependents ?? 0,
       bloodType: emp.bloodType || '',
       medicalConditions: emp.medicalConditions || '',
+      educationLevel: emp.educationLevel || '',
+      institutionName: emp.institutionName || '',
+      major: emp.major || '',
+      graduationYear: emp.graduationYear ? String(emp.graduationYear) : '',
+      exitDate: emp.exitDate || '',
+      exitReason: emp.exitReason || '',
+      exitNotes: emp.exitNotes || '',
+      severanceStatus: emp.severanceStatus || '',
+      clearanceStatus: emp.clearanceStatus || '',
     });
     setViewMode('edit');
   };
@@ -883,6 +1025,15 @@ export const KaryawanManagement: React.FC<{
   const handleSaveEditSubmit = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!editEmployee) return;
+
+    if (
+      (editForm.employmentType === 'PKWT' || editForm.employmentType === 'Probation' || editForm.employmentType === 'Internship') &&
+      editForm.contractStartDate && editForm.contractEndDate &&
+      editForm.contractEndDate < editForm.contractStartDate
+    ) {
+      alert('Tanggal berakhir kontrak tidak boleh lebih awal dari tanggal mulai kontrak!');
+      return;
+    }
 
     handleOpenConfirm({
       isOpen: true,
@@ -896,38 +1047,51 @@ export const KaryawanManagement: React.FC<{
           await userApi.update(editEmployee.backendId, {
             name: editForm.nama,
             employee_code: editForm.nik || undefined,
-            identity_number: editForm.nikKtp || undefined,
+            identity_number: editForm.nikKtp?.trim() || null,
             gender: editForm.gender,
-            birth_place: editForm.birthPlace || undefined,
-            birth_date: editForm.birthDate || undefined,
+            birth_place: editForm.birthPlace || null,
+            birth_date: editForm.birthDate || null,
             is_pregnant: editForm.gender === 'Perempuan' ? editForm.isPregnant : false,
-            phone: editForm.hp || undefined,
+            phone: editForm.hp || null,
             role: editForm.role || undefined,
-            department: editForm.dept || undefined,
+            department: editForm.dept || null,
             attendance_setting_id: editForm.officeId === '' ? null : editForm.officeId,
             monthly_claim_limit: editForm.limit === '' || editForm.limit === null ? null : editForm.limit,
+            overtime_enabled: editForm.overtimeEligible,
             employment_type: editForm.employmentType || null,
             joined_date: editForm.joinedDate || null,
             contract_start_date: editForm.employmentType === 'PKWT' ? (editForm.contractStartDate || null) : null,
             contract_end_date: (editForm.employmentType === 'PKWT' || editForm.employmentType === 'Probation' || editForm.employmentType === 'Internship')
               ? (editForm.contractEndDate || null)
               : null,
-            bank_name: editForm.bankName || undefined,
-            bank_account_no: editForm.bankAccountNo || undefined,
-            bank_account_holder: editForm.bankAccountHolder || undefined,
+            bank_name: editForm.bankName || null,
+            bank_account_no: editForm.bankAccountNo || null,
+            bank_account_holder: editForm.bankAccountHolder || null,
             // Prioritas 1 — Kontak Darurat, Alamat, Agama, Sipil & Medis
-            emergency_contact_name: editForm.emergencyContactName || undefined,
-            emergency_contact_relation: editForm.emergencyContactRelation || undefined,
-            emergency_contact_phone: editForm.emergencyContactPhone || undefined,
-            emergency_contact_address: editForm.emergencyContactAddress || undefined,
-            ktp_address: editForm.ktpAddress || undefined,
-            domicile_address: editForm.isDomicileSameAsKtp ? (editForm.ktpAddress || undefined) : (editForm.domicileAddress || undefined),
+            emergency_contact_name: editForm.emergencyContactName?.trim() || null,
+            emergency_contact_relation: editForm.emergencyContactRelation?.trim() || null,
+            emergency_contact_phone: editForm.emergencyContactPhone?.trim() || null,
+            emergency_contact_address: editForm.emergencyContactAddress?.trim() || null,
+            ktp_address: editForm.ktpAddress?.trim() || null,
+            ktp_city: editForm.ktpCity?.trim() || null,
+            ktp_province: editForm.ktpProvince?.trim() || null,
+            ktp_postal_code: editForm.ktpPostalCode?.trim() || null,
+            domicile_address: editForm.isDomicileSameAsKtp ? (editForm.ktpAddress?.trim() || null) : (editForm.domicileAddress?.trim() || null),
             is_domicile_same_as_ktp: editForm.isDomicileSameAsKtp,
-            religion: editForm.religion || undefined,
-            marital_status: editForm.maritalStatus || undefined,
+            religion: editForm.religion || null,
+            marital_status: editForm.maritalStatus || null,
             number_of_dependents: editForm.numberOfDependents !== '' ? Number(editForm.numberOfDependents) : 0,
-            blood_type: editForm.bloodType || undefined,
-            medical_conditions: editForm.medicalConditions || undefined,
+            blood_type: editForm.bloodType || null,
+            medical_conditions: editForm.medicalConditions || null,
+            education_level: editForm.educationLevel || null,
+            institution_name: editForm.institutionName?.trim() || null,
+            major: editForm.major?.trim() || null,
+            graduation_year: editForm.graduationYear ? Number(editForm.graduationYear) : null,
+            exit_date: editForm.exitDate || null,
+            exit_reason: editForm.exitReason || null,
+            exit_notes: editForm.exitNotes?.trim() || null,
+            severance_status: editForm.severanceStatus || null,
+            clearance_status: editForm.clearanceStatus || null,
           });
           await loadEmployees();
           onAddAuditLog('Update Profil Karyawan', `Profil ${editForm.nama} (${editEmployee.id}) diperbarui`, 'bg-indigo-600');
@@ -976,7 +1140,13 @@ export const KaryawanManagement: React.FC<{
     if (!nonaktifEmployee) return;
     setShowProgressNonaktif(true);
     try {
-      await userApi.deactivate(nonaktifEmployee.backendId);
+      await userApi.deactivate(nonaktifEmployee.backendId, {
+        exit_date: nonaktifForm.exitDate,
+        exit_reason: nonaktifForm.alasan,
+        exit_notes: nonaktifForm.catatan,
+        severance_status: nonaktifForm.severanceStatus,
+        clearance_status: nonaktifForm.clearanceStatus,
+      });
       await loadEmployees();
       onAddAuditLog('Akun Dinonaktifkan', `Akun ${nonaktifEmployee.nama} (${nonaktifEmployee.id}) dinonaktifkan. Alasan: ${nonaktifForm.alasan}. Catatan: ${nonaktifForm.catatan}`, 'bg-rose-600');
       onAddNotification('flag', 'Akun Dinonaktifkan', `Akun ${nonaktifEmployee.nama} berhasil diblokir.`);
@@ -1637,29 +1807,89 @@ export const KaryawanManagement: React.FC<{
               </div>
 
               <div className="space-y-3 font-sans">
-                <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Alasan Penonaktifan * (wajib untuk Audit)</label>
-                  <select
-                    value={nonaktifForm.alasan}
-                    onChange={(e) => setNonaktifForm({ ...nonaktifForm, alasan: e.target.value })}
-                    required
-                    className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
-                  >
-                    <option value="">Pilih Alasan</option>
-                    <option value="Resign / keluar dari perusahaan">Resign / keluar dari perusahaan</option>
-                    <option value="Cuti panjang / tidak aktif bekerja">Cuti panjang / tidak aktif bekerja</option>
-                    <option value="Penyalahgunaan sistem keuangan">Penyalahgunaan sistem keuangan</option>
-                    <option value="Restrukturisasi departemen">Restrukturisasi departemen</option>
-                  </select>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Tanggal Efektif Keluar */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
+                      Tanggal Efektif Keluar *
+                    </label>
+                    <input
+                      type="date"
+                      value={nonaktifForm.exitDate}
+                      onChange={(e) => setNonaktifForm({ ...nonaktifForm, exitDate: e.target.value })}
+                      required
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    />
+                  </div>
+
+                  {/* Kategori Alasan Terminasi */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
+                      Alasan Pengakhiran Kerja *
+                    </label>
+                    <select
+                      value={nonaktifForm.alasan}
+                      onChange={(e) => setNonaktifForm({ ...nonaktifForm, alasan: e.target.value })}
+                      required
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    >
+                      <option value="Resign / Mengundurkan Diri Sukarela">Resign / Mengundurkan Diri Sukarela</option>
+                      <option value="Habis Masa Kontrak (PKWT Selesai)">Habis Masa Kontrak (PKWT Selesai)</option>
+                      <option value="Pemutusan Hubungan Kerja (PHK)">Pemutusan Hubungan Kerja (PHK)</option>
+                      <option value="Pensiun">Pensiun</option>
+                      <option value="Pelanggaran Disiplin / Indisipliner">Pelanggaran Disiplin / Indisipliner</option>
+                      <option value="Cuti Panjang / Non-Aktif Sementara">Cuti Panjang / Non-Aktif Sementara</option>
+                      <option value="Meninggal Dunia">Meninggal Dunia</option>
+                      <option value="Lainnya">Lainnya</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Status Pesangon / UPMK */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
+                      Status Hak / Uang Pesangon
+                    </label>
+                    <select
+                      value={nonaktifForm.severanceStatus}
+                      onChange={(e) => setNonaktifForm({ ...nonaktifForm, severanceStatus: e.target.value })}
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    >
+                      <option value="Tidak Ada Pesangon">Tidak Ada Pesangon</option>
+                      <option value="Lunas / Selesai">Lunas / Selesai Dibayarkan</option>
+                      <option value="Sedang Diproses HR & Finance">Sedang Diproses HR & Finance</option>
+                      <option value="Menunggu Verifikasi Persetujuan">Menunggu Verifikasi Persetujuan</option>
+                    </select>
+                  </div>
+
+                  {/* Status Pengembalian Aset */}
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
+                      Clearance Aset Kantor
+                    </label>
+                    <select
+                      value={nonaktifForm.clearanceStatus}
+                      onChange={(e) => setNonaktifForm({ ...nonaktifForm, clearanceStatus: e.target.value })}
+                      className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+                    >
+                      <option value="Selesai (Completed)">Selesai (Semua Aset Kembali)</option>
+                      <option value="Sebagian (In Progress)">Sebagian (Masih Ada Aset)</option>
+                      <option value="Belum (Pending)">Belum Ada Pengembalian</option>
+                      <option value="Tidak Ada Aset Dipinjam">Tidak Ada Aset Dipinjam</option>
+                    </select>
+                  </div>
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">Catatan Tambahan</label>
+                  <label className="text-[10px] font-bold text-slate-400 dark:text-slate-500 block">
+                    Catatan Serah Terima / Alasan Detail
+                  </label>
                   <textarea
                     rows={2}
                     value={nonaktifForm.catatan}
                     onChange={(e) => setNonaktifForm({ ...nonaktifForm, catatan: e.target.value })}
-                    placeholder="Tulis informasi detail tambahan..."
+                    placeholder="Catatan serah terima pekerjaan, pengembalian kartu ID / laptop, atau nomor kontak setelah keluar..."
                     className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/30 text-slate-800 dark:text-slate-100 focus:outline-none"
                   />
                 </div>
@@ -2164,6 +2394,13 @@ export const KaryawanManagement: React.FC<{
                             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Alamat Sesuai KTP</span>
                             <div className="bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-700/60 min-h-[60px]">
                               <p className="text-xs text-slate-800 dark:text-slate-200 leading-relaxed">{fullData.ktpAddress || 'Belum diisi'}</p>
+                              {(fullData.ktpCity || fullData.ktpProvince || fullData.ktpPostalCode) && (
+                                <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 font-medium">
+                                  {[fullData.ktpCity, fullData.ktpProvince, fullData.ktpPostalCode ? `Kode Pos ${fullData.ktpPostalCode}` : '']
+                                    .filter(Boolean)
+                                    .join(', ')}
+                                </p>
+                              )}
                             </div>
                           </div>
 
@@ -2184,6 +2421,113 @@ export const KaryawanManagement: React.FC<{
                           </div>
                         </div>
                       </div>
+
+                      {/* Riwayat Pendidikan Terakhir Card */}
+                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                          <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                            <GraduationCap className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                            Latar Belakang Pendidikan Terakhir
+                          </h4>
+                          {fullData.educationLevel && (
+                            <span className="text-[10px] text-indigo-600 font-bold bg-indigo-50 dark:bg-indigo-950/40 px-2 py-0.5 rounded-full border border-indigo-200 dark:border-indigo-800/40">
+                              {fullData.educationLevel}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Jenjang Pendidikan</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{fullData.educationLevel || 'Belum diisi'}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Tahun Kelulusan</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{fullData.graduationYear ? `Lulus Tahun ${fullData.graduationYear}` : '—'}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nama Institusi / Sekolah / Universitas</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">{fullData.institutionName || 'Belum diisi'}</span>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Jurusan / Program Studi</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">{fullData.major || '—'}</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Informasi Terminasi & Offboarding (Jika Karyawan Nonaktif atau memiliki data terminasi) */}
+                      {(fullData.status === 'Nonaktif' || fullData.exitDate || fullData.exitReason) && (
+                        <div className="bg-rose-50/60 dark:bg-rose-950/30 p-5 rounded-2xl border border-rose-200 dark:border-rose-900/40 shadow-xs space-y-4">
+                          <div className="flex items-center justify-between pb-3 border-b border-rose-200/60 dark:border-rose-900/50">
+                            <h4 className="text-xs font-extrabold text-rose-700 dark:text-rose-400 flex items-center gap-2">
+                              <UserX className="w-4 h-4 text-rose-600 dark:text-rose-400" />
+                              Informasi Terminasi & Offboarding Karyawan
+                            </h4>
+                            <span className="text-[10px] text-rose-700 dark:text-rose-300 font-bold bg-rose-100 dark:bg-rose-900/50 px-2.5 py-0.5 rounded-full border border-rose-200 dark:border-rose-800">
+                              Karyawan Non-Aktif / Keluar
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Tanggal Efektif Keluar</span>
+                              <div className="bg-white/80 dark:bg-slate-900/80 px-3 py-2 rounded-xl border border-rose-100 dark:border-rose-900/40">
+                                <span className="text-xs font-bold text-rose-800 dark:text-rose-300">
+                                  {fullData.exitDate ? formatDateId(fullData.exitDate) : '—'}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Alasan Pengakhiran Kerja</span>
+                              <div className="bg-white/80 dark:bg-slate-900/80 px-3 py-2 rounded-xl border border-rose-100 dark:border-rose-900/40">
+                                <span className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                                  {fullData.exitReason || 'Nonaktif / Keluar'}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Status Pesangon / UPMK</span>
+                              <div className="bg-white/80 dark:bg-slate-900/80 px-3 py-2 rounded-xl border border-rose-100 dark:border-rose-900/40">
+                                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                                  {fullData.severanceStatus || 'Tidak Ada Pesangon'}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Clearance Aset Perusahaan</span>
+                              <div className="bg-white/80 dark:bg-slate-900/80 px-3 py-2 rounded-xl border border-rose-100 dark:border-rose-900/40">
+                                <span className="text-xs font-semibold text-slate-800 dark:text-slate-200">
+                                  {fullData.clearanceStatus || 'Selesai (Completed)'}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1 sm:col-span-2">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">Catatan Serah Terima / Alasan Detail</span>
+                              <div className="bg-white/80 dark:bg-slate-900/80 px-3 py-2 rounded-xl border border-rose-100 dark:border-rose-900/40">
+                                <span className="text-xs text-slate-700 dark:text-slate-300">
+                                  {fullData.exitNotes || 'Tidak ada catatan khusus.'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
 
                     </div>
                   )}

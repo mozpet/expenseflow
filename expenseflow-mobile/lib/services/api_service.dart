@@ -168,9 +168,13 @@ class ApiService {
       final msg = (data['message'] as String?) ??
           'Terjadi kesalahan (${res.statusCode}).';
       // Rate-limit (429): bawa retry_after (detik) untuk ditampilkan di UI.
-      final retryAfter = data['retry_after'] is int
-          ? data['retry_after'] as int
-          : null;
+      final retryAfter = data['retry_after_seconds'] is int
+          ? data['retry_after_seconds'] as int
+          : (data['retry_after'] is int
+              ? data['retry_after'] as int
+              : (res.headers['retry-after'] != null
+                  ? int.tryParse(res.headers['retry-after']!)
+                  : null));
       throw ApiException(msg, res.statusCode, data, retryAfter);
     }
 
