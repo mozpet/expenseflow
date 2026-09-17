@@ -201,45 +201,64 @@ class AttendanceTest extends TestCase
     }
 
     // ── Extra: HRD toggle WFH → attendance_enabled sinkron ──────────
+    // ── Extra: HRD toggle WFH tidak mematikan attendance_enabled ──────────
     public function test_hrd_toggle_wfh_sinkronkan_attendance_enabled(): void
     {
         $hrd = $this->user('hrd', wfh: true);
-        $emp = $this->user('employee', attendance: false, wfh: false);
+        $emp = $this->user('employee', attendance: true, wfh: true);
 
-        // Toggle WFH ON
-        $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-wfh",
-            [],
-            $this->token($hrd)
-        )
-        ->assertOk()
-        ->assertJsonPath('user.wfh_enabled', true)
-        ->assertJsonPath('user.attendance_enabled', true);
-
-        $emp->refresh();
-        $this->assertTrue($emp->wfh_enabled);
-        $this->assertTrue($emp->attendance_enabled);
-        $this->assertDatabaseHas('activity_logs', ['action' => 'wfh_toggled']);
-
-        // Toggle WFH OFF
+        // 1. Toggle WFH OFF dari tabel
         $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-wfh",
             [],
             $this->token($hrd)
         )
         ->assertOk()
         ->assertJsonPath('user.wfh_enabled', false)
-        ->assertJsonPath('user.attendance_enabled', false);
+        ->assertJsonPath('user.attendance_enabled', true); // Presensi mobile onsite tetap aktif
 
         $emp->refresh();
         $this->assertFalse($emp->wfh_enabled);
-        $this->assertFalse($emp->attendance_enabled);
+        $this->assertTrue($emp->attendance_enabled);
+        $this->assertDatabaseHas('activity_logs', ['action' => 'wfh_toggled']);
+
+        // 2. HRD bisa toggle WFH kembali ON dari tabel karena allow_wfh = true
+        $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-wfh",
+            [],
+            $this->token($hrd)
+        )
+        ->assertOk()
+        ->assertJsonPath('user.wfh_enabled', true);
+
+        // 3. Jika allow_wfh di profil dimatikan, barulah toggle-wfh terlock dan ditolak 422
+        $emp->allow_wfh = false;
+        $emp->save();
+
+        $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-wfh",
+            [],
+            $this->token($hrd)
+        )
+        ->assertStatus(422)
+        ->assertJsonPath('message', "Izinkan Presensi WFH untuk '{$emp->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch WFH terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.");
     }
 
     // ── Extra: HRD toggle radius ─────────────────────────────────────
     public function test_hrd_toggle_radius(): void
     {
         $hrd = $this->user('hrd', wfh: true);
-        $emp = $this->user('employee', wfh: true, radius: false);
+        $emp = $this->user('employee', attendance: true, wfh: true, radius: true);
 
+        // 1. Toggle radius OFF saat sedang aktif -> berhasil 200
+        $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-radius",
+            [],
+            $this->token($hrd)
+        )
+        ->assertOk()
+        ->assertJsonPath('user.radius_enabled', false);
+
+        $this->assertFalse($emp->fresh()->radius_enabled);
+        $this->assertDatabaseHas('activity_logs', ['action' => 'radius_toggled']);
+
+        // 2. Toggle radius ON kembali saat diizinkan -> berhasil 200
         $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-radius",
             [],
             $this->token($hrd)
@@ -247,8 +266,16 @@ class AttendanceTest extends TestCase
         ->assertOk()
         ->assertJsonPath('user.radius_enabled', true);
 
-        $this->assertTrue($emp->fresh()->radius_enabled);
-        $this->assertDatabaseHas('activity_logs', ['action' => 'radius_toggled']);
+        // 3. Saat allow_radius di profil dimatikan, switch lapangan terlock off -> ditolak 422
+        $emp->allow_radius = false;
+        $emp->save();
+
+        $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-radius",
+            [],
+            $this->token($hrd)
+        )
+        ->assertStatus(422)
+        ->assertJsonPath('message', "Validasi Radius Geofence untuk '{$emp->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.");
     }
 
     // ── Extra: employee tidak bisa akses dashboard HRD ───────────────
@@ -608,5 +635,257 @@ class AttendanceTest extends TestCase
         $this->assertNotNull($attYesterday->check_out_time);
         $this->assertTrue((bool) $attYesterday->is_auto_checkout);
     }
+
+    public function test_toggle_attendance_off_otomatis_mematikan_wfh_dan_radius(): void
+    {
+        $hrd = $this->user('hrd', wfh: true);
+        $emp = $this->user('employee', attendance: true, wfh: true);
+        $emp->radius_enabled = true;
+        $emp->save();
+
+        $this->assertTrue($emp->canWfh());
+        $this->assertTrue($emp->hasRadiusEnabled());
+
+        // Matikan Presensi Mobile
+        $this->postJson("/api/v1/dashboard/attendance/users/{$emp->id}/toggle-attendance", [], $this->token($hrd))
+            ->assertOk()
+            ->assertJsonPath('user.attendance_enabled', false)
+            ->assertJsonPath('user.wfh_enabled', false)
+            ->assertJsonPath('user.radius_enabled', false);
+
+        $emp->refresh();
+        $this->assertFalse($emp->attendance_enabled);
+        $this->assertFalse($emp->wfh_enabled);
+        $this->assertFalse($emp->radius_enabled);
+        $this->assertFalse($emp->canAccessAttendance());
+        $this->assertFalse($emp->canWfh());
+        $this->assertFalse($emp->hasRadiusEnabled());
+
+        // Cek status mobile juga mengembalikan false
+        $statusRes = $this->actingAs($emp, 'sanctum')
+            ->getJson('/api/v1/attendance/status')
+            ->assertOk();
+        $this->assertFalse($statusRes->json('attendance_enabled'));
+        $this->assertFalse($statusRes->json('wfh_enabled'));
+        $this->assertFalse($statusRes->json('radius_enabled'));
+    }
+
+    public function test_update_mobile_policy_cascade(): void
+    {
+        $hrd = $this->user('hrd', wfh: true);
+        $emp = $this->user('employee', attendance: true, wfh: true);
+
+        // Jika attendance_enabled false, wfh dan radius dipaksa false
+        $this->putJson("/api/v1/dashboard/attendance/users/{$emp->id}/mobile-policy", [
+            'attendance_enabled' => false,
+            'wfh_enabled'        => true,
+            'radius_enabled'     => true,
+        ], $this->token($hrd))
+            ->assertOk()
+            ->assertJsonPath('user.attendance_enabled', false)
+            ->assertJsonPath('user.wfh_enabled', false)
+            ->assertJsonPath('user.radius_enabled', false);
+
+        $emp->refresh();
+        $this->assertFalse($emp->attendance_enabled);
+        $this->assertFalse($emp->wfh_enabled);
+        $this->assertFalse($emp->radius_enabled);
+    }
+
+    public function test_user_controller_store_and_update_mobile_policy_cascade(): void
+    {
+        $admin = $this->user('admin', attendance: true, wfh: true);
+
+        // 1. Store dengan attendance_enabled false -> wfh dan radius otomatis false
+        $resStore = $this->postJson('/api/v1/admin/users', [
+            'name'               => 'Budi Mobile Off',
+            'email'              => 'budi.off@example.com',
+            'password'           => 'password123',
+            'role'               => 'employee',
+            'attendance_enabled' => false,
+            'wfh_enabled'        => true,
+            'radius_enabled'     => true,
+        ], $this->token($admin))->assertCreated();
+
+        $this->assertFalse($resStore->json('user.attendance_enabled'));
+        $this->assertFalse($resStore->json('user.wfh_enabled'));
+        $this->assertFalse($resStore->json('user.radius_enabled'));
+
+        $newUser = User::find($resStore->json('user.id'));
+        $this->assertFalse($newUser->attendance_enabled);
+        $this->assertFalse($newUser->wfh_enabled);
+        $this->assertFalse($newUser->radius_enabled);
+
+        // 2. Update user: hidupkan attendance_enabled dan wfh_enabled
+        $resUpdate = $this->putJson("/api/v1/admin/users/{$newUser->id}", [
+            'attendance_enabled' => true,
+            'wfh_enabled'        => true,
+            'radius_enabled'     => false,
+        ], $this->token($admin))->assertOk();
+
+        $this->assertTrue($resUpdate->json('user.attendance_enabled'));
+        $this->assertTrue($resUpdate->json('user.wfh_enabled'));
+        $this->assertFalse($resUpdate->json('user.radius_enabled'));
+
+        // 3. Update lagi: matikan attendance_enabled -> wfh_enabled otomatis false
+        $resUpdateOff = $this->putJson("/api/v1/admin/users/{$newUser->id}", [
+            'attendance_enabled' => false,
+            'wfh_enabled'        => true,
+            'radius_enabled'     => true,
+        ], $this->token($admin))->assertOk();
+
+        $this->assertFalse($resUpdateOff->json('user.attendance_enabled'));
+        $this->assertFalse($resUpdateOff->json('user.wfh_enabled'));
+        $this->assertFalse($resUpdateOff->json('user.radius_enabled'));
+
+        // 4. Pastikan index GET /api/v1/admin/users juga mengembalikan field attendance_enabled
+        $resIndex = $this->getJson('/api/v1/admin/users', $this->token($admin))->assertOk();
+        $targetInIndex = collect($resIndex->json('data'))->firstWhere('id', $newUser->id);
+        $this->assertNotNull($targetInIndex);
+        $this->assertFalse($targetInIndex['attendance_enabled']);
+        $this->assertFalse($targetInIndex['wfh_enabled']);
+        $this->assertFalse($targetInIndex['radius_enabled']);
+
+        // 5. Pastikan token mobile dicabut saat attendance_enabled dimatikan via mobile-policy
+        $newUser->createToken('auth-token-mobile');
+        $this->assertEquals(1, $newUser->tokens()->where('name', 'auth-token-mobile')->count());
+
+        $this->putJson("/api/v1/dashboard/attendance/users/{$newUser->id}/mobile-policy", [
+            'attendance_enabled' => false,
+            'wfh_enabled'        => false,
+            'radius_enabled'     => false,
+        ], $this->token($admin))->assertOk();
+
+        $this->assertEquals(0, $newUser->tokens()->where('name', 'auth-token-mobile')->count());
+    }
+
+    public function test_toggle_attendance_off_cascades_all_switches_off_and_guards_activation(): void
+    {
+        $admin = $this->user('admin');
+        $user = $this->user('employee', attendance: true, wfh: true, radius: true);
+        $user->dinas_luar_enabled = true;
+        $user->flexitime_enabled = true;
+        $user->save();
+
+        // 1. Toggle mobile attendance OFF
+        $res = $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-attendance", [], $this->token($admin))
+            ->assertOk();
+
+        $this->assertFalse($res->json('user.attendance_enabled'));
+        $this->assertFalse($res->json('user.wfh_enabled'));
+        $this->assertFalse($res->json('user.radius_enabled'));
+        $this->assertFalse($res->json('user.dinas_luar_enabled'));
+        // Flexitime tetap aktif (independen dari presensi mobile)
+        $this->assertTrue($res->json('user.flexitime_enabled'));
+
+        $user->refresh();
+        $this->assertFalse((bool) $user->attendance_enabled);
+        $this->assertFalse((bool) $user->wfh_enabled);
+        $this->assertFalse((bool) $user->radius_enabled);
+        $this->assertFalse((bool) $user->dinas_luar_enabled);
+        $this->assertTrue((bool) $user->flexitime_enabled);
+
+        // 2. Coba toggle Dinas Luar saat Presensi Mobile mati -> ditolak 422
+        $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-dinas-luar", [], $this->token($admin))
+            ->assertStatus(422);
+
+        // 3. Toggle Flexitime saat Presensi Mobile mati -> BERHASIL (karena flexitime independen)
+        $toggleFlexRes = $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-flexitime", [], $this->token($admin))
+            ->assertOk();
+        $this->assertFalse($toggleFlexRes->json('user.flexitime_enabled'));
+
+        // 4. Toggle Presensi Mobile saat mati harian tapi diizinkan di profil -> BERHASIL ON kembali
+        $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-attendance", [], $this->token($admin))
+            ->assertOk()
+            ->assertJsonPath('user.attendance_enabled', true);
+
+        // 5. Update lewat Edit Profil Karyawan (PUT /api/v1/admin/users/{id}) dengan allow_attendance: false
+        $this->putJson("/api/v1/admin/users/{$user->id}", [
+            'allow_attendance'   => false,
+            'flexitime_enabled'  => true,
+        ], $this->token($admin))->assertOk();
+
+        $user->refresh();
+        $this->assertFalse((bool) $user->allow_attendance);
+        $this->assertFalse((bool) $user->attendance_enabled);
+        $this->assertTrue((bool) $user->flexitime_enabled);
+
+        // 5b. Saat allow_attendance mati di profil, barulah switch terkunci dan tolak 422
+        $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-attendance", [], $this->token($admin))
+            ->assertStatus(422)
+            ->assertJsonPath('message', "Akses Presensi Mobile untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.");
+
+        // 6. Aktifkan kembali Presensi Mobile lewat Edit Profil Karyawan
+        $this->putJson("/api/v1/admin/users/{$user->id}", [
+            'allow_attendance' => true,
+        ], $this->token($admin))->assertOk();
+
+        $user->refresh();
+        $this->assertTrue((bool) $user->attendance_enabled);
+
+        // 7. Jika Izinkan Presensi WFH di-uncheck lewat Edit Profil Karyawan, radius_enabled otomatis false
+        $this->putJson("/api/v1/admin/users/{$user->id}", [
+            'wfh_enabled' => false,
+        ], $this->token($admin))->assertOk();
+
+        $user->refresh();
+        $this->assertFalse((bool) $user->wfh_enabled);
+        $this->assertFalse((bool) $user->radius_enabled);
+
+        // Switch Lapangan terkunci off saat WFH mati di profil -> tolak 422
+        $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-radius", [], $this->token($admin))
+            ->assertStatus(422)
+            ->assertJsonPath('message', "Izinkan Presensi WFH untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.");
+
+        // 8. Jika Validasi Radius Geofence di-uncheck lewat Edit Profil Karyawan, switch Lapangan terkunci off
+        $this->putJson("/api/v1/admin/users/{$user->id}", [
+            'wfh_enabled'    => true,
+            'radius_enabled' => false,
+        ], $this->token($admin))->assertOk();
+
+        $user->refresh();
+        $this->assertTrue((bool) $user->wfh_enabled);
+        $this->assertFalse((bool) $user->radius_enabled);
+
+        // Switch Lapangan terkunci off saat radius mati di profil -> tolak 422
+        $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-radius", [], $this->token($admin))
+            ->assertStatus(422)
+            ->assertJsonPath('message', "Validasi Radius Geofence untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.");
+
+        // 9. Aktifkan kembali Validasi Radius Geofence lewat Edit Profil Karyawan -> radius_enabled true
+        $this->putJson("/api/v1/admin/users/{$user->id}", [
+            'wfh_enabled'    => true,
+            'radius_enabled' => true,
+        ], $this->token($admin))->assertOk();
+
+        $user->refresh();
+        $this->assertTrue((bool) $user->wfh_enabled);
+        $this->assertTrue((bool) $user->radius_enabled);
+
+        // Sekarang toggle-radius bisa mematikan radius sementara (karena sedang aktif)
+        $this->postJson("/api/v1/dashboard/attendance/users/{$user->id}/toggle-radius", [], $this->token($admin))
+            ->assertOk()
+            ->assertJsonPath('user.radius_enabled', false);
+    }
+
+    public function test_check_in_accepts_office_alias_and_normalizes_to_onsite(): void
+    {
+        $emp = $this->user('employee', attendance: true, wfh: true);
+        $emp->radius_enabled = false;
+        $emp->save();
+
+        $res = $this->postJson('/api/v1/attendance/check-in', [
+            'latitude'      => -6.2088,
+            'longitude'     => 106.8456,
+            'check_in_type' => 'office',
+        ], $this->token($emp))->assertCreated();
+
+        $this->assertDatabaseHas('attendances', [
+            'user_id'       => $emp->id,
+            'check_in_type' => 'wfh', // Karena radius_enabled = false & wfh_enabled = true
+        ]);
+    }
 }
+
+
 

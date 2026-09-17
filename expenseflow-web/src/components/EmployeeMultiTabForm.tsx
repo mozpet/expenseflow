@@ -1772,46 +1772,129 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
               {/* Presensi Diizinkan */}
-              <label className="flex items-start gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 cursor-pointer">
+              <label className={`flex items-start gap-3 p-3.5 rounded-2xl border transition cursor-pointer ${
+                form.attendanceEnabled !== false
+                  ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800'
+                  : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
+              }`}>
                 <input
                   type="checkbox"
                   checked={form.attendanceEnabled !== false}
-                  onChange={(e) => setForm({ ...form, attendanceEnabled: e.target.checked })}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setForm({
+                      ...form,
+                      attendanceEnabled: checked,
+                      // Jika Presensi Mobile dimatikan, WFH dan radius otomatis dimatikan
+                      wfhEnabled: checked ? (form.wfhEnabled !== false) : false,
+                      radiusEnabled: checked ? ((form.wfhEnabled !== false) && (form.radiusEnabled !== false)) : false,
+                    });
+                  }}
                   className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
                 />
                 <div>
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Presensi Mobile Aktif</span>
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Akses Mobile</span>
                   <span className="text-[10px] text-slate-400">Bisa check-in/out di HP</span>
                 </div>
               </label>
 
               {/* Boleh WFH */}
-              <label className="flex items-start gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 cursor-pointer">
+              {(() => {
+                const isAttActive = form.attendanceEnabled !== false;
+                const isWfhChecked = isAttActive && form.wfhEnabled !== false;
+                return (
+                  <label
+                    className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
+                      !isAttActive
+                        ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
+                        : isWfhChecked
+                          ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 cursor-pointer'
+                          : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                    }`}
+                    title={!isAttActive ? 'Presensi Mobile harus aktif terlebih dahulu' : undefined}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={!isAttActive}
+                      checked={isWfhChecked}
+                      onChange={(e) => {
+                        if (!isAttActive) return;
+                        const checked = e.target.checked;
+                        setForm({
+                          ...form,
+                          wfhEnabled: checked,
+                          // Jika Izinkan Presensi WFH di-uncheck, otomatis Validasi Radius Geofence ikut uncheck
+                          ...(checked ? {} : { radiusEnabled: false }),
+                        });
+                      }}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Izinkan Presensi WFH</span>
+                      <span className="text-[10px] text-slate-400">Boleh absen luar kantor</span>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Validasi Radius */}
+              {(() => {
+                const isAttActive = form.attendanceEnabled !== false;
+                const isWfhChecked = isAttActive && form.wfhEnabled !== false;
+                const isRadiusChecked = isAttActive && isWfhChecked && form.radiusEnabled !== false;
+                const isRadiusDisabled = !isAttActive || !isWfhChecked;
+                return (
+                  <label
+                    className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
+                      isRadiusDisabled
+                        ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
+                        : isRadiusChecked
+                          ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 cursor-pointer'
+                          : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                    }`}
+                    title={
+                      !isAttActive
+                        ? 'Presensi Mobile harus aktif terlebih dahulu'
+                        : !isWfhChecked
+                          ? 'Izinkan Presensi WFH harus aktif terlebih dahulu'
+                          : undefined
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={isRadiusDisabled}
+                      checked={isRadiusChecked}
+                      onChange={(e) => {
+                        if (isRadiusDisabled) return;
+                        setForm({ ...form, radiusEnabled: e.target.checked });
+                      }}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Validasi Radius Geofence</span>
+                      <span className="text-[10px] text-slate-400">Cek koordinat GPS kantor</span>
+                    </div>
+                  </label>
+                );
+              })()}
+              {/* Jam Fleksibel (Flexitime) - Independen dari Akses Mobile */}
+              <label className={`flex items-start gap-3 p-3.5 rounded-2xl border transition cursor-pointer ${
+                Boolean(form.flexitimeEnabled)
+                  ? 'bg-teal-50/40 dark:bg-teal-950/20 border-teal-200 dark:border-teal-800'
+                  : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
+              }`}>
                 <input
                   type="checkbox"
-                  checked={form.wfhEnabled !== false}
-                  onChange={(e) => setForm({ ...form, wfhEnabled: e.target.checked })}
-                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
+                  checked={Boolean(form.flexitimeEnabled)}
+                  onChange={(e) => setForm({ ...form, flexitimeEnabled: e.target.checked })}
+                  className="w-4 h-4 rounded text-teal-600 focus:ring-teal-500 mt-0.5"
                 />
                 <div>
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Izinkan Presensi WFH</span>
-                  <span className="text-[10px] text-slate-400">Boleh absen luar kantor</span>
+                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Jam Fleksibel (Flexitime)</span>
+                  <span className="text-[10px] text-slate-400">Jadwal datang & pulang fleksibel</span>
                 </div>
               </label>
 
-              {/* Validasi Radius */}
-              <label className="flex items-start gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={form.radiusEnabled !== false}
-                  onChange={(e) => setForm({ ...form, radiusEnabled: e.target.checked })}
-                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
-                />
-                <div>
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Validasi Radius Geofence</span>
-                  <span className="text-[10px] text-slate-400">Cek koordinat GPS kantor</span>
-                </div>
-              </label>
               {/* Hak Lembur Overtime */}
               <label className="flex items-start gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 cursor-pointer">
                 <input

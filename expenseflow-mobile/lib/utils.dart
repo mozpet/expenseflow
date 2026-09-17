@@ -54,3 +54,42 @@ String formatDateIndonesianRange(dynamic start, dynamic end) {
   if (s == e || end == null) return s;
   return '$s — $e';
 }
+
+/// Mengubah DateTime atau string ISO menjadi format Indonesia dengan jam dan menit.
+/// Contoh: '2026-09-17T12:46:54.000000Z' → '17 September 2026, 19:46 WIB'
+String formatDateTimeIndonesian(dynamic date) {
+  if (date == null) return '-';
+  DateTime? dt;
+  if (date is DateTime) {
+    dt = date.isUtc ? date.toLocal() : date;
+  } else if (date is String) {
+    if (date.isEmpty) return '-';
+    if (date.contains('T') || date.endsWith('Z')) {
+      final parsed = DateTime.tryParse(date);
+      if (parsed != null) {
+        dt = parsed.toLocal();
+      }
+    }
+    dt ??= DateTime.tryParse(date);
+  }
+  if (dt == null) return date.toString();
+  const months = [
+    '',
+    'Januari',
+    'Februari',
+    'Maret',
+    'April',
+    'Mei',
+    'Juni',
+    'Juli',
+    'Agustus',
+    'September',
+    'Oktober',
+    'November',
+    'Desember',
+  ];
+  final hour = dt.hour.toString().padLeft(2, '0');
+  final min = dt.minute.toString().padLeft(2, '0');
+  return '${dt.day} ${months[dt.month]} ${dt.year}, $hour:$min WIB';
+}
+

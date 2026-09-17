@@ -22,6 +22,8 @@ export interface Receipt {
   varianceFlag?: boolean;
   variancePct?: number;
   tanggal: string;
+  ocrDate?: string;
+  submittedAt?: string;
   departemen: string;
   cabang?: string;
   cabangId?: number;
@@ -129,7 +131,10 @@ export interface StrukApproval {
   diprosesOleh: string;
   waktu: string;
   catatan: string;
+  notes?: string; // Keterangan / catatan dari karyawan saat mengajukan struk
   tanggal?: string; // Format YYYY-MM-DD untuk filtering
+  ocrDate?: string;
+  submittedAt?: string;
   cabang?: string;
   cabangId?: number;
   branchVarianceLimit?: number | null;

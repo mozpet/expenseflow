@@ -38,6 +38,16 @@ function avatarFor(seed: string) {
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
+export function toLocalDateString(iso?: string | null): string {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return (iso || '').substring(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 export function formatTanggal(value?: string | null): string {
   if (!value) return '—';
   const d = new Date(value);
@@ -52,6 +62,7 @@ export function formatWaktu(value?: string | null): string {
   return d.toLocaleString('id-ID', {
     day: 'numeric',
     month: 'short',
+    year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
   });
@@ -130,6 +141,8 @@ export function mapReceipt(r: any): Receipt {
     varianceFlag: isVariance,
     variancePct,
     tanggal: formatTanggal(r.receipt_date ?? r.submitted_at ?? r.created_at),
+    ocrDate: formatTanggal(r.ocr_raw_date || r.receipt_date),
+    submittedAt: r.submitted_at ? formatWaktu(r.submitted_at) : (r.created_at ? formatWaktu(r.created_at) : undefined),
     departemen: r.user?.department ?? '—',
     cabang: r.office?.office_name ?? r.user?.office?.office_name ?? '—',
     cabangId: r.attendance_setting_id ? Number(r.attendance_setting_id) : (r.user?.attendance_setting_id ? Number(r.user.attendance_setting_id) : undefined),
@@ -197,8 +210,8 @@ export function mapReceiptToApproval(r: any): StrukApproval {
   // Ambil nama approver, fallback ke "Finance"
   const approverName = r.approvals?.[0]?.user?.name ?? r.approved_by?.name ?? 'Finance';
 
-  // Extract tanggal YYYY-MM-DD dari timestamp untuk filtering
-  const dateStr = (r.submitted_at ?? r.created_at ?? '').substring(0, 10);
+  // Extract tanggal YYYY-MM-DD dari timestamp pengajuan lokal untuk filtering
+  const dateStr = toLocalDateString(r.submitted_at ?? r.created_at);
   const items = parseReceiptItems(r.ocr_raw_items);
   const subtotal = r.ocr_raw_subtotal !== null && r.ocr_raw_subtotal !== undefined ? num(r.ocr_raw_subtotal) : undefined;
   const tax = r.ocr_raw_tax !== null && r.ocr_raw_tax !== undefined ? num(r.ocr_raw_tax) : undefined;
@@ -221,8 +234,11 @@ export function mapReceiptToApproval(r: any): StrukApproval {
     approvedAmount,
     keputusan,
     diprosesOleh: approverName,
-    waktu: formatWaktu(r.submitted_at ?? r.created_at),
+    waktu: formatTanggal(r.submitted_at ?? r.created_at),
+    ocrDate: formatTanggal(r.ocr_raw_date || r.receipt_date),
+    submittedAt: r.submitted_at ? formatWaktu(r.submitted_at) : (r.created_at ? formatWaktu(r.created_at) : undefined),
     catatan: r.approvals?.[0]?.notes ?? r.rejection_reason ?? '—',
+    notes: r.notes || undefined,
     tanggal: dateStr,
     cabang: r.office?.office_name ?? r.user?.office?.office_name ?? '—',
     cabangId: r.attendance_setting_id ? Number(r.attendance_setting_id) : (r.user?.attendance_setting_id ? Number(r.user.attendance_setting_id) : undefined),

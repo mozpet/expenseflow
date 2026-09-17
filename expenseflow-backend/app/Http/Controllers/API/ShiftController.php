@@ -1043,6 +1043,13 @@ class ShiftController extends Controller
 
         // Catat aktivitas ke log
         $hasSchedule = ! empty($validated['shift_id']) || ! empty($validated['shift_pattern_id']);
+
+        // Karyawan berjadwal shift / pola rotasi TIDAK BOLEH mengaktifkan flexitime (mutual exclusion)
+        if ($hasSchedule && $targetUser->flexitime_enabled) {
+            $targetUser->flexitime_enabled = false;
+            $targetUser->save();
+        }
+
         $action = $hasSchedule ? 'shift_assigned' : 'shift_removed';
         $shiftDisplayName = $pattern ? "Pola Rotasi '{$pattern->name}'" : ($shift ? "Shift '{$shift->name}'" : 'Default Kantor');
         $endDateStr = isset($validated['end_date']) ? $validated['end_date'] : null;
@@ -1558,6 +1565,13 @@ class ShiftController extends Controller
         $userShift->fill(collect($validated)->only(['shift_id', 'shift_pattern_id', 'anchor_day_order', 'start_date', 'end_date', 'notes'])->toArray());
         $userShift->save();
 
+        // Karyawan berjadwal shift / pola rotasi TIDAK BOLEH mengaktifkan flexitime (mutual exclusion)
+        $hasSchedule = ! empty($userShift->shift_id) || ! empty($userShift->shift_pattern_id);
+        if ($hasSchedule && $targetUser->flexitime_enabled) {
+            $targetUser->flexitime_enabled = false;
+            $targetUser->save();
+        }
+
         $this->logActivity(
             $actor->id,
             $actor->company_id,
@@ -1978,6 +1992,13 @@ class ShiftController extends Controller
                     ? ' hingga ' . Carbon::parse($validated['end_date'])->translatedFormat('d F Y')
                     : '';
                 $hasSchedule = ! empty($validated['shift_id']) || ! empty($validated['shift_pattern_id']);
+
+                // Karyawan berjadwal shift / pola rotasi TIDAK BOLEH mengaktifkan flexitime (mutual exclusion)
+                if ($hasSchedule && $user->flexitime_enabled) {
+                    $user->flexitime_enabled = false;
+                    $user->save();
+                }
+
                 $this->notifyEmployee(
                     $user,
                     $hasSchedule ? 'shift_assigned' : 'shift_removed',
@@ -3756,7 +3777,7 @@ class ShiftController extends Controller
                         'work_end_time'   => $isOff ? null : ($endTime ? substr((string) $endTime, 0, 5) : null),
                         'is_off'          => $isOff,
                         'is_wfh'          => $isWfh,
-                        'is_field'        => ($isOff || ! $isWfh) ? false : (bool) $patternItem->is_field,
+                        'is_field'        => ($isOff || ! $isWfh || $isWfhApprovedDay) ? false : (bool) $patternItem->is_field,
                         'is_cross_day'    => $crossDay,
                         'holiday'         => $holidayInfo,
                         'personal_leave'  => $isPersonalLeave,
@@ -3783,7 +3804,7 @@ class ShiftController extends Controller
                 if ($shiftSchedule) {
                     $isOff = (bool) $shiftSchedule->is_off;
                     $isWfh = $isOff ? false : ((bool) $shiftSchedule->is_wfh || $isWfhApprovedDay);
-                    $isField = ($isOff || ! $isWfh) ? false : (bool) $shiftSchedule->is_field;
+                    $isField = ($isOff || ! $isWfh || $isWfhApprovedDay) ? false : (bool) $shiftSchedule->is_field;
                     // Cuti mandiri / izin / sakit approved juga memaksa hari tsb libur (sama seperti cuti bersama)
                     $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
                     $dayColor = $forceOff

@@ -26,6 +26,7 @@ import {
   ShieldAlert,
   Building2,
   CreditCard,
+  FileText,
 } from 'lucide-react';
 import { receiptApi, attendanceApi } from '../services/endpoints';
 import { useDebounce } from '../hooks/useDebounce';
@@ -226,8 +227,20 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
            (statusFilter === 'dibayar' && a.keputusan === 'Dibayar') ||
            (statusFilter === 'ditolak' && a.keputusan === 'Ditolak');
 
-    const matchesDateRange = (!startDate || (a.tanggal && a.tanggal >= startDate)) &&
-           (!endDate || (a.tanggal && a.tanggal <= endDate));
+    const matchesDateRange = (() => {
+      if (!startDate && !endDate) return true;
+      if (!a.tanggal) return false;
+      if (startDate && !endDate) {
+        // Jika hanya tanggal awal yang dipilih, filter tepat di tanggal tersebut (single date)
+        return a.tanggal === startDate;
+      }
+      if (!startDate && endDate) {
+        return a.tanggal === endDate;
+      }
+      const min = startDate <= endDate ? startDate : endDate;
+      const max = startDate <= endDate ? endDate : startDate;
+      return a.tanggal >= min && a.tanggal <= max;
+    })();
 
     return matchesSearch && matchesStatus && matchesDateRange;
   });
@@ -421,7 +434,7 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Nominal Disetujui</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Status Pencairan</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Diproses Oleh</th>
-                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Waktu</th>
+                <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Tanggal Pengajuan</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">Catatan</th>
                 <th className="py-3 px-4 font-semibold text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider text-right">Aksi</th>
               </tr>
@@ -482,7 +495,16 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                         </div>
                       </td>
                       <td className="py-3 px-4 text-xs font-medium text-slate-700 dark:text-slate-300">
-                        {item.merchant}
+                        <div>{item.merchant}</div>
+                        {item.notes && (
+                          <div
+                            className="mt-0.5 inline-flex items-center gap-1 text-[10px] text-slate-500 dark:text-slate-400 italic max-w-[180px] truncate"
+                            title={`Keterangan Karyawan: ${item.notes}`}
+                          >
+                            <FileText className="w-2.5 h-2.5 shrink-0 text-amber-500" />
+                            <span className="truncate">{item.notes}</span>
+                          </div>
+                        )}
                       </td>
                       <td className={`py-3 px-4 text-xs font-mono font-semibold ${
                         approved || paid ? 'text-slate-800 dark:text-slate-200' : 'text-slate-500 dark:text-slate-400 line-through'
@@ -687,7 +709,7 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                         <FileSpreadsheet className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
                         <span className="truncate">Foto Struk Fisik</span>
                       </div>
-                      <p className="text-[11px] text-slate-400 mt-0.5">Waktu: {selectedApproval.waktu}</p>
+                      <p className="text-[11px] text-slate-400 mt-0.5">Waktu Pengajuan: {selectedApproval.submittedAt || selectedApproval.waktu}</p>
                       <button
                         onClick={() => {
                           openLightbox(detailImageUrl);
@@ -757,6 +779,20 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                   </span>
                 </div>
                 <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Waktu Pengajuan</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                    {selectedApproval.submittedAt || selectedApproval.waktu || '—'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Tanggal Nota (OCR)</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-indigo-500 shrink-0" />
+                    {selectedApproval.ocrDate || '—'}
+                  </span>
+                </div>
+                <div>
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Merchant Toko</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.merchant}</span>
                 </div>
@@ -773,6 +809,23 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Diproses Oleh</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedApproval.diprosesOleh}</span>
                 </div>
+              </div>
+
+              {/* Employee Notes / Keterangan Pengajuan Karyawan */}
+              <div className="p-3 bg-amber-50/70 dark:bg-amber-950/20 rounded-xl border border-amber-200/80 dark:border-amber-800/40 text-xs">
+                <div className="flex items-center gap-1.5 font-bold text-amber-900 dark:text-amber-200 mb-1 text-[11px]">
+                  <FileText className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>Keterangan Pengajuan Karyawan</span>
+                </div>
+                {selectedApproval.notes ? (
+                  <p className="text-slate-700 dark:text-slate-300 text-[11px] leading-relaxed whitespace-pre-wrap font-medium">
+                    {selectedApproval.notes}
+                  </p>
+                ) : (
+                  <p className="text-slate-400 dark:text-slate-500 italic text-[10.5px]">
+                    Tidak ada keterangan tambahan yang dicantumkan karyawan saat pengajuan.
+                  </p>
+                )}
               </div>
 
               {/* Employee Bank Account Info Card */}

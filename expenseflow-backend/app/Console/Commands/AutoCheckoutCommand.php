@@ -132,8 +132,23 @@ class AutoCheckoutCommand extends Command
                 ? Carbon::parse($attDate, 'Asia/Jakarta')->addDay()->toDateString()
                 : $attDate;
 
-            $workEnd         = Carbon::parse($jamPulangDate . ' ' . substr($jamPulang, 0, 5), 'Asia/Jakarta');
-            $reminderTime    = $workEnd->copy()->addMinutes($reminderMins);
+            $workEnd = Carbon::parse($jamPulangDate . ' ' . substr($jamPulang, 0, 5), 'Asia/Jakarta');
+
+            // Khusus flexitime: sesuaikan batas jam pulang dengan jam check-in aktual & snapshot
+            $isFlexSession = $attendance->isFlexitimeSession($attendance->user);
+            if ($isFlexSession && $officeForCalc) {
+                $targetMins    = (int) ($officeForCalc->flex_target_minutes ?? 480);
+                $breakMins     = (int) ($scheduleForCalc['break_minutes'] ?? $officeForCalc->break_minutes ?? 60);
+                $checkInWib    = Carbon::parse($attendance->check_in_time)->setTimezone('Asia/Jakarta');
+                $flexWorkStart = $this->resolveWorkStart($checkInWib, $scheduleForCalc, $attDate, $attendance->user, $attendance);
+                $flexTargetEnd = $flexWorkStart->copy()->addMinutes($targetMins + $breakMins);
+
+                if ($flexTargetEnd->greaterThan($workEnd)) {
+                    $workEnd = $flexTargetEnd;
+                }
+            }
+
+            $reminderTime     = $workEnd->copy()->addMinutes($reminderMins);
             $autoCheckoutTime = $workEnd->copy()->addMinutes($graceMins);
 
             // Sudah lewat batas auto-checkout → lakukan auto-checkout.
@@ -247,7 +262,7 @@ class AutoCheckoutCommand extends Command
 
         // Hitung jam kerja dari jam JADWAL masuk (bukan jam check-in).
         // Konsisten dengan manual checkOut() di AttendanceController.
-        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate);
+        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate, $attendance->user, $attendance);
         $workMinutes = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta')));
 
         // Potong jam istirahat jika bekerja >= 5 jam (300 menit) sesuai UU 13/2003
@@ -265,7 +280,7 @@ class AutoCheckoutCommand extends Command
         // $skipOvertime: checkout patologis (ditutup tepat di jam check-in) → tanpa lembur.
         $overtimeMinutes = $skipOvertime
             ? 0
-            : $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking);
+            : $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking, $attendance->user, $attendance);
 
         $attendance->update([
             'check_out_time'   => $checkOutTime,
@@ -385,8 +400,16 @@ class AutoCheckoutCommand extends Command
     //     - Shift menandai hari ini libur (is_off) → seluruh menit kerja jadi lembur.
     //     - Tanpa shift & hari libur nasional/weekend → seluruh menit kerja jadi lembur.
     //     - Hari kerja efektif → lembur dihitung setelah jam pulang yang berlaku (shift/kantor).
-    private function calculateOvertime(AttendanceSetting $office, ?array $schedule, string $date, Carbon $checkOutTime, int $workMinutes, bool $isNationalNonWorking): int
-    {
+    private function calculateOvertime(
+        AttendanceSetting $office,
+        ?array $schedule,
+        string $date,
+        Carbon $checkOutTime,
+        int $workMinutes,
+        bool $isNationalNonWorking,
+        ?User $user = null,
+        ?Attendance $attendance = null
+    ): int {
         if (! $office->overtime_enabled) {
             return 0;
         }
@@ -407,6 +430,15 @@ class AutoCheckoutCommand extends Command
             $full = max(0, $workMinutes);
 
             return $full >= $minOvertime ? $full : 0;
+        }
+
+        // Kasus 2.5: Karyawan dengan jam kerja fleksibel (flexitime)
+        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) ($user && $user->flexitime_enabled);
+        if ($isFlex) {
+            $targetMins = (int) ($office->flex_target_minutes ?? 480);
+            $lewat = max(0, $workMinutes - $targetMins);
+
+            return $lewat >= $minOvertime ? $lewat : 0;
         }
 
         // Kasus 3: hari kerja efektif → lembur setelah jam pulang yang berlaku
@@ -447,16 +479,27 @@ class AutoCheckoutCommand extends Command
     //     Jam kerja dihitung mulai dari jam JADWAL masuk, bukan jam check-in.
     //     Jika check-in sebelum jadwal → titik awal = jadwal (tidak ada bonus jam).
     //     Jika check-in terlambat     → titik awal = jam check-in aktual.
-    private function resolveWorkStart(Carbon $checkInTime, ?array $schedule, string $date): Carbon
+    //     Khusus flexitime: titik awal = jam check-in aktual (dibatasi paling awal jam jendela kedatangan).
+    private function resolveWorkStart(Carbon $checkInTime, ?array $schedule, string $date, ?User $user = null, ?Attendance $attendance = null): Carbon
     {
+        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
+
+        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) ($user && $user->flexitime_enabled);
+        if ($isFlex) {
+            $office = $schedule['office'] ?? $user?->office;
+            $arrivalStartStr = ! empty($office?->flex_arrival_start) ? substr((string) $office->flex_arrival_start, 0, 5) : '07:00';
+            $arrivalStart = Carbon::parse($date . ' ' . $arrivalStartStr, 'Asia/Jakarta');
+
+            return $checkInWib->lessThan($arrivalStart) ? $arrivalStart : $checkInWib;
+        }
+
         $workStartStr = $schedule['work_start_time'] ?? null;
 
         if (! $workStartStr) {
-            return $checkInTime->copy()->setTimezone('Asia/Jakarta');
+            return $checkInWib;
         }
 
         $workStart  = Carbon::parse($date . ' ' . $workStartStr, 'Asia/Jakarta');
-        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
 
         return $checkInWib->greaterThan($workStart) ? $checkInWib : $workStart;
     }

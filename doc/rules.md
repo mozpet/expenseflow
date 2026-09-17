@@ -37,6 +37,7 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Pengaturan Limit Klaim & Variansi Per Cabang: SELESAI (Konfigurasi batas klaim max_claim_limit & batas toleransi variansi variance_limit dapat diatur berbeda untuk setiap cabang kantor; fallback otomatis ke limit global perusahaan jika null; endpoint PUT /api/v1/dashboard/settings/branches/{id} untuk role Finance & Admin; UI multi-cabang di Inbox Struk) — 2026-09-11
   - Multi-Foto per Struk (Lampiran Slip EDC / Nota Rincian - P1): SELESAI (Dukungan foto utama struk untuk OCR Gemini + hingga 3 foto lampiran tambahan berupa Slip EDC debit/kredit, bukti transfer QRIS, atau nota rincian item; tabel `receipt_images` dengan `image_type` 'primary' dan 'additional'; preview & thumbnail switcher di Mobile Step 1 & Step 2; thumbnail selector & fullscreen lightbox zoom switch di Dashboard Web; endpoint download/stream `GET /api/v1/receipts/{id}/image?image_id={imageId}`) — 2026-09-11
   - Laporan Pengeluaran Dinas / Bundling Struk (Expense Reports - P1): SELESAI (Pengelompokan banyak struk ke dalam bundle laporan dinas/perjalanan; tabel `expense_reports` dengan relasi `receipts.expense_report_id`; endpoint CRUD & submit bundle untuk karyawan, serta batch approval / rejection satu kali klik oleh Finance; tab khusus "Laporan Dinas" dengan review modal bundle lengkap di Web Dashboard) — 2026-09-11
+  - Jam Kerja Fleksibel (Flexitime & Core Hours): SELESAI (Hak akses per karyawan `flexitime_enabled`; konfigurasi kantor cabang `flex_arrival_start`/`end`, `flex_core_start`/`end`, `flex_target_minutes`; check-in di jendela fleksibel tetap 'present'; titik jam masuk dinamis; deteksi 'early_leave' sebelum jam inti atau durasi belum cukup; lembur otomatis di atas target durasi; UI toggle web & modal/banner mobile Flutter) — 2026-09-16
   - Approval Matrix Bertingkat: DI-KEEP DULU (multi-level expense approval ditunda atas arahan user — 2026-09-02)
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
   - Custom Role Management : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
@@ -112,7 +113,7 @@ bootstrap/
 | # | Tabel | Keterangan |
 |---|-------|-----------|
 | 1 | `companies` | Perusahaan (name, email, phone, address, logo, is_active) |
-| 2 | `users` | Karyawan (company_id, employee_code, name, email, password, role, department, monthly_claim_limit, is_active, attendance_enabled, wfh_enabled, radius_enabled) |
+| 2 | `users` | Karyawan (company_id, employee_code, name, email, password, role, department, monthly_claim_limit, is_active, attendance_enabled, wfh_enabled, radius_enabled, **dinas_luar_enabled**, **flexitime_enabled**) |
 | 3 | `personal_access_tokens` | Sanctum token (otomatis) |
 | 4 | `password_reset_tokens` | Reset password |
 | 5 | `login_attempts` | Log percobaan login (user_id nullable, ip_address, user_agent, status, attempted_at) |
@@ -145,7 +146,7 @@ bootstrap/
 | # | Tabel | Keterangan |
 |---|-------|-----------|
 | 17 | `attendances` | Presensi harian (user_id, company_id, date, check_in_time, check_in_lat, check_in_lng, check_in_distance_meters, check_in_type [onsite/wfh/field], check_in_photo, check_out_time, check_out_lat, check_out_lng, check_out_type, status [present/late/absent], **work_minutes**, **overtime_minutes**, **is_holiday**, **auto_checkout_at**, **is_auto_checkout**, notes) |
-| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable, **variance_limit** integer nullable 0-99%, **max_claim_limit** decimal(15,2) nullable) |
+| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable, **variance_limit** integer nullable 0-99%, **max_claim_limit** decimal(15,2) nullable, **flex_arrival_start** default '07:00:00', **flex_arrival_end** default '10:00:00', **flex_core_start** default '10:00:00', **flex_core_end** default '15:00:00', **flex_target_minutes** default 480) |
 | 19 | `leave_requests` | Pengajuan cuti/izin (user_id, company_id, leave_type [wfh/izin/sakit/cuti], start_date, end_date, total_days, reason, status [pending/approved/rejected], approved_by, approved_at, rejection_reason) |
 | 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type, quota, used) |
 | 20b | `holidays` | Kalender libur (company_id **nullable** → NULL = libur nasional semua company, date, name, is_national). Unique (company_id, date). Dipakai untuk hitung hari kerja cuti & lembur hari libur. |
@@ -499,6 +500,8 @@ DELETE /api/v1/admin/users/{id}             → destroy (soft delete)
 GET  /api/v1/dashboard/attendance/users          → listUsers
 POST /api/v1/dashboard/attendance/users/{id}/toggle-wfh    → toggleWfh
 POST /api/v1/dashboard/attendance/users/{id}/toggle-radius → toggleRadius
+POST /api/v1/dashboard/attendance/users/{id}/toggle-dinas-luar → toggleDinasLuar
+POST /api/v1/dashboard/attendance/users/{id}/toggle-flexitime  → toggleFlexitime
 GET  /api/v1/dashboard/attendance/leaves         → listLeaves
 POST /api/v1/dashboard/attendance/leaves/{id}/approve → approveLeave
 POST /api/v1/dashboard/attendance/leaves/{id}/reject  → rejectLeave
@@ -697,6 +700,88 @@ total_days cuti = HARI KERJA saja
 | `auto_checkout_grace_minutes` | 60 | Menit setelah work_end_time → auto-checkout sistem |
 
 HRD bisa ubah per kantor via `PUT /api/v1/dashboard/attendance/settings/{id}`.
+
+---
+
+## Sistem Jam Kerja Fleksibel (Flexitime & Core Hours) — 2026-09-16
+Fitur jam kerja fleksibel memungkinkan karyawan datang dan pulang dengan waktu yang lebih dinamis tanpa langsung ditandai terlambat (*late*), selama tetap mematuhi **jendela kedatangan (*arrival window*)**, berada di kantor pada **jam kerja inti (*core hours*)**, dan memenuhi **target durasi kerja harian (*target working minutes*)**.
+
+### 1. Struktur Data & Konfigurasi
+- **Hak Akses Karyawan (`users.flexitime_enabled`)**:
+  - Boolean (default: `false`).
+  - Diaktifkan/dinonaktifkan per karyawan oleh HRD/Admin via toggle API `POST /api/v1/dashboard/attendance/users/{id}/toggle-flexitime` atau tabel presensi web.
+  - Dicatat ke dalam `activity_logs` (`flexitime_toggled`).
+  - Karyawan non-flex (`flexitime_enabled = false`) tetap mengikuti jam kantor fixed (`work_start_time` & `work_end_time`).
+- **Aturan Penegakan Mutual Exclusion: Shift vs Flexitime (2026-09-16)**:
+  - Karyawan yang memiliki penugasan Shift (baik Template Shift maupun Pola Rotasi Shift aktif) **DILARANG** mengaktifkan Flexitime.
+  - Saat shift di-assign atau diperbarui (`assignShift`, `bulkAssign`, `updateAssignment`), sistem **otomatis mematikan** `flexitime_enabled = false` untuk karyawan tersebut.
+  - Endpoint `POST /api/v1/dashboard/attendance/users/{id}/toggle-flexitime` akan **menolak (HTTP 422)** jika HRD mencoba mengaktifkan flexitime pada karyawan yang sedang terikat shift aktif.
+  - Pada tabel master karyawan Web Dashboard (`AttendanceManagement.tsx`), tombol toggle Flexitime untuk karyawan berjadwal shift otomatis berada dalam posisi **OFF dan terkunci (Disabled)** dengan tooltip penjelas nama shift aktif.
+- **Konfigurasi Cabang Kantor (`attendance_settings`)**:
+  - `flex_arrival_start` (time, default `'07:00:00'`): Batas awal jendela kedatangan yang diakui.
+  - `flex_arrival_end` (time, default `'10:00:00'`): Batas akhir kedatangan tepat waktu.
+  - `flex_core_start` (time, default `'10:00:00'`): Awal jam kerja inti (*core hours*).
+  - `flex_core_end` (time, default `'15:00:00'`): Akhir jam kerja inti (*core hours*). Karyawan dilarang checkout sebelum jam ini.
+  - `flex_target_minutes` (integer, default `480` = 8 jam kerja bersih): Target durasi kerja minimal dalam 1 hari.
+  - Dikelola melalui endpoint `PUT /api/v1/dashboard/attendance/settings/{id}` dan form *Pengaturan Kantor* di Web Dashboard.
+
+### 2. Aturan Check-In & Penentuan Status Kehadiran
+- **Status `present` (Tepat Waktu)**:
+  - Check-in sebelum atau tepat pada `flex_arrival_end` (+ toleransi telat kantor `late_tolerance_minutes`).
+  - Contoh: Datang pukul 08:45 WIB tetap dianggap **`present`** (karyawan non-flex dengan jam masuk 08:00 akan tercatat `late`).
+- **Status `late` (Terlambat)**:
+  - Check-in setelah melewati batas akhir jendela kedatangan + toleransi (`> flex_arrival_end + late_tolerance_minutes`).
+- **Titik Awal Jam Kerja (`resolveWorkStart()`)**:
+  - Jam masuk dihitung mulai dari check-in aktual.
+  - Jika datang mendahului jendela kedatangan (< `flex_arrival_start`), titik awal di-clamp ke `flex_arrival_start`.
+
+### 3. Aturan Check-Out & Deteksi Pulang Cepat (`early_leave`)
+Karyawan flexitime dinyatakan **Pulang Cepat (`status = 'early_leave'`)** apabila salah satu atau kedua kondisi berikut terjadi saat check-out:
+1. **Melanggar Jam Inti (*Core Hours*)**: Check-out sebelum `flex_core_end` (default 15:00).
+2. **Durasi Kerja Belum Terpenuhi**: Total durasi kerja bersih (`work_minutes`) kurang dari `flex_target_minutes` (default 480 menit).
+Jika kedua syarat terpenuhi (check-out ≥ `flex_core_end` dan `work_minutes` ≥ `flex_target_minutes`), status kehadiran tetap `present`.
+
+### 4. Perhitungan Lembur Otomatis
+- Bagi karyawan flexitime, durasi lembur (`overtime_minutes`) dihitung dari kelebihan waktu kerja bersih di atas target durasi harian:  
+  $$\text{overtime\_minutes} = \text{work\_minutes} - \text{flex\_target\_minutes}$$
+- Hanya dihitung jika `overtime_enabled = true` dan kelebihan waktu memenuhi `min_overtime_minutes`.
+
+### 5. Auto-Checkout & Target Dinamis
+- **Target Jam Pulang Dinamis (`target_checkout_time`)**:
+  $$\text{target\_checkout\_time} = \text{check\_in\_time} + \text{flex\_target\_minutes} + \text{break\_minutes}$$
+- Dikembalikan di endpoint `GET /api/v1/attendance/status` untuk panduan jam pulang di aplikasi mobile.
+- **Auto-Checkout Scheduler (`attendance:auto-checkout`)**: Menghitung batas toleransi checkout otomatis dari `target_checkout_time` karyawan bersangkutan.
+
+### 6. Integrasi Antarmuka (Web & Mobile)
+- **Web Dashboard HRD (`expenseflow-web`)**:
+  - `AttendanceManagement.tsx`: Kolom & tombol toggle interaktif Flexitime di tabel master karyawan, responsif audit log.
+  - `SettingsManagement.tsx`: Form kartu parameter flexitime cabang (window kedatangan, core hours, target durasi).
+- **Mobile Flutter (`expenseflow-mobile`)**:
+  - `PresensiProvider`: Menyimpan dan mensinkronisasikan `flexitimeEnabled` & `flexitimeConfig` dari backend.
+  - `PresensiMapScreen`: Menampilkan banner kartu hijau toska berlabel *"Jam Kerja Fleksibel (Flexitime)"* dengan info window kedatangan, jam inti, dan target jam pulang dinamis.
+  - Modal Peringatan Pulang Cepat: Jika karyawan mencoba check-out sebelum jam inti atau target durasi tercapai, muncul konfirmasi dialog yang memperingatkan bahwa absensi akan berstatus Pulang Cepat (*early_leave*).
+
+---
+
+## Sistem Presensi Dinas Luar (Kunjungan Klien & Proyek Luar) — 2026-09-16
+Fitur presensi khusus untuk karyawan yang bertugas di luar kantor (Sales, Teknisi, Konsultan) untuk melakukan presensi langsung di lokasi klien/proyek tanpa terkunci radius kantor.
+
+### 1. Sinkronisasi Otomatis Izin HRD (Web Dashboard & Backend)
+- **Saat HRD Mengaktifkan Dinas Luar (`dinas_luar_enabled = true`)**:
+  - `wfh_enabled` **otomatis menyala (`true`)** karena dinas luar wajib presensi menggunakan HP.
+  - `attendance_enabled` **otomatis menyala (`true`)** agar karyawan memiliki hak akses presensi mobile.
+  - `radius_enabled` (Radius Lapangan) **otomatis mati (`false`)** karena dinas luar berada di luar area kantor/klien tanpa geofence kantor.
+  - Tombol switch WFH dan Radius di tabel karyawan Web Dashboard (`AttendanceManagement.tsx`) otomatis sinkron secara instan.
+- **Saat HRD Menonaktifkan Dinas Luar (`dinas_luar_enabled = false`)**:
+  - `dinas_luar_enabled = false` dan `wfh_enabled = false` kembali ke presensi kantor standar.
+
+### 2. Penegakan Status Otomatis di Aplikasi Mobile (Flutter)
+- **Otomatis Mode Dinas Luar**: Karyawan dengan `dinas_luar_enabled = true` otomatis langsung menggunakan mode `'dinas_luar'` (`_selectedMode = 'dinas_luar'`).
+- **Tanpa Pemilih Mode Manual (Terkunci)**: Selector tab mode manual (`[ Kantor ] [ WFH ] [ Dinas Luar ]`) **disembunyikan**, sehingga karyawan tidak bisa salah memilih status lain karena hari itu ditugaskan dinas luar.
+- **Banner Status Khusus**: Menampilkan banner ungu berikon tas kerja *"Mode Dinas Luar Aktif (Kunjungan Klien / Proyek Luar)"*.
+- **Form Kunjungan Klien Langsung Muncul**: Field Nama Klien (wajib) dan Catatan Kunjungan (opsional) langsung tampil di panel bawah.
+- **Tombol Presensi Langsung**: Tombol aksi langsung berlabel *"Simpan Presensi Dinas Luar"* (`#5E35B1`).
+- **Auto Reverse Geocoding**: Alamat kunjungan dan GPS dicatat otomatis oleh backend.
 
 ---
 
@@ -1211,26 +1296,27 @@ Perubahan jam operasional, toleransi keterlambatan, atau radius GPS di tengah ha
    > "⚠️ Anda mengubah Jam Kerja / Lokasi GPS / Auto-Checkout di tengah hari. Ini akan mengubah aturan presensi & perhitungan otomatis untuk karyawan hari ini. Lanjutkan?" (Tingkat keamanan: Rendah - hanya mencegah *human error*) ✅ SELESAI 2026-08-26 (backend + frontend web — lihat bawah)
 4. **Subscribe Notifikasi**: Kirim notifikasi (DB + FCM) ke seluruh HRD/Admin saat pengaturan kantor diubah, agar perubahan bisa diaudit bersama. ✅ SELESAI (Tingkat Keamanan: Rendah - responsif bukan preventif)
 
-### Implementasi Snapshot + Gerbang Konfirmasi "SIMPAN" (2026-08-26)
-**Migration** `2026_08_26_000001_add_setting_snapshot_to_attendances_table.php` — kolom
+### Implementasi Snapshot + Gerbang Konfirmasi "SIMPAN" (2026-08-26 & 2026-09-16)
+**Migration** `2026_08_26_000001_add_setting_snapshot_to_attendances_table.php` & `2026_09_16_000005_add_flexitime_snapshot_to_attendances_table.php` — kolom
 `snap_*` di `attendances` (semua nullable; baris lama otomatis pakai jalur lama tanpa backfill):
 kantor acuan (`snap_office_id`, lat/lng/radius), jadwal efektif saat check-in
-(`snap_source`, `snap_work_start_time`, `snap_work_end_time`, `snap_is_off`,
+(`snap_source`, `snap_shift_id`, `snap_shift_name`, `snap_work_start_time`, `snap_work_end_time`, `snap_is_off`,
 `snap_is_cross_day`), aturan lembur/pulang-awal/auto-checkout (`snap_overtime_enabled`,
 `snap_min_overtime_minutes`, `snap_early_leave_tolerance_minutes`, `snap_reminder_minutes`,
-`snap_grace_minutes`).
+`snap_grace_minutes`), serta **snapshot jam kerja fleksibel (flexitime)**:
+`snap_flexitime_enabled`, `snap_flex_arrival_start`, `snap_flex_arrival_end`, `snap_flex_core_start`,
+`snap_flex_core_end`, `snap_flex_target_minutes`.
 
 **Alur snapshot** (helper di `App\Models\Attendance`: `buildSnapshot()`, `hasSnapshot()`,
-`snapshotSchedule()`, `snapshotOffice()`):
+`snapshotSchedule()`, `snapshotOffice()`, `isFlexitimeSession()`):
 1. `checkIn()` → tulis snapshot jadwal efektif (hasil `resolveSchedule`) + kantor acuan
-   (kantor terdekat bila radius check berjalan) ke kolom `snap_*`.
+   (kantor terdekat bila radius check berjalan) + status flexitime user & parameter flexitime cabang ke kolom `snap_*`.
 2. `checkOut()` → validasi radius checkout memakai koordinat/radius snapshot (HRD memindah/
    memperkecil radius siang hari tidak menolak checkout); hitung work/lembur/early-leave dari
-   schedule snapshot.
+   schedule & flexitime snapshot (`isFlexitimeSession()`, target durasi kerja `snap_flex_target_minutes`, dan jam inti `snap_flex_core_end`).
 3. `AutoCheckoutCommand` → reminder & auto-checkout memakai jam pulang + grace/reminder
-   snapshot; konsisten dengan `checkOut()` manual.
-4. `checkStatus()` → `scheduled_auto_checkout_at` dari snapshot (tidak bergeser saat setting
-   diedit); tampilan shift aktif tetap live.
+   snapshot, serta menghitung batas target checkout dinamis bagi sesi flexitime (`flexTargetEnd = workStart + flex_target_minutes + break_minutes`); konsisten dengan `checkOut()` manual.
+4. `checkStatus()` → `scheduled_auto_checkout_at` & `flexitime_config` dari snapshot (target durasi, jam inti, dan target checkout tidak bergeser saat setting cabang atau toggle user diubah di siang hari).
 5. Perubahan setting hanya berpengaruh ke karyawan yang **belum check-in** hari itu & seluruh
    presensi esok hari.
 
@@ -1238,12 +1324,13 @@ kantor acuan (`snap_office_id`, lat/lng/radius), jadwal efektif saat check-in
 (`work_start_time`, `work_end_time`, `work_days`, `custom_schedules`, `office_latitude`,
 `office_longitude`, `radius_meters`, `late_tolerance_minutes`, `early_leave_tolerance_minutes`,
 `overtime_enabled`, `min_overtime_minutes`, `checkout_reminder_minutes`,
-`auto_checkout_grace_minutes`) dan request TIDAK menyertakan `confirm_dangerous = "SIMPAN"` →
+`auto_checkout_grace_minutes`, `flex_arrival_start`, `flex_arrival_end`, `flex_core_start`,
+`flex_core_end`, `flex_target_minutes`) dan request TIDAK menyertakan `confirm_dangerous = "SIMPAN"` →
 **422** dengan `requires_confirmation`, `confirmation_phrase: "SIMPAN"`,
 `dangerous_changed_fields[]`. Frontend wajib menampilkan dialog ketik-"SIMPAN" lalu mengirim
 ulang payload + field konfirmasi. Field aman (mis. `office_name`) tidak butuh konfirmasi.
 Response sukses & notifikasi HRD menyertakan daftar field berbahaya yang berubah.
-Test: `tests/Feature/SettingSnapshotTest.php`.
+Test: `tests/Feature/SettingSnapshotTest.php` & `tests/Feature/FlexitimeAttendanceTest.php`.
 
 **Frontend web (2026-08-26):** `SettingsManagement.tsx` (OfficesTab) menangani 422
 `requires_confirmation` dari `doSave()` → menampilkan dialog peringatan berisi daftar field
@@ -1251,8 +1338,7 @@ berbahaya yang berubah (dengan label ramah Indonesia) + input wajib ketik persis
 (tombol simpan disabled sampai frasa cocok). Konfirmasi mengirim ulang payload +
 `confirm_dangerous = "SIMPAN"`. Form Tambah Kantor tidak terdampak (endpoint create tanpa gerbang).
 
-Jadi bukan "ditunda ke besok", melainkan: siapa yang sudah terlanjur masuk, dia aman dengan aturan saat dia masuk. Sisanya langsung ikut aturan baru. Ini yang membuat perubahan mendadak tidak merugikan siapa pun yang sedang bekerja
-
+Jadi bukan "ditunda ke besok", melainkan: siapa yang sudah terlanjur masuk, dia aman dengan aturan saat dia masuk. Sisanya langsung ikut aturan baru. Ini yang membuat perubahan mendadak tidak merugikan siapa pun yang sedang bekerja. Termasuk jika di siang hari HRD menaikkan target jam kerja atau mematikan toggle flexitime user: sesi yang sedang aktif tetap terlindungi oleh snapshot presensi.
 ------------------------------------------------------------------------------
 
 masih ada bug di assign massal pada roster harian --selesai
@@ -1277,13 +1363,16 @@ bug untuk fitur sistem cuti bersama di dalam tab kalender pada file @AttedenceMa
    ✅ SELESAI 2026-08-16 — respondCollectiveLeave(): policy sebelumnya selalu diambil dari kantor
    pertama perusahaan (::where('company_id',...)->first()). Diperbaiki: gunakan
    $user->attendance_setting_id dengan fallback ke kantor pertama jika belum di-assign.
+5. bug cuti bersama pada hari H masih berstatus pending: jika tanggal cuti bersama sudah tiba (hari H atau lewat) dan user belum memilih/menyetujui, seharusnya otomatis dianggap TIDAK IKUT cuti bersama (status declined & rejected)
+   ✅ SELESAI 2026-09-14 — Penyebab: auto-decline sebelumnya hanya ditempatkan di console command scheduler `attendance:auto-decline-collective-leave` (berjalan per jam), sehingga jika cron di server/lokal belum atau tidak berjalan, status di database tetap 'pending' dan controller menampilkan 'Menunggu'.
+   Perbaikan: Logika auto-decline dipusatkan ke `LeaveRequest::autoDeclineExpiredCollectiveLeaves()` dan dieksekusi secara real-time on-the-fly di controller terkait (`collectiveLeaveDetail`, `listHolidays`, `listCollectiveLeaves`, `listLeaves`, `today`). Selain itu batas `respondCollectiveLeave()` dikunci tepat saat hari H tiba (`<= $today`, HTTP 422) dan banner mobile disembunyikan pada hari H.
 
 
    ada bug: kantor A menambahkan libur nasional untuk semua kantor cabang, namun kantor B bisa menghapus libur nasional yang di buat oleh kantor A ✅ SELESAI 2026-08-22 — Opsi A: libur nasional (company_id NULL) kini master data global yang hanya bisa di-CRUD oleh super_admin. Guard ditambahkan di storeHolidays(), updateHolidays(), dan destroyHolidays() di AttendanceController. HRD/Admin tetap bebas mengelola libur perusahaan/cabang miliknya.
 
    ada bug lagi: user yang sudah assigned shift, di dalam shif itu pada tanggal 25 agustus adalah jadwal dia libur shift , tapi dia mengajukan cuti/izin/sakit/wfh dan sistem memperbolehkan dia mengajukan cuti/izin/sakit/wfh, padahal seharusnya user tidak bisa mengajukan cuti/izin/sakit/wfh kalau di jadwal shif dia libur , tolong buatkan validasi bahwa dia libur pada jadwal shif tersebut ✅ SELESAI 2026-08-22
 
-  ada bug lagi: user a adalah pegawai kantor cabang B yang di mana hari libur dari kantor cabang B(kantor default) adalah dalam 1 minggu kantor cabang b libur di hari sabtu dan minggu, lalu user a assigned shift yang di mana dalam shift tersebut hari sabtu dan minggu jadwal user a masuk kerja, lalu user a ingin mengajukan cuti pada hari minggu namun tidak bisa karena sistem membaca bahwa dia libur kerja(karena kantor default libur di hari minggu) padahal saat ini karyawan tersebut di assigned shift shift di mana shif itu hari minggu dan sabtu user a masuk ✅ SELESAI 2026-08-22
+  ada bug lagi: user a adalah pegawai kantor cabang B yang di mana hari libur dari kantor cabang B(kantor default) adalah dalam 1 minggu kantor cabang b libur di hari sabtu dan minggu, lalu user a assigned shift yang di mana dalam shift tersebut hari sabtu dan minggu user a masuk kerja, lalu user a ingin mengajukan cuti pada hari minggu namun tidak bisa karena sistem membaca bahwa dia libur kerja(karena kantor default libur di hari minggu) padahal saat ini karyawan tersebut di assigned shift shift di mana shif itu hari minggu dan sabtu user a masuk ✅ SELESAI 2026-08-22
 
   ada bug pada device binding, user tetap bisa login walaupun device id nya tidak sesuai dengan device id yang terdaftar
 

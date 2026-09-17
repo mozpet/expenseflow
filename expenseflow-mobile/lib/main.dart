@@ -11,6 +11,7 @@ import 'providers/receipt_provider.dart';
 import 'providers/shift_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
+import 'services/device_integrity_service.dart';
 import 'services/notification_service.dart';
 
 void main() async {
@@ -21,6 +22,9 @@ void main() async {
   if (!kIsWeb) {
     await Firebase.initializeApp();
     await NotificationService().init();
+    // Pre-cache deteksi integritas perangkat (root/jailbreak/emulator)
+    // agar pengecekan instan saat membuka layar presensi.
+    DeviceIntegrityService.initialize();
   }
 
   await initializeDateFormatting('id', null);

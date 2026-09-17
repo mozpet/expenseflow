@@ -41,6 +41,12 @@ class AttendanceSetting extends Model
         // limit klaim & toleransi variansi struk khusus cabang (null = fallback ke company_settings)
         'variance_limit',
         'max_claim_limit',
+        // konfigurasi jam kerja fleksibel (flexitime) cabang
+        'flex_arrival_start',
+        'flex_arrival_end',
+        'flex_core_start',
+        'flex_core_end',
+        'flex_target_minutes',
     ];
 
     protected function casts(): array
@@ -63,6 +69,7 @@ class AttendanceSetting extends Model
             'custom_schedules'              => 'array',
             'checkout_reminder_minutes'     => 'integer',
             'auto_checkout_grace_minutes'   => 'integer',
+            'flex_target_minutes'           => 'integer',
             'enforce_weekly_hours'          => 'boolean',
             'max_weekly_hours'              => 'integer',
             'shift_notice_days'             => 'integer',

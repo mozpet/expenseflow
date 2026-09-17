@@ -101,6 +101,7 @@ interface Employee {
   wfhEnabled?: boolean;
   radiusEnabled?: boolean;
   attendanceEnabled?: boolean;
+  flexitimeEnabled?: boolean;
   deviceName?: string | null;
   deviceId?: string | null;
   deviceBoundAt?: string | null;
@@ -215,9 +216,10 @@ function mapEmployee(u: any): Employee {
     joinedDate: u.joined_date ?? null,
     contractStartDate: u.contract_start_date ?? null,
     contractEndDate: u.contract_end_date ?? null,
-    wfhEnabled: u.wfh_enabled !== false,
-    radiusEnabled: u.radius_enabled !== false,
-    attendanceEnabled: u.attendance_enabled !== false,
+    wfhEnabled: Boolean(u.allow_wfh ?? u.wfh_enabled),
+    radiusEnabled: Boolean(u.allow_radius ?? u.radius_enabled),
+    attendanceEnabled: Boolean(u.allow_attendance ?? u.attendance_enabled),
+    flexitimeEnabled: Boolean(u.flexitime_enabled),
     deviceName: u.device_name ?? null,
     deviceId: u.device_id ?? null,
     deviceBoundAt: u.device_bound_at ?? null,
@@ -543,6 +545,10 @@ export const KaryawanManagement: React.FC<{
     hasJkk: true,
     hasJkm: true,
     overtimeEligible: true,
+    attendanceEnabled: true,
+    wfhEnabled: true,
+    radiusEnabled: true,
+    flexitimeEnabled: false,
 
     // Prioritas 1 — Kontak Darurat
     emergencyContactName: '',
@@ -636,6 +642,9 @@ export const KaryawanManagement: React.FC<{
     hasJkk: true,
     hasJkm: true,
     overtimeEligible: true,
+    attendanceEnabled: true,
+    wfhEnabled: true,
+    radiusEnabled: true,
 
     // Prioritas 1 — Kontak Darurat
     emergencyContactName: '',
@@ -819,6 +828,13 @@ export const KaryawanManagement: React.FC<{
             attendance_setting_id: addForm.officeId === '' ? null : addForm.officeId,
             monthly_claim_limit: addForm.limit === '' || addForm.limit === null ? null : addForm.limit,
             overtime_enabled: addForm.overtimeEligible,
+            allow_attendance: Boolean(addForm.attendanceEnabled),
+            allow_wfh: addForm.attendanceEnabled ? Boolean(addForm.wfhEnabled) : false,
+            allow_radius: (addForm.attendanceEnabled && addForm.wfhEnabled) ? Boolean(addForm.radiusEnabled) : false,
+            attendance_enabled: Boolean(addForm.attendanceEnabled),
+            wfh_enabled: addForm.attendanceEnabled ? Boolean(addForm.wfhEnabled) : false,
+            radius_enabled: (addForm.attendanceEnabled && addForm.wfhEnabled) ? Boolean(addForm.radiusEnabled) : false,
+            flexitime_enabled: Boolean(addForm.flexitimeEnabled),
             employment_type: addForm.employmentType || null,
             joined_date: addForm.joinedDate || null,
             contract_start_date: addForm.employmentType === 'PKWT' ? (addForm.contractStartDate || null) : null,
@@ -865,6 +881,8 @@ export const KaryawanManagement: React.FC<{
             }
           }
 
+          invalidateCache('/admin/users');
+          invalidateCache('/dashboard/attendance/users');
           await loadEmployees();
           onAddAuditLog('Karyawan Baru Terdaftar', `Menambahkan karyawan baru: ${addForm.nama} - Role: ${addForm.role}`, 'bg-indigo-600');
           onAddNotification('new', 'Karyawan Baru Ditambahkan', `Akun untuk ${addForm.nama} berhasil didaftarkan.`);
@@ -911,6 +929,9 @@ export const KaryawanManagement: React.FC<{
             hasJkk: true,
             hasJkm: true,
             overtimeEligible: true,
+            attendanceEnabled: true,
+            wfhEnabled: true,
+            radiusEnabled: true,
             emergencyContactName: '',
             emergencyContactRelation: 'Keluarga',
             emergencyContactPhone: '',
@@ -988,6 +1009,10 @@ export const KaryawanManagement: React.FC<{
       hasJkk: emp.hasJkk ?? true,
       hasJkm: emp.hasJkm ?? true,
       overtimeEligible: emp.overtimeEligible ?? (emp.role === 'employee'),
+      attendanceEnabled: Boolean(emp.attendanceEnabled),
+      wfhEnabled: emp.attendanceEnabled ? Boolean(emp.wfhEnabled) : false,
+      radiusEnabled: (emp.attendanceEnabled && emp.wfhEnabled) ? Boolean(emp.radiusEnabled) : false,
+      flexitimeEnabled: Boolean(emp.flexitimeEnabled),
 
       // Prioritas 1 — Kontak Darurat
       emergencyContactName: emp.emergencyContactName || '',
@@ -1058,6 +1083,13 @@ export const KaryawanManagement: React.FC<{
             attendance_setting_id: editForm.officeId === '' ? null : editForm.officeId,
             monthly_claim_limit: editForm.limit === '' || editForm.limit === null ? null : editForm.limit,
             overtime_enabled: editForm.overtimeEligible,
+            allow_attendance: Boolean(editForm.attendanceEnabled),
+            allow_wfh: editForm.attendanceEnabled ? Boolean(editForm.wfhEnabled) : false,
+            allow_radius: (editForm.attendanceEnabled && editForm.wfhEnabled) ? Boolean(editForm.radiusEnabled) : false,
+            attendance_enabled: Boolean(editForm.attendanceEnabled),
+            wfh_enabled: editForm.attendanceEnabled ? Boolean(editForm.wfhEnabled) : false,
+            radius_enabled: (editForm.attendanceEnabled && editForm.wfhEnabled) ? Boolean(editForm.radiusEnabled) : false,
+            flexitime_enabled: Boolean(editForm.flexitimeEnabled),
             employment_type: editForm.employmentType || null,
             joined_date: editForm.joinedDate || null,
             contract_start_date: editForm.employmentType === 'PKWT' ? (editForm.contractStartDate || null) : null,
@@ -1093,6 +1125,8 @@ export const KaryawanManagement: React.FC<{
             severance_status: editForm.severanceStatus || null,
             clearance_status: editForm.clearanceStatus || null,
           });
+          invalidateCache('/admin/users');
+          invalidateCache('/dashboard/attendance/users');
           await loadEmployees();
           onAddAuditLog('Update Profil Karyawan', `Profil ${editForm.nama} (${editEmployee.id}) diperbarui`, 'bg-indigo-600');
           onAddNotification('success', 'Profil Karyawan Diperbarui', `Perubahan data untuk ${editForm.nama} berhasil disimpan.`);

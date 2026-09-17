@@ -8,6 +8,7 @@ import 'package:permission_handler/permission_handler.dart'
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
 import '../services/api_service.dart';
+import '../services/device_integrity_service.dart';
 
 enum _LocationState { requesting, loading, ready, denied, disabled }
 
@@ -31,6 +32,13 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   bool _syncingStatus = true;
   // Flag: true saat user menekan tombol refresh
   bool _isRefreshing = false;
+  // Hasil pemeriksaan integritas perangkat (root/jailbreak/emulator)
+  DeviceIntegrityResult? _integrityResult;
+
+  // ─── State Dinas Luar & Mode Presensi (Kategori F) ───────────
+  String _selectedMode = 'office'; // 'office', 'wfh', 'dinas_luar'
+  final TextEditingController _clientNameController = TextEditingController();
+  final TextEditingController _visitNotesController = TextEditingController();
 
   /// Posisi aktif yang digunakan (GPS asli)
   LatLng get _activeLatLng =>
@@ -58,7 +66,21 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
       _initLocation();
       // Sync status presensi dari backend agar shift lintas hari & data radius kantor terdeteksi
       _syncBackendStatus();
+      // Cek integritas perangkat (root/jailbreak/emulator) — async, non-blocking
+      _checkDeviceIntegrity();
     });
+  }
+
+  /// Periksa apakah perangkat di-root/jailbreak atau berjalan di emulator.
+  Future<void> _checkDeviceIntegrity() async {
+    try {
+      final result = await DeviceIntegrityService.checkIntegrity();
+      if (mounted) {
+        setState(() => _integrityResult = result);
+      }
+    } catch (_) {
+      // Jika pengecekan gagal, anggap aman — jangan blokir user
+    }
   }
 
   /// Sinkronkan status dari backend saat halaman dibuka.
@@ -67,37 +89,76 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   Future<void> _syncBackendStatus() async {
     final prov = Provider.of<PresensiProvider>(context, listen: false);
     try {
-      await prov.syncStatusFromBackend();
+      await prov.syncStatusFromBackend(forceRefresh: true);
+      if (mounted && prov.canCheckIn) {
+        setState(() {
+          if (prov.canDinasLuar) {
+            _selectedMode = 'dinas_luar';
+          } else if (!prov.radiusEnabled && prov.wfhEnabled) {
+            _selectedMode = 'wfh';
+          } else {
+            _selectedMode = 'office';
+          }
+        });
+      }
     } catch (_) {
       // gagal sync — tidak crash, hanya tampilkan tombol sesuai state lokal
     }
     if (mounted) setState(() => _syncingStatus = false);
   }
 
-  /// Refresh lokasi GPS & status presensi backend secara simultan
+  /// Refresh lokasi GPS & status presensi backend secara simultan (Live Refresh)
   Future<void> _handleRefresh() async {
     if (_isRefreshing) return;
     setState(() => _isRefreshing = true);
 
     try {
       final prov = Provider.of<PresensiProvider>(context, listen: false);
-      // 1. Sinkronisasi status backend (shift, jam kerja, auto-checkout)
-      await prov.syncStatusFromBackend();
+      // 1. Sinkronisasi status backend secara paksa (abaikan cache)
+      await prov.syncStatusFromBackend(forceRefresh: true);
 
-      // 2. Refresh posisi GPS real-time
+      // 2. Sinkronkan mode presensi lokal secara real-time berdasarkan respons backend
+      if (mounted && prov.canCheckIn) {
+        setState(() {
+          if (prov.canDinasLuar) {
+            _selectedMode = 'dinas_luar';
+          } else if (!prov.radiusEnabled && prov.wfhEnabled) {
+            _selectedMode = 'wfh';
+          } else {
+            _selectedMode = 'office';
+          }
+        });
+      }
+
+      // 3. Refresh posisi GPS real-time
       await _initLocation();
 
       if (mounted) {
+        final String statusDesc = prov.canDinasLuar
+            ? 'Mode Dinas Luar Aktif (Bebas Radius)'
+            : (!prov.radiusEnabled && prov.wfhEnabled
+                ? 'Mode WFH Aktif'
+                : 'Mode Kantor Aktif');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: const Row(
+            content: Row(
               children: [
-                Icon(Icons.check_circle_outline, color: Colors.white, size: 18),
-                SizedBox(width: 8),
-                Text('Lokasi GPS & status presensi diperbarui'),
+                Icon(
+                  prov.canDinasLuar
+                      ? Icons.business_center_rounded
+                      : Icons.check_circle_outline,
+                  color: Colors.white,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text('Status diperbarui: $statusDesc'),
+                ),
               ],
             ),
-            backgroundColor: Colors.indigo.shade600,
+            backgroundColor: prov.canDinasLuar
+                ? const Color(0xFF5E35B1)
+                : Colors.indigo.shade600,
             behavior: SnackBarBehavior.floating,
             duration: const Duration(seconds: 2),
           ),
@@ -123,6 +184,8 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   @override
   void dispose() {
     _positionStream?.cancel();
+    _clientNameController.dispose();
+    _visitNotesController.dispose();
     super.dispose();
   }
 
@@ -275,8 +338,99 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
     );
   }
 
+  /// Dialog peringatan perangkat tidak aman (root/jailbreak/emulator).
+  Future<void> _showDeviceIntegrityDialog() async {
+    final result = _integrityResult;
+    if (result == null || !result.hasIssue) return;
+
+    await showDialog(
+      context: context,
+      barrierDismissible: true,
+      builder: (ctx) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: Row(
+          children: [
+            Icon(
+              result.isEmulator ? Icons.computer_rounded : Icons.shield_rounded,
+              color: Colors.orange.shade700,
+              size: 24,
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                result.isEmulator
+                    ? 'Emulator Terdeteksi'
+                    : 'Perangkat Di-Root',
+                style: const TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.orange.shade200),
+              ),
+              child: Text(
+                result.message,
+                style: TextStyle(
+                    color: Colors.orange.shade900,
+                    fontSize: 13,
+                    height: 1.4),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Cara mengatasi:',
+              style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 13,
+                  color: Colors.grey.shade800),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              result.solutionSteps,
+              style: TextStyle(
+                  color: Colors.grey.shade700, fontSize: 12, height: 1.5),
+            ),
+          ],
+        ),
+        actions: [
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.indigo.shade600,
+                foregroundColor: Colors.white,
+                shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Mengerti',
+                  style: TextStyle(fontWeight: FontWeight.bold)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Future<void> _simpanPresensi() async {
     if (!_hasActivePosition || _submitting) return;
+
+    // ─── Validasi Integritas Perangkat (Root/Jailbreak/Emulator) ─────
+    if (_integrityResult != null && _integrityResult!.hasIssue) {
+      await _showDeviceIntegrityDialog();
+      return;
+    }
 
     // ─── Validasi Anti Fake GPS (Mock Location) ─────────────────
     if (_position != null && _position!.isMocked) {
@@ -287,21 +441,131 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
     final prov = Provider.of<PresensiProvider>(context, listen: false);
     final wasCheckIn = prov.canCheckIn;
 
+    // ─── Validasi Input Dinas Luar (Kategori F) ───────────────────
+    if (wasCheckIn && _selectedMode == 'dinas_luar') {
+      if (_clientNameController.text.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.white, size: 18),
+                SizedBox(width: 8),
+                Text('Nama klien atau tempat kunjungan wajib diisi.'),
+              ],
+            ),
+            backgroundColor: Colors.red.shade700,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+        return;
+      }
+    }
+
+    // ─── Konfirmasi Pulang Cepat untuk Karyawan Flexitime ───────────
+    if (!wasCheckIn && prov.flexitimeEnabled && prov.flexitimeConfig != null) {
+      final config = prov.flexitimeConfig!;
+      final coreEndRaw = config['core_end'] as String? ?? '15:00';
+      final coreEndStr = coreEndRaw.length >= 5 ? coreEndRaw.substring(0, 5) : coreEndRaw;
+      final targetCheckoutRaw = config['target_checkout_time'] as String?;
+      final targetCheckoutStr = targetCheckoutRaw != null && targetCheckoutRaw.length >= 5
+          ? targetCheckoutRaw.substring(0, 5)
+          : targetCheckoutRaw;
+      final now = DateTime.now();
+      final nowTimeStr =
+          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+      final isBeforeCore = nowTimeStr.compareTo(coreEndStr) < 0;
+      final isBeforeTarget = targetCheckoutStr != null && nowTimeStr.compareTo(targetCheckoutStr) < 0;
+
+      if (isBeforeCore || isBeforeTarget) {
+        final reason = isBeforeCore
+            ? 'Saat ini masih dalam Jam Inti Wajib Hadir (Core Hours s.d. $coreEndStr WIB).'
+            : 'Target durasi kerja harian Anda belum tercapai (Target pulang: $targetCheckoutStr WIB).';
+
+        final confirmed = await showDialog<bool>(
+          context: context,
+          builder: (ctx) => AlertDialog(
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            title: Row(
+              children: [
+                Icon(Icons.warning_amber_rounded, color: Colors.amber.shade800, size: 24),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text('Konfirmasi Pulang Cepat',
+                      style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(reason, style: const TextStyle(fontSize: 13, height: 1.4)),
+                const SizedBox(height: 10),
+                Text(
+                  'Jika check-out sekarang, status presensi hari ini akan dicatat sebagai Pulang Cepat (Early Leave). Lanjutkan?',
+                  style: TextStyle(fontSize: 12, color: Colors.grey.shade700),
+                ),
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(ctx).pop(false),
+                child: const Text('Batal',
+                    style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey)),
+              ),
+              ElevatedButton(
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF7E22CE),
+                  foregroundColor: Colors.white,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                onPressed: () => Navigator.of(ctx).pop(true),
+                child: const Text('Ya, Check-Out'),
+              ),
+            ],
+          ),
+        );
+        if (confirmed != true) return;
+      }
+    }
+
     setState(() => _submitting = true);
     try {
       await prov.simpanPresensi(
-          _activeLatLng.latitude, _activeLatLng.longitude,
-          isMocked: _position?.isMocked ?? false);
+        _activeLatLng.latitude,
+        _activeLatLng.longitude,
+        isMocked: _position?.isMocked ?? false,
+        isRooted: _integrityResult?.isRooted ?? false,
+        isEmulator: _integrityResult?.isEmulator ?? false,
+        checkInType: wasCheckIn
+            ? (_selectedMode == 'office' ? 'onsite' : _selectedMode)
+            : null,
+        clientName: wasCheckIn && _selectedMode == 'dinas_luar'
+            ? _clientNameController.text.trim()
+            : null,
+        visitNotes: wasCheckIn && _selectedMode == 'dinas_luar'
+            ? _visitNotesController.text.trim()
+            : null,
+      );
       if (!mounted) return;
       final isEarlyLeave = !wasCheckIn && prov.todayIsEarlyLeave;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(wasCheckIn
-              ? 'Presensi masuk berhasil dicatat!'
+              ? (_selectedMode == 'dinas_luar'
+                  ? 'Presensi dinas luar berhasil dicatat!'
+                  : (_selectedMode == 'wfh'
+                      ? 'Presensi WFH berhasil dicatat!'
+                      : 'Presensi masuk berhasil dicatat!'))
               : (isEarlyLeave
                   ? 'Presensi pulang berhasil dicatat (Pulang Cepat)'
                   : 'Presensi pulang berhasil dicatat!')),
-          backgroundColor: isEarlyLeave ? const Color(0xFF7E22CE) : Colors.green,
+          backgroundColor: isEarlyLeave
+              ? const Color(0xFF7E22CE)
+              : (_selectedMode == 'dinas_luar'
+                  ? const Color(0xFF0066CC)
+                  : Colors.green),
           duration: const Duration(seconds: 3),
         ),
       );
@@ -513,9 +777,24 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
       );
     }
     
+    // Inisialisasi awal & update dinamis mode presensi secara otomatis dari backend
+    if (prov.canCheckIn) {
+      if (prov.canDinasLuar) {
+        _selectedMode = 'dinas_luar';
+      } else if (!prov.radiusEnabled && prov.wfhEnabled) {
+        _selectedMode = 'wfh';
+      } else {
+        _selectedMode = 'office';
+      }
+    }
+
     final isCompleted = !prov.canCheckIn && !prov.canCheckOut;
     final actionLabel = prov.canCheckIn
-        ? 'Simpan Presensi Masuk'
+        ? (_selectedMode == 'dinas_luar'
+            ? 'Simpan Presensi Dinas Luar'
+            : (_selectedMode == 'wfh'
+                ? 'Simpan Presensi WFH'
+                : 'Simpan Presensi Masuk'))
         : prov.canCheckOut
             ? 'Simpan Presensi Pulang'
             : prov.todayIsEarlyLeave
@@ -523,7 +802,8 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                 : 'Presensi Hari Ini Selesai';
 
     final userOffice = prov.primaryOffice ?? (prov.offices.isNotEmpty ? prov.offices.first : null);
-    final displayedOffices = userOffice != null ? [userOffice] : prov.offices;
+    // Multi-geofence roaming: tampilkan seluruh kantor cabang perusahaan yang aktif
+    final displayedOffices = prov.offices.isNotEmpty ? prov.offices : (userOffice != null ? [userOffice] : <OfficeArea>[]);
 
     final nearestOffice = _getNearestOffice(displayedOffices);
     final distanceToNearest = _getDistanceToOffice(nearestOffice);
@@ -799,241 +1079,430 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
             ),
           ),
 
-          // ── Panel bawah (40% layar) ──────────────────────────
+          // ── Panel bawah (fleksibel & scrollable agar bebas bug overflow) ───────────
           Expanded(
-            flex: 4,
+            flex: (prov.canCheckIn && _selectedMode == 'dinas_luar') ? 5 : 4,
             child: Container(
               color: Colors.white,
               child: SafeArea(
                 top: false,
                 bottom: true,
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
-                  child: Column(
+                child: RefreshIndicator(
+                  onRefresh: _handleRefresh,
+                  color: const Color(0xFF0088FF),
+                  child: SingleChildScrollView(
+                    physics: const AlwaysScrollableScrollPhysics(
+                      parent: BouncingScrollPhysics(),
+                    ),
+                    padding: const EdgeInsets.fromLTRB(20, 14, 20, 12),
+                    child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                  // Koordinat Posisi User (GPS Real-Time)
-                  if (_hasActivePosition)
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.location_on_outlined,
-                          size: 16,
-                          color: Color(0xFF1E88E5),
-                        ),
-                        const SizedBox(width: 6),
-                        Expanded(
-                          child: Text(
-                            '${_activeLatLng.latitude.toStringAsFixed(6)},  ${_activeLatLng.longitude.toStringAsFixed(6)}',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              color: Colors.black87,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                      ],
-                    )
-                  else
-                    Text(
-                      _stateMessage,
-                      style:
-                          const TextStyle(fontSize: 13, color: Colors.grey),
-                    ),
-
-                  // Informasi Jarak & Radius Kantor (Hanya aktif bila radius_enabled ON)
-                  if (prov.radiusEnabled &&
-                      _hasActivePosition &&
-                      nearestOffice != null &&
-                      distanceToNearest != null) ...[
-                    Container(
-                      margin: const EdgeInsets.only(top: 8),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: isWithinRadius
-                            ? const Color(0xFFE8F5E9)
-                            : const Color(0xFFFFF3E0),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: isWithinRadius
-                              ? const Color(0xFFA5D6A7)
-                              : const Color(0xFFFFB74D),
-                        ),
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            isWithinRadius
-                                ? Icons.check_circle
-                                : Icons.warning_amber_rounded,
-                            size: 16,
-                            color: isWithinRadius
-                                ? const Color(0xFF2E7D32)
-                                : const Color(0xFFE65100),
-                          ),
-                          const SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              isWithinRadius
-                                  ? 'DALAM RADIUS: ${nearestOffice.name} (${distanceToNearest.round()}m / batas ${nearestOffice.radiusMeters.toInt()}m)'
-                                  : 'DI LUAR RADIUS: ${nearestOffice.name} • Batas ${nearestOffice.radiusMeters.toInt()}m (Jarak: ${distanceToNearest >= 1000 ? '${(distanceToNearest / 1000).toStringAsFixed(1)} km' : '${distanceToNearest.round()} m'})',
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.bold,
-                                color: isWithinRadius
-                                    ? const Color(0xFF1B5E20)
-                                    : const Color(0xFFBF360C),
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ] else if (!prov.radiusEnabled && _hasActivePosition) ...[
-                    // Mode WFH (Radius OFF): Tampilkan info WFH tanpa peringatan radius
-                    Container(
-                      margin: const EdgeInsets.only(top: 8),
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFE3F2FD),
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: const Color(0xFF90CAF9)),
-                      ),
-                      child: const Row(
-                        children: [
-                          Icon(Icons.home_work_outlined,
-                              size: 16, color: Color(0xFF1565C0)),
-                          SizedBox(width: 6),
-                          Expanded(
-                            child: Text(
-                              'Mode WFH Aktif (Presensi dari Rumah / Tanpa Batas Radius)',
-                              style: TextStyle(
-                                fontSize: 11.5,
-                                fontWeight: FontWeight.bold,
-                                color: Color(0xFF0D47A1),
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-
-                  const Spacer(),
-
-                  // Baris masuk / pulang
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 12, horizontal: 16),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFF0066CC),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                      children: [
-                        _TimeChip(
-                            label: 'Masuk',
-                            value: prov.todayMasuk ?? '--:--',
-                            icon: Icons.login),
-                        Container(
-                            width: 1, height: 30, color: Colors.white30),
-                        _TimeChip(
-                            label: 'Pulang',
-                            value: prov.todayPulang ?? '--:--',
-                            icon: Icons.logout),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-
-                  // Banner Peringatan Fake GPS
-                  if (_position?.isMocked == true) ...[
-                    GestureDetector(
-                      onTap: _showMockLocationDialog,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 9),
-                        decoration: BoxDecoration(
-                          color: Colors.red.shade50,
-                          borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.red.shade200),
-                        ),
-                        child: Row(
+                      // Koordinat Posisi User (GPS Real-Time)
+                      if (_hasActivePosition)
+                        Row(
                           children: [
-                            Icon(Icons.gpp_bad_rounded,
-                                color: Colors.red.shade700, size: 18),
-                            const SizedBox(width: 8),
+                            const Icon(
+                              Icons.location_on_outlined,
+                              size: 16,
+                              color: Color(0xFF1E88E5),
+                            ),
+                            const SizedBox(width: 6),
                             Expanded(
                               child: Text(
-                                'Fake GPS / Lokasi Palsu terdeteksi aktif. Klik untuk panduan.',
-                                style: TextStyle(
-                                    color: Colors.red.shade900,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600),
+                                '${_activeLatLng.latitude.toStringAsFixed(6)},  ${_activeLatLng.longitude.toStringAsFixed(6)}',
+                                style: const TextStyle(
+                                  fontSize: 13,
+                                  color: Colors.black87,
+                                  fontWeight: FontWeight.w600,
+                                ),
                               ),
                             ),
-                            Icon(Icons.chevron_right,
-                                color: Colors.red.shade400, size: 18),
+                          ],
+                        )
+                      else
+                        Text(
+                          _stateMessage,
+                          style:
+                              const TextStyle(fontSize: 13, color: Colors.grey),
+                        ),
+
+                      // Informasi Jarak & Status Mode Presensi
+                      if (prov.canCheckIn && _selectedMode == 'dinas_luar') ...[
+                        Container(
+                          margin: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 7),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFEDE7F6),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFFD1C4E9)),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.business_center_rounded,
+                                  size: 16, color: Color(0xFF5E35B1)),
+                              SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'Mode Kunjungan Klien / Dinas Luar (Bebas Radius Cabang)',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF4527A0),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else if (prov.radiusEnabled &&
+                          _hasActivePosition &&
+                          nearestOffice != null &&
+                          distanceToNearest != null) ...[
+                        Container(
+                          margin: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: isWithinRadius
+                                ? const Color(0xFFE8F5E9)
+                                : const Color(0xFFFFF3E0),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(
+                              color: isWithinRadius
+                                  ? const Color(0xFFA5D6A7)
+                                  : const Color(0xFFFFB74D),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                isWithinRadius
+                                    ? Icons.check_circle
+                                    : Icons.warning_amber_rounded,
+                                size: 16,
+                                color: isWithinRadius
+                                    ? const Color(0xFF2E7D32)
+                                    : const Color(0xFFE65100),
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  isWithinRadius
+                                      ? 'DALAM RADIUS: ${nearestOffice.name} (${distanceToNearest.round()}m / batas ${nearestOffice.radiusMeters.toInt()}m)'
+                                      : 'DI LUAR RADIUS: ${nearestOffice.name} • Batas ${nearestOffice.radiusMeters.toInt()}m (Jarak: ${distanceToNearest >= 1000 ? '${(distanceToNearest / 1000).toStringAsFixed(1)} km' : '${distanceToNearest.round()} m'})',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.bold,
+                                    color: isWithinRadius
+                                        ? const Color(0xFF1B5E20)
+                                        : const Color(0xFFBF360C),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ] else if (!prov.radiusEnabled && _hasActivePosition) ...[
+                        Container(
+                          margin: const EdgeInsets.only(top: 8),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFE3F2FD),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: const Color(0xFF90CAF9)),
+                          ),
+                          child: const Row(
+                            children: [
+                              Icon(Icons.home_work_outlined,
+                                  size: 16, color: Color(0xFF1565C0)),
+                              SizedBox(width: 6),
+                              Expanded(
+                                child: Text(
+                                  'Mode WFH Aktif (Presensi dari Rumah / Tanpa Batas Radius)',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.bold,
+                                    color: Color(0xFF0D47A1),
+                                  ),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+
+                      const SizedBox(height: 10),
+
+                      // Baris masuk / pulang
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            vertical: 12, horizontal: 16),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0066CC),
+                          borderRadius: BorderRadius.circular(14),
+                        ),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _TimeChip(
+                                label: 'Masuk',
+                                value: prov.todayMasuk ?? '--:--',
+                                icon: Icons.login),
+                            Container(
+                                width: 1, height: 30, color: Colors.white30),
+                            _TimeChip(
+                                label: 'Pulang',
+                                value: prov.todayPulang ?? '--:--',
+                                icon: Icons.logout),
                           ],
                         ),
                       ),
-                    ),
-                    const SizedBox(height: 10),
-                  ],
 
-                  // Tombol simpan
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: (_hasActivePosition &&
-                              !isCompleted &&
-                              !_submitting)
-                          ? _simpanPresensi
-                          : null,
-                      icon: _submitting
-                          ? const SizedBox(
-                              width: 18,
-                              height: 18,
-                              child: CircularProgressIndicator(
-                                  strokeWidth: 2, color: Colors.white),
-                            )
-                          : Icon(
-                              isCompleted
-                                  ? Icons.check_circle
-                                  : prov.canCheckIn
-                                      ? Icons.login
-                                      : Icons.logout,
-                              size: 20,
+                      // Banner Jam Kerja Fleksibel (Flexitime & Core Hours)
+                      if (prov.flexitimeEnabled) ...[
+                        _buildFlexitimeBanner(prov),
+                      ],
+
+
+
+                      // Form Input Kunjungan Klien (hanya saat mode dinas luar & belum check-in)
+                      if (prov.canCheckIn && _selectedMode == 'dinas_luar') ...[
+                        const SizedBox(height: 10),
+                        _buildDinasLuarForm(),
+                      ],
+
+                      const SizedBox(height: 12),
+
+                      // Banner Peringatan Fake GPS
+                      if (_position?.isMocked == true) ...[
+                        GestureDetector(
+                          onTap: _showMockLocationDialog,
+                          child: Container(
+                            margin: const EdgeInsets.only(bottom: 10),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 9),
+                            decoration: BoxDecoration(
+                              color: Colors.red.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.red.shade200),
                             ),
-                      label: Text(_submitting ? 'Menyimpan...' : actionLabel,
-                          style: const TextStyle(
-                              fontSize: 15, fontWeight: FontWeight.bold)),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: const Color(0xFF0088FF),
-                        foregroundColor: Colors.white,
-                        disabledBackgroundColor: Colors.grey.shade300,
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12)),
+                            child: Row(
+                              children: [
+                                Icon(Icons.gpp_bad_rounded,
+                                    color: Colors.red.shade700, size: 18),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Fake GPS / Lokasi Palsu terdeteksi aktif. Klik untuk panduan.',
+                                    style: TextStyle(
+                                        color: Colors.red.shade900,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600),
+                                  ),
+                                ),
+                                Icon(Icons.chevron_right,
+                                    color: Colors.red.shade400, size: 18),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+
+                      // Banner Peringatan Root/Jailbreak/Emulator
+                      if (_integrityResult != null && _integrityResult!.hasIssue) ...[
+                        GestureDetector(
+                          onTap: _showDeviceIntegrityDialog,
+                          child: Container(
+                            margin: const EdgeInsets.only(bottom: 10),
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 12, vertical: 9),
+                            decoration: BoxDecoration(
+                              color: Colors.orange.shade50,
+                              borderRadius: BorderRadius.circular(10),
+                              border: Border.all(color: Colors.orange.shade200),
+                            ),
+                            child: Row(
+                              children: [
+                                Icon(
+                                  _integrityResult!.isEmulator
+                                      ? Icons.computer_rounded
+                                      : Icons.shield_rounded,
+                                  color: Colors.orange.shade700,
+                                  size: 18,
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    _integrityResult!.bannerMessage,
+                                    style: TextStyle(
+                                        color: Colors.orange.shade900,
+                                        fontSize: 11,
+                                        fontWeight: FontWeight.w600),
+                                  ),
+                                ),
+                                Icon(Icons.chevron_right,
+                                    color: Colors.orange.shade400, size: 18),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ],
+
+                      // Tombol simpan
+                      SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          onPressed: (_hasActivePosition &&
+                                  !isCompleted &&
+                                  !_submitting &&
+                                  !(_integrityResult?.hasIssue ?? false))
+                              ? _simpanPresensi
+                              : null,
+                          icon: _submitting
+                              ? const SizedBox(
+                                  width: 18,
+                                  height: 18,
+                                  child: CircularProgressIndicator(
+                                      strokeWidth: 2, color: Colors.white),
+                                )
+                              : Icon(
+                                  isCompleted
+                                      ? Icons.check_circle
+                                      : prov.canCheckIn
+                                          ? (_selectedMode == 'dinas_luar'
+                                              ? Icons.camera_alt_outlined
+                                              : (_selectedMode == 'wfh'
+                                                  ? Icons.home_work_outlined
+                                                  : Icons.login))
+                                          : Icons.logout,
+                                  size: 20,
+                                ),
+                          label: Text(_submitting ? 'Menyimpan...' : actionLabel,
+                              style: const TextStyle(
+                                  fontSize: 15, fontWeight: FontWeight.bold)),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: _selectedMode == 'dinas_luar'
+                                ? const Color(0xFF5E35B1)
+                                : const Color(0xFF0088FF),
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor: Colors.grey.shade300,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(12)),
+                          ),
+                        ),
                       ),
-                    ),
+                    ],
                   ),
-                ],
+                ),
               ),
             ),
           ),
         ),
+      ],
+    ),
+  );
+  }
+
+
+
+  Widget _buildDinasLuarForm() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
       ),
-    ],
-  ),
-);
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.business_center_rounded,
+                  size: 16, color: Color(0xFF5E35B1)),
+              const SizedBox(width: 6),
+              const Text(
+                'Detail Kunjungan Dinas Luar',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+              ),
+              const Spacer(),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEDE7F6),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text(
+                  'Kunjungan Klien',
+                  style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF5E35B1)),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          TextField(
+            controller: _clientNameController,
+            style: const TextStyle(fontSize: 13),
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              prefixIcon: const Icon(Icons.domain_rounded, size: 18),
+              hintText: 'Nama Klien / Instansi / Tempat *',
+              hintStyle: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              fillColor: Colors.white,
+              filled: true,
+            ),
+          ),
+          const SizedBox(height: 6),
+          TextField(
+            controller: _visitNotesController,
+            style: const TextStyle(fontSize: 13),
+            decoration: InputDecoration(
+              isDense: true,
+              contentPadding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+              prefixIcon: const Icon(Icons.notes_rounded, size: 18),
+              hintText: 'Catatan / Agenda Kunjungan (Opsional)',
+              hintStyle: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+              border:
+                  OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+              fillColor: Colors.white,
+              filled: true,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            children: [
+              Icon(Icons.location_on_outlined, size: 13, color: Colors.grey.shade600),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  'Lokasi GPS & alamat kunjungan dicatat otomatis oleh sistem.',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade600),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 
   Widget _buildMapOverlay() {
@@ -1131,6 +1600,109 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
       default:
         return '';
     }
+  }
+
+  Widget _buildFlexitimeBanner(PresensiProvider prov) {
+    final isCheckedIn = !prov.canCheckIn && prov.canCheckOut;
+    final arrival = prov.flexArrivalWindow ?? '07:00 - 10:00';
+    final core = prov.flexCoreHours ?? '10:00 - 15:00';
+    final targetMinutes = prov.flexTargetMinutes;
+    final targetCheckout = prov.flexTargetCheckoutTime;
+    final hours = (targetMinutes / 60).toStringAsFixed(0);
+
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0FDF4),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: const Color(0xFF86EFAC)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF16A34A).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Icon(Icons.auto_awesome, size: 14, color: Color(0xFF16A34A)),
+              ),
+              const SizedBox(width: 8),
+              const Expanded(
+                child: Text(
+                  'Jam Kerja Fleksibel (Flexitime)',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: Color(0xFF15803D),
+                  ),
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFDCFCE7),
+                  borderRadius: BorderRadius.circular(6),
+                  border: Border.all(color: const Color(0xFF86EFAC)),
+                ),
+                child: Text(
+                  '$hours Jam Kerja',
+                  style: const TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF166534),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (isCheckedIn && targetCheckout != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFBBF7D0)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.flag_rounded, size: 15, color: Color(0xFF16A34A)),
+                  const SizedBox(width: 6),
+                  Text(
+                    'Target Pulang: ',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
+                  ),
+                  Text(
+                    '$targetCheckout WIB',
+                    style: const TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.bold,
+                      color: Color(0xFF15803D),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+          ],
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'Datang: $arrival  •  Jam Inti: $core',
+                  style: TextStyle(fontSize: 10.5, color: Colors.green.shade900),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 

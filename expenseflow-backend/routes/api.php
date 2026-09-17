@@ -21,24 +21,28 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\Facades\Route;
 
-// === STANDAR RESPONS KESALAHAN HTTP 429 (BAGIAN 4 RULES.MD) ===
+// === STANDAR RESPONS KESALAHAN HTTP 429 ===
 // Format respons JSON seragam dengan header HTTP standar:
-//   - message: Pesan ramah dalam Bahasa Indonesia
-//   - retry_after_seconds: Waktu tunggu dalam detik (di-clamp <= 60 detik)
+//   - message: Pesan ramah dalam Bahasa Indonesia dengan waktu tunggu eksplisit (detik)
+//   - retry_after_seconds: Waktu tunggu dalam detik (di-clamp <= 30 detik)
 //   - retry_after: Alias kompatibilitas klien
 //   - rate_limit: true
 // Headers:
-//   - Retry-After: Detik tunggu di-clamp <= 60 detik
+//   - Retry-After: Detik tunggu di-clamp <= 30 detik
 //   - X-RateLimit-Limit & X-RateLimit-Remaining: Diteruskan dari Laravel RateLimiter
-$buildRateLimitResponse = function (string $message, array $headers, int $window = 60) {
+$buildRateLimitResponse = function (string $message, array $headers, int $window = 30) {
     $raw = (int) ($headers['Retry-After'] ?? 0);
-    $seconds = max(1, min($raw > 0 ? $raw : $window, 60));
+    $seconds = max(1, min($raw > 0 ? $raw : $window, 30));
 
     $clampedHeaders = $headers;
     $clampedHeaders['Retry-After'] = (string) $seconds;
 
+    // Pastikan pesan selalu menampilkan sisa detik tunggu
+    $baseMessage = preg_replace('/\.?\s*(Silakan|Mohon|Coba)\s+tunggu.*$/i', '', trim($message));
+    $formattedMessage = rtrim($baseMessage, '.') . ". Silakan tunggu {$seconds} detik sebelum mencoba kembali.";
+
     return response()->json([
-        'message'             => $message,
+        'message'             => $formattedMessage,
         'retry_after_seconds' => $seconds,
         'retry_after'         => $seconds,
         'rate_limit'          => true,
@@ -48,15 +52,14 @@ $buildRateLimitResponse = function (string $message, array $headers, int $window
 // Rate limiter untuk login: dua batasan jalan serentak.
 //   - Per akun: 5 percobaan per menit (dibedakan per email)  → penjaga anti brute-force utama
 //   - Per IP  : 120 percobaan per menit (sangat longgar untuk kantor NAT & CGNAT seluler)
-$loginErrorResponse = function (Request $request, array $headers, int $window) use ($buildRateLimitResponse) {
+$loginErrorResponse = function (Request $request, array $headers, int $window = 30) use ($buildRateLimitResponse) {
     $raw = (int) ($headers['Retry-After'] ?? 0);
-    $seconds = max(1, min($raw > 0 ? $raw : $window, 60));
-    $minutes = max(1, (int) ceil($seconds / 60));
+    $seconds = max(1, min($raw > 0 ? $raw : $window, 30));
 
     return $buildRateLimitResponse(
-        "Terlalu banyak percobaan login. Coba lagi dalam {$minutes} menit ({$seconds} detik).",
+        "Terlalu banyak percobaan login. Coba lagi dalam {$seconds} detik.",
         $headers,
-        60
+        30
     );
 };
 
@@ -67,10 +70,10 @@ RateLimiter::for('login', function (Request $request) use ($loginErrorResponse) 
     return [
         Limit::perMinute(5)
             ->by($email)
-            ->response(fn (Request $req, array $h) => $loginErrorResponse($req, $h, 60)),
+            ->response(fn (Request $req, array $h) => $loginErrorResponse($req, $h, 30)),
         Limit::perMinute(120)
             ->by($request->ip())
-            ->response(fn (Request $req, array $h) => $loginErrorResponse($req, $h, 60)),
+            ->response(fn (Request $req, array $h) => $loginErrorResponse($req, $h, 30)),
     ];
 });
 
@@ -81,9 +84,9 @@ RateLimiter::for('otp_send', function (Request $request) use ($buildRateLimitRes
     return Limit::perMinutes(10, 5)
         ->by($key)
         ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
-            "Terlalu banyak permintaan OTP. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            "Terlalu banyak permintaan OTP.",
             $h,
-            60
+            30
         ));
 });
 
@@ -93,9 +96,9 @@ RateLimiter::for('otp_verify', function (Request $request) use ($buildRateLimitR
     return Limit::perMinutes(5, 10)
         ->by($key)
         ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
-            "Terlalu banyak percobaan verifikasi OTP. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            "Terlalu banyak percobaan verifikasi OTP.",
             $h,
-            60
+            30
         ));
 });
 
@@ -105,51 +108,51 @@ RateLimiter::for('otp_reset', function (Request $request) use ($buildRateLimitRe
     return Limit::perMinutes(10, 5)
         ->by($key)
         ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
-            "Terlalu banyak permintaan reset password. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            "Terlalu banyak permintaan reset password.",
             $h,
-            60
+            30
         ));
 });
 
 // === RATE LIMITER TIER 1: General & Navigation (Read) ===
-// 120 request / menit per user_id (fallback ke IP jika belum login)
+// 120 request / menit per user_id (fallback ke IP jika belum login), cooldown clamp 30 detik
 RateLimiter::for('api', function (Request $request) use ($buildRateLimitResponse) {
     $key = $request->user() ? (string) $request->user()->id : $request->ip();
 
     return Limit::perMinute(120)
         ->by($key)
         ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
-            "Terlalu banyak permintaan. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            "Terlalu banyak permintaan.",
             $h,
-            60
+            30
         ));
 });
 
 // === RATE LIMITER TIER 2: Actions & Mutations (Write) ===
-// 45 request / menit per user_id (fallback ke IP jika belum login)
+// 45 request / menit per user_id (fallback ke IP jika belum login), cooldown clamp 30 detik
 RateLimiter::for('actions', function (Request $request) use ($buildRateLimitResponse) {
     $key = $request->user() ? (string) $request->user()->id : $request->ip();
 
     return Limit::perMinute(45)
         ->by($key)
         ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
-            "Terlalu banyak aksi. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            "Terlalu banyak aksi.",
             $h,
-            60
+            30
         ));
 });
 
 // === RATE LIMITER TIER 3: Heavy Resource & Processing ===
-// 15 request / menit per user_id (fallback ke IP jika belum login)
+// 15 request / menit per user_id (fallback ke IP jika belum login), cooldown clamp 30 detik
 RateLimiter::for('heavy', function (Request $request) use ($buildRateLimitResponse) {
     $key = $request->user() ? (string) $request->user()->id : $request->ip();
 
     return Limit::perMinute(15)
         ->by($key)
         ->response(fn (Request $req, array $h) => $buildRateLimitResponse(
-            "Terlalu banyak pemrosesan berat. Silakan tunggu beberapa saat sebelum mencoba kembali.",
+            "Terlalu banyak pemrosesan berat.",
             $h,
-            60
+            30
         ));
 });
 
@@ -305,8 +308,13 @@ Route::prefix('v1')->group(function () {
             // Fitur manajemen presensi khusus HRD, Admin, Super Admin
             Route::middleware('role:hrd,admin,super_admin')->group(function () {
                 Route::get('/users', [AttendanceController::class, 'listUsers']);
+                Route::post('/users/{id}/toggle-attendance', [AttendanceController::class, 'toggleAttendance']);
+                Route::put('/users/{id}/mobile-policy', [AttendanceController::class, 'updateMobilePolicy']);
                 Route::post('/users/{id}/toggle-wfh', [AttendanceController::class, 'toggleWfh']);
                 Route::post('/users/{id}/toggle-radius', [AttendanceController::class, 'toggleRadius']);
+                Route::post('/users/{id}/toggle-dinas-luar', [AttendanceController::class, 'toggleDinasLuar']);
+                Route::post('/users/{id}/toggle-flexitime', [AttendanceController::class, 'toggleFlexitime']);
+                Route::get('/attendances/{attendance}/photo', [AttendanceController::class, 'photo']);
                 Route::get('/leaves', [AttendanceController::class, 'listLeaves']);
                 Route::get('/leaves/{leave}/document', [AttendanceController::class, 'leaveDocument']);
                 Route::post('/leaves/{id}/approve', [AttendanceController::class, 'approveLeave']);
@@ -411,6 +419,7 @@ Route::prefix('v1')->group(function () {
         ->group(function () {
             Route::get('/status', [AttendanceController::class, 'checkStatus']);
             Route::get('/my', [AttendanceController::class, 'myAttendance']);
+            Route::get('/{attendance}/photo', [AttendanceController::class, 'photo']);
             Route::get('/leave-balance', [AttendanceController::class, 'myLeaveBalance']);
             Route::get('/my-leaves', [AttendanceController::class, 'myLeaves']);
             Route::post('/leave-request', [AttendanceController::class, 'requestLeave']);

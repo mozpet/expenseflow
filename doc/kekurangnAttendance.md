@@ -531,4 +531,264 @@ if ($startStr === $today) {
      - Validasi sisi klien memastikan `attendance_setting_id` terisi sebelum payload dikirimkan.
      - Dropdown pilihan shift di dalam item siklus hanya menampilkan shift milik cabang yang dipilih atau shift global.
 
+---
+
+## 🚀 Bagian 5 — Evaluasi Celah Fungsional & Kebutuhan Lanjutan Sistem Presensi Modern (2026-09-16)
+
+> Catatan evaluasi komprehensif di luar daftar bug awal dan di luar fitur yang sengaja di-keep untuk modul Payroll (seperti tarif lembur nominal, premi malam, dan pemotongan gaji).
+> Merangkum kebutuhan nyata di operasional lapangan, kepatuhan regulasi ketenagakerjaan Indonesia (UU 13/2003 & PP 35/2021), integritas anti-fraud, dan pengalaman pengguna mobile/web.
+
+---
+
+### 🛡️ Kategori E — Keamanan Perangkat & Integritas Presensi (Anti-Fraud & Verification)
+
+#### 1. TINGGI: Ketiadaan Kewajiban Foto Selfie Aktual Saat Check-in & Check-out (Photo Proof with Watermark)
+- **Kondisi Saat Ini:**
+  - Skema database tabel `attendances` sudah memiliki kolom `check_in_photo` (nullable), namun controller backend (`AttendanceController::checkIn`) maupun aplikasi Flutter mobile tidak pernah mewajibkan atau mengunggah foto selfie saat presensi.
+- **Celah Operasional (Fraud Titip HP):**
+  - Meskipun sistem telah dilengkapi *Device Binding* dan validasi radius GPS kantor (*geofencing*), karyawan tetap dapat melakukan kecurangan dengan **menitipkan HP-nya ke rekan kerja yang berada di kantor**. Rekan kerja tersebut dapat menekan tombol *Check-in* di HP milik rekannya tanpa terdeteksi karena koordinat dan device ID sah.
+- **Rekomendasi Solusi:**
+  - Wajibkan jepret foto langsung dari kamera depan perangkat (larang pemilihan berkas dari galeri).
+  - Bubuhkan *watermark metadata* (tanggal & jam WIB, koordinat lat/lng, dan status kehadiran) pada berkas foto.
+  - Simpan path foto ke kolom `check_in_photo` dan sediakan thumbnail foto pada tabel riwayat presensi di dashboard web HRD.
+
+#### 2. [SELESAI ✅ 2026-09-16] Deteksi Perangkat Di-Root / Jailbreak & Emulator PC
+- **Lokasi Kode:**
+  - Mobile Service: `expenseflow-mobile/lib/services/device_integrity_service.dart` (`DeviceIntegrityService`, `DeviceIntegrityResult`).
+  - Mobile Entrypoint: `expenseflow-mobile/lib/main.dart` (pre-cache `DeviceIntegrityService.initialize()` saat startup).
+  - Mobile UI/Screen: `expenseflow-mobile/lib/screens/presensi_map_screen.dart` (banner peringatan, dialog panduan unroot/emulator, disable tombol presensi).
+  - Mobile Provider: `expenseflow-mobile/lib/presensi_provider.dart` (`simpanPresensi(..., isRooted, isEmulator)`).
+  - Mobile API Service: `expenseflow-mobile/lib/services/api_service.dart` (`checkIn()`, `checkOut()`).
+  - Backend Controller: `expenseflow-backend/app/Http/Controllers/API/AttendanceController.php` (`checkIn()`, `checkOut()`).
+  - Automated Tests: `expenseflow-backend/tests/Feature/DeviceIntegrityAttendanceTest.php` (5 test methods, 20 assertions green).
+- **Latar Belakang & Celah Operasional:**
+  - Sebelumnya sistem hanya mendeteksi `is_mocked` (Mock Location API). Namun pengguna tingkat lanjut pada HP di-root (Magisk/Zygisk/LSPosed) dapat menyembunyikan status mock location dari OS.
+  - Karyawan juga dapat memasang aplikasi di **Emulator PC** (NoxPlayer, BlueStacks, LDPlayer) yang diletakkan di kantor untuk melakukan auto-presensi tanpa hadir fisik.
+- **Implementasi Fitur & Proteksi Berlapis (Defense in Depth):**
+  1. **Mobile Device Integrity Service (`device_integrity_service.dart`):**
+     - Memanfaatkan package `safe_device` untuk inspeksi biner root (su binary, Superuser.apk, Magisk path) dan status hardware fisik (`SafeDevice.isRealDevice`).
+     - Hasil dicache selama siklus hidup aplikasi sehingga tidak memberatkan performa UI saat layar peta presensi dibuka.
+     - Dipanggil secara otomatis pada `main.dart` (pre-cache background saat cold start).
+  2. **Antarmuka Pengguna Mobile (`presensi_map_screen.dart`):**
+     - Banner interaktif oranye langsung muncul jika perangkat terdeteksi di-root atau berjalan di emulator.
+     - Tombol "Check In" / "Check Out" otomatis **dinonaktifkan (disabled)** jika integritas perangkat bermasalah.
+     - Dialog interaktif `_showDeviceIntegrityDialog()` menyediakan instruksi solutif langkah demi langkah bagi karyawan (unroot, menghapus Magisk/SuperSU, dan beralih ke HP fisik asli).
+  3. **Backend Validation Guard (`AttendanceController.php`):**
+     - Validasi ganda di sisi server pada endpoint `/api/v1/attendance/check-in` dan `/api/v1/attendance/check-out`.
+     - Request yang membawa flag `is_rooted: true` langsung ditolak dengan **HTTP 403 Forbidden** dan payload `rooted_device_detected: true`.
+     - Request yang membawa flag `is_emulator: true` langsung ditolak dengan **HTTP 403 Forbidden** dan payload `emulator_detected: true`.
+  4. **Pengujian Otomatis (Automated Tests):**
+     - `test_check_in_blocked_when_device_is_rooted` (HTTP 403, tidak ada row attendances dibuat).
+     - `test_check_in_blocked_when_device_is_emulator` (HTTP 403, tidak ada row attendances dibuat).
+     - `test_check_out_blocked_when_device_is_rooted` (HTTP 403, check_out_time tetap null).
+     - `test_check_out_blocked_when_device_is_emulator` (HTTP 403, check_out_time tetap null).
+     - `test_check_in_and_check_out_success_when_device_is_clean` (HTTP 201 dan 200 normal).
+     - `flutter analyze` 5 files: 0 issues found.
+
+---
+
+### 🌐 Kategori F — Karyawan Lapangan, Roaming & Kunjungan Klien (Field Operations & Multi-Site)
+
+#### 3. [SELESAI ✅ 2026-09-16] Mode Presensi Kunjungan Klien / Proyek Luar (Client Visit / Task Check-in) & Multi-Geofence Roaming
+- **Lokasi Kode:**
+  - Database Migrations:
+    - `expenseflow-backend/database/migrations/2026_09_16_021500_add_dinas_luar_enabled_to_users_table.php` (tambah kolom boolean `dinas_luar_enabled` default false).
+    - `expenseflow-backend/database/migrations/2026_09_16_021600_add_client_visit_fields_to_attendances_table.php` (tambah `client_name`, `client_address`, `visit_notes` pada tabel `attendances`).
+  - Backend Models & Services:
+    - `expenseflow-backend/app/Models/User.php` (`dinas_luar_enabled`, helper method `canDinasLuar(): bool`).
+    - `expenseflow-backend/app/Models/Attendance.php` (fillable `client_name`, `client_address`, `visit_notes`).
+    - `expenseflow-backend/app/Services/LocationService.php` (`reverseGeocode($lat, $lng)` dengan fallback OpenStreetMap Nominatim dan timeout resilien).
+    - `expenseflow-backend/app/Http/Controllers/API/AttendanceController.php`:
+      - `toggleDinasLuar(Request $request, $id)`: Endpoint HRD / Company Admin untuk mengaktifkan/menonaktifkan izin dinas luar per karyawan.
+      - `checkIn(AttendanceCheckInRequest $request)`: Validasi izin dinas luar, input wajib `client_name`, catatan kunjungan opsional, reverse geocode alamat otomatis, tanpa mewajibkan foto selfie (fitur selfie presensi di-keep untuk roadmap Kategori E).
+      - `checkStatus()`: Menyuplai seluruh daftar cabang kantor aktif (`offices`) dan status `dinas_luar_enabled`.
+  - Backend Routes:
+    - `expenseflow-backend/routes/api.php` (`POST /v1/attendance/users/{id}/toggle-dinas-luar`).
+  - Web Dashboard (React / TypeScript):
+    - `expenseflow-web/src/services/endpoints.ts` (`toggleDinasLuar`, `attendancePhotoUrl`).
+    - `expenseflow-web/src/components/AttendanceManagement.tsx`:
+      - Toggle switch interaktif "Izin Dinas Luar" pada tabel daftar karyawan (Tab Karyawan) dengan feedback toast instan.
+      - Badge khusus "Dinas Luar" berikon tas kantor ungu lengkap dengan nama klien pada tabel kehadiran hari ini (Tab Hari Ini).
+      - Filter dropdown "Dinas Luar" dan metric card ringkasan di tab Laporan Kehadiran.
+      - Modal detail kunjungan dinas luar (`visitDetailModal`) lengkap dengan nama klien, catatan tugas, alamat lengkap reverse-geocoded, koordinat GPS, serta tombol pintas langsung ke Google Maps.
+  - Mobile App (Flutter / Dart):
+    - `expenseflow-mobile/lib/models/attendance_model.dart` (`clientName`, `clientAddress`, `visitNotes`, `isDinasLuar`).
+    - `expenseflow-mobile/lib/services/api_service.dart` (`checkIn` mendukung parameter client visit `client_name`, `client_address`, `visit_notes`).
+    - `expenseflow-mobile/lib/presensi_provider.dart` (`dinasLuarEnabled`, `canDinasLuar`, sinkronisasi status kantor & dinas luar).
+    - `expenseflow-mobile/lib/screens/presensi_map_screen.dart`:
+      - Mode selector dinamis: Tombol tab pill "Kantor", "WFH" (jika diizinkan), dan "Dinas Luar" (jika diaktifkan HRD).
+      - Form Kunjungan Klien yang praktis: Field nama klien/tempat kunjungan (wajib) dan catatan agenda kunjungan (opsional), tanpa mewajibkan kamera selfie (presensi selfie di-keep untuk nanti).
+      - Multi-geofence Roaming: Peta memvisualisasikan seluruh cabang kantor perusahaan, otomatis menghitung jarak ke kantor terdekat, dan mengizinkan presensi kantor di cabang mana pun yang terdekat tanpa false-positive geofence violation.
+    - `expenseflow-mobile/lib/screens/presensi_history_screen.dart`:
+      - Badge ungu "Dinas: [Nama Klien]" pada kartu riwayat kehadiran karyawan.
+  - Automated Tests:
+    - `expenseflow-backend/tests/Feature/FieldVisitDinasLuarAttendanceTest.php`:
+      - `test_user_without_dinas_luar_permission_is_rejected` (HTTP 403 Forbidden).
+      - `test_dinas_luar_check_in_requires_client_name_and_allows_without_photo` (Wajib nama klien, presensi berhasil tanpa foto).
+      - `test_dinas_luar_check_in_succeeds_and_saves_client_visit_details` (Menyimpan nama klien, alamat, catatan kunjungan).
+      - `test_roaming_employee_can_check_in_at_any_active_company_office` (Multi-geofence roaming validasi lolos di cabang terdekat).
+      - `test_roaming_employee_is_rejected_if_outside_all_offices` (Multi-geofence di luar seluruh cabang ditolak HTTP 422).
+      - `test_hrd_can_toggle_dinas_luar_permission` (HTTP 200 toggle izin on/off).
+      - Hasil: **7 passed, 40 assertions green**.
+      - Total Suite Attendance: **54 passed, 281 assertions green**.
+    - Mobile Analyzer: `flutter analyze` -> **0 issues found**.
+    - Web Build: `npm run build` -> **Built successfully 0 errors**.
+
+---
+
+### ⚖️ Kategori G — Kepatuhan Regulasi Izin Khusus Indonesia (Statutory Special Paid Leave)
+
+#### 5. TINGGI: Ketiadaan Kategori Izin Khusus Berbayar Resmi UU No. 13/2003 (Tidak Memotong Cuti)
+- **Kondisi Saat Ini:**
+  - Kolom `leave_type` pada tabel `leave_requests` hanya bertipe enum `['wfh', 'izin', 'sakit', 'cuti']`.
+- **Dasar Hukum & Masalah Regulasi:**
+  - Berdasarkan UU Ketenagakerjaan No. 13/2003 Pasal 93 ayat (2) & (4), pekerja berhak atas **upah penuh dan TIDAK boleh memotong hak cuti tahunan** untuk peristiwa-peristiwa penting berikut:
+    1. Karyawan menikah: 3 hari
+    2. Menikahkan anak: 2 hari
+    3. Khitanan / Pembaptisan anak: 2 hari
+    4. Istri melahirkan atau keguguran: 2 hari
+    5. Suami/Istri, Orang Tua/Mertua, atau Anak/Menantu meninggal dunia: 2 hari
+    6. Anggota keluarga dalam satu rumah meninggal dunia: 1 hari
+    7. Melaksanakan kewajiban ibadah keagamaan (Haji/Umrah): sesuai durasi resmi
+    8. Cuti Melahirkan: 3 bulan (90 hari)
+    9. Cuti Haid hari ke-1 & ke-2 bagi pekerja perempuan
+- **Dampak:**
+  - Karyawan yang menikah atau berduka terpaksa memotong kuota cuti tahunan regulernya (`cuti`), atau mengajukan `izin` yang rentan dianggap izin mangkir/tanpa upah (*unpaid leave*).
+- **Rekomendasi Solusi:**
+  - Perluas tipe pengajuan atau tambahkan tabel `special_leave_types` dengan kuota hari yang terkunci otomatis sesuai ketentuan UU tanpa mengurangi saldo cuti tahunan.
+
+#### 6. SEDANG: Ketiadaan Validasi Wajib Berkas Surat Keterangan Dokter (SKD) untuk Izin Sakit (skip)
+- **Kondisi Saat Ini:**
+  - Tabel `leave_requests` sudah memiliki kolom lampiran `document_path`, namun pengunggahan berkas bersifat opsional untuk seluruh jenis izin.
+- **Celah Operasional:**
+  - Karyawan dapat mengajukan izin sakit 2–3 hari berturut-turut hanya dengan mengetik alasan teks singkat tanpa melampirkan bukti diagnosis dokter.
+- **Rekomendasi Solusi:**
+  - Terapkan aturan validasi backend: jika `leave_type == 'sakit'` dan durasi $\ge 1$ hari (atau dikonfigurasi $\ge 2$ hari oleh kantor), berkas foto Surat Keterangan Dokter (SKD) **wajib diunggah** (`required|file|mimes:jpg,jpeg,png,pdf`).
+
+---
+
+### 📅 Kategori H — Manajemen Siklus Cuti & Kebijakan Masa Kerja (Leave Lifecycle & Accrual)
+
+#### 7. SEDANG: Ketiadaan Sistem Akrual & Prorate Cuti Otomatis Berdasarkan Masa Kerja
+- **Kondisi Saat Ini:**
+  - Kuota saldo cuti harus di-set manual oleh HRD (`setLeaveBalance`) atau reset tahunan sekaligus 12 hari.
+- **Kebutuhan Standar HR:**
+  - **Masa Tunggu (Probation):** Karyawan baru yang masa kerjanya belum melewati masa percobaan (misal 3 bulan) idealnya belum diizinkan mengambil cuti tahunan.
+  - **Akrual Bulanan (Prorate):** Bagi karyawan di tahun pertama kerja, hak cuti dihitung proporsional (bertambah 1 hari per bulan masa kerja), bukan langsung diberikan 12 hari di muka.
+- **Rekomendasi Solusi:**
+  - Tambahkan konfigurasi kebijakan cuti di kantor: tipe akrual (tahunan di muka vs bulanan prorate) serta masa tunggu minimum hak cuti.
+
+#### 8. SEDANG: Ketiadaan Kebijakan Masa Kedaluwarsa Saldo Cuti (Carry-Forward Expiry)
+- **Kondisi Saat Ini:**
+  - Perintah reset cuti tahunan menghapus/me-reset kuota tanpa opsi batas bawa sisa cuti (*carry-over*).
+- **Dampak Operasional:**
+  - Kebijakan perusahaan di Indonesia umumnya mengizinkan sisa cuti tahun lalu dibawa maksimal N hari (misal 6 hari) dan wajib dihabiskan paling lambat tanggal 31 Maret di tahun berjalan sebelum hangus otomatis.
+- **Rekomendasi Solusi:**
+  - Tambahkan kolom `carried_over_quota` dan `carry_over_expired_at` pada tabel `leave_balances`.
+
+---
+
+### ⏰ Kategori I — Otomasi Pengingat Presensi (Smart Push Notifications)
+
+#### 9. [SELESAI ✅ 2026-09-16] Otomasi Pengingat Presensi Cerdas (Reminder Jam Masuk, Jam Pulang, & Peringatan Cutoff)
+- **Lokasi Kode:**
+  - Backend Command: `expenseflow-backend/app/Console/Commands/SendAttendanceRemindersCommand.php` (`attendance:send-reminders`).
+  - Scheduler: `expenseflow-backend/routes/console.php` (dijalankan terjadwal `->everyTenMinutes()->withoutOverlapping()->runInBackground()`).
+  - Notification Service: `expenseflow-backend/app/Services/FcmService.php` (Push notification real-time ke perangkat Android/iOS via FCM HTTP v1 API).
+  - Database Table: Tabel `notifications` (riwayat notifikasi untuk Notification Center mobile & web).
+  - Automated Tests: `expenseflow-backend/tests/Feature/AttendanceReminderPushNotificationTest.php` (8 test methods, 16 assertions green).
+- **Aturan Ketat Hak Akses Pengingat (Target Karyawan):**
+  - Pengingat **HANYA BERLAKU** untuk karyawan yang memiliki izin presensi mobile:
+    - `wfh_enabled = true` & `dinas_luar_enabled = true` ✅
+    - `wfh_enabled = true` & `dinas_luar_enabled = false` ✅
+    - `wfh_enabled = false` & `dinas_luar_enabled = true` ✅
+  - Pengingat **TIDAK BERLAKU** jika `wfh_enabled = false` dan `dinas_luar_enabled = false` (karyawan kantor murni yang melakukan presensi di perangkat mesin fisik kantor) ❌.
+  - Karyawan yang sedang cuti/izin/sakit (`LeaveRequest` approved hari ini), hari libur nasional/perusahaan, atau shift off-day otomatis diabaikan.
+- **Tiga Skenario Pengingat Terjadwal:**
+  1. **Reminder Jam Masuk (15 Menit Sebelum Masuk):**
+     - Target: Karyawan berizin mobile yang belum check-in hari ini.
+     - Window Waktu: 15 menit sebelum jam masuk shift/kantor s/d 5 menit setelah jam masuk.
+     - Pesan: *"⏰ 15 menit lagi jam kerja Anda dimulai ({jam} WIB). Jangan lupa lakukan presensi masuk di aplikasi!"*
+  2. **Reminder Jam Pulang (Tepat Saat Jam Kerja Selesai):**
+     - Target: Karyawan berizin mobile yang sudah check-in tetapi belum check-out.
+     - Window Waktu: Tepat jam pulang shift/kantor s/d 30 menit setelah jam pulang.
+     - Pesan: *"🏠 Jam kerja Anda telah berakhir ({jam} WIB). Jangan lupa lakukan presensi pulang (check-out) di aplikasi!"*
+  3. **Peringatan Batas Alpha (15 Menit Sebelum Cutoff Telat):**
+     - Target: Karyawan yang belum check-in dan kantor memiliki konfigurasi batas telat (`late_checkin_cutoff_minutes`).
+     - Window Waktu: 15 menit sebelum jam cutoff telat/alpha tiba.
+     - Pesan: *"⚠️ 15 menit lagi presensi masuk hari ini akan ditutup ({jam} WIB). Segera lakukan presensi di aplikasi agar tidak tercatat Alpha!"*
+- **Integritas Anti-Spam (Deduplikasi):**
+  - Menggunakan Cache Key harian berdurasi 24 jam (`attendance_remind_start_{userId}_{date}`, `attendance_remind_end_{userId}_{date}`, `attendance_remind_cutoff_{userId}_{date}`) sehingga setiap jenis notifikasi dijamin hanya terkirim tepat 1 kali per hari per karyawan.
+- **Hasil Pengujian Otomatis:**
+  - `php artisan test --filter=AttendanceReminderPushNotificationTest` ➡️ **8 passed, 16 assertions**.
+  - Seluruh rangkaian pengujian attendance: **62 passed, 257 assertions**.
+
+---
+
+### ⏱️ Kategori J — Disiplin Lembur, Jam Kerja Fleksibel & Aksesibilitas Kiosk
+
+#### 10. TINGGI: Ketiadaan Pemisahan Surat Perintah Kerja Lembur (SPKL Awal) vs Klaim Lembur Aktual
+- **Kondisi Saat Ini:**
+  - Pengajuan lembur saat ini dilakukan setelah kejadian (*post-factum*).
+- **Celah Operasional:**
+  - Karyawan dapat sengaja bertahan di kantor hingga malam hari (misal jam 21:00) tanpa pekerjaan mendesak, lalu mengajukan lembur setelah pulang (*overtime padding fraud*).
+- **Rekomendasi Solusi:**
+  - Standar alur lembur perusahaan (SPKL):
+    1. **Pre-Approval (SPKL):** Atasan menugaskan lembur terlebih dahulu sebelum jam kerja berakhir (menentukan target tugas dan estimasi durasi).
+    2. **Klaim Aktual:** Saat check-out lembur, sistem mencocokkan waktu riil dengan batas SPKL yang telah disetujui atasan.
+
+#### 11. SEDANG: Ketiadaan Dukungan Jam Kerja Fleksibel (Flexitime & Core Hours) [SELESAI ✅ 2026-09-16]
+- **Kondisi Saat Ini:**
+  - Jam kerja terikat kaku pada satu jam masuk tetap (`work_start_time`, misal 08:00). Masuk pukul 08:16 langsung ditandai "Late" (terlambat).
+- **Kebutuhan Perusahaan Modern:**
+  - Untuk staf IT/kantor back-office yang menerapkan jam kerja fleksibel:
+    - Karyawan bebas datang antara pukul 07:00 s.d 10:00 asalkan memenuhi target durasi kerja harian (misal 8 jam kerja) dan wajib berada di kantor pada jam inti (*Core Hours*, misal 10:00–15:00).
+    - Datang pukul 09:00 dan pulang pukul 18:00 tidak dianggap terlambat karena memenuhi target 8 jam.
+- **Implementasi (Opsi 2 — User-Level Toggle & Branch Settings):**
+  - **Database & Model:**
+    - Migration: Tambah `flexitime_enabled` (boolean, default false) pada tabel `users`.
+    - Migration: Tambah parameter flexitime kantor pada tabel `attendance_settings`: `flex_arrival_start` (07:00), `flex_arrival_end` (10:00), `flex_core_start` (10:00), `flex_core_end` (15:00), `flex_target_minutes` (480 = 8 jam kerja).
+    - Migration: Tambah snapshot kolom flexitime pada tabel `attendances`: `snap_flexitime_enabled`, `snap_flex_arrival_start`, `snap_flex_arrival_end`, `snap_flex_core_start`, `snap_flex_core_end`, `snap_flex_target_minutes`.
+  - **Backend Logic (AttendanceController & AutoCheckoutCommand):**
+    - `buildSnapshot()`: Menyimpan konfigurasi flexitime user dan cabang saat `checkIn()` untuk dibekukan.
+    - `isFlexitimeSession()`: Membaca status flexitime dari snapshot sesi presensi (fallback ke live user untuk record lama).
+    - `snapshotOffice()`: Menimpa parameter flexitime instance AttendanceSetting dengan nilai yang dibekukan saat check-in.
+    - `determineStatus()`: Karyawan flexitime yang check-in sebelum/pada `flex_arrival_end` (+ toleransi) ditandai `present` (tidak telat).
+    - `resolveWorkStart()`: Jam masuk dihitung mulai dari check-in aktual (atau batas awal window kedatangan), bukan jam kantor fixed.
+    - `checkEarlyLeave()`: Deteksi pulang cepat jika check-out sebelum `flex_core_end` atau durasi kerja riil belum memenuhi `flex_target_minutes` (membaca snapshot).
+    - `calculateOvertime()`: Menghitung lembur setelah durasi kerja melampaui `flex_target_minutes` snapshot.
+    - `toggleFlexitime()`: Endpoint `POST /api/v1/dashboard/attendance/users/{id}/toggle-flexitime` bagi HRD untuk mengaktifkan/menonaktifkan flexitime per karyawan (otomatis memblokir dengan status 422 jika karyawan sedang terikat penugasan shift aktif).
+    - `checkStatus()`: Mengembalikan `flexitime_enabled` dan `flexitime_config` beserta target dinamis `target_checkout_time` berbasis snapshot sesi aktif.
+    - `AutoCheckoutCommand`: Menghitung batas auto-checkout dinamis untuk sesi flexitime (`workStart + target_minutes + break_minutes`) serta menghitung overtime berbasis snapshot flexitime.
+    - **Mutual Exclusion Shift vs Flexitime (2026-09-16)**: Karyawan berjadwal Shift atau Pola Rotasi otomatis berstatus `flexitime_enabled = false`. Saat di-assign shift via `assignShift` atau `bulkAssign`, toggle otomatis dimatikan.
+    - **Proteksi Perubahan Siang Hari (Bulletproof Midday Changes)**: Perubahan aturan HRD di siang hari (seperti mengubah target jam kerja cabang atau mematikan toggle flexitime user) TIDAK mempengaruhi sesi presensi karyawan yang sudah check-in di pagi hari.
+  - **Web Dashboard (Admin / HRD):**
+    - `AttendanceManagement.tsx`: Kolom & tombol toggle Flexitime interaktif di tabel karyawan dengan audit log. Bagi karyawan yang memiliki jadwal shift aktif, tombol toggle otomatis terkunci (Disabled / OFF) disertai tooltip penjelas nama shift aktif.
+    - `SettingsManagement.tsx`: Kartu konfigurasi parameter flexitime cabang (window kedatangan, core hours, target durasi harian).
+  - **Mobile App (Flutter):**
+    - `PresensiProvider`: Sinkronisasi status `flexitimeEnabled` & `flexitimeConfig` dari backend.
+    - `PresensiMapScreen`: Banner indikator mode Flexitime dengan info target pulang dinamis dan modal konfirmasi anti pulang cepat saat check-out sebelum core hours atau sebelum target durasi terpenuhi.
+  - **Automated Tests:**
+    - `tests/Feature/FlexitimeAttendanceTest.php`: 17 pengujian fitur lengkap (check-in, check-out, early leave, overtime, update kantor, toggle API, auto-disable on assign-shift, bulk-assign, mutual exclusion guard, list-users active shift flags, snapshot storage, midday office target change resilience, midday user toggle change resilience) - 100% Passed (17 tests, 75 assertions).
+
+#### 12. SEDANG: Ketiadaan Mode Tablet Kiosk Bersama di Lobi / Pabrik (Shared Attendance Kiosk)(skip)
+- **Kondisi Saat Ini:**
+  - Presensi mewajibkan setiap karyawan memiliki smartphone pribadi dengan aplikasi Flutter terinstal.
+- **Kendala Lapangan:**
+  - Di fasilitas pabrik, pergudangan, atau staf kebersihan (*cleaning service*), tidak semua karyawan memiliki smartphone memadai, atau terdapat aturan larangan membawa ponsel pribadi ke area steril / lini produksi.
+- **Rekomendasi Solusi:**
+  - Sediakan mode Kiosk pada satu tablet Android/iPad yang dipasang di lobi: karyawan melakukan presensi cepat dengan memindai **QR Code / Barcode pada ID Card** masing-masing di depan kamera tablet bersama.
+
+---
+
+### 📊 Kategori K — Analitik Cerdas HRD (HR Analytics & Early Warning System)
+
+#### 13. SEDANG: Ketiadaan Deteksi Pola Ketidakhadiran & Indeks Bradford Factor
+- **Kondisi Saat Ini:**
+  - Laporan HRD saat ini hanya menyajikan angka total agregat (jumlah hadir, telat, dan alpha).
+- **Kebutuhan Manajerial HRD:**
+  - **Bradford Factor:** Rumus standar manajemen SDM internasional untuk mengukur dampak gangguan operasional akibat ketidakhadiran berulang ($B = S^2 \times D$, di mana $S$ adalah frekuensi kejadian izin dan $D$ adalah total hari).
+  - Sistem dapat otomatis memberikan indikator "Lampu Kuning / Merah" kepada HRD untuk mendeteksi karyawan yang sering mengambil izin singkat di hari-hari strategis (seperti selalu izin di hari Senin atau Jumat untuk memperpanjang akhir pekan).
+
+
 

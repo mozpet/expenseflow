@@ -17,6 +17,9 @@ class Attendance extends Model
         'check_in_distance_meters',
         'check_in_type',
         'check_in_photo',
+        'client_name',
+        'client_address',
+        'visit_notes',
         'check_out_time',
         'check_out_lat',
         'check_out_lng',
@@ -49,12 +52,18 @@ class Attendance extends Model
         'snap_min_checkout_interval_minutes',
         'snap_reminder_minutes',
         'snap_grace_minutes',
+        'snap_flexitime_enabled',
+        'snap_flex_arrival_start',
+        'snap_flex_arrival_end',
+        'snap_flex_core_start',
+        'snap_flex_core_end',
+        'snap_flex_target_minutes',
     ];
 
     protected function casts(): array
     {
         return [
-            'date'                     => 'date',
+            'date'                     => 'date:Y-m-d',
             'check_in_time'            => 'datetime',
             'check_out_time'           => 'datetime',
             'auto_checkout_at'         => 'datetime',
@@ -81,6 +90,8 @@ class Attendance extends Model
             'snap_min_checkout_interval_minutes' => 'integer',
             'snap_reminder_minutes'    => 'integer',
             'snap_grace_minutes'       => 'integer',
+            'snap_flexitime_enabled'   => 'boolean',
+            'snap_flex_target_minutes' => 'integer',
         ];
     }
 
@@ -121,8 +132,9 @@ class Attendance extends Model
      *        respons reminder_at/auto_checkout_at di checkIn()).
      * @param \App\Models\AttendanceSetting|null $office Kantor acuan (hasil radius
      *        check bila berjalan, selain itu kantor penempatan karyawan).
+     * @param \App\Models\User|null $user Karyawan yang melakukan presensi (untuk snapshot flexitime).
      */
-    public function buildSnapshot(array $schedule, ?string $jamPulang, ?AttendanceSetting $office): array
+    public function buildSnapshot(array $schedule, ?string $jamPulang, ?AttendanceSetting $office, ?User $user = null): array
     {
         return [
             'snap_office_id'                     => $office?->id,
@@ -142,6 +154,12 @@ class Attendance extends Model
             'snap_min_checkout_interval_minutes' => $office?->min_checkout_interval_minutes ?? 10,
             'snap_reminder_minutes'              => $office?->checkout_reminder_minutes,
             'snap_grace_minutes'                 => $office?->auto_checkout_grace_minutes,
+            'snap_flexitime_enabled'             => $user ? (bool) $user->flexitime_enabled : false,
+            'snap_flex_arrival_start'            => $office?->flex_arrival_start,
+            'snap_flex_arrival_end'              => $office?->flex_arrival_end,
+            'snap_flex_core_start'               => $office?->flex_core_start,
+            'snap_flex_core_end'                 => $office?->flex_core_end,
+            'snap_flex_target_minutes'           => $office?->flex_target_minutes,
         ];
     }
 
@@ -238,7 +256,36 @@ class Attendance extends Model
         if ($this->snap_grace_minutes !== null) {
             $office->auto_checkout_grace_minutes = $this->snap_grace_minutes;
         }
+        if ($this->snap_flex_arrival_start !== null) {
+            $office->flex_arrival_start = $this->snap_flex_arrival_start;
+        }
+        if ($this->snap_flex_arrival_end !== null) {
+            $office->flex_arrival_end = $this->snap_flex_arrival_end;
+        }
+        if ($this->snap_flex_core_start !== null) {
+            $office->flex_core_start = $this->snap_flex_core_start;
+        }
+        if ($this->snap_flex_core_end !== null) {
+            $office->flex_core_end = $this->snap_flex_core_end;
+        }
+        if ($this->snap_flex_target_minutes !== null) {
+            $office->flex_target_minutes = $this->snap_flex_target_minutes;
+        }
 
         return $office;
+    }
+
+    /**
+     * Apakah sesi presensi ini berjalan dalam mode Flexitime?
+     * Memprioritaskan nilai snapshot (snap_flexitime_enabled).
+     * Fallback ke atribut live user jika record lama belum memiliki snapshot.
+     */
+    public function isFlexitimeSession(?User $user = null): bool
+    {
+        if ($this->snap_flexitime_enabled !== null) {
+            return (bool) $this->snap_flexitime_enabled;
+        }
+
+        return (bool) ($user?->flexitime_enabled ?? false);
     }
 }

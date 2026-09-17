@@ -270,12 +270,79 @@ class ApiService {
     double lat,
     double lng, {
     bool isMocked = false,
+    bool isRooted = false,
+    bool isEmulator = false,
+    String? checkInType,
+    String? clientName,
+    String? clientAddress,
+    String? visitNotes,
+    Uint8List? photoBytes,
+    String? photoFileName,
   }) async {
+    if (photoBytes != null) {
+      final token = await getToken();
+      final uri = Uri.parse('${ApiConfig.baseUrl}/attendance/check-in');
+      final req = http.MultipartRequest('POST', uri)
+        ..headers['Accept'] = 'application/json'
+        ..headers['X-Platform'] = 'mobile';
+      if (token != null && token.isNotEmpty) {
+        req.headers['Authorization'] = 'Bearer $token';
+      }
+      req.fields['latitude'] = lat.toString();
+      req.fields['longitude'] = lng.toString();
+      req.fields['is_mocked'] = isMocked ? '1' : '0';
+      req.fields['is_rooted'] = isRooted ? '1' : '0';
+      req.fields['is_emulator'] = isEmulator ? '1' : '0';
+      if (checkInType != null) req.fields['check_in_type'] = checkInType;
+      if (clientName != null) req.fields['client_name'] = clientName;
+      if (clientAddress != null) req.fields['client_address'] = clientAddress;
+      if (visitNotes != null) req.fields['visit_notes'] = visitNotes;
+
+      req.files.add(
+        http.MultipartFile.fromBytes(
+          'photo',
+          photoBytes,
+          filename: photoFileName ?? 'visit_${DateTime.now().millisecondsSinceEpoch}.jpg',
+        ),
+      );
+
+      http.Response res;
+      try {
+        final streamed = await req.send().timeout(const Duration(seconds: 40));
+        res = await http.Response.fromStream(streamed);
+      } catch (e) {
+        throw ApiException(
+            'Tidak dapat terhubung ke server. Pastikan backend menyala.');
+      }
+
+      Map<String, dynamic> data = {};
+      if (res.body.isNotEmpty) {
+        try {
+          final decoded = jsonDecode(res.body);
+          if (decoded is Map<String, dynamic>) data = decoded;
+        } catch (_) {}
+      }
+
+      if (res.statusCode >= 200 && res.statusCode < 300) {
+        return data;
+      }
+      final msg = data['message'] as String? ??
+          'Terjadi kesalahan pada server (${res.statusCode})';
+      throw ApiException(msg, res.statusCode, data);
+    }
+
     final body = <String, dynamic>{
       'latitude': lat,
       'longitude': lng,
       'is_mocked': isMocked,
+      'is_rooted': isRooted,
+      'is_emulator': isEmulator,
     };
+    if (checkInType != null) body['check_in_type'] = checkInType;
+    if (clientName != null) body['client_name'] = clientName;
+    if (clientAddress != null) body['client_address'] = clientAddress;
+    if (visitNotes != null) body['visit_notes'] = visitNotes;
+
     return _request('POST', '/attendance/check-in', body: body);
   }
 
@@ -283,11 +350,15 @@ class ApiService {
     double lat,
     double lng, {
     bool isMocked = false,
+    bool isRooted = false,
+    bool isEmulator = false,
   }) async {
     final body = <String, dynamic>{
       'latitude': lat,
       'longitude': lng,
       'is_mocked': isMocked,
+      'is_rooted': isRooted,
+      'is_emulator': isEmulator,
     };
     return _request('POST', '/attendance/check-out', body: body);
   }

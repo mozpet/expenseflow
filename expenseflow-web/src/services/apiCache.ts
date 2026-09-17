@@ -245,6 +245,15 @@ export const MUTATION_INVALIDATIONS: MutationInvalidationRule[] = [
       '/dashboard/attendance/users',
     ],
   },
+  // Toggle & Kebijakan Akses Presensi Karyawan (Mobile Policy, WFH, Radius, Dinas Luar, Flexitime)
+  {
+    pattern: /^\/dashboard\/attendance\/users\/\d+\/(toggle-|mobile-policy)/,
+    invalidates: [
+      '/dashboard/attendance/users',
+      '/dashboard/attendance/today',
+      '/admin/users',
+    ],
+  },
   // Master Vendor
   {
     pattern: /^\/dashboard\/vendors/,

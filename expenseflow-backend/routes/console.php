@@ -15,6 +15,13 @@ Schedule::command('attendance:auto-checkout')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Kategori I: Pengingat presensi cerdas (jam masuk 15m sblm mulai, jam pulang, & cutoff 15m sblm batas alpha).
+// Dijalankan setiap 10 menit untuk mengevaluasi window pengingat presensi karyawan mobile (WFH / Dinas Luar).
+Schedule::command('attendance:send-reminders')
+    ->everyTenMinutes()
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // Auto-decline karyawan yang belum memilih cuti bersama saat hari H tiba.
 // Berjalan setiap jam 00:07 (ambil jam non-round untuk distribusi beban),
 // menandai pending → declined untuk tanggal cuti yang sudah lewat.

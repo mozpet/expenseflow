@@ -67,6 +67,15 @@ class AuthController extends Controller
             ], 403);
         }
 
+        // Mobile platform guard: jika presensi mobile (attendance_enabled) tidak aktif, tolak login mobile
+        if ($platform === 'mobile' && ! $user->attendance_enabled) {
+            $this->logAttempt($user, $request, 'failed');
+
+            return response()->json([
+                'message' => 'Akses presensi mobile belum diaktifkan atau telah dinonaktifkan oleh HRD.',
+            ], 403);
+        }
+
         // ─── DEVICE BINDING (mobile, role employee) — cegah "titip absen" ───
         // 1 akun karyawan terikat 1 device. Pindah device wajib approval HR.
         //   - Device pertama         → auto-bind (trust-on-first-use).
@@ -159,6 +168,9 @@ class AuthController extends Controller
             'attendance_enabled'    => $user->canAccessAttendance(),
             'wfh_enabled'           => $user->canWfh(),
             'radius_enabled'        => $user->hasRadiusEnabled(),
+            'dinas_luar_enabled'    => $user->canDinasLuar(),
+            'flexitime_enabled'     => $user->canFlexitime(),
+            'is_wfh_approved_today' => $user->hasApprovedWfhToday(),
             'can_access_receipts'   => $user->canAccessReceipts(),
             'can_access_attendance' => $user->canAccessAttendance(),
         ];
@@ -267,6 +279,19 @@ class AuthController extends Controller
     public function me(Request $request): JsonResponse
     {
         $user = $request->user()->load('company');
+        $token = $user->currentAccessToken();
+        $isMobileToken = ($token instanceof \Laravel\Sanctum\PersonalAccessToken && $token->name === 'auth-token-mobile');
+
+        // Jika request dari mobile tapi presensi mobile dinonaktifkan
+        if (($request->header('X-Platform') === 'mobile' || $isMobileToken) && ! $user->attendance_enabled) {
+            if ($token instanceof \Laravel\Sanctum\PersonalAccessToken) {
+                $token->delete();
+            }
+
+            return response()->json([
+                'message' => 'Akses presensi mobile Anda telah dinonaktifkan oleh HRD.',
+            ], 403);
+        }
 
         // Auto-bind device jika akun mobile belum memiliki device_id
         if ($request->header('X-Platform') === 'mobile' && config('app.device_binding_enabled', true)) {

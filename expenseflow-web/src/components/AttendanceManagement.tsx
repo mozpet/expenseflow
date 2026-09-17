@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   CalendarCheck,
   Users,
@@ -39,9 +39,14 @@ import {
   Archive,
   Layers,
   Sparkles,
+  Briefcase,
+  Camera,
+  Eye,
+  Smartphone,
+  Lock,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
-import { ApiError, invalidateCache, onDataVersionChange } from '../services/api';
+import { ApiError, getRetryAfterSeconds, invalidateCache, onDataVersionChange } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../auth/AuthContext';
 import CustomDatePicker from './CustomDatePicker';
@@ -585,6 +590,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [showUpcoming, setShowUpcoming] = useState(false);
   const [docLoadingId, setDocLoadingId] = useState<number | null>(null);
   const [docModal, setDocModal] = useState<{ url: string; isPdf: boolean; userName: string } | null>(null);
+  const [visitDetailModal, setVisitDetailModal] = useState<{
+    attendanceId: number;
+    userName: string;
+    clientName: string;
+    clientAddress?: string;
+    visitNotes?: string;
+    checkInLat?: number | string;
+    checkInLng?: number | string;
+    checkInTime?: string;
+    photoUrl?: string | null;
+    loadingPhoto: boolean;
+  } | null>(null);
   const [users, setUsers] = useState<any[]>([]);
   const [userSearch, setUserSearch] = useState('');
   const [userOfficeFilter, setUserOfficeFilter] = useState('');
@@ -592,6 +609,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [balanceSearch, setBalanceSearch] = useState('');
   const [balanceOfficeFilter, setBalanceOfficeFilter] = useState('');
   const [togglingUserId, setTogglingUserId] = useState<number | null>(null);
+
 
   // Sub-tab & history state untuk Saldo Cuti
   const [balanceSubTab, setBalanceSubTab] = useState<'active' | 'history'>('active');
@@ -685,8 +703,52 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [holidays, setHolidays] = useState<any[]>([]);
   const [holidayYear, setHolidayYear] = useState<number>(new Date().getFullYear());
 
+  // Countdown timer saat terkena HTTP 429 (Rate limit)
+  const [rateLimitCountdown, setRateLimitCountdown] = useState(0);
+  const rateLimitTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (rateLimitTimerRef.current) {
+        clearInterval(rateLimitTimerRef.current);
+        rateLimitTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  const startRateLimitCountdown = useCallback((initialSeconds: number) => {
+    const secs = Math.max(1, Math.min(initialSeconds, 30));
+    setRateLimitCountdown(secs);
+    setError(`Terlalu banyak permintaan. Silakan tunggu ${secs} detik sebelum mencoba kembali.`);
+
+    if (rateLimitTimerRef.current) {
+      clearInterval(rateLimitTimerRef.current);
+    }
+
+    rateLimitTimerRef.current = setInterval(() => {
+      setRateLimitCountdown((prev) => {
+        if (prev <= 1) {
+          if (rateLimitTimerRef.current) {
+            clearInterval(rateLimitTimerRef.current);
+            rateLimitTimerRef.current = null;
+          }
+          setError(null);
+          return 0;
+        }
+        const next = prev - 1;
+        setError(`Terlalu banyak permintaan. Silakan tunggu ${next} detik sebelum mencoba kembali.`);
+        return next;
+      });
+    }, 1000);
+  }, []);
+
   const reportApiError = (err: unknown, fallback: string) => {
     if (err instanceof ApiError) {
+      if (err.status === 429) {
+        const secs = getRetryAfterSeconds(err) ?? 30;
+        startRateLimitCountdown(secs);
+        return;
+      }
       const firstError = err.data?.errors && Object.values(err.data.errors)[0];
       setError(Array.isArray(firstError) ? firstError[0] : err.message);
     } else {
@@ -873,6 +935,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     try {
       await attendanceApi.approveLeave(id);
       invalidateCache('/dashboard/attendance/leaves');
+      invalidateCache('/dashboard/attendance/today');
+      invalidateCache('/dashboard/attendance/users');
       invalidateCache('/dashboard/notifications');
       onAddAuditLog('Izin/Cuti Disetujui', `Pengajuan #${id} (${name}) disetujui`, 'bg-emerald-600');
       onAddNotification('success', 'Pengajuan Disetujui', `Pengajuan ${name} telah disetujui.`);
@@ -892,6 +956,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     try {
       await attendanceApi.rejectLeave(id, reason.trim());
       invalidateCache('/dashboard/attendance/leaves');
+      invalidateCache('/dashboard/attendance/today');
+      invalidateCache('/dashboard/attendance/users');
       invalidateCache('/dashboard/notifications');
       onAddAuditLog('Izin/Cuti Ditolak', `Pengajuan #${id} (${name}) ditolak: ${reason}`, 'bg-rose-600');
       onAddNotification('flag', 'Pengajuan Ditolak', `Pengajuan ${name} ditolak.`);
@@ -923,14 +989,32 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   };
 
   const handleToggleWfh = async (id: number, name: string) => {
+    const targetUser = users.find(u => u.id === id);
+    if (targetUser?.allow_attendance === false) {
+      setError(`Mode WFH terkunci untuk ${name} karena Akses Presensi Mobile dinonaktifkan di Edit Profil Karyawan. Aktifkan kembali di Edit Profil Karyawan.`);
+      return;
+    }
+    if (targetUser?.allow_wfh === false) {
+      setError(`Mode WFH terkunci untuk ${name} karena Izinkan Presensi WFH dinonaktifkan di Edit Profil Karyawan. Aktifkan kembali di Edit Profil Karyawan.`);
+      return;
+    }
+    if (!targetUser?.attendance_enabled) {
+      setError(`Mode WFH tidak dapat diaktifkan untuk ${name} karena Presensi Mobile sedang nonaktif. Aktifkan Presensi Mobile terlebih dahulu.`);
+      return;
+    }
+    if (targetUser?.dinas_luar_enabled) {
+      setError(`Mode WFH tidak dapat dinonaktifkan untuk ${name} karena izin Dinas Luar sedang aktif. Nonaktifkan Dinas Luar terlebih dahulu.`);
+      return;
+    }
     try {
       const res: any = await attendanceApi.toggleWfh(id);
+      invalidateCache('/dashboard/attendance/users');
+      invalidateCache('/admin/users');
       const on = res?.user?.wfh_enabled;
-      onAddAuditLog('Mode WFH Diubah', `WFH ${name} ${on ? 'diaktifkan' : 'dinonaktifkan'}`, on ? 'bg-emerald-600' : 'bg-slate-600');
+      onAddAuditLog('Mode WFH Diubah', `Mode WFH ${name} ${on ? 'diaktifkan' : 'dinonaktifkan'}`, on ? 'bg-emerald-600' : 'bg-slate-600');
       setUsers(prev => prev.map(u => u.id === id ? {
         ...u,
-        wfh_enabled: res?.user?.wfh_enabled ?? !u.wfh_enabled,
-        attendance_enabled: res?.user?.attendance_enabled ?? u.attendance_enabled,
+        ...(res?.user || {}),
       } : u));
     } catch (e) {
       reportApiError(e, 'Gagal mengubah mode WFH.');
@@ -938,17 +1022,119 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   };
 
   const handleToggleRadius = async (id: number, name: string) => {
+    const targetUser = users.find(u => u.id === id);
+    if (targetUser?.allow_attendance === false) {
+      setError(`Switch Lapangan terkunci untuk ${name} karena Akses Presensi Mobile dinonaktifkan di Edit Profil Karyawan. Aktifkan kembali di Edit Profil Karyawan.`);
+      return;
+    }
+    if (targetUser?.allow_wfh === false) {
+      setError(`Switch Lapangan terkunci untuk ${name} karena Izinkan Presensi WFH dinonaktifkan di Edit Profil Karyawan. Aktifkan kembali di Edit Profil Karyawan.`);
+      return;
+    }
+    if (targetUser?.allow_radius === false) {
+      setError(`Switch Lapangan terkunci untuk ${name} karena Validasi Radius Geofence dinonaktifkan di Edit Profil Karyawan. Aktifkan kembali di Edit Profil Karyawan.`);
+      return;
+    }
+    if (!targetUser?.attendance_enabled) {
+      setError(`Switch Lapangan tidak dapat diubah untuk ${name} karena Presensi Mobile sedang nonaktif.`);
+      return;
+    }
+    if (!targetUser?.wfh_enabled) {
+      setError(`Switch Lapangan tidak dapat diubah untuk ${name} karena Mode WFH sedang nonaktif.`);
+      return;
+    }
+    if (targetUser?.dinas_luar_enabled) {
+      setError(`Radius lapangan tidak dapat diaktifkan untuk ${name} karena karyawan dalam mode Dinas Luar (bebas radius).`);
+      return;
+    }
     try {
       const res: any = await attendanceApi.toggleRadius(id);
+      invalidateCache('/dashboard/attendance/users');
+      invalidateCache('/admin/users');
       const on = res?.user?.radius_enabled;
       onAddAuditLog('Radius Lapangan Diubah', `Radius ${name} ${on ? 'diaktifkan (lapangan)' : 'dinonaktifkan (WFH bebas)'}`, on ? 'bg-amber-600' : 'bg-slate-600');
       setUsers(prev => prev.map(u => u.id === id ? {
         ...u,
-        radius_enabled: res?.user?.radius_enabled ?? !u.radius_enabled,
+        ...(res?.user || {}),
       } : u));
     } catch (e) {
       reportApiError(e, 'Gagal mengubah radius lapangan.');
     }
+  };
+
+  const handleToggleDinasLuar = async (id: number, name: string) => {
+    const targetUser = users.find(u => u.id === id);
+    if (targetUser?.allow_attendance === false) {
+      setError(`Izin Dinas Luar terkunci untuk ${name} karena Akses Presensi Mobile dinonaktifkan di Edit Profil Karyawan. Aktifkan kembali di Edit Profil Karyawan.`);
+      return;
+    }
+    if (!targetUser?.attendance_enabled && !targetUser?.dinas_luar_enabled) {
+      setError(`Izin Dinas Luar tidak dapat diaktifkan untuk ${name} karena Presensi Mobile sedang nonaktif. Aktifkan Presensi Mobile terlebih dahulu.`);
+      return;
+    }
+    try {
+      const res: any = await attendanceApi.toggleDinasLuar(id);
+      invalidateCache('/dashboard/attendance/users');
+      invalidateCache('/admin/users');
+      const on = res?.user?.dinas_luar_enabled;
+      onAddAuditLog('Izin Dinas Luar Diubah', `Dinas luar / kunjungan klien ${name} ${on ? 'diaktifkan' : 'dinonaktifkan'}`, on ? 'bg-indigo-600' : 'bg-slate-600');
+      setUsers(prev => prev.map(u => u.id === id ? {
+        ...u,
+        ...(res?.user || {}),
+      } : u));
+    } catch (e) {
+      reportApiError(e, 'Gagal mengubah izin dinas luar.');
+    }
+  };
+
+  const handleToggleFlexitime = async (id: number, name: string) => {
+    try {
+      const res: any = await attendanceApi.toggleFlexitime(id);
+      invalidateCache('/dashboard/attendance/users');
+      invalidateCache('/admin/users');
+      const on = res?.user?.flexitime_enabled;
+      onAddAuditLog('Jam Fleksibel Diubah', `Jam fleksibel (flexitime) ${name} ${on ? 'diaktifkan' : 'dinonaktifkan'}`, on ? 'bg-teal-600' : 'bg-slate-600');
+      setUsers(prev => prev.map(u => u.id === id ? {
+        ...u,
+        flexitime_enabled: res?.user?.flexitime_enabled ?? !u.flexitime_enabled,
+      } : u));
+    } catch (e) {
+      reportApiError(e, 'Gagal mengubah jam kerja fleksibel.');
+    }
+  };
+
+  const openVisitDetailModal = async (record: any) => {
+    const attId = record.attendance_id || record.id;
+    setVisitDetailModal({
+      attendanceId: attId,
+      userName: record.name || record.user_name || 'Karyawan',
+      clientName: record.client_name || 'Kunjungan Klien',
+      clientAddress: record.client_address,
+      visitNotes: record.visit_notes,
+      checkInLat: record.check_in_lat,
+      checkInLng: record.check_in_lng,
+      checkInTime: record.check_in_time,
+      photoUrl: null,
+      loadingPhoto: true,
+    });
+
+    if (attId) {
+      const url = await attendanceApi.attendancePhotoUrl(attId);
+      setVisitDetailModal(prev => prev && prev.attendanceId === attId ? {
+        ...prev,
+        photoUrl: url,
+        loadingPhoto: false,
+      } : prev);
+    } else {
+      setVisitDetailModal(prev => prev ? { ...prev, loadingPhoto: false } : null);
+    }
+  };
+
+  const closeVisitDetailModal = () => {
+    if (visitDetailModal?.photoUrl) {
+      URL.revokeObjectURL(visitDetailModal.photoUrl);
+    }
+    setVisitDetailModal(null);
   };
 
   const handleToggleCutiQuota = async (userId: number, userName: string, currentQuota: number) => {
@@ -1061,19 +1247,37 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               else if (tab === 'report') loadReport(reportPage, true);
               else if (tab === 'holidays') loadHolidays(true);
             }}
-            disabled={loading || balanceHistoryLoading}
+            disabled={loading || balanceHistoryLoading || rateLimitCountdown > 0}
             className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-xl text-xs font-bold transition shrink-0 disabled:opacity-50"
-            title="Refresh Data"
+            title={rateLimitCountdown > 0 ? `Tunggu ${rateLimitCountdown} detik` : "Refresh Data"}
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${(loading || balanceHistoryLoading) ? 'animate-spin' : ''}`} />
-            <span className="hidden sm:inline">Refresh</span>
+            {rateLimitCountdown > 0 ? (
+              <>
+                <Clock className="w-3.5 h-3.5 animate-spin text-rose-500" style={{ animationDuration: '3s' }} />
+                <span>Tunggu ({rateLimitCountdown}s)</span>
+              </>
+            ) : (
+              <>
+                <RefreshCw className={`w-3.5 h-3.5 ${(loading || balanceHistoryLoading) ? 'animate-spin' : ''}`} />
+                <span className="hidden sm:inline">Refresh</span>
+              </>
+            )}
           </button>
         </div>
       </div>
 
       {error && (
-        <div className="flex items-center justify-between gap-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-4 py-3 text-xs">
-          <span className="flex items-center gap-2"><AlertCircle className="w-4 h-4" />{error}</span>
+        <div className="flex items-center justify-between gap-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 text-rose-700 dark:text-rose-300 rounded-xl px-4 py-3 text-xs shadow-sm transition-all duration-200">
+          <span className="flex items-center gap-2 font-medium">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 dark:text-rose-400" />
+            {error}
+          </span>
+          {rateLimitCountdown > 0 && (
+            <span className="shrink-0 flex items-center gap-1.5 font-mono font-bold bg-rose-200/80 dark:bg-rose-900/80 text-rose-800 dark:text-rose-200 px-2.5 py-1 rounded-lg text-xs shadow-inner">
+              <Clock className="w-3.5 h-3.5 text-rose-600 dark:text-rose-300 animate-spin" style={{ animationDuration: '3s' }} />
+              {rateLimitCountdown} detik
+            </span>
+          )}
         </div>
       )}
 
@@ -1094,11 +1298,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   onChange={(e) => setTodayOfficeFilter(e.target.value)}
                   className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
                 >
-                  <option value="">Semua Kantor</option>
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
                   {offices.map(o => (
-                    <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                    <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                   ))}
-                  <option value="null">Tanpa Kantor</option>
+                  <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
                 </select>
               </div>
             </div>
@@ -1168,11 +1372,25 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                     }
                                     {!p.is_cross_day && p.check_out_time ? ` – ${fmtTime(p.check_out_time)}` : ''}
                                     {p.is_cross_day && <span className="ml-1 text-indigo-400 font-medium">· shift malam</span>}
+                                    {p.check_in_type === 'dinas_luar' && p.client_name && (
+                                      <span className="ml-1 text-emerald-600 dark:text-emerald-400 font-semibold">· Klien: {p.client_name}</span>
+                                    )}
                                   </p>
                                 </div>
                                 <div className="flex items-center gap-1.5 shrink-0">
                                   {p.check_in_type === 'wfh' && <Home className="w-3 h-3 text-indigo-500" />}
                                   {p.check_in_type === 'field' && <MapPin className="w-3 h-3 text-amber-500" />}
+                                  {p.check_in_type === 'dinas_luar' && (
+                                    <button
+                                      type="button"
+                                      onClick={() => openVisitDetailModal(p)}
+                                      className="inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 hover:bg-emerald-100 transition cursor-pointer"
+                                      title="Lihat Detail Kunjungan Dinas Luar"
+                                    >
+                                      <Briefcase className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                                      <span>Dinas Luar</span>
+                                    </button>
+                                  )}
                                   <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
                                 </div>
                               </div>
@@ -1207,7 +1425,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                               return (
                                 <div key={p.user_id} className="flex items-center justify-between border-b border-slate-50 dark:border-slate-800/60 pb-2">
                                   <div className="min-w-0">
-                                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate">{p.name}</p>
+                                    <p className="text-xs font-semibold text-slate-800 dark:text-slate-200 truncate flex items-center gap-1">
+                                      {p.name}
+                                    </p>
                                     <p className="text-[10px] text-slate-400">
                                       {p.employee_code && <span className="font-mono">{p.employee_code} · </span>}
                                       {p.department ?? '—'}
@@ -1216,16 +1436,25 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                       )}
                                     </p>
                                   </div>
-                                  {isAlpha && (
-                                    <div className="flex items-center shrink-0 ml-2">
+                                  <div className="flex items-center gap-1.5 shrink-0 ml-2">
+                                    {p.is_wfh && (
+                                      <span
+                                        className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 border border-blue-200 dark:border-blue-900/40 flex items-center gap-1"
+                                        title={p.is_wfh_approved ? 'Pengajuan WFH disetujui HRD hari ini' : 'Mode WFH aktif'}
+                                      >
+                                        <Home className="w-2.5 h-2.5" />
+                                        WFH
+                                      </span>
+                                    )}
+                                    {isAlpha && (
                                       <span
                                         className="text-[9px] font-bold px-2 py-0.5 rounded bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40 shrink-0"
                                         title={p.cutoff_time ? `Melewati batas waktu presensi (${p.cutoff_time} WIB)` : 'Alpha'}
                                       >
                                         Alpha
                                       </span>
-                                    </div>
-                                  )}
+                                    )}
+                                  </div>
                                 </div>
                               );
                             })}
@@ -1412,10 +1641,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     }}
                     className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <option value="">Semua Status</option>
-                    <option value="pending">Menunggu</option>
-                    <option value="approved">Disetujui</option>
-                    <option value="rejected">Ditolak</option>
+                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Status</option>
+                    <option value="pending" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Menunggu</option>
+                    <option value="approved" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Disetujui</option>
+                    <option value="rejected" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Ditolak</option>
                   </select>
 
                   {/* Dropdown tipe */}
@@ -1425,11 +1654,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     onChange={(e) => setLeaveTypeFilter(e.target.value as any)}
                     className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <option value="">Semua Tipe</option>
-                    <option value="izin">Izin</option>
-                    <option value="sakit">Sakit</option>
-                    <option value="cuti">Cuti</option>
-                    <option value="wfh">WFH</option>
+                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Tipe</option>
+                    <option value="izin" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Izin</option>
+                    <option value="sakit" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Sakit</option>
+                    <option value="cuti" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Cuti</option>
+                    <option value="wfh" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">WFH</option>
                   </select>
 
                   {/* Dropdown sumber cuti */}
@@ -1439,9 +1668,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     onChange={(e) => setLeaveSourceFilter(e.target.value as any)}
                     className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <option value="all">Semua Sumber</option>
-                    <option value="mandiri">Mandiri (Mobile)</option>
-                    <option value="collective">Cuti Bersama</option>
+                    <option value="all" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Sumber</option>
+                    <option value="mandiri" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Mandiri (Mobile)</option>
+                    <option value="collective" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Cuti Bersama</option>
                   </select>
 
                   {/* Dropdown kantor cabang */}
@@ -1451,11 +1680,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       onChange={(e) => setLeaveOfficeFilter(e.target.value)}
                       className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                     >
-                      <option value="">Semua Kantor</option>
+                      <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
                       {offices.map((o: any) => (
-                        <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                        <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                       ))}
-                      <option value="null">Tanpa Kantor</option>
+                      <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
                     </select>
                   )}
 
@@ -1486,7 +1715,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     placeholder="Cari nama karyawan..."
                     value={leaveSearch}
                     onChange={(e) => setLeaveSearch(e.target.value)}
-                    className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-full sm:w-48"
+                    className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-full sm:w-48"
                   />
                 </div>
               </div>
@@ -1504,7 +1733,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <div className="overflow-x-auto">
                 <table className="w-full text-xs text-left">
                   <thead>
-                    <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                    <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400">
                       <th className="py-2 px-2 font-semibold">Karyawan</th>
                       <th className="py-2 px-2 font-semibold">Tipe</th>
                       <th className="py-2 px-2 font-semibold">Sumber</th>
@@ -1676,11 +1905,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           setLeavePageSize(Number(e.target.value));
                           setLeavePage(1);
                         }}
-                        className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                        className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
                       >
-                        <option value={25}>25</option>
-                        <option value={50}>50</option>
-                        <option value={100}>100</option>
+                        <option value={25} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">25</option>
+                        <option value={50} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">50</option>
+                        <option value={100} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">100</option>
                       </select>
                     </div>
                   </div>
@@ -1738,8 +1967,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         loading ? <TabSkeleton tab="users" /> : (
           <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5">
             <div className="bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 p-3 rounded-xl text-[11px] text-indigo-900 dark:text-indigo-400 flex items-start gap-2 mb-4">
-              <Home className="w-4 h-4 shrink-0 mt-0.5" />
-              <span>Mode WFH ON → karyawan bisa presensi dari rumah via aplikasi mobile. OFF → presensi hanya di kantor (perangkat presensi). Radius ON → presensi mobile wajib dalam radius area kerja (mode lapangan).</span>
+              <Smartphone className="w-4 h-4 shrink-0 mt-0.5 text-indigo-600" />
+              <span><strong>Kontrol Presensi Karyawan:</strong> Hak akses Presensi Mobile dikontrol melalui checkbox di <strong>Edit Profil Karyawan</strong>. Jika Presensi Mobile dimatikan di profil, fitur mobile (Mode WFH, Radius Lapangan, Dinas Luar) otomatis <strong>terkunci (OFF)</strong>. Jam kerja fleksibel (Flexitime) dapat diatur mandiri karena berlaku untuk seluruh tipe presensi kantor.</span>
             </div>
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 mb-3">
               <div className="relative flex-1">
@@ -1749,19 +1978,19 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   placeholder="Cari nama atau NIK karyawan..."
                   value={userSearch}
                   onChange={(e) => setUserSearch(e.target.value)}
-                  className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                 />
               </div>
               <select
                 value={userOfficeFilter}
                 onChange={(e) => setUserOfficeFilter(e.target.value)}
-                className="py-2 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                className="py-2 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
               >
-                <option value="">Semua Kantor</option>
+                <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
                 {offices.map(o => (
-                  <option key={o.id} value={o.id}>{o.office_name}</option>
+                  <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                 ))}
-                <option value="null">Tanpa Kantor</option>
+                <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
               </select>
             </div>
             <div className="overflow-x-auto">
@@ -1785,54 +2014,158 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <>
                     <table className="w-full text-xs text-left">
                       <thead>
-                        <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                        <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400">
                           <th className="py-2 px-2 font-semibold">Nama</th>
                           <th className="py-2 px-2 font-semibold">Departemen</th>
                           <th className="py-2 px-2 font-semibold">Kantor</th>
                           <th className="py-2 px-2 font-semibold">Role</th>
                           <th className="py-2 px-2 font-semibold text-center">Mode WFH</th>
                           <th className="py-2 px-2 font-semibold text-center">Radius Lapangan</th>
+                          <th className="py-2 px-2 font-semibold text-center">Dinas Luar</th>
+                          <th className="py-2 px-2 font-semibold text-center">Flexitime</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
                         {filtered.length === 0 ? (
-                          <tr><td colSpan={6} className="text-center py-8 text-slate-400">{userSearch || userOfficeFilter ? 'Tidak ada karyawan yang cocok dengan filter.' : 'Tidak ada karyawan.'}</td></tr>
+                          <tr><td colSpan={8} className="text-center py-8 text-slate-400">{userSearch || userOfficeFilter ? 'Tidak ada karyawan yang cocok dengan filter.' : 'Tidak ada karyawan.'}</td></tr>
                         ) : (
-                          paginatedUsers.map((u) => (
-                            <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
-                              <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">
-                                {u.name}
-                                {(u.employee_code || u.nik) && (
-                                  <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({u.employee_code || u.nik})</span>
-                                )}
-                              </td>
-                              <td className="py-2.5 px-2 text-slate-500">{u.department ?? '—'}</td>
-                              <td className="py-2.5 px-2 text-slate-500">{u.office?.office_name ?? u.office_name ?? '—'}</td>
-                              <td className="py-2.5 px-2 text-slate-500 capitalize">{u.role}</td>
-                              <td className="py-2.5 px-2 text-center">
-                                <button
-                                  onClick={() => handleToggleWfh(u.id, u.name)}
-                                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.wfh_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
-                                  title={u.wfh_enabled ? 'WFH aktif — klik untuk nonaktifkan' : 'WFH nonaktif — klik untuk aktifkan'}
-                                >
-                                  <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.wfh_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-                                </button>
-                              </td>
-                              <td className="py-2.5 px-2 text-center">
-                                {u.wfh_enabled ? (
-                                  <button
-                                    onClick={() => handleToggleRadius(u.id, u.name)}
-                                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.radius_enabled ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'}`}
-                                    title={u.radius_enabled ? 'Radius aktif (lapangan) — klik untuk nonaktifkan' : 'Radius nonaktif (WFH bebas) — klik untuk aktifkan'}
-                                  >
-                                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.radius_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
-                                  </button>
-                                ) : (
-                                  <span className="text-[10px] text-slate-300 dark:text-slate-700">—</span>
-                                )}
-                              </td>
-                            </tr>
-                          ))
+                          paginatedUsers.map((u) => {
+                            // Status Izin Master dari Edit Profil Karyawan
+                            const isMobileLocked = u.allow_attendance === false;
+                            const isWfhLocked = isMobileLocked || u.allow_wfh === false;
+                            const isRadiusLocked = isWfhLocked || u.allow_radius === false;
+                            const isDinasLuarLocked = isMobileLocked;
+
+                            return (
+                              <tr key={u.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30">
+                                <td className="py-2.5 px-2 font-semibold text-slate-800 dark:text-slate-200">
+                                  {u.name}
+                                  {(u.employee_code || u.nik) && (
+                                    <span className="ml-1.5 text-[10px] font-mono font-normal text-slate-400">({u.employee_code || u.nik})</span>
+                                  )}
+                                </td>
+                                <td className="py-2.5 px-2 text-slate-500 dark:text-slate-400">{u.department ?? '—'}</td>
+                                <td className="py-2.5 px-2 text-slate-500 dark:text-slate-400">{u.office?.office_name ?? u.office_name ?? '—'}</td>
+                                <td className="py-2.5 px-2 text-slate-500 dark:text-slate-400 capitalize">{u.role}</td>
+
+                                {/* 1. Mode WFH */}
+                                <td className="py-2.5 px-2 text-center">
+                                  {isWfhLocked ? (
+                                    <div className="inline-flex items-center justify-center gap-1.5" title={isMobileLocked ? "Akses Presensi Mobile dinonaktifkan di Edit Profil Karyawan. Switch WFH terkunci." : "Izinkan Presensi WFH dinonaktifkan di Edit Profil Karyawan. Switch terkunci off."}>
+                                      <button
+                                        disabled
+                                        className="relative inline-flex h-5 w-9 items-center rounded-full bg-slate-200 dark:bg-slate-800 opacity-40 cursor-not-allowed"
+                                      >
+                                        <span className="inline-block h-3.5 w-3.5 transform rounded-full bg-slate-400 dark:bg-slate-600 translate-x-1" />
+                                      </button>
+                                      <Lock className="w-3 h-3 text-slate-400 dark:text-slate-500 shrink-0" />
+                                    </div>
+                                  ) : u.dinas_luar_enabled ? (
+                                    <button
+                                      disabled
+                                      className="relative inline-flex h-5 w-9 items-center rounded-full bg-emerald-500 opacity-80 cursor-not-allowed"
+                                      title="Mode WFH otomatis aktif dan terkunci karena izin Dinas Luar menyala. Nonaktifkan Dinas Luar jika ingin mengubah."
+                                    >
+                                      <span className="inline-block h-3.5 w-3.5 transform rounded-full bg-white translate-x-4 shadow-sm" />
+                                    </button>
+                                  ) : u.is_wfh_approved_today ? (
+                                    <button
+                                      disabled
+                                      className="relative inline-flex h-5 w-9 items-center rounded-full bg-emerald-500 opacity-80 cursor-not-allowed"
+                                      title="Mode WFH otomatis aktif karena pengajuan WFH telah disetujui HRD untuk hari ini."
+                                    >
+                                      <span className="inline-block h-3.5 w-3.5 transform rounded-full bg-white translate-x-4 shadow-sm" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleToggleWfh(u.id, u.name)}
+                                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition cursor-pointer ${u.wfh_enabled ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                      title={u.wfh_enabled ? 'WFH aktif — klik untuk nonaktifkan' : 'WFH nonaktif — klik untuk aktifkan'}
+                                    >
+                                      <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.wfh_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                                    </button>
+                                  )}
+                                </td>
+
+                                {/* 2. Radius Lapangan */}
+                                <td className="py-2.5 px-2 text-center">
+                                  {isRadiusLocked ? (
+                                    <div className="inline-flex items-center justify-center gap-1.5" title={isMobileLocked ? "Akses Presensi Mobile dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci." : "Validasi Radius / WFH dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci off."}>
+                                      <button
+                                        disabled
+                                        className="relative inline-flex h-5 w-9 items-center rounded-full bg-slate-200 dark:bg-slate-800 opacity-40 cursor-not-allowed"
+                                      >
+                                        <span className="inline-block h-3.5 w-3.5 transform rounded-full bg-slate-400 dark:bg-slate-600 translate-x-1" />
+                                      </button>
+                                      <Lock className="w-3 h-3 text-slate-400 dark:text-slate-500 shrink-0" />
+                                    </div>
+                                  ) : (u.dinas_luar_enabled || u.is_wfh_approved_today) ? (
+                                    <span className="text-[10px] font-mono text-slate-400 dark:text-slate-600" title="Radius dinonaktifkan otomatis (WFH / Dinas Luar bebas radius)">—</span>
+                                  ) : !u.wfh_enabled ? (
+                                    <button
+                                      disabled
+                                      className="relative inline-flex h-5 w-9 items-center rounded-full bg-slate-200 dark:bg-slate-800 opacity-50 cursor-not-allowed"
+                                      title="Mode WFH sedang nonaktif — aktifkan Mode WFH untuk mengatur radius lapangan"
+                                    >
+                                      <span className="inline-block h-3.5 w-3.5 transform rounded-full bg-slate-400 dark:bg-slate-600 translate-x-1" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleToggleRadius(u.id, u.name)}
+                                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition cursor-pointer ${u.radius_enabled ? 'bg-amber-500' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                      title={u.radius_enabled ? 'Radius aktif (lapangan) — klik untuk nonaktifkan' : 'Radius nonaktif (WFH bebas) — klik untuk aktifkan'}
+                                    >
+                                      <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.radius_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                                    </button>
+                                  )}
+                                </td>
+
+                                {/* 3. Dinas Luar */}
+                                <td className="py-2.5 px-2 text-center">
+                                  {isDinasLuarLocked ? (
+                                    <div className="inline-flex items-center justify-center gap-1.5" title="Akses Presensi Mobile dinonaktifkan di Edit Profil Karyawan. Switch terkunci sampai diizinkan kembali di Edit Profil Karyawan.">
+                                      <button
+                                        disabled
+                                        className="relative inline-flex h-5 w-9 items-center rounded-full bg-slate-200 dark:bg-slate-800 opacity-40 cursor-not-allowed"
+                                      >
+                                        <span className="inline-block h-3.5 w-3.5 transform rounded-full bg-slate-400 dark:bg-slate-600 translate-x-1" />
+                                      </button>
+                                      <Lock className="w-3 h-3 text-slate-400 dark:text-slate-500 shrink-0" />
+                                    </div>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleToggleDinasLuar(u.id, u.name)}
+                                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition cursor-pointer ${u.dinas_luar_enabled ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                      title={u.dinas_luar_enabled ? 'Izin Dinas Luar aktif — klik untuk nonaktifkan' : 'Izin Dinas Luar nonaktif — klik untuk aktifkan'}
+                                    >
+                                      <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.dinas_luar_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                                    </button>
+                                  )}
+                                </td>
+
+                                {/* 4. Flexitime (Independen dari presensi mobile) */}
+                                <td className="py-2.5 px-2 text-center">
+                                  {u.has_active_shift ? (
+                                    <button
+                                      disabled
+                                      className="relative inline-flex h-5 w-9 items-center rounded-full bg-slate-200 dark:bg-slate-800 opacity-50 cursor-not-allowed"
+                                      title={`Flexitime dinonaktifkan otomatis karena karyawan memiliki penugasan shift (${u.active_shift_name || 'Shift'}).`}
+                                    >
+                                      <span className="inline-block h-3.5 w-3.5 transform rounded-full bg-slate-400 dark:bg-slate-600 translate-x-1" />
+                                    </button>
+                                  ) : (
+                                    <button
+                                      onClick={() => handleToggleFlexitime(u.id, u.name)}
+                                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition ${u.flexitime_enabled ? 'bg-teal-600' : 'bg-slate-300 dark:bg-slate-700'}`}
+                                      title={u.flexitime_enabled ? 'Jam kerja fleksibel aktif — klik untuk nonaktifkan' : 'Jam kerja fleksibel nonaktif — klik untuk aktifkan'}
+                                    >
+                                      <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white transition ${u.flexitime_enabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                                    </button>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          })
                         )}
                       </tbody>
                     </table>
@@ -1855,11 +2188,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 setUserPageSize(Number(e.target.value));
                                 setUserPage(1);
                               }}
-                              className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                              className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
                             >
-                              <option value={25}>25</option>
-                              <option value={50}>50</option>
-                              <option value={100}>100</option>
+                              <option value={25} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">25</option>
+                              <option value={50} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">50</option>
+                              <option value={100} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">100</option>
                             </select>
                           </div>
                         </div>
@@ -2022,13 +2355,13 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       <select
                         value={balanceOfficeFilter}
                         onChange={(e) => setBalanceOfficeFilter(e.target.value)}
-                        className="py-1.5 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 max-w-[180px]"
+                        className="py-1.5 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 max-w-[180px]"
                       >
-                        <option value="">Semua Kantor</option>
+                        <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
                         {offices.map(o => (
-                          <option key={o.id} value={o.id}>{o.office_name}</option>
+                          <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                         ))}
-                        <option value="none">Tanpa Kantor</option>
+                        <option value="none" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
                       </select>
                       <div className="relative">
                         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
@@ -2196,11 +2529,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   setBalancePageSize(Number(e.target.value));
                                   setBalancePage(1);
                                 }}
-                                className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
+                                className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none cursor-pointer"
                               >
-                                <option value={12}>12</option>
-                                <option value={24}>24</option>
-                                <option value={48}>48</option>
+                                <option value={12} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">12</option>
+                                <option value={24} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">24</option>
+                                <option value={48} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">48</option>
                               </select>
                             </div>
                           </div>
@@ -2312,11 +2645,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <select
                     value={balanceHistoryYearFilter}
                     onChange={(e) => setBalanceHistoryYearFilter(e.target.value)}
-                    className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                   >
-                    <option value="">Semua Tahun Reset</option>
+                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Tahun Reset</option>
                     {[new Date().getFullYear(), new Date().getFullYear() - 1, new Date().getFullYear() - 2].map(y => (
-                      <option key={y} value={y}>{y}</option>
+                      <option key={y} value={y} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{y}</option>
                     ))}
                   </select>
 
@@ -2324,13 +2657,13 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <select
                     value={balanceHistoryOfficeFilter}
                     onChange={(e) => setBalanceHistoryOfficeFilter(e.target.value)}
-                    className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                   >
-                    <option value="">Semua Kantor</option>
+                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
                     {offices.map(o => (
-                      <option key={o.id} value={o.id}>{o.office_name}</option>
+                      <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                     ))}
-                    <option value="none">Tanpa Kantor</option>
+                    <option value="none" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
                   </select>
                 </div>
 
@@ -2491,7 +2824,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     placeholder="Cari nama karyawan..."
                     value={reportSearch}
                     onChange={(e) => setReportSearch(e.target.value)}
-                    className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors"
+                    className="w-full pl-8 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors"
                   />
                 </div>
                 <button
@@ -2534,9 +2867,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor</label>
                 <select value={reportFilter.office_id || ''} onChange={(e) => setReportFilterAndReset({ ...reportFilter, office_id: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer">
-                  <option value="">Semua Kantor</option>
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
                   {offices.map(o => (
-                    <option key={o.id} value={o.id}>{o.office_name}</option>
+                    <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                   ))}
                 </select>
               </div>
@@ -2548,13 +2881,13 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   onChange={(e) => setReportFilterAndReset({ ...reportFilter, shift_id: e.target.value })}
                   className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer"
                 >
-                  <option value="">Semua Shift</option>
-                  <option value="office">🏢 Kantor (Default)</option>
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Shift</option>
+                  <option value="office" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">🏢 Kantor (Default)</option>
                   {reportAvailableShifts.map((s) => {
                     const shiftStat = report?.by_shift?.find((bs: any) => bs.shift_id === s.id);
                     const lateNote = shiftStat?.late > 0 ? ` (⚠️ ${shiftStat.late} Telat)` : '';
                     return (
-                      <option key={s.id} value={s.id}>
+                      <option key={s.id} value={s.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
                         {s.name}{lateNote}
                       </option>
                     );
@@ -2565,25 +2898,26 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Status</label>
                 <select value={reportFilter.status} onChange={(e) => setReportFilterAndReset({ ...reportFilter, status: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer">
-                  <option value="">Semua Status</option>
-                  <option value="present">Hadir</option>
-                  <option value="late">Telat</option>
-                  <option value="early_leave">Pulang Awal</option>
-                  <option value="absent">Alpha</option>
-                  <option value="libur">Libur</option>
-                  <option value="cuti">Cuti</option>
-                  <option value="izin">Izin</option>
-                  <option value="sakit">Sakit</option>
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Status</option>
+                  <option value="present" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Hadir</option>
+                  <option value="late" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Telat</option>
+                  <option value="early_leave" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Pulang Awal</option>
+                  <option value="absent" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Alpha</option>
+                  <option value="libur" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Libur</option>
+                  <option value="cuti" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Cuti</option>
+                  <option value="izin" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Izin</option>
+                  <option value="sakit" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Sakit</option>
                 </select>
               </div>
 
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Lokasi</label>
                 <select value={reportFilter.type} onChange={(e) => setReportFilterAndReset({ ...reportFilter, type: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer">
-                  <option value="">Semua Lokasi</option>
-                  <option value="onsite">On Site</option>
-                  <option value="wfh">WFH</option>
-                  <option value="field">Lapangan</option>
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Lokasi</option>
+                  <option value="onsite" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">On Site</option>
+                  <option value="wfh" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">WFH</option>
+                  <option value="field" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Lapangan</option>
+                  <option value="dinas_luar" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Dinas Luar</option>
                 </select>
               </div>
             </div>
@@ -2594,7 +2928,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           ) : report && (
             <>
               {/* Summary global */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-11 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 xl:grid-cols-12 gap-3">
                 <SummaryCard label="Hadir" value={report.summary?.present ?? 0} color="text-emerald-600" />
                 <SummaryCard label="Telat" value={report.summary?.late ?? 0} color="text-amber-600" />
                 <SummaryCard label="Pulang Awal" value={report.summary?.early_leave ?? 0} color="text-violet-600" />
@@ -2604,6 +2938,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <SummaryCard label="Sakit" value={report.summary?.sakit ?? 0} color="text-orange-500" />
                 <SummaryCard label="On site" value={report.by_type?.onsite ?? 0} color="text-slate-700 dark:text-white" />
                 <SummaryCard label="WFH" value={report.by_type?.wfh ?? 0} color="text-indigo-600" />
+                <SummaryCard label="Dinas Luar" value={report.by_type?.dinas_luar ?? 0} color="text-emerald-500" />
                 <SummaryCard label="Jam Kerja" value={fmtMinutes(report.summary?.total_working_minutes)} color="text-cyan-600" />
                 <SummaryCard label="Lembur" value={fmtMinutes(report.summary?.total_overtime_minutes)} color="text-orange-600" />
               </div>
@@ -2675,7 +3010,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 <div className="p-5 overflow-x-auto">
                   <table className="w-full text-xs text-left">
                     <thead>
-                      <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                      <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-500 dark:text-slate-400">
                         <th className="py-2 px-2 font-semibold">NIK</th>
                         <th className="py-2 px-2 font-semibold">
                           <button
@@ -2787,18 +3122,40 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                               </td>
                               <td className="py-3 px-2 whitespace-nowrap">
                                 {r.check_in_type ? (
-                                  <span className="flex items-center gap-1.5">
-                                    {r.check_in_type === 'wfh' && <Home className="w-3.5 h-3.5 text-indigo-500" />}
-                                    {r.check_in_type === 'field' && <MapPin className="w-3.5 h-3.5 text-amber-500" />}
-                                    {r.check_in_type === 'onsite' && <Building2 className="w-3.5 h-3.5 text-slate-400" />}
-                                    {r.check_in_type === 'wfh' ? 'WFH' : r.check_in_type === 'field' ? 'Lapangan' : 'Kantor'}
-                                  </span>
+                                  <div className="flex flex-col gap-1">
+                                    <span className="flex items-center gap-1.5">
+                                      {r.check_in_type === 'wfh' && <Home className="w-3.5 h-3.5 text-indigo-500" />}
+                                      {r.check_in_type === 'field' && <MapPin className="w-3.5 h-3.5 text-amber-500" />}
+                                      {r.check_in_type === 'onsite' && <Building2 className="w-3.5 h-3.5 text-slate-400" />}
+                                      {r.check_in_type === 'dinas_luar' && <Briefcase className="w-3.5 h-3.5 text-emerald-500" />}
+                                      <span className={r.check_in_type === 'dinas_luar' ? 'font-semibold text-emerald-700 dark:text-emerald-400' : ''}>
+                                        {r.check_in_type === 'dinas_luar' ? 'Dinas Luar' : r.check_in_type === 'wfh' ? 'WFH' : r.check_in_type === 'field' ? 'Lapangan' : 'Kantor'}
+                                      </span>
+                                    </span>
+                                    {r.check_in_type === 'dinas_luar' && (
+                                      <div className="flex items-center gap-1.5">
+                                        {r.client_name && (
+                                          <span className="text-[10px] text-slate-500 max-w-[130px] truncate" title={r.client_name}>
+                                            {r.client_name}
+                                          </span>
+                                        )}
+                                        <button
+                                          type="button"
+                                          onClick={() => openVisitDetailModal(r)}
+                                          className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/60 text-[9px] font-bold border border-emerald-200 dark:border-emerald-800 transition cursor-pointer"
+                                          title="Lihat Detail Kunjungan & Foto Bukti"
+                                        >
+                                          <Eye className="w-2.5 h-2.5" /> Detail
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
                                 ) : (
                                   <span className="text-slate-300 dark:text-slate-600">—</span>
                                 )}
                               </td>
                               <td className="py-3 px-2 whitespace-nowrap">
-                                {(r.check_in_type === 'wfh' || r.check_in_type === 'field') && r.check_in_lat && r.check_in_lng ? (
+                                {(r.check_in_type === 'wfh' || r.check_in_type === 'field' || r.check_in_type === 'dinas_luar') && r.check_in_lat && r.check_in_lng ? (
                                   <a
                                     href={`https://www.google.com/maps?q=${r.check_in_lat},${r.check_in_lng}`}
                                     target="_blank"
@@ -2847,9 +3204,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           }}
                           className="py-0.5 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 focus:outline-none cursor-pointer"
                         >
-                          <option value={25}>25</option>
-                          <option value={50}>50</option>
-                          <option value={100}>100</option>
+                          <option value={25} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">25</option>
+                          <option value={50} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">50</option>
+                          <option value={100} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">100</option>
                         </select>
                       </div>
                     </div>
@@ -3125,6 +3482,103 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         </div>
       )}
 
+      {/* ─── Modal: Detail Kunjungan Dinas Luar & Foto Bukti ─── */}
+      {visitDetailModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div onClick={closeVisitDetailModal} className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm" />
+          <div className="relative z-10 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex items-center justify-between px-5 py-3.5 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/40">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-xl bg-emerald-100 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center">
+                  <Briefcase className="w-4 h-4" />
+                </div>
+                <div>
+                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100">Detail Kunjungan Klien</p>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">{visitDetailModal.userName}</p>
+                </div>
+              </div>
+              <button
+                onClick={closeVisitDetailModal}
+                className="p-1.5 hover:bg-slate-200/60 dark:hover:bg-slate-800 rounded-lg text-slate-400 hover:text-slate-600 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="flex-1 overflow-y-auto p-5 space-y-4">
+              {/* Info Klien */}
+              <div className="bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40 rounded-xl p-3.5 space-y-2.5">
+                <div>
+                  <span className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-wider block">Nama Klien / Instansi</span>
+                  <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{visitDetailModal.clientName}</p>
+                </div>
+                {visitDetailModal.clientAddress && (
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Alamat / Lokasi Klien</span>
+                    <p className="text-xs text-slate-700 dark:text-slate-300 leading-relaxed flex items-start gap-1.5 mt-0.5">
+                      <MapPin className="w-3.5 h-3.5 text-emerald-500 shrink-0 mt-0.5" />
+                      <span>{visitDetailModal.clientAddress}</span>
+                    </p>
+                  </div>
+                )}
+                {visitDetailModal.visitNotes && (
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Catatan / Agenda Kunjungan</span>
+                    <p className="text-xs text-slate-600 dark:text-slate-300 bg-white/60 dark:bg-slate-900/60 rounded-lg p-2 mt-0.5 border border-slate-100 dark:border-slate-800/80">
+                      {visitDetailModal.visitNotes}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* GPS Coordinates & Google Maps Link */}
+              {visitDetailModal.checkInLat && visitDetailModal.checkInLng && (
+                <div className="flex items-center justify-between p-3 rounded-xl border border-slate-100 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/30 text-xs">
+                  <div>
+                    <span className="text-[10px] font-semibold text-slate-400 block">Koordinat GPS Saat Check-in</span>
+                    <span className="font-mono text-slate-700 dark:text-slate-300 text-xs">
+                      {Number(visitDetailModal.checkInLat).toFixed(6)}, {Number(visitDetailModal.checkInLng).toFixed(6)}
+                    </span>
+                  </div>
+                  <a
+                    href={`https://www.google.com/maps?q=${visitDetailModal.checkInLat},${visitDetailModal.checkInLng}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 text-xs font-semibold shadow-xs transition"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" /> Google Maps
+                  </a>
+                </div>
+              )}
+
+              {/* Foto Bukti Kunjungan (jika ada) */}
+              {visitDetailModal.photoUrl && (
+                <div>
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block mb-2">Foto Bukti Terlampir</span>
+                  <div className="relative rounded-xl overflow-hidden border border-slate-200 dark:border-slate-700 bg-slate-950 flex items-center justify-center group">
+                    <img
+                      src={visitDetailModal.photoUrl}
+                      alt={`Foto kunjungan ${visitDetailModal.clientName}`}
+                      className="max-h-72 w-full object-contain rounded-xl"
+                    />
+                    <a
+                      href={visitDetailModal.photoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="absolute bottom-3 right-3 px-2.5 py-1.5 rounded-lg bg-slate-900/80 backdrop-blur-sm text-white text-xs font-semibold opacity-0 group-hover:opacity-100 transition flex items-center gap-1"
+                    >
+                      <ExternalLink className="w-3 h-3" /> Perbesar
+                    </a>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ─── Modal: Panduan/Legend ─── */}
       {showLegend && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -3222,6 +3676,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           </div>
         </div>
       )}
+
     </div>
   );
 };
@@ -3709,9 +4164,9 @@ const HolidaysTab: React.FC<{
                 className="py-1.5 px-3 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                 title="Filter libur mingguan per kantor"
               >
-                <option value="">Semua Kantor</option>
+                <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
                 {offices.map((o: any) => (
-                  <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                  <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                 ))}
               </select>
             </div>
@@ -3729,7 +4184,7 @@ const HolidaysTab: React.FC<{
           <div className="space-y-1.5 sm:col-span-1">
             <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Tanggal</label>
             {/* Tanggal tidak bisa diedit — berasal dari pilihan kalender (atau tanggal libur yang sedang diubah). */}
-            <div className="flex items-center gap-2 text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100">
+            <div className="flex items-center gap-2 text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100">
               <CalendarDays className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
               <span className="font-semibold">{form.date ? fmtDate(form.date) : '—'}</span>
             </div>
@@ -3742,7 +4197,7 @@ const HolidaysTab: React.FC<{
               value={form.name}
               placeholder={form.type === 'nasional' ? 'mis. Hari Kenaikan Yesus Kristus' : form.type === 'collective' ? 'mis. Cuti Bersama Idul Fitri' : 'mis. Hari Jadi Perusahaan'}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
               required
             />
           </div>
@@ -3753,9 +4208,9 @@ const HolidaysTab: React.FC<{
               onChange={(e) => handleTypeChange(e.target.value)}
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
             >
-              {isSuperAdmin && <option value="nasional">Libur Nasional</option>}
-              <option value="collective">Cuti Bersama</option>
-              <option value="perusahaan">Libur Perusahaan</option>
+              {isSuperAdmin && <option value="nasional" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Libur Nasional</option>}
+              <option value="collective" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Cuti Bersama</option>
+              <option value="perusahaan" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Libur Perusahaan</option>
             </select>
           </div>
 
@@ -3777,12 +4232,12 @@ const HolidaysTab: React.FC<{
                 required={!isSuperAdmin}
               >
                 {isSuperAdmin ? (
-                  <option value="">Semua Kantor (Semua Cabang)</option>
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor (Semua Cabang)</option>
                 ) : (
-                  <option value="" disabled>Pilih Kantor Cabang...</option>
+                  <option value="" disabled className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Pilih Kantor Cabang...</option>
                 )}
                 {offices.map((o: any) => (
-                  <option key={o.id} value={String(o.id)}>{o.office_name}</option>
+                  <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                 ))}
               </select>
             </div>
@@ -4335,7 +4790,9 @@ const HolidaysTab: React.FC<{
                                 {e.remaining ?? e.quota - e.used} hari
                               </td>
                               <td className="py-2 px-3 text-center">
-                                <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                                <span
+                                  title={e.rejection_reason || undefined}
+                                  className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
                                   e.collective_status === 'accepted'
                                     ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400'
                                     : e.collective_status === 'declined'
@@ -4748,7 +5205,7 @@ const HolidaysTab: React.FC<{
                     className="w-full py-1.5 px-3 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none"
                   >
                     {[2024, 2025, 2026, 2027].map(y => (
-                      <option key={y} value={y}>Tahun {y}</option>
+                      <option key={y} value={y} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tahun {y}</option>
                     ))}
                   </select>
                 </div>
@@ -4763,8 +5220,8 @@ const HolidaysTab: React.FC<{
                     disabled={syncingHolidays}
                     className="w-full py-1.5 px-3 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-2 focus:ring-rose-500/20 focus:border-rose-500 outline-none"
                   >
-                    <option value="nasional">Libur Nasional (Bebas Cuti / Tanggal Merah)</option>
-                    <option value="collective">Cuti Bersama Perusahaan (Potong Kuota Cuti)</option>
+                    <option value="nasional" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Libur Nasional (Bebas Cuti / Tanggal Merah)</option>
+                    <option value="collective" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Cuti Bersama Perusahaan (Potong Kuota Cuti)</option>
                   </select>
                 </div>
               </div>

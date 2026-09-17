@@ -43,7 +43,7 @@ class AppUser {
       email: json['email'] ?? '-',
       role: json['role'] ?? 'employee',
       department: json['department'] as String?,
-      wfhEnabled: json['wfh_enabled'] == true,
+      wfhEnabled: json['wfh_enabled'] == true || json['dinas_luar_enabled'] == true,
       attendanceEnabled: json['attendance_enabled'] == true,
       bankName: json['bank_name'] as String?,
       bankAccountNo: json['bank_account_no'] as String?,

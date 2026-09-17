@@ -232,10 +232,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
     // Tab Presensi: muat riwayat dan sync status WFH/presensi dari backend
     if (index == 2) {
-      Provider.of<PresensiProvider>(
-        context,
-        listen: false,
-      ).fetchMyAttendance();
+      final prov = Provider.of<PresensiProvider>(context, listen: false);
+      prov.fetchMyAttendance(forceRefresh: true);
+      prov.syncStatusFromBackend(forceRefresh: true);
     }
     // Tab Izin & Cuti: ambil data terbaru
     if (index == 3) {
@@ -326,8 +325,18 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   }
 
   void _goToPresensi() {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
     final presensiProv = Provider.of<PresensiProvider>(context, listen: false);
-    if (presensiProv.wfhEnabled || presensiProv.canCheckOut) {
+    if (!presensiProv.attendanceEnabled || (auth.user != null && !auth.user!.attendanceEnabled)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses presensi mobile dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    if (presensiProv.wfhEnabled || presensiProv.canDinasLuar || presensiProv.canCheckOut) {
       Navigator.push(
         context,
         MaterialPageRoute(builder: (_) => const PresensiMapScreen()),
@@ -477,8 +486,6 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                     ],
                   ),
                   const SizedBox(height: 20),
-
-
 
                   // ─── Card Utama: Status Presensi Hari Ini ────────────
                   _buildAttendanceCard(presensiProv),

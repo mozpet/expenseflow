@@ -244,6 +244,12 @@ const OfficesTab: React.FC<{
     default_leave_quota: 12,
     leave_reset_date: '',
     custom_schedules: {} as Record<number, { start: string; end: string; break_minutes?: number | '' }>,
+    // ─── Jam Kerja Fleksibel (Flexitime) Cabang ───
+    flex_arrival_start: '07:00',
+    flex_arrival_end: '10:00',
+    flex_core_start: '10:00',
+    flex_core_end: '15:00',
+    flex_target_minutes: 480,
     // ─── Bidang Payroll Cabang (Roadmap Bagian C) ───
     umr_amount: 0,
     payroll_cutoff_date: 25,
@@ -290,6 +296,11 @@ const OfficesTab: React.FC<{
     min_overtime_minutes: 'Ambang Minimal Lembur',
     checkout_reminder_minutes: 'Reminder Checkout',
     auto_checkout_grace_minutes: 'Auto-Checkout',
+    flex_arrival_start: 'Window Datang Flexitime (Mulai)',
+    flex_arrival_end: 'Window Datang Flexitime (Selesai)',
+    flex_core_start: 'Jam Inti Flexitime (Mulai)',
+    flex_core_end: 'Jam Inti Flexitime (Selesai)',
+    flex_target_minutes: 'Target Durasi Flexitime',
   };
 
   const openAdd = () => {
@@ -332,6 +343,12 @@ const OfficesTab: React.FC<{
       default_leave_quota: o.default_leave_quota ?? 12,
       leave_reset_date: o.leave_reset_date ? String(o.leave_reset_date).slice(0, 5) : '',
       custom_schedules: o.custom_schedules ?? {},
+      // Flexitime fields
+      flex_arrival_start: o.flex_arrival_start ? String(o.flex_arrival_start).slice(0, 5) : '07:00',
+      flex_arrival_end: o.flex_arrival_end ? String(o.flex_arrival_end).slice(0, 5) : '10:00',
+      flex_core_start: o.flex_core_start ? String(o.flex_core_start).slice(0, 5) : '10:00',
+      flex_core_end: o.flex_core_end ? String(o.flex_core_end).slice(0, 5) : '15:00',
+      flex_target_minutes: o.flex_target_minutes !== undefined && o.flex_target_minutes !== null ? Number(o.flex_target_minutes) : 480,
       // Payroll fields
       umr_amount: o.umr_amount !== undefined && o.umr_amount !== null ? Number(o.umr_amount) : 0,
       payroll_cutoff_date: o.payroll_cutoff_date !== undefined && o.payroll_cutoff_date !== null ? Number(o.payroll_cutoff_date) : 25,
@@ -569,6 +586,12 @@ const OfficesTab: React.FC<{
         // Auto-checkout presensi mobile (dihitung dari jam pulang — kantor default ATAU shift)
         checkout_reminder_minutes: Number(form.checkout_reminder_minutes),
         auto_checkout_grace_minutes: Number(form.auto_checkout_grace_minutes),
+        // Jam Kerja Fleksibel (Flexitime Cabang)
+        flex_arrival_start: form.flex_arrival_start ? form.flex_arrival_start : '07:00',
+        flex_arrival_end: form.flex_arrival_end ? form.flex_arrival_end : '10:00',
+        flex_core_start: form.flex_core_start ? form.flex_core_start : '10:00',
+        flex_core_end: form.flex_core_end ? form.flex_core_end : '15:00',
+        flex_target_minutes: Number(form.flex_target_minutes ?? 480),
         // Kebijakan saldo cuti per kantor: kuota default & tanggal reset tahunan
         default_leave_quota: Number(form.default_leave_quota ?? 12),
         leave_reset_date: form.leave_reset_date ? form.leave_reset_date : null,
@@ -717,6 +740,13 @@ const OfficesTab: React.FC<{
                           return ` · reset tiap ${Number(dd)} ${bulan}`;
                         })()
                       : ' · tanpa reset otomatis'}
+                  </span>
+                </span>
+                <span className="col-span-2 flex items-center gap-1">
+                  <Clock className="w-3 h-3 text-cyan-500" />
+                  Flexitime:{' '}
+                  <span className="text-cyan-600 dark:text-cyan-400 font-semibold">
+                    Datang {(o.flex_arrival_start ?? '07:00').slice(0, 5)} - {(o.flex_arrival_end ?? '10:00').slice(0, 5)} · Jam Inti {(o.flex_core_start ?? '10:00').slice(0, 5)} - {(o.flex_core_end ?? '15:00').slice(0, 5)} · Target {((o.flex_target_minutes ?? 480) / 60).toFixed(1).replace('.0', '')} jam
                   </span>
                 </span>
               </div>
@@ -1432,6 +1462,112 @@ const OfficesTab: React.FC<{
                         </p>
                       )}
                     </div>
+                  </div>
+                </div>
+
+                {/* Section 5: Jam Kerja Fleksibel (Flexitime Cabang) */}
+                <div className="p-4 rounded-xl border border-cyan-200/80 dark:border-cyan-800/60 bg-cyan-50/30 dark:bg-cyan-950/20 space-y-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="p-1.5 bg-cyan-100 dark:bg-cyan-900/50 text-cyan-700 dark:text-cyan-300 rounded-lg shrink-0 mt-0.5">
+                      <Clock className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-cyan-900 dark:text-cyan-200">
+                        Parameter Jam Kerja Fleksibel (Flexitime Cabang)
+                      </h4>
+                      <p className="text-[11px] text-cyan-700 dark:text-cyan-300/80 leading-relaxed mt-0.5">
+                        Konfigurasi ini berlaku khusus bagi karyawan yang opsi <strong>Flexitime</strong>-nya diaktifkan pada daftar karyawan. Karyawan non-flex tetap mengikuti jam kantor standar.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                    {/* Window Datang */}
+                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-2">
+                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">
+                        Window Kedatangan Bebas
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-[9px] text-slate-400 block mb-1">Mulai Dari</span>
+                          <input
+                            type="time"
+                            value={form.flex_arrival_start}
+                            onChange={(e) => setForm({ ...form, flex_arrival_start: e.target.value })}
+                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                          />
+                        </div>
+                        <div>
+                          <span className="text-[9px] text-slate-400 block mb-1">Batas Akhir</span>
+                          <input
+                            type="time"
+                            value={form.flex_arrival_end}
+                            onChange={(e) => setForm({ ...form, flex_arrival_end: e.target.value })}
+                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[9px] text-slate-400">
+                        Check-in sebelum batas akhir (+ toleransi) dihitung Hadir (Present).
+                      </p>
+                    </div>
+
+                    {/* Core Hours */}
+                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-2">
+                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">
+                        Jam Inti Wajib Hadir (Core Hours)
+                      </label>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <span className="text-[9px] text-slate-400 block mb-1">Mulai</span>
+                          <input
+                            type="time"
+                            value={form.flex_core_start}
+                            onChange={(e) => setForm({ ...form, flex_core_start: e.target.value })}
+                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                          />
+                        </div>
+                        <div>
+                          <span className="text-[9px] text-slate-400 block mb-1">Selesai</span>
+                          <input
+                            type="time"
+                            value={form.flex_core_end}
+                            onChange={(e) => setForm({ ...form, flex_core_end: e.target.value })}
+                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[9px] text-slate-400">
+                        Check-out sebelum jam inti selesai terhitung Pulang Cepat (Early Leave).
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Target Durasi Kerja Harian */}
+                  <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                        Target Durasi Kerja Harian
+                      </label>
+                      <span className="text-[10px] font-mono font-bold text-cyan-600 dark:text-cyan-400">
+                        {Math.floor((Number(form.flex_target_minutes) || 480) / 60)} Jam {((Number(form.flex_target_minutes) || 480) % 60) > 0 ? `${(Number(form.flex_target_minutes) || 480) % 60} Menit` : ''} kerja
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        min={60}
+                        max={1440}
+                        step={15}
+                        value={form.flex_target_minutes}
+                        onChange={(e) => setForm({ ...form, flex_target_minutes: e.target.value === '' ? '' : Math.max(60, parseInt(e.target.value) || 0) })}
+                        className="w-36 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                      />
+                      <span className="text-xs text-slate-500">menit (default: 480 = 8 jam kerja bersih)</span>
+                    </div>
+                    <p className="text-[9px] text-slate-400">
+                      Sistem menghitung target pulang = jam check-in + target durasi + istirahat ({form.break_minutes ?? 60} mnt).
+                    </p>
                   </div>
                 </div>
               </div>

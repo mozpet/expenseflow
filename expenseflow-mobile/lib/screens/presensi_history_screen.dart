@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
+import '../providers/auth_provider.dart';
 import '../utils.dart';
 import '../widgets/custom_date_range_picker_dialog.dart';
 import '../widgets/skeleton.dart';
@@ -22,17 +23,31 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
     // Riwayat presensi selalu dimuat, terlepas dari status WFH.
     // Backend /attendance/my kini tidak membutuhkan attendance_access.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Provider.of<PresensiProvider>(context, listen: false).fetchMyAttendance();
+      final prov = Provider.of<PresensiProvider>(context, listen: false);
+      prov.fetchMyAttendance(forceRefresh: true);
+      prov.syncStatusFromBackend(forceRefresh: true);
     });
   }
 
   void _goToPresensiMap() {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    final prov = Provider.of<PresensiProvider>(context, listen: false);
+    if (!prov.attendanceEnabled || (auth.user != null && !auth.user!.attendanceEnabled)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses presensi mobile dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     Navigator.push(
       context,
       MaterialPageRoute(builder: (_) => const PresensiMapScreen()),
     ).then((_) {
       if (!mounted) return;
-      Provider.of<PresensiProvider>(context, listen: false).fetchMyAttendance();
+      prov.fetchMyAttendance(forceRefresh: true);
+      prov.syncStatusFromBackend(forceRefresh: true);
     });
   }
 
@@ -123,7 +138,7 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
       // 2. canCheckOut = true → sudah check-in, belum checkout (harus bisa checkout
       //    meski HRD mematikan WFH di tengah shift)
       floatingActionButton:
-          (presensiProv.wfhEnabled || presensiProv.canCheckOut)
+          (presensiProv.wfhEnabled || presensiProv.canDinasLuar || presensiProv.canCheckOut)
           ? FloatingActionButton.extended(
               heroTag: 'presensi_history_fab',
               onPressed: _goToPresensiMap,
@@ -780,6 +795,14 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
                                 'Telat ${record.lateMinutes}m',
                                 Colors.orange.shade700,
                                 Colors.orange.shade50,
+                              ),
+                            if (record.isDinasLuar)
+                              _badge(
+                                record.clientName != null && record.clientName!.isNotEmpty
+                                    ? 'Dinas: ${record.clientName}'
+                                    : 'Dinas Luar',
+                                const Color(0xFF5E35B1),
+                                const Color(0xFFEDE7F6),
                               ),
                           ],
                         ),

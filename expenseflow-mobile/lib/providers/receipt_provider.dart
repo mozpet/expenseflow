@@ -73,6 +73,7 @@ class ReceiptRecord {
   final String? rejectionReason;
   final String? ocrError;
   final String? imagePath;
+  final String? submittedAt;
   final String createdAt;
   final int? expenseReportId;
   final String? expenseReportTitle;
@@ -107,6 +108,7 @@ class ReceiptRecord {
     this.rejectionReason,
     this.ocrError,
     this.imagePath,
+    this.submittedAt,
     required this.createdAt,
     this.expenseReportId,
     this.expenseReportTitle,
@@ -191,6 +193,7 @@ class ReceiptRecord {
       rejectionReason: (rejection?.isEmpty ?? true) ? null : rejection,
       ocrError: m['ocr_error']?.toString() ?? rejection,
       imagePath: m['image_path']?.toString(),
+      submittedAt: m['submitted_at']?.toString(),
       createdAt: (m['created_at'] ?? '').toString(),
       expenseReportId: expRepId,
       expenseReportTitle: expRepTitle,
@@ -246,6 +249,25 @@ class ReceiptRecord {
     return 0;
   }
 
+  /// Tanggal pengajuan ke finance (hanya tanggal, untuk tampilan ringkas).
+  String get displaySubmissionDate {
+    final raw = submittedAt ?? createdAt;
+    return formatDateIndonesian(raw);
+  }
+
+  /// Tanggal & waktu pengajuan ke finance lengkap dengan jam dan menit (untuk tampilan detail).
+  String get displaySubmissionDateTime {
+    final raw = submittedAt ?? createdAt;
+    return formatDateTimeIndonesian(raw);
+  }
+
+  /// Tanggal nota hasil scan OCR fisik. Jika tidak terdeteksi OCR, mengembalikan '—'.
+  String get displayOcrDate {
+    final raw = receiptDate ?? ocrRawDate;
+    if (raw == null || raw.isEmpty) return '—';
+    return formatDateIndonesian(raw);
+  }
+
   String get displayDate {
     final raw = receiptDate ?? ocrRawDate ?? createdAt;
     return formatDateIndonesian(raw);
@@ -296,7 +318,10 @@ class ReceiptProvider extends ChangeNotifier {
     return _receipts
         .where((r) {
           if (r.status == 'draft') return false;
-          final d = DateTime.tryParse(r.createdAt);
+          final dStr = (r.submittedAt != null && r.submittedAt!.isNotEmpty)
+              ? r.submittedAt!
+              : r.createdAt;
+          final d = DateTime.tryParse(dStr);
           return d != null && d.month == now.month && d.year == now.year;
         })
         .fold(0.0, (sum, r) => sum + r.displayAmount);

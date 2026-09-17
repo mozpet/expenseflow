@@ -340,25 +340,47 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                     ),
                     const SizedBox(height: 16),
 
-                    // Nomor pengajuan
+                    // Nomor pengajuan & Tanggal Pengajuan
                     Container(
                       padding: const EdgeInsets.symmetric(
-                          horizontal: 14, vertical: 8),
+                          horizontal: 14, vertical: 10),
                       decoration: BoxDecoration(
                         color: Colors.blue.shade50,
                         borderRadius: BorderRadius.circular(8),
                       ),
-                      child: Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      child: Column(
                         children: [
-                          const Text('No. Pengajuan',
-                              style: TextStyle(
-                                  color: Colors.blueGrey, fontSize: 12)),
-                          Text(_currentReceipt.receiptNumber,
-                              style: TextStyle(
-                                  color: Colors.blue.shade800,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 13)),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('No. Pengajuan',
+                                  style: TextStyle(
+                                      color: Colors.blueGrey, fontSize: 12)),
+                              Text(_currentReceipt.receiptNumber,
+                                  style: TextStyle(
+                                      color: Colors.blue.shade800,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13)),
+                            ],
+                          ),
+                          const Divider(height: 12, thickness: 0.5),
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text('Waktu Pengajuan',
+                                  style: TextStyle(
+                                      color: Colors.blueGrey, fontSize: 12)),
+                              Text(
+                                _currentReceipt.isDraft
+                                    ? 'Belum diajukan (Draf)'
+                                    : _currentReceipt.displaySubmissionDateTime,
+                                style: TextStyle(
+                                    color: Colors.blue.shade900,
+                                    fontWeight: FontWeight.w600,
+                                    fontSize: 12),
+                              ),
+                            ],
+                          ),
                         ],
                       ),
                     ),
@@ -549,7 +571,7 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                             _currentReceipt.vendorName ??
                             '-'),
                     const SizedBox(height: 8),
-                    _row('Tanggal OCR', _currentReceipt.displayDate),
+                    _row('Tanggal Nota (OCR)', _currentReceipt.displayOcrDate),
                     const SizedBox(height: 8),
 
                     // Rincian Item Belanjaan
@@ -814,6 +836,13 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
                                 ? const Color(0xFF2E7D32)
                                 : null),
                         decoration: _currentReceipt.isRejected ? TextDecoration.lineThrough : null,
+                      ),
+                      const SizedBox(height: 8),
+                      _row(
+                        'Tanggal Pengajuan',
+                        _currentReceipt.isDraft
+                            ? 'Belum diajukan (Draf)'
+                            : _currentReceipt.displaySubmissionDate,
                       ),
                       const SizedBox(height: 8),
                       _row('Kategori', _currentReceipt.category ?? '-'),

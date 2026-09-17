@@ -142,13 +142,26 @@ class AttendanceController extends Controller
 
     // ─── Helper: tentukan titik awal perhitungan jam kerja ──────────────────
     //     Jam kerja dihitung mulai dari jam JADWAL masuk (bukan jam check-in).
+    // ─── Helper: tentukan titik awal perhitungan jam kerja ────────────
     //     Jika karyawan check-in lebih awal dari jadwal → titik awal = jadwal.
     //     Jika karyawan check-in terlambat → titik awal = jam check-in aktual.
+    //     Khusus flexitime: titik awal = jam check-in aktual (dibatasi paling awal jam jendela kedatangan).
     //
     //     Juga mempertimbangkan shift lintas hari (cross-day): jam mulai shift
     //     malam bisa berada di hari sebelumnya.
-    private function resolveWorkStart(Carbon $checkInTime, array $schedule, string $date): Carbon
+    private function resolveWorkStart(Carbon $checkInTime, array $schedule, string $date, ?User $user = null, ?Attendance $attendance = null): Carbon
     {
+        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
+
+        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) ($user && $user->flexitime_enabled);
+        if ($isFlex) {
+            $office = $schedule['office'] ?? $user?->office;
+            $arrivalStartStr = ! empty($office?->flex_arrival_start) ? substr((string) $office->flex_arrival_start, 0, 5) : '07:00';
+            $arrivalStart = Carbon::parse($date . ' ' . $arrivalStartStr, 'Asia/Jakarta');
+
+            return $checkInWib->lessThan($arrivalStart) ? $arrivalStart : $checkInWib;
+        }
+
         $workStartStr = $schedule['work_start_time'];
 
         // Tidak ada jadwal → pakai waktu check-in aktual sebagai titik awal
@@ -162,13 +175,12 @@ class AttendanceController extends Controller
 
         // Titik awal = jadwal ATAU check-in aktual — mana yang lebih lambat
         // (karyawan terlambat → hitung dari check-in; datang awal → hitung dari jadwal)
-        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
-
         return $checkInWib->greaterThan($workStart) ? $checkInWib : $workStart;
     }
 
     // ─── Helper: tentukan status hadir/telat berdasarkan jam kerja ────
     //     Mempertimbangkan shift aktif karyawan; fallback ke kantor default.
+    //     Mendukung jam kerja fleksibel (flexitime & core hours) jika user->flexitime_enabled.
     private function determineStatus(User $user, Carbon $checkInTime, string $date): string
     {
         $schedule = $this->getWorkSchedule($user, $date);
@@ -181,8 +193,19 @@ class AttendanceController extends Controller
             return 'present';
         }
 
-        $tanggalWib = $checkInTime->copy()->setTimezone('Asia/Jakarta')->toDateString();
+        $tanggalWib    = $checkInTime->copy()->setTimezone('Asia/Jakarta')->toDateString();
         $lateTolerance = (int) ($schedule['late_tolerance_minutes'] ?? $office->late_tolerance_minutes ?? 15);
+
+        // Karyawan dengan jam kerja fleksibel (flexitime):
+        // Bebas datang di jendela fleksibel (default s/d 10:00 WIB).
+        // Baru dianggap terlambat jika datang lewat batas akhir jendela kedatangan + toleransi.
+        if ($user->flexitime_enabled) {
+            $arrivalEnd = ! empty($office->flex_arrival_end) ? substr((string) $office->flex_arrival_end, 0, 5) : '10:00';
+            $batasTelat = Carbon::parse($tanggalWib . ' ' . $arrivalEnd, 'Asia/Jakarta')->addMinutes($lateTolerance);
+
+            return $checkInTime->copy()->setTimezone('Asia/Jakarta')->greaterThan($batasTelat) ? 'late' : 'present';
+        }
+
         $batasTelat = Carbon::parse($tanggalWib . ' ' . $workStartTime, 'Asia/Jakarta')
             ->addMinutes($lateTolerance);
 
@@ -499,24 +522,113 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
         }
 
+        // Jika presensi mobile dinonaktifkan di Edit Profil Karyawan, switch terkunci
+        if (! $target->allow_attendance) {
+            return response()->json([
+                'message' => "Akses Presensi Mobile untuk '{$target->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.",
+            ], 422);
+        }
+
+        // Toggle status harian presensi mobile
         $target->attendance_enabled = ! $target->attendance_enabled;
+
+        // Jika presensi mobile dinonaktifkan:
+        // Switch fitur presensi mobile (WFH, radius, dinas luar) otomatis dimatikan (OFF),
+        // serta seluruh token sesi mobile dicabut agar langsung ter-logout.
+        if (! $target->attendance_enabled) {
+            $target->wfh_enabled = false;
+            $target->radius_enabled = false;
+            $target->dinas_luar_enabled = false;
+            $target->tokens()->where('name', 'auth-token-mobile')->delete();
+        } else {
+            // Jika dinyalakan kembali, pulihkan sesuai izin di profil
+            $target->wfh_enabled = (bool) $target->allow_wfh;
+            $target->radius_enabled = (bool) ($target->allow_wfh && $target->allow_radius);
+        }
+
         $target->save();
 
         $this->logActivity(
             $actor->id,
             $target->company_id,
             'attendance_toggled',
-            ($target->attendance_enabled ? 'Mengaktifkan' : 'Menonaktifkan') . ' presensi untuk ' . $target->name,
+            ($target->attendance_enabled ? 'Mengaktifkan' : 'Menonaktifkan') . ' presensi mobile untuk ' . $target->name,
             'user',
             $target->id
         );
 
         return response()->json([
-            'message' => 'Status presensi user berhasil diperbarui.',
+            'message' => 'Status kebijakan presensi mobile user berhasil diperbarui.',
             'user'    => [
                 'id'                 => $target->id,
                 'name'               => $target->name,
-                'attendance_enabled' => $target->attendance_enabled,
+                'allow_attendance'   => (bool) $target->allow_attendance,
+                'allow_wfh'          => (bool) $target->allow_wfh,
+                'allow_radius'       => (bool) $target->allow_radius,
+                'attendance_enabled' => (bool) $target->attendance_enabled,
+                'wfh_enabled'        => (bool) $target->wfh_enabled,
+                'radius_enabled'     => (bool) $target->radius_enabled,
+                'dinas_luar_enabled' => (bool) $target->dinas_luar_enabled,
+                'flexitime_enabled'  => (bool) $target->flexitime_enabled,
+            ],
+        ]);
+    }
+
+    // 1a. updateMobilePolicy() — atur sekaligus 3 kebijakan presensi mobile (Presensi Mobile, WFH, Radius)
+    public function updateMobilePolicy(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $target = User::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if (! $target) {
+            return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
+        }
+
+        $validated = $request->validate([
+            'attendance_enabled' => 'required|boolean',
+            'wfh_enabled'        => 'nullable|boolean',
+            'radius_enabled'     => 'nullable|boolean',
+        ]);
+
+        $attEnabled = (bool) $validated['attendance_enabled'];
+        $wfhEnabled = $attEnabled ? (bool) ($validated['wfh_enabled'] ?? false) : false;
+        $radiusEnabled = $attEnabled ? (bool) ($validated['radius_enabled'] ?? false) : false;
+
+        $target->attendance_enabled = $attEnabled;
+        $target->wfh_enabled = $wfhEnabled;
+        $target->radius_enabled = $radiusEnabled;
+        if (! $attEnabled) {
+            $target->dinas_luar_enabled = false;
+            $target->tokens()->where('name', 'auth-token-mobile')->delete();
+        }
+        $target->save();
+
+        $this->logActivity(
+            $actor->id,
+            $target->company_id,
+            'attendance_toggled',
+            'Memperbarui kebijakan akses presensi mobile untuk ' . $target->name,
+            'user',
+            $target->id
+        );
+
+        return response()->json([
+            'message' => 'Kebijakan akses presensi mobile berhasil disimpan.',
+            'user'    => [
+                'id'                 => $target->id,
+                'name'               => $target->name,
+                'allow_attendance'   => (bool) $target->allow_attendance,
+                'allow_wfh'          => (bool) $target->allow_wfh,
+                'allow_radius'       => (bool) $target->allow_radius,
+                'attendance_enabled' => (bool) $target->attendance_enabled,
+                'wfh_enabled'        => (bool) $target->wfh_enabled,
+                'radius_enabled'     => (bool) $target->radius_enabled,
+                'dinas_luar_enabled' => (bool) $target->dinas_luar_enabled,
+                'flexitime_enabled'  => (bool) $target->flexitime_enabled,
             ],
         ]);
     }
@@ -537,27 +649,55 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
         }
 
-        $newWfhState = ! $target->wfh_enabled;
-
-        // Guard: jika HRD ingin mematikan WFH, cek apakah karyawan sedang
-        // aktif check-in (belum checkout) hari ini. Jika ya, tetap simpan
-        // perubahan (agar check-in baru besok terblokir) tapi attendance_enabled
-        // TIDAK dimatikan supaya karyawan bisa menyelesaikan checkout.
-        $today = now('Asia/Jakarta')->toDateString();
-        $hasActiveCheckIn = \App\Models\Attendance::where('user_id', $target->id)
-            ->whereDate('date', $today)
-            ->whereNotNull('check_in_time')
-            ->whereNull('check_out_time')
-            ->exists();
-
-        $target->wfh_enabled = $newWfhState;
-
-        // attendance_enabled hanya dimatikan jika karyawan TIDAK sedang aktif check-in.
-        // Jika sedang aktif, biarkan attendance_enabled tetap true agar checkout bisa dilakukan.
-        if ($newWfhState || ! $hasActiveCheckIn) {
-            $target->attendance_enabled = $newWfhState;
+        // Guard 1: Izin Presensi Mobile di profil harus aktif
+        if (! $target->allow_attendance) {
+            return response()->json([
+                'message' => "Akses Presensi Mobile untuk '{$target->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch WFH terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.",
+            ], 422);
         }
 
+        // Guard 2: Presensi Mobile harian harus aktif
+        if (! $target->attendance_enabled) {
+            return response()->json([
+                'message' => "Akses Presensi Mobile untuk '{$target->name}' sedang nonaktif. Aktifkan Presensi Mobile terlebih dahulu.",
+            ], 422);
+        }
+
+        // Guard 3: Izin Presensi WFH di profil harus aktif
+        if (! $target->allow_wfh) {
+            return response()->json([
+                'message' => "Izinkan Presensi WFH untuk '{$target->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch WFH terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.",
+            ], 422);
+        }
+
+        // Jika Dinas Luar aktif, mode WFH (akses presensi HP) tidak boleh dimatikan secara manual
+        if ($target->dinas_luar_enabled && $target->wfh_enabled) {
+            return response()->json([
+                'message' => "Mode WFH tidak dapat dinonaktifkan untuk '{$target->name}' karena izin Dinas Luar sedang aktif. Nonaktifkan Dinas Luar terlebih dahulu.",
+            ], 422);
+        }
+
+        // Jika karyawan memiliki pengajuan WFH yang telah disetujui HRD untuk hari ini
+        if ($target->hasApprovedWfhToday()) {
+            return response()->json([
+                'message' => "Mode WFH tidak dapat diubah secara manual untuk '{$target->name}' karena memiliki pengajuan WFH yang telah disetujui HRD untuk hari ini.",
+            ], 422);
+        }
+
+        $newWfhState = ! $target->wfh_enabled;
+        $target->wfh_enabled = $newWfhState;
+
+        // Jika mode WFH dimatikan, radius lapangan juga otomatis dimatikan
+        if (! $newWfhState) {
+            $target->radius_enabled = false;
+        } else {
+            // Jika mode WFH dinyalakan dan radius diizinkan, aktifkan radius
+            if ($target->allow_radius) {
+                $target->radius_enabled = true;
+            }
+        }
+
+        // CATATAN: attendance_enabled TETAP AKTIF! Jangan pernah mematikan attendance_enabled saat WFH dimatikan.
         $target->save();
 
         $this->logActivity(
@@ -569,20 +709,19 @@ class AttendanceController extends Controller
             $target->id
         );
 
-        $warningMsg = ! $newWfhState && $hasActiveCheckIn
-            ? ' Catatan: karyawan sedang aktif check-in, mode presensi mobile tetap aktif hingga karyawan checkout.'
-            : '';
-
         return response()->json([
-            'message' => ($target->wfh_enabled
+            'message' => $target->wfh_enabled
                 ? 'Mode WFH diaktifkan — karyawan bisa presensi dari rumah lewat aplikasi.'
-                : 'Mode WFH dinonaktifkan — presensi mobile dimatikan, presensi kantor lewat perangkat presensi.')
-                . $warningMsg,
+                : 'Mode WFH dinonaktifkan — karyawan presensi di area kantor sesuai lokasi.',
             'user' => [
                 'id'                 => $target->id,
                 'name'               => $target->name,
-                'wfh_enabled'        => $target->wfh_enabled,
-                'attendance_enabled' => $target->attendance_enabled,
+                'allow_attendance'   => (bool) $target->allow_attendance,
+                'allow_wfh'          => (bool) $target->allow_wfh,
+                'allow_radius'       => (bool) $target->allow_radius,
+                'wfh_enabled'        => (bool) $target->wfh_enabled,
+                'radius_enabled'     => (bool) $target->radius_enabled,
+                'attendance_enabled' => (bool) $target->attendance_enabled,
             ],
         ]);
     }
@@ -590,7 +729,6 @@ class AttendanceController extends Controller
     // 1c. toggleRadius() — aktif/nonaktifkan validasi radius untuk karyawan lapangan
     //     true  → presensi mobile wajib berada dalam radius lokasi kerja
     //     false → presensi mobile bebas (WFH dari rumah, tanpa cek lokasi)
-    //     Catatan: radius hanya berlaku jika wfh_enabled = true (mobile aktif).
     public function toggleRadius(Request $request, int $id): JsonResponse
     {
         $actor = $request->user();
@@ -602,6 +740,48 @@ class AttendanceController extends Controller
 
         if (! $target) {
             return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
+        }
+
+        // Guard 1: Izin Akses Presensi Mobile di profil harus aktif
+        if (! $target->allow_attendance) {
+            return response()->json([
+                'message' => "Akses Presensi Mobile untuk '{$target->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.",
+            ], 422);
+        }
+
+        // Guard 2: Presensi Mobile harian harus aktif
+        if (! $target->attendance_enabled) {
+            return response()->json([
+                'message' => "Akses Presensi Mobile untuk '{$target->name}' sedang nonaktif. Aktifkan Presensi Mobile terlebih dahulu.",
+            ], 422);
+        }
+
+        // Guard 3: Izin Presensi WFH di profil harus aktif
+        if (! $target->allow_wfh) {
+            return response()->json([
+                'message' => "Izinkan Presensi WFH untuk '{$target->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.",
+            ], 422);
+        }
+
+        // Guard 4: Mode WFH harian harus aktif jika ingin mengatur radius lapangan
+        if (! $target->wfh_enabled) {
+            return response()->json([
+                'message' => "Radius lapangan hanya dapat diubah jika Mode WFH aktif terlebih dahulu untuk '{$target->name}'.",
+            ], 422);
+        }
+
+        // Guard 5: Izin Validasi Radius Geofence di Edit Profil Karyawan harus aktif
+        if (! $target->allow_radius) {
+            return response()->json([
+                'message' => "Validasi Radius Geofence untuk '{$target->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch Lapangan terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.",
+            ], 422);
+        }
+
+        // Jika Dinas Luar aktif, radius lapangan tidak boleh diaktifkan (dinas luar bebas radius)
+        if ($target->dinas_luar_enabled) {
+            return response()->json([
+                'message' => "Radius lapangan tidak dapat diaktifkan untuk '{$target->name}' karena karyawan sedang dalam mode Dinas Luar (bebas radius).",
+            ], 422);
         }
 
         $target->radius_enabled = ! $target->radius_enabled;
@@ -619,12 +799,140 @@ class AttendanceController extends Controller
         return response()->json([
             'message' => $target->radius_enabled
                 ? 'Validasi radius diaktifkan — karyawan harus presensi di sekitar area kerja.'
-                : 'Validasi radius dinonaktifkan — karyawan bisa presensi dari mana saja (WFH).',
+                : 'Validasi radius dinonaktifkan — karyawan bisa presensi dari mana saja (WFH bebas).',
             'user' => [
-                'id'             => $target->id,
-                'name'           => $target->name,
-                'wfh_enabled'    => $target->wfh_enabled,
-                'radius_enabled' => $target->radius_enabled,
+                'id'                 => $target->id,
+                'name'               => $target->name,
+                'allow_attendance'   => (bool) $target->allow_attendance,
+                'allow_wfh'          => (bool) $target->allow_wfh,
+                'allow_radius'       => (bool) $target->allow_radius,
+                'wfh_enabled'        => (bool) $target->wfh_enabled,
+                'radius_enabled'     => (bool) $target->radius_enabled,
+                'attendance_enabled' => (bool) $target->attendance_enabled,
+            ],
+        ]);
+    }
+
+    // 1d. toggleDinasLuar() — aktif/nonaktifkan izin presensi dinas luar / kunjungan klien
+    public function toggleDinasLuar(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $target = User::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if (! $target) {
+            return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
+        }
+
+        // Guard 1: Izin Akses Presensi Mobile di profil harus aktif
+        if (! $target->allow_attendance) {
+            return response()->json([
+                'message' => "Akses Presensi Mobile untuk '{$target->name}' sedang dinonaktifkan di Edit Profil Karyawan. Switch Dinas Luar terkunci dan harus diaktifkan kembali melalui menu Edit Profil Karyawan.",
+            ], 422);
+        }
+
+        // Jika Presensi Mobile nonaktif harian, tolak aktivasi Dinas Luar
+        if (! $target->dinas_luar_enabled && ! $target->attendance_enabled) {
+            return response()->json([
+                'message' => "Izin Dinas Luar tidak dapat diaktifkan untuk '{$target->name}' karena Presensi Mobile sedang nonaktif. Aktifkan Presensi Mobile terlebih dahulu.",
+            ], 422);
+        }
+
+        $target->dinas_luar_enabled = ! $target->dinas_luar_enabled;
+        if ($target->dinas_luar_enabled) {
+            $target->wfh_enabled = true;
+            $target->attendance_enabled = true;
+            $target->radius_enabled = false;
+        } else {
+            $target->wfh_enabled = false;
+            $target->radius_enabled = false;
+        }
+        $target->save();
+
+        $this->logActivity(
+            $actor->id,
+            $target->company_id,
+            'dinas_luar_toggled',
+            ($target->dinas_luar_enabled ? 'Mengaktifkan' : 'Menonaktifkan') . ' izin presensi dinas luar untuk ' . $target->name,
+            'user',
+            $target->id
+        );
+
+        return response()->json([
+            'message' => $target->dinas_luar_enabled
+                ? 'Izin Dinas Luar / Kunjungan Klien diaktifkan — karyawan dapat presensi di lokasi klien/proyek.'
+                : 'Izin Dinas Luar / Kunjungan Klien dinonaktifkan.',
+            'user' => [
+                'id'                 => $target->id,
+                'name'               => $target->name,
+                'allow_attendance'   => (bool) $target->allow_attendance,
+                'allow_wfh'          => (bool) $target->allow_wfh,
+                'allow_radius'       => (bool) $target->allow_radius,
+                'wfh_enabled'        => (bool) $target->wfh_enabled,
+                'radius_enabled'     => (bool) $target->radius_enabled,
+                'attendance_enabled' => (bool) $target->attendance_enabled,
+                'dinas_luar_enabled' => (bool) $target->dinas_luar_enabled,
+                'flexitime_enabled'  => (bool) $target->flexitime_enabled,
+            ],
+        ]);
+    }
+
+    // 1d. toggleFlexitime() — toggle izin jam kerja fleksibel (flexitime) karyawan
+    public function toggleFlexitime(Request $request, int $id): JsonResponse
+    {
+        $actor = $request->user();
+
+        $target = User::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if (! $target) {
+            return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
+        }
+
+        // Aturan: Jika karyawan saat ini non-flex dan HRD ingin mengaktifkan flexitime,
+        // periksa apakah karyawan sedang memiliki penugasan shift atau pola rotasi aktif.
+        // Karyawan berjadwal shift DILARANG mengaktifkan flexitime (mutual exclusion).
+        if (! $target->flexitime_enabled) {
+            $activeAssignment = $target->activeShiftAssignment();
+            if ($activeAssignment) {
+                $shiftName = $activeAssignment->shift?->name
+                    ?? $activeAssignment->shiftPattern?->name
+                    ?? 'Shift / Pola Rotasi';
+
+                return response()->json([
+                    'message' => "Karyawan '{$target->name}' sedang memiliki penugasan {$shiftName}. Jam kerja fleksibel (flexitime) tidak dapat diaktifkan untuk karyawan berjadwal shift.",
+                ], 422);
+            }
+        }
+
+        $target->flexitime_enabled = ! $target->flexitime_enabled;
+        $target->save();
+
+        $this->logActivity(
+            $actor->id,
+            $target->company_id,
+            'flexitime_toggled',
+            ($target->flexitime_enabled ? 'Mengaktifkan' : 'Menonaktifkan') . ' jam kerja fleksibel (flexitime) untuk ' . $target->name,
+            'user',
+            $target->id
+        );
+
+        return response()->json([
+            'message' => $target->flexitime_enabled
+                ? 'Jam kerja fleksibel (flexitime) diaktifkan untuk karyawan ini.'
+                : 'Jam kerja fleksibel (flexitime) dinonaktifkan — kembali ke jam kerja normal.',
+            'user' => [
+                'id'                 => $target->id,
+                'name'               => $target->name,
+                'wfh_enabled'        => $target->wfh_enabled,
+                'radius_enabled'     => $target->radius_enabled,
+                'dinas_luar_enabled' => (bool) $target->dinas_luar_enabled,
+                'flexitime_enabled'  => (bool) $target->flexitime_enabled,
             ],
         ]);
     }
@@ -642,7 +950,7 @@ class AttendanceController extends Controller
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
             )
-            ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'attendance_setting_id', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'is_active']);
+            ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'attendance_setting_id', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'is_active']);
 
         if ($filter === 'enabled') {
             $query->where('attendance_enabled', true);
@@ -651,11 +959,77 @@ class AttendanceController extends Controller
         }
 
         if ($perPage === 'all' || $request->boolean('all')) {
-            return response()->json(['data' => $query->orderBy('name')->get()]);
+            $users = $query->orderBy('name')->get();
+            $this->appendActiveShiftInfo($users);
+            return response()->json(['data' => $users]);
         }
 
         $limit = $perPage ? (int) $perPage : 2000;
-        return response()->json($query->orderBy('name')->paginate($limit));
+        $paginator = $query->orderBy('name')->paginate($limit);
+        $this->appendActiveShiftInfo($paginator->getCollection());
+        return response()->json($paginator);
+    }
+
+    /**
+     * Helper privat: tambahkan flag has_active_shift & active_shift_name ke kumpulan user (anti N+1).
+     * Otomatis sinkronkan flexitime_enabled = false jika ada user shift yang sebelumnya menyala.
+     */
+    private function appendActiveShiftInfo($users): void
+    {
+        if ($users->isEmpty()) {
+            return;
+        }
+
+        $todayStr = now('Asia/Jakarta')->toDateString();
+        $activeShifts = \App\Models\UserShift::with(['shift:id,name', 'shiftPattern:id,name'])
+            ->whereIn('user_id', $users->pluck('id'))
+            ->where(function ($q) {
+                $q->whereNotNull('shift_id')->orWhereNotNull('shift_pattern_id');
+            })
+            ->whereDate('start_date', '<=', $todayStr)
+            ->where(function ($q) use ($todayStr) {
+                $q->whereNull('end_date')->orWhereDate('end_date', '>=', $todayStr);
+            })
+            ->orderByDesc('start_date')
+            ->get()
+            ->groupBy('user_id');
+
+        $approvedWfhUsers = LeaveRequest::where('status', 'approved')
+            ->where('leave_type', 'wfh')
+            ->whereIn('user_id', $users->pluck('id'))
+            ->whereDate('start_date', '<=', $todayStr)
+            ->whereDate('end_date', '>=', $todayStr)
+            ->pluck('user_id')
+            ->flip();
+
+        foreach ($users as $u) {
+            $active = $activeShifts->get($u->id)?->first();
+            $hasActiveShift = $active !== null;
+
+            // Auto-heal: jika karyawan punya shift aktif tapi flexitime_enabled masih true, matikan di DB
+            if ($hasActiveShift && $u->flexitime_enabled) {
+                $u->flexitime_enabled = false;
+                User::where('id', $u->id)->update(['flexitime_enabled' => false]);
+            }
+
+            // Auto-heal: jika karyawan punya dinas luar aktif, wfh & attendance wajib true, radius wajib false
+            if ($u->dinas_luar_enabled) {
+                if (! $u->wfh_enabled || ! $u->attendance_enabled || $u->radius_enabled) {
+                    $u->wfh_enabled = true;
+                    $u->attendance_enabled = true;
+                    $u->radius_enabled = false;
+                    User::where('id', $u->id)->update([
+                        'wfh_enabled'        => true,
+                        'attendance_enabled' => true,
+                        'radius_enabled'     => false,
+                    ]);
+                }
+            }
+
+            $u->has_active_shift      = $hasActiveShift;
+            $u->active_shift_name     = $active ? ($active->shift?->name ?? $active->shiftPattern?->name ?? 'Shift') : null;
+            $u->is_wfh_approved_today = isset($approvedWfhUsers[$u->id]);
+        }
     }
 
     // listAllUsers() — daftar SEMUA karyawan aktif (tanpa pagination)
@@ -948,6 +1322,10 @@ class AttendanceController extends Controller
 
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
+        if ($actor->company_id) {
+            LeaveRequest::autoDeclineExpiredCollectiveLeaves($actor->company_id);
+        }
+
         $leaves = LeaveRequest::query()
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
             ->when(
@@ -1074,7 +1452,17 @@ class AttendanceController extends Controller
         $attendances = $attendancesYesterday->replace($attendancesToday);
 
         // Izin/cuti disetujui yang mencakup hari ini, di-index per user_id
+        // CATATAN: leave_type 'wfh' dikecualikan karena WFH adalah mode kerja, bukan izin/cuti tidak masuk.
         $onLeave = LeaveRequest::where('status', 'approved')
+            ->where('start_date', '<=', $today)
+            ->where('end_date', '>=', $today)
+            ->whereIn('leave_type', ['cuti', 'sakit', 'izin'])
+            ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
+            ->get()->keyBy('user_id');
+
+        // Pengajuan WFH yang disetujui untuk hari ini
+        $approvedWfhToday = LeaveRequest::where('status', 'approved')
+            ->where('leave_type', 'wfh')
             ->where('start_date', '<=', $today)
             ->where('end_date', '>=', $today)
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
@@ -1083,6 +1471,10 @@ class AttendanceController extends Controller
         $checkedIn = [];
         $notCheckedIn = [];
         $leaveList = [];
+
+        if ($actor->company_id) {
+            \App\Models\LeaveRequest::autoDeclineExpiredCollectiveLeaves($actor->company_id);
+        }
 
         // Cek apakah hari ini libur nasional/perusahaan/cabang beserta pengecualian karyawan (holiday_exclusions)
         $holidaysToday = \App\Models\Holiday::with('excludedUsers:id')
@@ -1113,6 +1505,7 @@ class AttendanceController extends Controller
                 $attDateStr = Carbon::parse($att->date)->format('Y-m-d');
                 $isCrossDay = $attDateStr === $yesterday;
                 $checkedIn[] = [
+                    'attendance_id'         => $att->id,
                     'user_id'               => $emp->id,
                     'name'                  => $emp->name,
                     'department'            => $emp->department,
@@ -1121,10 +1514,17 @@ class AttendanceController extends Controller
                     'check_in_time'         => $att->check_in_time,
                     'check_out_time'        => $att->check_out_time,
                     'check_in_type'         => $att->check_in_type,
+                    'check_in_lat'          => $att->check_in_lat,
+                    'check_in_lng'          => $att->check_in_lng,
+                    'check_in_photo'        => $att->check_in_photo,
+                    'client_name'           => $att->client_name,
+                    'client_address'        => $att->client_address,
+                    'visit_notes'           => $att->visit_notes,
                     'status'                => $att->status,
                     'shift_date'            => $attDateStr,
                     'checkout_date'         => $isCrossDay ? $today : null,
                     'is_cross_day'          => $isCrossDay,
+                    'is_wfh'                => $att->check_in_type === 'wfh' || isset($approvedWfhToday[$emp->id]) || (bool) $emp->wfh_enabled,
                 ];
             } elseif (isset($onLeave[$emp->id])) {
                 $leaveList[] = [
@@ -1182,6 +1582,8 @@ class AttendanceController extends Controller
                 }
 
                 $status = $isOff ? 'libur' : ($isAlpha ? 'alpha' : 'belum_hadir');
+                $isWfhApproved = isset($approvedWfhToday[$emp->id]);
+                $isWfh         = $isWfhApproved || (bool) $emp->wfh_enabled || ! empty($schedule['is_wfh']);
 
                 $notCheckedIn[] = [
                     'user_id'               => $emp->id,
@@ -1195,6 +1597,8 @@ class AttendanceController extends Controller
                     'cutoff_time'           => $cutoffTimeStr,
                     'cutoff_minutes'        => $cutoffMinutes,
                     'work_start_time'       => $workStartTime ? substr($workStartTime, 0, 5) : null,
+                    'is_wfh'                => $isWfh,
+                    'is_wfh_approved'       => $isWfhApproved,
                 ];
             }
         }
@@ -1545,8 +1949,9 @@ class AttendanceController extends Controller
             'month'   => 'nullable|integer|between:1,12',
             'year'    => 'nullable|integer',
         ]);
-        $month = $validated['month'] ?? now()->month;
-        $year  = $validated['year'] ?? now()->year;
+        $nowWib = now('Asia/Jakarta');
+        $month  = $validated['month'] ?? (int) $nowWib->month;
+        $year   = $validated['year']  ?? (int) $nowWib->year;
 
         $target = User::when(
             $actor->role !== 'super_admin',
@@ -1557,14 +1962,14 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
         }
 
-        $start      = Carbon::create($year, $month, 1)->startOfMonth();
+        $start      = Carbon::create($year, $month, 1, 0, 0, 0, 'Asia/Jakarta')->startOfMonth();
         $end        = (clone $start)->endOfMonth();
         $rangeStart = $start->toDateString();
         $rangeEnd   = $end->toDateString();
 
         // Hitung hanya sampai hari ini agar hari depan tidak dihitung absen
-        $countUntil = Carbon::parse($rangeEnd)->greaterThan(now())
-            ? now()->toDateString()
+        $countUntil = Carbon::parse($rangeEnd, 'Asia/Jakarta')->greaterThan($nowWib)
+            ? $this->todayDate()
             : $rangeEnd;
 
         // Hari libur nasional + perusahaan dalam bulan ini
@@ -1789,6 +2194,8 @@ class AttendanceController extends Controller
                 'attendances.check_in_type', 'attendances.status',
                 'attendances.overtime_minutes', 'attendances.is_holiday',
                 'attendances.check_in_lat', 'attendances.check_in_lng',
+                'attendances.check_in_photo', 'attendances.client_name',
+                'attendances.client_address', 'attendances.visit_notes',
                 'attendances.work_minutes as working_minutes',
                 'attendances.snap_shift_id', 'attendances.snap_shift_name',
                 'attendances.snap_source', 'attendances.snap_work_start_time',
@@ -1930,7 +2337,7 @@ class AttendanceController extends Controller
         $dates = [];
         $curDate = Carbon::parse($endDate);
         $firstDate = Carbon::parse($startDate);
-        $today = now()->toDateString();
+        $today = $this->todayDate();
         while ($curDate->gte($firstDate)) {
             $dStr = $curDate->format('Y-m-d');
             $dates[] = [
@@ -2170,6 +2577,10 @@ class AttendanceController extends Controller
                             'check_in_type'    => $att->check_in_type,
                             'check_in_lat'     => $att->check_in_lat,
                             'check_in_lng'     => $att->check_in_lng,
+                            'check_in_photo'   => $att->check_in_photo,
+                            'client_name'      => $att->client_name,
+                            'client_address'   => $att->client_address,
+                            'visit_notes'      => $att->visit_notes,
                             'status'           => $status,
                             'late_minutes'     => $lateMinutes,
                             'overtime_minutes' => (int) ($att->overtime_minutes ?? 0),
@@ -2344,8 +2755,8 @@ class AttendanceController extends Controller
         ]);
 
         $companyId = $actor->role === 'super_admin' ? null : $actor->company_id;
-        $startDate = $validated['start_date'] ?? now()->startOfMonth()->toDateString();
-        $endDate   = $validated['end_date']   ?? now()->toDateString();
+        $startDate = $validated['start_date'] ?? now('Asia/Jakarta')->startOfMonth()->toDateString();
+        $endDate   = $validated['end_date']   ?? $this->todayDate();
 
         if (Carbon::parse($startDate)->diffInDays(Carbon::parse($endDate)) > 62) {
             return response()->json([
@@ -2394,15 +2805,15 @@ class AttendanceController extends Controller
             'end_date'   => 'nullable|date|after_or_equal:start_date',
             'department' => 'nullable|string|max:100',
             'status'     => 'nullable|in:present,late,absent,early_leave,cuti,izin,sakit,wfh,libur',
-            'type'       => 'nullable|in:onsite,wfh,field',
+            'type'       => 'nullable|in:onsite,wfh,field,dinas_luar',
             'search'     => 'nullable|string|max:100',
             'office_id'  => 'nullable|integer',
             'shift_id'   => 'nullable|string|max:50',
         ]);
 
         $companyId  = $actor->role === 'super_admin' ? null : $actor->company_id;
-        $startDate  = $validated['start_date'] ?? now()->startOfMonth()->toDateString();
-        $endDate    = $validated['end_date']   ?? now()->toDateString();
+        $startDate  = $validated['start_date'] ?? now('Asia/Jakarta')->startOfMonth()->toDateString();
+        $endDate    = $validated['end_date']   ?? $this->todayDate();
 
         if (Carbon::parse($startDate)->diffInDays(Carbon::parse($endDate)) > 62) {
             return response()->streamDownload(function () {
@@ -2423,7 +2834,7 @@ class AttendanceController extends Controller
 
         return response()->streamDownload(function () use ($rows) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['NIK', 'Nama', 'Departemen', 'Shift', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
+            fputcsv($out, ['NIK', 'Nama', 'Departemen', 'Shift', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Klien / Proyek', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
             foreach ($rows as $r) {
                 $mins     = $r['working_minutes'];
                 $jamKerja = $mins !== null
@@ -2443,6 +2854,7 @@ class AttendanceController extends Controller
                     $r['check_in_time']  ? Carbon::parse($r['check_in_time'])->timezone('Asia/Jakarta')->format('H:i')  : '-',
                     $r['check_out_time'] ? Carbon::parse($r['check_out_time'])->timezone('Asia/Jakarta')->format('H:i') : '-',
                     $r['check_in_type'] ?? '-',
+                    $r['client_name'] ?? '-',
                     $r['status'],
                     $r['late_minutes'] !== null ? $r['late_minutes'] : '-',
                     $jamKerja,
@@ -2500,6 +2912,12 @@ class AttendanceController extends Controller
             'custom_schedules.*.start'         => 'required_with:custom_schedules|date_format:H:i',
             'custom_schedules.*.end'           => 'required_with:custom_schedules|date_format:H:i',
             'custom_schedules.*.break_minutes' => 'nullable|integer|min:0|max:240',
+            // Konfigurasi Jam Kerja Fleksibel (Flexitime Cabang)
+            'flex_arrival_start'               => 'sometimes|nullable|date_format:H:i:s,H:i',
+            'flex_arrival_end'                 => 'sometimes|nullable|date_format:H:i:s,H:i',
+            'flex_core_start'                  => 'sometimes|nullable|date_format:H:i:s,H:i',
+            'flex_core_end'                    => 'sometimes|nullable|date_format:H:i:s,H:i',
+            'flex_target_minutes'              => 'sometimes|nullable|integer|min:60|max:1440',
         ];
     }
 
@@ -2797,6 +3215,11 @@ class AttendanceController extends Controller
             'min_overtime_minutes',
             'checkout_reminder_minutes',
             'auto_checkout_grace_minutes',
+            'flex_arrival_start',
+            'flex_arrival_end',
+            'flex_core_start',
+            'flex_core_end',
+            'flex_target_minutes',
         ];
     }
 
@@ -2878,6 +3301,10 @@ class AttendanceController extends Controller
         $user      = $request->user();
         $companyId = $user->company_id;
         $year      = $request->query('year', now('Asia/Jakarta')->year);
+
+        if ($companyId) {
+            \App\Models\LeaveRequest::autoDeclineExpiredCollectiveLeaves($companyId);
+        }
 
         $holidays = Holiday::with(['office:id,office_name', 'excludedUsers:id,name,employee_code,attendance_setting_id'])
             ->where(function ($q) use ($companyId) {
@@ -3769,13 +4196,17 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Tidak ditemukan.'], 404);
         }
 
+        // Auto-decline karyawan yang belum memilih jika hari H sudah tiba
+        \App\Models\LeaveRequest::autoDeclineExpiredCollectiveLeaves($holiday->company_id, $holiday->id);
+
         $excludedUserIds = $holiday->excludedUsers()->pluck('users.id');
+        $hYear = (int) Carbon::parse($holiday->date)->year;
         $rows = \App\Models\LeaveRequest::where('holiday_id', $holiday->id)
             ->whereNotIn('leave_requests.user_id', $excludedUserIds)
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
-            ->leftJoin('leave_balances', function ($join) {
+            ->leftJoin('leave_balances', function ($join) use ($hYear) {
                 $join->on('leave_balances.user_id', '=', 'users.id')
-                    ->whereColumn('leave_balances.year', \DB::raw('YEAR(leave_requests.start_date)'))
+                    ->where('leave_balances.year', $hYear)
                     ->where('leave_balances.leave_type', 'cuti');
             })
             ->select([
@@ -3785,6 +4216,7 @@ class AttendanceController extends Controller
                 'users.department',
                 'leave_requests.total_days',
                 'leave_requests.collective_status',
+                'leave_requests.rejection_reason',
                 \DB::raw('COALESCE(leave_balances.quota, 12) as quota'),
                 \DB::raw('COALESCE(leave_balances.used, 0) as used'),
             ])
@@ -3797,6 +4229,7 @@ class AttendanceController extends Controller
                 'department'        => $r->department,
                 'total_days'        => $r->total_days,
                 'collective_status' => $r->collective_status,
+                'rejection_reason'  => $r->rejection_reason,
                 'quota'             => (int) $r->quota,
                 'used'              => (int) $r->used,
                 'remaining'         => (int) $r->quota - (int) $r->used,
@@ -3824,6 +4257,9 @@ class AttendanceController extends Controller
         $user      = $request->user();
         $companyId = $user->company_id;
         $today     = now('Asia/Jakarta')->toDateString();
+
+        // Auto-decline cuti bersama yang sudah lewat / hari H
+        \App\Models\LeaveRequest::autoDeclineExpiredCollectiveLeaves($companyId);
 
         // Ambil semua cuti bersama milik perusahaan yang belum lewat + H-7 ke depan
         // Dan cocok dengan cabang karyawan (NULL = semua cabang, ATAU attendance_setting_id sama dengan kantor user)
@@ -3924,7 +4360,7 @@ class AttendanceController extends Controller
         //    (N query → 1). Logika di dalam helper meniru resolveSchedule() persis.
         $offFromScheduleSet = $this->resolveOffDatesForUser($user, $holidayDates);
 
-        $result = $holidays->map(function ($h) use ($user, $approvedPersonalDateSet, $offFromScheduleSet, $companyId, $remaining, $myRequests, $policy) {
+        $result = $holidays->map(function ($h) use ($user, $approvedPersonalDateSet, $offFromScheduleSet, $companyId, $remaining, $myRequests, $policy, $today) {
             $dateStr = $h->date->toDateString();
 
             // 1) Cek apakah karyawan SUDAH libur dari jadwal shift di tanggal cuti bersama.
@@ -3950,9 +4386,9 @@ class AttendanceController extends Controller
                 'collective_status' => $myRequests->get($h->id) ?? 'pending',
                 'remaining_quota'   => $remaining,
                 'policy'            => $policy,
-                // Apakah banner harus muncul: H-7 s/d hari H, BELUM memilih,
+                // Apakah banner harus muncul: sebelum hari H tiba, BELUM memilih (pending),
                 // DAN karyawan TIDAK libur dari jadwal shift / cuti pribadi di hari itu.
-                'show_banner'       => $dateStr <= now('Asia/Jakarta')->addDays(7)->toDateString()
+                'show_banner'       => $dateStr > $today
                                     && ($myRequests->get($h->id) ?? 'pending') === 'pending'
                                     && ! $isOffFromSchedule
                                     && ! $isOnPersonalLeave,
@@ -4149,10 +4585,10 @@ class AttendanceController extends Controller
             ], 403);
         }
 
-        // Tidak bisa ubah pilihan setelah hari H lewat
+        // Tidak bisa ubah pilihan setelah hari H tiba atau lewat
         $today = now('Asia/Jakarta')->toDateString();
-        if ($holiday->date->toDateString() < $today) {
-            return response()->json(['message' => 'Batas waktu memilih telah lewat.'], 422);
+        if ($holiday->date->toDateString() <= $today) {
+            return response()->json(['message' => 'Batas waktu memilih telah berakhir (hari H cuti bersama telah tiba).'], 422);
         }
 
         // FIX BUG #6 (race condition): seluruh baca-status → cek saldo → update →
@@ -4440,6 +4876,7 @@ class AttendanceController extends Controller
                 continue; // libur dari jadwal shift / weekend menurut jadwalnya → skip
             }
 
+            $isExpired = $date <= now('Asia/Jakarta')->toDateString();
             $rows[] = [
                 'user_id'           => $u->id,
                 'company_id'        => $companyId,
@@ -4449,8 +4886,9 @@ class AttendanceController extends Controller
                 'end_date'          => $date,
                 'total_days'        => $userDays,
                 'reason'            => "Cuti bersama: {$holiday->name}",
-                'status'            => 'pending',
-                'collective_status' => 'pending',
+                'status'            => $isExpired ? 'rejected' : 'pending',
+                'collective_status' => $isExpired ? 'declined' : 'pending',
+                'rejection_reason'  => $isExpired ? 'Tidak merespons sebelum batas waktu (hari H tiba) — otomatis ditolak oleh sistem.' : null,
                 'created_at'        => $now,
                 'updated_at'        => $now,
             ];
@@ -4851,15 +5289,42 @@ class AttendanceController extends Controller
     public function checkIn(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'latitude'    => 'required|numeric|between:-90,90',
-            'longitude'   => 'required|numeric|between:-180,180',
-            'is_mocked'   => 'nullable|boolean',
+            'latitude'       => 'required|numeric|between:-90,90',
+            'longitude'      => 'required|numeric|between:-180,180',
+            'check_in_type'  => 'nullable|string|in:onsite,wfh,field,dinas_luar,office',
+            'client_name'    => 'nullable|string|max:255',
+            'client_address' => 'nullable|string|max:1000',
+            'visit_notes'    => 'nullable|string|max:1000',
+            'notes'          => 'nullable|string|max:1000',
+            'photo'          => 'nullable|file|image|max:10240',
+            'is_mocked'      => 'nullable|boolean',
+            'is_rooted'      => 'nullable|boolean',
+            'is_emulator'    => 'nullable|boolean',
         ]);
+
+        // Normalisasi alias 'office' dari mobile menjadi 'onsite'
+        if (($validated['check_in_type'] ?? '') === 'office') {
+            $validated['check_in_type'] = 'onsite';
+        }
 
         if ($request->boolean('is_mocked')) {
             return response()->json([
                 'message'           => 'Presensi ditolak. Terdeteksi penggunaan aplikasi Fake GPS / Mock Location pada perangkat Anda. Harap matikan aplikasi pemalsu lokasi untuk melanjutkan.',
                 'fake_gps_detected' => true,
+            ], 403);
+        }
+
+        if ($request->boolean('is_rooted')) {
+            return response()->json([
+                'message'              => 'Presensi ditolak. Perangkat Anda terdeteksi telah di-root (Android) atau jailbreak (iOS). Harap gunakan perangkat yang tidak di-modifikasi untuk keamanan data presensi.',
+                'rooted_device_detected' => true,
+            ], 403);
+        }
+
+        if ($request->boolean('is_emulator')) {
+            return response()->json([
+                'message'               => 'Presensi ditolak. Aplikasi terdeteksi berjalan di dalam Emulator atau Simulator (bukan perangkat fisik). Presensi hanya dapat dilakukan pada perangkat HP asli.',
+                'emulator_detected'     => true,
             ], 403);
         }
 
@@ -4909,11 +5374,26 @@ class AttendanceController extends Controller
             ->whereDate('end_date', '>=', $today)
             ->exists();
 
-        // Mode (a): mobile diblokir → gunakan perangkat presensi kantor (kecuali WFH global / shift WFH terjadwal / pengajuan WFH disetujui)
-        if (! $user->canWfh() && ! $isWfhScheduled && ! $isWfhApproved) {
-            return response()->json([
-                'message' => 'Presensi aplikasi hanya untuk karyawan WFH atau lapangan. Presensi di kantor dilakukan melalui perangkat presensi.',
-            ], 403);
+        $isDinasLuarRequest = ($validated['check_in_type'] ?? '') === 'dinas_luar';
+
+        if ($isDinasLuarRequest) {
+            if (! $user->canDinasLuar() && ! $isFieldScheduled) {
+                return response()->json([
+                    'message' => 'Anda tidak memiliki izin presensi dinas luar / kunjungan klien. Hubungi HRD.',
+                ], 403);
+            }
+            if (empty($validated['client_name'])) {
+                return response()->json([
+                    'message' => 'Nama klien / instansi wajib diisi untuk presensi dinas luar.',
+                ], 422);
+            }
+        } else {
+            // Mode (a): mobile diblokir → gunakan perangkat presensi kantor (kecuali WFH global / shift WFH terjadwal / pengajuan WFH disetujui)
+            if (! $user->canWfh() && ! $isWfhScheduled && ! $isWfhApproved) {
+                return response()->json([
+                    'message' => 'Presensi aplikasi hanya untuk karyawan WFH atau lapangan. Presensi di kantor dilakukan melalui perangkat presensi.',
+                ], 403);
+            }
         }
 
         // Cegah presensi jika user sedang cuti, sakit, atau izin hari ini
@@ -4996,10 +5476,20 @@ class AttendanceController extends Controller
         $distanceMeters = null;
         $checkInType    = 'wfh';
 
+        $checkInPhoto = null;
+        if ($request->hasFile('photo') && $request->file('photo')->isValid()) {
+            $checkInPhoto = $request->file('photo')->store('attendance_photos');
+        }
+
+        $clientAddress = $validated['client_address'] ?? null;
+        if ($isDinasLuarRequest && empty($clientAddress)) {
+            $clientAddress = app(LocationService::class)->reverseGeocode((float) $validated['latitude'], (float) $validated['longitude']);
+        }
+
         // Mode WFH / Shift WFH / Pengajuan WFH Disetujui: validasi window waktu presensi
         // Cegah check-in terlalu dini (mis. subuh/malam setelah tengah malam reset).
         // Gunakan jam masuk dari shift aktif jika ada; fallback ke kantor.
-        if (! $user->hasRadiusEnabled() || $isWfhScheduled || $isWfhApproved) {
+        if (! $isDinasLuarRequest && (! $user->hasRadiusEnabled() || $isWfhScheduled || $isWfhApproved)) {
             $officeRef = $jadwalHariIni['office'];
             $jamMasuk  = $jadwalHariIni['work_start_time'];
 
@@ -5023,8 +5513,10 @@ class AttendanceController extends Controller
         }
 
         // Mode (c): lapangan — validasi radius terhadap lokasi kantor terdekat
-        // Berjalan jika: (1) user memiliki radius_enabled=true & bukan hari WFH murni/pengajuan WFH disetujui, ATAU (2) hari ini adalah shift Lapangan terjadwal (is_field = true)
-        $needRadiusCheck = $isFieldScheduled || ($user->hasRadiusEnabled() && ! $isWfhScheduled && ! $isWfhApproved);
+        // Berjalan jika BUKAN dinas luar, BUKAN pengajuan WFH disetujui, dan:
+        // (1) hari ini adalah shift Lapangan terjadwal (is_field = true), ATAU
+        // (2) user memiliki radius_enabled=true & hari ini bukan shift WFH murni terjadwal
+        $needRadiusCheck = ! $isDinasLuarRequest && ! $isWfhApproved && ($isFieldScheduled || ($user->hasRadiusEnabled() && ! $isWfhScheduled));
 
         // Kantor acuan presensi hari ini — dipakai untuk validasi radius & snapshot.
         // Default: kantor penempatan karyawan; ditimpa kantor TERDEKAT bila radius check berjalan.
@@ -5069,6 +5561,8 @@ class AttendanceController extends Controller
             }
 
             $checkInType = 'field';
+        } elseif ($isDinasLuarRequest) {
+            $checkInType = 'dinas_luar';
         }
 
         // Ambil jadwal efektif untuk menentukan status (hadir/telat) & reminder
@@ -5093,11 +5587,15 @@ class AttendanceController extends Controller
                 'check_in_distance_meters' => $distanceMeters,
                 'check_in_type'            => $checkInType,
                 'status'                   => $status,
+                'client_name'              => $isDinasLuarRequest ? ($validated['client_name'] ?? null) : null,
+                'client_address'           => $isDinasLuarRequest ? $clientAddress : null,
+                'visit_notes'              => $isDinasLuarRequest ? ($validated['visit_notes'] ?? $validated['notes'] ?? null) : ($validated['notes'] ?? null),
+                'check_in_photo'           => $checkInPhoto,
                 // SNAPSHOT: bekukan aturan yang berlaku saat check-in (jam kerja,
-                // kantor acuan, lembur, toleransi, auto-checkout). Perubahan setting
+                // kantor acuan, lembur, toleransi, auto-checkout, flexitime). Perubahan setting
                 // HRD di siang hari tidak lagi mempengaruhi record ini — lihat
                 // doc/rules.md "Snapshot Acuan Jam Kerja".
-            ] + Attendance::make()->buildSnapshot($jadwalHariIni, $jamPulang, $acuanOffice)
+            ] + Attendance::make()->buildSnapshot($jadwalHariIni, $jamPulang, $acuanOffice, $user)
         );
 
         // ─── Queue Job: activity log & notifikasi di background ─────────
@@ -5107,7 +5605,7 @@ class AttendanceController extends Controller
             $user->id,
             $user->company_id,
             'attendance_check_in',
-            "Check-in ({$checkInType}) status {$status}",
+            "Check-in ({$checkInType}) status {$status}" . ($isDinasLuarRequest && ! empty($validated['client_name']) ? " [Klien: {$validated['client_name']}]" : ''),
             'attendance',
             $attendance->id,
         );
@@ -5135,6 +5633,7 @@ class AttendanceController extends Controller
             'attendance' => $attendance->only([
                 'id', 'date', 'check_in_time', 'check_in_type',
                 'check_in_distance_meters', 'status',
+                'client_name', 'client_address', 'visit_notes', 'check_in_photo',
             ]),
             // Jadwal shift aktif yang berlaku hari ini (untuk tampilan di Flutter)
             'active_shift' => $jadwalHariIni['source'] === 'shift' ? [
@@ -5160,12 +5659,28 @@ class AttendanceController extends Controller
             'latitude'        => 'required|numeric|between:-90,90',
             'longitude'       => 'required|numeric|between:-180,180',
             'is_mocked'       => 'nullable|boolean',
+            'is_rooted'       => 'nullable|boolean',
+            'is_emulator'     => 'nullable|boolean',
         ]);
 
         if ($request->boolean('is_mocked')) {
             return response()->json([
                 'message'           => 'Presensi pulang ditolak. Terdeteksi penggunaan aplikasi Fake GPS / Mock Location pada perangkat Anda. Harap matikan aplikasi pemalsu lokasi untuk melanjutkan.',
                 'fake_gps_detected' => true,
+            ], 403);
+        }
+
+        if ($request->boolean('is_rooted')) {
+            return response()->json([
+                'message'              => 'Presensi pulang ditolak. Perangkat Anda terdeteksi telah di-root (Android) atau jailbreak (iOS). Harap gunakan perangkat yang tidak di-modifikasi.',
+                'rooted_device_detected' => true,
+            ], 403);
+        }
+
+        if ($request->boolean('is_emulator')) {
+            return response()->json([
+                'message'               => 'Presensi pulang ditolak. Aplikasi terdeteksi berjalan di dalam Emulator atau Simulator (bukan perangkat fisik).',
+                'emulator_detected'     => true,
             ], 403);
         }
 
@@ -5351,7 +5866,7 @@ class AttendanceController extends Controller
         // SNAPSHOT (2026-08-26): pakai aturan yang dibekukan saat check-in bila ada,
         // agar edit setting HRD di siang hari tidak mengubah hasil checkout.
         $schedule       = $attendance->snapshotSchedule() ?? $this->getWorkSchedule($user, $scheduleDate);
-        $workStart      = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate);
+        $workStart      = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate, $user, $attendance);
         $workMinutes    = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta')));
 
         // Potong jam istirahat jika bekerja >= 5 jam (300 menit) sesuai UU 13/2003
@@ -5364,8 +5879,8 @@ class AttendanceController extends Controller
         // Pass $user->id agar cuti bersama yang di-decline tidak dianggap hari libur karyawan ini.
         $nonWorking      = $this->isNonWorkingDay($scheduleDate, $user->company_id, null, $user->id);
         // calculateOvertime & checkEarlyLeave sudah mempertimbangkan shift aktif karyawan (cross-day aware)
-        $overtimeMinutes = $this->calculateOvertime($user, $scheduleDate, $checkOutTime, $workMinutes, $nonWorking, $schedule);
-        $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking, $schedule);
+        $overtimeMinutes = $this->calculateOvertime($user, $scheduleDate, $checkOutTime, $workMinutes, $nonWorking, $schedule, $attendance);
+        $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking, $schedule, $workMinutes, $attendance);
 
         $updateData = [
             'check_out_time'      => $checkOutTime,
@@ -5384,6 +5899,10 @@ class AttendanceController extends Controller
 
         $attendance->update($updateData);
         $attendance->refresh();
+
+        if ($overtimeMinutes > 0) {
+            $this->createOvertimeApproval($attendance, false);
+        }
 
         // ─── Queue Job: activity log di background ─────────────────────
         ProcessAttendanceBackgroundJob::dispatch(
@@ -5420,7 +5939,7 @@ class AttendanceController extends Controller
     //
     //     $schedule (opsional): jadwal yang sudah di-resolve caller — bila diisi,
     //     helper TIDAK me-resolve ulang (dipakai jalur snapshot checkout).
-    private function calculateOvertime(User $user, string $date, Carbon $checkOutTime, int $workMinutes, bool $isNationalNonWorking, ?array $schedule = null): int
+    private function calculateOvertime(User $user, string $date, Carbon $checkOutTime, int $workMinutes, bool $isNationalNonWorking, ?array $schedule = null, ?Attendance $attendance = null): int
     {
         $schedule = $schedule ?? $this->getWorkSchedule($user, $date);
         $office   = $schedule['office'];
@@ -5456,6 +5975,16 @@ class AttendanceController extends Controller
             return $full >= $minOvertime ? $full : 0;
         }
 
+        // Kasus 2.5: Karyawan dengan jam kerja fleksibel (flexitime)
+        //            Lembur dihitung dari akumulasi jam kerja bersih yang melebihi target harian
+        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) $user->flexitime_enabled;
+        if ($isFlex) {
+            $targetMins = (int) ($office->flex_target_minutes ?? 480);
+            $lewat = max(0, $workMinutes - $targetMins);
+
+            return $lewat >= $minOvertime ? $lewat : 0;
+        }
+
         // Kasus 3: hari kerja efektif (dari shift atau default kantor)
         //          → hitung lembur setelah jam pulang yang berlaku
         $jamPulangStr = $schedule['work_end_time'];
@@ -5482,18 +6011,43 @@ class AttendanceController extends Controller
     //     Mempertimbangkan shift aktif: pakai jam pulang shift jika ada.
     //     Tidak berlaku di hari libur (per jadwal shift atau kalender).
     //     $schedule (opsional): jadwal dari caller (jalur snapshot checkout).
-    private function checkEarlyLeave(User $user, string $date, Carbon $checkOutTime, bool $isNationalNonWorking, ?array $schedule = null): bool
+    //     Mendukung jam kerja fleksibel (flexitime) dengan validasi jam inti & durasi target.
+    private function checkEarlyLeave(User $user, string $date, Carbon $checkOutTime, bool $isNationalNonWorking, ?array $schedule = null, ?int $workMinutes = null, ?Attendance $attendance = null): bool
     {
         $schedule = $schedule ?? $this->getWorkSchedule($user, $date);
-        $office   = $schedule['office'];
+        $office   = $schedule['office'] ?? $user->office;
 
         // Hari libur per jadwal shift → tidak ada konsep pulang awal
-        if ($schedule['is_off']) {
+        if (! empty($schedule['is_off'])) {
             return false;
         }
 
         // Hari libur nasional/weekend tanpa shift → tidak ada konsep pulang awal
-        if ($schedule['source'] === 'office' && $isNationalNonWorking) {
+        if (($schedule['source'] ?? 'office') === 'office' && $isNationalNonWorking) {
+            return false;
+        }
+
+        // Karyawan dengan jam kerja fleksibel (flexitime):
+        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) $user->flexitime_enabled;
+        if ($isFlex) {
+            // Syarat 1: Karyawan flexitime wajib standby sampai jam inti berakhir (flex_core_end, default 15:00)
+            $coreEndStr  = ! empty($office?->flex_core_end) ? substr((string) $office->flex_core_end, 0, 5) : '15:00';
+            $coreEnd     = Carbon::parse($date . ' ' . $coreEndStr, 'Asia/Jakarta');
+            $checkOutWib = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
+
+            if ($checkOutWib->lessThan($coreEnd)) {
+                return true; // Pulang mendahului batas jam inti
+            }
+
+            // Syarat 2: Karyawan flexitime wajib memenuhi target durasi kerja harian (default 480 menit = 8 jam)
+            $targetMinutes = (int) ($office?->flex_target_minutes ?? 480);
+            $toleransi     = (int) ($office?->early_leave_tolerance_minutes ?? 0);
+            $minRequired   = max(0, $targetMinutes - $toleransi);
+
+            if ($workMinutes !== null && $workMinutes < $minRequired) {
+                return true; // Durasi kerja belum memenuhi target harian
+            }
+
             return false;
         }
 
@@ -5674,14 +6228,62 @@ class AttendanceController extends Controller
             'require_selfie' => (bool) $primaryOffice->require_selfie,
         ] : null;
 
-        $userOffices = $officeData ? [$officeData] : [];
+        // Multi-geofence roaming: ambil seluruh cabang aktif milik perusahaan
+        $allCompanyOffices = AttendanceSetting::where('company_id', $user->company_id)
+            ->whereNotNull('office_latitude')
+            ->whereNotNull('office_longitude')
+            ->get();
 
-        $isWfhApproved = LeaveRequest::where('user_id', $user->id)
-            ->where('status', 'approved')
-            ->where('leave_type', 'wfh')
-            ->whereDate('start_date', '<=', $today)
-            ->whereDate('end_date', '>=', $today)
-            ->exists();
+        $userOffices = $allCompanyOffices->map(function ($off) {
+            return [
+                'id'             => $off->id,
+                'name'           => $off->office_name,
+                'latitude'       => (float) $off->office_latitude,
+                'longitude'      => (float) $off->office_longitude,
+                'radius_meters'  => (int) $off->radius_meters,
+                'require_selfie' => (bool) $off->require_selfie,
+            ];
+        })->values()->all();
+
+        if (empty($userOffices) && $officeData) {
+            $userOffices = [$officeData];
+        }
+
+        $isWfhApproved = $user->hasApprovedWfhToday($today);
+
+        $isFlexSession = $attendance
+            ? $attendance->isFlexitimeSession($user)
+            : (bool) $user->flexitime_enabled;
+        $officeForFlex = ($attendance && $attendance->hasSnapshot())
+            ? ($attendance->snapshotOffice() ?? $primaryOffice ?? $user->office)
+            : ($primaryOffice ?? $user->office);
+
+        $flexConfig = null;
+        if ($isFlexSession && $officeForFlex) {
+            $arrivalStart = ! empty($officeForFlex->flex_arrival_start) ? substr((string) $officeForFlex->flex_arrival_start, 0, 5) : '07:00';
+            $arrivalEnd   = ! empty($officeForFlex->flex_arrival_end) ? substr((string) $officeForFlex->flex_arrival_end, 0, 5) : '10:00';
+            $coreStart    = ! empty($officeForFlex->flex_core_start) ? substr((string) $officeForFlex->flex_core_start, 0, 5) : '10:00';
+            $coreEnd      = ! empty($officeForFlex->flex_core_end) ? substr((string) $officeForFlex->flex_core_end, 0, 5) : '15:00';
+            $targetMins   = (int) ($officeForFlex->flex_target_minutes ?? 480);
+            $breakMins    = (int) ($officeForFlex->break_minutes ?? 60);
+
+            $targetCheckoutTime = null;
+            if ($attendance && $attendance->check_in_time) {
+                $checkInCarbon = Carbon::parse($attendance->check_in_time)->setTimezone('Asia/Jakarta');
+                $targetCheckoutTime = $checkInCarbon->copy()->addMinutes($targetMins + $breakMins)->format('H:i');
+            }
+
+            $flexConfig = [
+                'arrival_start'        => $arrivalStart,
+                'arrival_end'          => $arrivalEnd,
+                'core_start'           => $coreStart,
+                'core_end'             => $coreEnd,
+                'target_minutes'       => $targetMins,
+                'target_hours'         => round($targetMins / 60, 1),
+                'break_minutes'        => $breakMins,
+                'target_checkout_time' => $targetCheckoutTime,
+            ];
+        }
 
         if (! $attendance || ! $attendance->check_in_time) {
             $jadwalHariIni    = $this->getWorkSchedule($user, (string) $today);
@@ -5696,8 +6298,12 @@ class AttendanceController extends Controller
                 'scheduled_auto_checkout_at' => null,
                 // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
                 // tombol "Catat Presensi" saat tombol Refresh ditekan.
-                'wfh_enabled'         => (bool) ($user->wfh_enabled || $isWfhApproved || $isWfhScheduled || $isFieldScheduled),
-                'radius_enabled'      => (bool) ($isWfhApproved ? false : ($user->radius_enabled || $isFieldScheduled)),
+                'attendance_enabled'  => (bool) $user->canAccessAttendance(),
+                'wfh_enabled'         => (bool) ($user->canAccessAttendance() && ($user->canWfh() || $isWfhApproved || $isWfhScheduled || $isFieldScheduled)),
+                'radius_enabled'      => (bool) ($user->canAccessAttendance() && ($user->canDinasLuar() ? false : ($isWfhApproved ? false : ($user->radius_enabled || $isFieldScheduled)))),
+                'dinas_luar_enabled'  => (bool) ($user->canDinasLuar() || $isFieldScheduled),
+                'flexitime_enabled'   => (bool) $user->flexitime_enabled,
+                'flexitime_config'    => $flexConfig,
                 'is_wfh_approved'     => $isWfhApproved,
                 'office'              => $officeData,
                 'offices'             => $userOffices,
@@ -5752,7 +6358,7 @@ class AttendanceController extends Controller
         // agar tombol checkout tetap muncul di Flutter meskipun HRD mematikan toggle WFH.
         // Toggle WFH yang dimatikan hanya berlaku untuk MENCEGAH check-in baru, bukan memblokir checkout.
         $isActiveSession = $attendance->check_in_time && ! $attendance->check_out_time;
-        $wfhEnabledForResponse = $isActiveSession ? true : (bool) ($user->wfh_enabled || $isWfhApproved);
+        $wfhEnabledForResponse = $isActiveSession ? true : (bool) ($user->canWfh() || $isWfhApproved);
 
         // Jadwal shift aktif hari ini (untuk tampilan di Flutter).
         // SNAPSHOT: jika karyawan sedang dalam sesi aktif (sudah check-in tapi belum checkout),
@@ -5764,18 +6370,23 @@ class AttendanceController extends Controller
             'checked_in'  => true,
             'checked_out' => (bool) $attendance->check_out_time,
             'attendance'  => $attendance->only([
-                'id', 'date', 'check_in_time', 'check_out_time',
+                'id', 'date', 'check_in_time', 'check_out_time', 'check_in_type',
+                'client_name', 'client_address', 'visit_notes', 'check_in_photo',
                 'status', 'work_minutes', 'overtime_minutes',
                 'is_auto_checkout', 'auto_checkout_at',
             ]),
             // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
             // tombol "Catat Presensi" saat tombol Refresh ditekan.
             // Jika user sedang aktif (checked-in, belum checkout), paksa true.
-            'wfh_enabled'    => $wfhEnabledForResponse,
-            'radius_enabled' => (bool) ($isWfhApproved || ($attendance && $attendance->check_in_type === 'wfh') ? false : $user->radius_enabled),
-            'is_wfh_approved' => $isWfhApproved,
-            'office'         => $officeData,
-            'offices'        => $userOffices,
+            'attendance_enabled'  => (bool) $user->canAccessAttendance(),
+            'wfh_enabled'         => $wfhEnabledForResponse,
+            'radius_enabled'      => (bool) ($user->canDinasLuar() || $isWfhApproved || ($attendance && in_array($attendance->check_in_type, ['wfh', 'dinas_luar'])) ? false : ($user->radius_enabled || ! empty($jadwalHariIni['is_field']) || ($attendance && $attendance->check_in_type === 'field'))),
+            'dinas_luar_enabled'  => (bool) ($user->canDinasLuar() || (! empty($jadwalHariIni['is_field']))),
+            'flexitime_enabled'   => (bool) $isFlexSession,
+            'flexitime_config'    => $flexConfig,
+            'is_wfh_approved'     => $isWfhApproved,
+            'office'              => $officeData,
+            'offices'             => $userOffices,
             'active_shift' => $jadwalTampilan['source'] === 'shift' ? [
                 'shift_id'        => $jadwalTampilan['shift_id'],
                 'shift_name'      => $jadwalTampilan['shift_name'],
@@ -5788,6 +6399,32 @@ class AttendanceController extends Controller
                 'id', 'overtime_minutes', 'status', 'reviewed_at', 'notes',
             ]) : null,
         ]);
+    }
+
+    // photo() — sajikan foto bukti kehadiran / kunjungan dinas luar privat
+    public function photo(Request $request, Attendance $attendance)
+    {
+        $user = $request->user();
+
+        // Karyawan hanya boleh lihat foto miliknya sendiri
+        if ($user->role === 'employee' && $attendance->user_id !== $user->id) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke foto presensi ini.'], 403);
+        }
+
+        // HRD / Admin / Finance / Super Admin hanya di perusahaannya
+        if ($user->role !== 'employee' && $attendance->company_id !== $user->company_id && $user->role !== 'super_admin') {
+            return response()->json(['message' => 'Data presensi tidak ditemukan di perusahaan Anda.'], 403);
+        }
+
+        $photoPath = $attendance->check_in_photo;
+        if (! $photoPath || ! Storage::disk('local')->exists($photoPath)) {
+            return response()->json(['message' => 'Foto bukti kehadiran tidak ditemukan.'], 404);
+        }
+
+        $fullPath = Storage::disk('local')->path($photoPath);
+        $mimeType = mime_content_type($fullPath) ?: 'image/jpeg';
+
+        return response()->file($fullPath, ['Content-Type' => $mimeType]);
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -6204,6 +6841,7 @@ class AttendanceController extends Controller
             ->select([
                 'id', 'date', 'check_in_time', 'check_in_type', 'check_in_distance_meters',
                 'check_out_time', 'check_out_type', 'status', 'notes',
+                'client_name', 'client_address', 'visit_notes', 'check_in_photo',
                 'work_minutes', 'overtime_minutes', 'is_holiday', 'is_auto_checkout',
             ]);
 
@@ -6264,12 +6902,17 @@ class AttendanceController extends Controller
             ->whereDate('end_date', '>=', $todayStr)
             ->exists();
 
+        $jadwalHariIni    = $this->getWorkSchedule($user, $todayStr);
+        $isWfhScheduled   = ! empty($jadwalHariIni['is_wfh']);
+        $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
+
         $responseData = $attendances->toArray();
-        $responseData['wfh_enabled']     = (bool) ($user->wfh_enabled || $isWfhApprovedToday);
-        $responseData['radius_enabled']  = (bool) ($isWfhApprovedToday ? false : $user->radius_enabled);
-        $responseData['is_wfh_approved'] = $isWfhApprovedToday;
-        $responseData['office']          = $officeData;
-        $responseData['offices']         = $officeData ? [$officeData] : [];
+        $responseData['wfh_enabled']        = (bool) ($user->canWfh() || $isWfhApprovedToday || $isWfhScheduled || $isFieldScheduled);
+        $responseData['radius_enabled']     = (bool) ($user->canDinasLuar() ? false : ($isWfhApprovedToday ? false : ($user->radius_enabled || $isFieldScheduled)));
+        $responseData['dinas_luar_enabled'] = (bool) ($user->canDinasLuar() || $isFieldScheduled);
+        $responseData['is_wfh_approved']    = $isWfhApprovedToday;
+        $responseData['office']             = $officeData;
+        $responseData['offices']            = $officeData ? [$officeData] : [];
 
         return response()->json($responseData);
     }

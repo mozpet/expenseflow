@@ -1246,7 +1246,7 @@ class ReceiptController extends Controller
             'id', 'company_id', 'user_id', 'attendance_setting_id', 'expense_report_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
             'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
             'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
-            'receipt_date', 'status', 'ocr_status', 'category', 'notes',
+            'ocr_raw_date', 'receipt_date', 'status', 'ocr_status', 'category', 'notes',
             'variance_flag', 'variance_pct', 'is_potential_duplicate',
             'duplicate_reference_id', 'duplicate_reason', 'submitted_at', 'created_at',
         ])
@@ -1316,7 +1316,7 @@ class ReceiptController extends Controller
             'id', 'company_id', 'user_id', 'attendance_setting_id', 'expense_report_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
             'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
             'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
-            'receipt_date', 'status', 'ocr_status', 'category', 'notes',
+            'ocr_raw_date', 'receipt_date', 'status', 'ocr_status', 'category', 'notes',
             'variance_flag', 'variance_pct', 'is_potential_duplicate',
             'duplicate_reference_id', 'duplicate_reason', 'paid_at', 'paid_by', 'payment_method',
             'payment_ref_no', 'submitted_at', 'created_at',

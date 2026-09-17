@@ -32,13 +32,13 @@ return Application::configure(basePath: dirname(__DIR__))
         );
 
         $exceptions->render(function (ThrottleRequestsException $e, Request $request) {
-            $raw = (int) ($e->getHeaders()['Retry-After'] ?? 60);
-            $seconds = max(1, min($raw > 0 ? $raw : 60, 60));
+            $raw = (int) ($e->getHeaders()['Retry-After'] ?? 30);
+            $seconds = max(1, min($raw > 0 ? $raw : 30, 30));
             $headers = $e->getHeaders();
             $headers['Retry-After'] = (string) $seconds;
 
             return response()->json([
-                'message'             => 'Terlalu banyak permintaan. Silakan tunggu beberapa saat sebelum mencoba kembali.',
+                'message'             => "Terlalu banyak permintaan. Silakan tunggu {$seconds} detik sebelum mencoba kembali.",
                 'retry_after_seconds' => $seconds,
                 'retry_after'         => $seconds,
                 'rate_limit'          => true,

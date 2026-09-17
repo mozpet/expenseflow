@@ -293,10 +293,37 @@ export const attendanceApi = {
   // Didukung in-memory smart cache (5 menit) + request deduplication terpusat
   allUsers: (forceRefresh = false) =>
     apiGet('/dashboard/attendance/users/all', undefined, { forceRefresh }),
+  toggleAttendance: (id: number | string) =>
+    apiPost(`/dashboard/attendance/users/${id}/toggle-attendance`),
+  updateMobilePolicy: (
+    id: number | string,
+    data: { attendance_enabled: boolean; wfh_enabled?: boolean; radius_enabled?: boolean }
+  ) => apiPut(`/dashboard/attendance/users/${id}/mobile-policy`, data),
   toggleWfh: (id: number | string) =>
     apiPost(`/dashboard/attendance/users/${id}/toggle-wfh`),
   toggleRadius: (id: number | string) =>
     apiPost(`/dashboard/attendance/users/${id}/toggle-radius`),
+  toggleDinasLuar: (id: number | string) =>
+    apiPost(`/dashboard/attendance/users/${id}/toggle-dinas-luar`),
+  toggleFlexitime: (id: number | string) =>
+    apiPost(`/dashboard/attendance/users/${id}/toggle-flexitime`),
+  attendancePhotoUrl: async (
+    id: number | string,
+  ): Promise<string | null> => {
+    try {
+      const headers: Record<string, string> = { 'X-Platform': 'web' };
+      const token = getToken();
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const response = await fetch(`${BASE_URL}/dashboard/attendance/attendances/${id}/photo`, { headers });
+      if (!response.ok) return null;
+
+      const blob = await response.blob();
+      return URL.createObjectURL(blob);
+    } catch {
+      return null;
+    }
+  },
 
   // Pengajuan izin/cuti
   leaves: (filters?: {

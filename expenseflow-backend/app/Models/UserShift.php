@@ -22,8 +22,8 @@ class UserShift extends Model
         return [
             'shift_pattern_id' => 'integer',
             'anchor_day_order' => 'integer',
-            'start_date'       => 'date',
-            'end_date'         => 'date',
+            'start_date'       => 'date:Y-m-d',
+            'end_date'         => 'date:Y-m-d',
         ];
     }
 

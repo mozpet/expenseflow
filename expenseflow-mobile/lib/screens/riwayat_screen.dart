@@ -45,10 +45,16 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
     }
     if (_selectedDateRange != null) {
       list = list.where((r) {
-        final dStr = r.receiptDate ?? r.ocrRawDate ?? r.createdAt;
+        final dStr = (r.submittedAt != null && r.submittedAt!.isNotEmpty)
+            ? r.submittedAt!
+            : (r.receiptDate ?? r.ocrRawDate ?? r.createdAt);
         if (dStr.isEmpty) return true;
-        final raw = dStr.length >= 10 ? dStr.substring(0, 10) : dStr;
-        final parsed = DateTime.tryParse(raw);
+        DateTime? parsed;
+        if (dStr.contains('T') || dStr.endsWith('Z')) {
+          parsed = DateTime.tryParse(dStr)?.toLocal();
+        } else {
+          parsed = DateTime.tryParse(dStr.length >= 10 ? dStr.substring(0, 10) : dStr);
+        }
         if (parsed == null) return true;
         final start = DateTime(
           _selectedDateRange!.start.year,
@@ -1022,7 +1028,9 @@ class _ReceiptCard extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                receipt.displayDate,
+                receipt.isDraft
+                    ? receipt.displayDate
+                    : receipt.displaySubmissionDate,
                 style: const TextStyle(color: Colors.grey, fontSize: 12),
               ),
               const SizedBox(height: 12),

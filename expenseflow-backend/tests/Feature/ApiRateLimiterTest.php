@@ -133,12 +133,13 @@ class ApiRateLimiterTest extends TestCase
         $this->assertArrayHasKey('rate_limit', $data);
         $this->assertTrue($data['rate_limit']);
         $this->assertIsInt($data['retry_after_seconds']);
-        $this->assertLessThanOrEqual(60, $data['retry_after_seconds']);
+        $this->assertLessThanOrEqual(30, $data['retry_after_seconds']);
         $this->assertGreaterThanOrEqual(1, $data['retry_after_seconds']);
+        $this->assertStringContainsString('detik', $data['message']);
 
         // Verify HTTP Headers according to Section 4
         $retryAfterHeader = (int) $response->headers->get('Retry-After');
-        $this->assertLessThanOrEqual(60, $retryAfterHeader);
+        $this->assertLessThanOrEqual(30, $retryAfterHeader);
         $this->assertGreaterThanOrEqual(1, $retryAfterHeader);
         $this->assertTrue($response->headers->has('X-RateLimit-Limit'));
         $this->assertTrue($response->headers->has('X-RateLimit-Remaining'));

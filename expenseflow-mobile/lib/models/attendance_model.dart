@@ -15,6 +15,11 @@ class PresensiRecord {
   final String? overtimeReason;
   // Status presensi dari backend: 'present', 'late', 'early_leave', 'absent', 'wfh', dll.
   final String? status;
+  // Kategori F: Data kunjungan dinas luar
+  final String? clientName;
+  final String? clientAddress;
+  final String? visitNotes;
+  final String? checkInPhoto;
 
   PresensiRecord({
     this.id = 0,
@@ -31,9 +36,14 @@ class PresensiRecord {
     this.overtimeStatus,
     this.overtimeReason,
     this.status,
+    this.clientName,
+    this.clientAddress,
+    this.visitNotes,
+    this.checkInPhoto,
   });
 
   bool get isEarlyLeave => status == 'early_leave';
+  bool get isDinasLuar => checkInType == 'dinas_luar' || (clientName != null && clientName!.isNotEmpty);
 
   PresensiRecord copyWith({
     int? id,
@@ -50,6 +60,10 @@ class PresensiRecord {
     String? overtimeStatus,
     String? overtimeReason,
     String? status,
+    String? clientName,
+    String? clientAddress,
+    String? visitNotes,
+    String? checkInPhoto,
   }) {
     return PresensiRecord(
       id: id ?? this.id,
@@ -66,6 +80,10 @@ class PresensiRecord {
       overtimeStatus: overtimeStatus ?? this.overtimeStatus,
       overtimeReason: overtimeReason ?? this.overtimeReason,
       status: status ?? this.status,
+      clientName: clientName ?? this.clientName,
+      clientAddress: clientAddress ?? this.clientAddress,
+      visitNotes: visitNotes ?? this.visitNotes,
+      checkInPhoto: checkInPhoto ?? this.checkInPhoto,
     );
   }
 

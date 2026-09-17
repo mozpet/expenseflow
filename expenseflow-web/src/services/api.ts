@@ -34,7 +34,7 @@ export {
 
 const BASE_URL =
   (import.meta.env.VITE_API_BASE_URL as string | undefined) ??
-  'https://0586-2001-448a-2018-b34-947e-aa07-683b-20e9.ngrok-free.app/api/v1';
+  'http://127.0.0.1:8000/api/v1';
 
 const TOKEN_KEY = 'expenseflow_token';
 const USER_KEY = 'expenseflow_user';
@@ -176,18 +176,19 @@ async function executeFetch<T = any>(
       (data && (data.message || data.error)) || `Permintaan gagal (${res.status}).`;
       
     if (res.status === 429) {
-      let retryAfter = 60;
-      if (data?.retry_after_seconds) {
+      let retryAfter = 30;
+      if (typeof data?.retry_after_seconds === 'number') {
         retryAfter = data.retry_after_seconds;
-      } else if (data?.retry_after) {
+      } else if (typeof data?.retry_after === 'number') {
         retryAfter = data.retry_after;
       } else {
         const headerRetry = res.headers.get('Retry-After');
-        if (headerRetry) retryAfter = parseInt(headerRetry, 10) || 60;
+        if (headerRetry) retryAfter = parseInt(headerRetry, 10) || 30;
       }
+      retryAfter = Math.max(1, Math.min(retryAfter, 30));
       message =
         (data && data.message) ||
-        `Aktivitas terlalu cepat. Mohon tunggu ${retryAfter} detik sebelum mencoba kembali.`;
+        `Terlalu banyak permintaan. Silakan tunggu ${retryAfter} detik sebelum mencoba kembali.`;
     }
 
     throw new ApiError(message, res.status, data);
@@ -291,12 +292,17 @@ export async function request<T = any>(
   return result;
 }
 
-// Ambil waktu tunggu (detik) dari error rate-limit (429) — dipakai LoginPage
-// untuk menampilkan countdown. Nilai bersumber dari body `retry_after`.
+// Ambil waktu tunggu (detik) dari error rate-limit (429) — dipakai LoginPage & komponen web
+// untuk menampilkan countdown. Nilai bersumber dari body `retry_after_seconds` / `retry_after`.
 export const getRetryAfterSeconds = (err: unknown): number | null => {
   if (err instanceof ApiError) {
-    const v = err.data?.retry_after;
-    if (typeof v === 'number' && v > 0) return v;
+    const v = err.data?.retry_after_seconds ?? err.data?.retry_after;
+    if (typeof v === 'number' && v > 0) return Math.min(v, 30);
+    if (typeof err.message === 'string') {
+      const match = err.message.match(/(\d+)\s*detik/i);
+      if (match) return Math.min(parseInt(match[1], 10), 30);
+    }
+    if (err.status === 429) return 30;
   }
   return null;
 };

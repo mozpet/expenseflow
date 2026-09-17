@@ -22,7 +22,7 @@ return new class extends Migration
             $table->decimal('check_in_lat', 10, 8)->nullable();
             $table->decimal('check_in_lng', 11, 8)->nullable();
             $table->integer('check_in_distance_meters')->nullable();
-            $table->enum('check_in_type', ['onsite', 'wfh', 'field'])->nullable();
+            $table->enum('check_in_type', ['onsite', 'wfh', 'field', 'dinas_luar'])->nullable();
             $table->string('check_in_photo')->nullable();
 
             // Check-out

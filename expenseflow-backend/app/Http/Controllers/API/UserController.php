@@ -58,6 +58,9 @@ class UserController extends Controller
                 'is_active', 'employment_type', 'joined_date', 'identity_number',
                 'contract_start_date', 'contract_end_date', 'bank_name',
                 'bank_account_no', 'bank_account_holder',
+                'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled',
+                'allow_attendance', 'allow_wfh', 'allow_radius',
+                'device_name', 'device_id', 'device_bound_at',
                 // Prioritas 1 fields
                 'emergency_contact_name', 'emergency_contact_relation',
                 'emergency_contact_phone', 'emergency_contact_address',
@@ -109,6 +112,14 @@ class UserController extends Controller
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
             'overtime_enabled'      => 'nullable|boolean',
+            'attendance_enabled'    => 'nullable|boolean',
+            'wfh_enabled'           => 'nullable|boolean',
+            'radius_enabled'        => 'nullable|boolean',
+            'dinas_luar_enabled'    => 'nullable|boolean',
+            'flexitime_enabled'     => 'nullable|boolean',
+            'allow_attendance'      => 'nullable|boolean',
+            'allow_wfh'             => 'nullable|boolean',
+            'allow_radius'          => 'nullable|boolean',
             // Tipe hubungan kerja
             'employment_type'       => ['nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
             'joined_date'           => 'nullable|date',
@@ -152,6 +163,16 @@ class UserController extends Controller
 
         $identityNumber = !empty($validated['identity_number']) ? trim($validated['identity_number']) : null;
 
+        $allowAttendance = isset($validated['allow_attendance']) ? (bool) $validated['allow_attendance'] : (isset($validated['attendance_enabled']) ? (bool) $validated['attendance_enabled'] : true);
+        $allowWfh = $allowAttendance ? (bool) ($validated['allow_wfh'] ?? $validated['wfh_enabled'] ?? true) : false;
+        $allowRadius = ($allowAttendance && $allowWfh) ? (bool) ($validated['allow_radius'] ?? $validated['radius_enabled'] ?? true) : false;
+
+        $attEnabled = isset($validated['attendance_enabled']) ? (bool) $validated['attendance_enabled'] : $allowAttendance;
+        $wfhEnabled = ($allowAttendance && $attEnabled && $allowWfh) ? (bool) ($validated['wfh_enabled'] ?? true) : false;
+        $radiusEnabled = ($allowAttendance && $attEnabled && $allowWfh && $wfhEnabled && $allowRadius) ? (bool) ($validated['radius_enabled'] ?? true) : false;
+        $dinasLuarEnabled = $attEnabled ? (bool) ($validated['dinas_luar_enabled'] ?? false) : false;
+        $flexitimeEnabled = (bool) ($validated['flexitime_enabled'] ?? false);
+
         $user = User::create([
             'company_id'            => $companyId,
             'employee_code'         => $validated['employee_code'] ?? null,
@@ -168,6 +189,14 @@ class UserController extends Controller
             'is_pregnant'           => $gender === 'Perempuan' ? (bool) ($validated['is_pregnant'] ?? false) : false,
             'attendance_setting_id' => $validated['attendance_setting_id'] ?? null,
             'overtime_enabled'      => $validated['overtime_enabled'] ?? true,
+            'allow_attendance'      => $allowAttendance,
+            'allow_wfh'             => $allowWfh,
+            'allow_radius'          => $allowRadius,
+            'attendance_enabled'    => $attEnabled,
+            'wfh_enabled'           => $wfhEnabled,
+            'radius_enabled'        => $radiusEnabled,
+            'dinas_luar_enabled'    => $dinasLuarEnabled,
+            'flexitime_enabled'     => $flexitimeEnabled,
             'monthly_claim_limit'   => $validated['monthly_claim_limit'] ?? null,
             'is_active'             => true,
             'employment_type'       => $validated['employment_type'] ?? null,
@@ -228,7 +257,7 @@ class UserController extends Controller
             'user'    => $user->only([
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'is_active', 'company_id',
+                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
                 'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',
@@ -279,6 +308,14 @@ class UserController extends Controller
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
             'overtime_enabled'      => 'sometimes|nullable|boolean',
+            'attendance_enabled'    => 'sometimes|nullable|boolean',
+            'wfh_enabled'           => 'sometimes|nullable|boolean',
+            'radius_enabled'        => 'sometimes|nullable|boolean',
+            'dinas_luar_enabled'    => 'sometimes|nullable|boolean',
+            'flexitime_enabled'     => 'sometimes|nullable|boolean',
+            'allow_attendance'      => 'sometimes|nullable|boolean',
+            'allow_wfh'             => 'sometimes|nullable|boolean',
+            'allow_radius'          => 'sometimes|nullable|boolean',
             // Tipe hubungan kerja
             'employment_type'       => ['sometimes', 'nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
             'joined_date'           => 'sometimes|nullable|date',
@@ -342,10 +379,44 @@ class UserController extends Controller
             $validated['is_pregnant'] = false;
         }
 
+        // Izin master presensi mobile & WFH & Radius dari Edit Profil Karyawan
+        if (array_key_exists('allow_attendance', $validated) || array_key_exists('attendance_enabled', $validated)) {
+            $allowAtt = (bool) ($validated['allow_attendance'] ?? $validated['attendance_enabled']);
+            $validated['allow_attendance'] = $allowAtt;
+            $validated['attendance_enabled'] = $allowAtt;
+            if (! $allowAtt) {
+                $validated['allow_wfh'] = false;
+                $validated['allow_radius'] = false;
+                $validated['wfh_enabled'] = false;
+                $validated['radius_enabled'] = false;
+                $validated['dinas_luar_enabled'] = false;
+                $user->tokens()->where('name', 'auth-token-mobile')->delete();
+            }
+        }
+        if (array_key_exists('allow_wfh', $validated) || array_key_exists('wfh_enabled', $validated)) {
+            $currAllowAtt = $validated['allow_attendance'] ?? $user->allow_attendance ?? true;
+            $allowWfh = $currAllowAtt ? (bool) ($validated['allow_wfh'] ?? $validated['wfh_enabled']) : false;
+            $validated['allow_wfh'] = $allowWfh;
+            $validated['wfh_enabled'] = $allowWfh;
+            if (! $allowWfh) {
+                $validated['allow_radius'] = false;
+                $validated['radius_enabled'] = false;
+            }
+        }
+        if (array_key_exists('allow_radius', $validated) || array_key_exists('radius_enabled', $validated)) {
+            $currAllowAtt = $validated['allow_attendance'] ?? $user->allow_attendance ?? true;
+            $currAllowWfh = $validated['allow_wfh'] ?? $user->allow_wfh ?? true;
+            $allowRadius = ($currAllowAtt && $currAllowWfh) ? (bool) ($validated['allow_radius'] ?? $validated['radius_enabled']) : false;
+            $validated['allow_radius'] = $allowRadius;
+            $validated['radius_enabled'] = $allowRadius;
+        }
+
         $original = $user->only([
             'name', 'email', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant',
             'role', 'department', 'employee_code',
             'identity_number', 'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled',
+            'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled',
+            'allow_attendance', 'allow_wfh', 'allow_radius',
             'employment_type', 'joined_date', 'contract_start_date',
             'contract_end_date', 'bank_name', 'bank_account_no', 'bank_account_holder',
             'emergency_contact_name', 'emergency_contact_relation',
@@ -389,7 +460,7 @@ class UserController extends Controller
             'user'    => $user->only([
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'is_active', 'company_id',
+                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
                 'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',
@@ -829,9 +900,12 @@ class UserController extends Controller
                     'attendance_setting_id' => $officeId,
                     'monthly_claim_limit'   => isset($row['monthly_claim_limit']) && is_numeric($row['monthly_claim_limit']) ? (float) $row['monthly_claim_limit'] : null,
                     'is_active'             => true,
+                    'allow_attendance'      => $defaultAttendanceEnabled,
+                    'allow_wfh'             => $defaultAttendanceEnabled ? $defaultWfhEnabled : false,
+                    'allow_radius'          => ($defaultAttendanceEnabled && $defaultWfhEnabled) ? $defaultRadiusEnabled : false,
                     'attendance_enabled'    => $defaultAttendanceEnabled,
-                    'wfh_enabled'           => $defaultWfhEnabled,
-                    'radius_enabled'        => $defaultRadiusEnabled,
+                    'wfh_enabled'           => $defaultAttendanceEnabled ? $defaultWfhEnabled : false,
+                    'radius_enabled'        => ($defaultAttendanceEnabled && $defaultWfhEnabled) ? $defaultRadiusEnabled : false,
                     'overtime_enabled'      => $defaultOvertimeEnabled,
                     'employment_type'       => $employmentType,
                     'joined_date'           => $joinedDate,

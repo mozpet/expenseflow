@@ -23,7 +23,7 @@ class ShiftSchedule extends Model
     protected function casts(): array
     {
         return [
-            'effective_date' => 'date',
+            'effective_date' => 'date:Y-m-d',
             'day_of_week'    => 'integer',
             'break_minutes'  => 'integer',
             'is_off'         => 'boolean',

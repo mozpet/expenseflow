@@ -34,4 +34,43 @@ class LocationService
 
         return $earthRadius * $c;
     }
+
+    /**
+     * Reverse geocoding koordinat (lat, lng) ke alamat/nama jalan ringkas via OpenStreetMap Nominatim.
+     * Menggunakan timeout singkat (3 detik) & fallback aman agar tidak menghambat proses presensi.
+     */
+    public function reverseGeocode(float $lat, float $lng): ?string
+    {
+        try {
+            $response = \Illuminate\Support\Facades\Http::withHeaders([
+                'User-Agent' => 'ExpenseFlow-Attendance/1.0 (contact@expenseflow.internal)',
+                'Accept'     => 'application/json',
+            ])->timeout(3)->get('https://nominatim.openstreetmap.org/reverse', [
+                'lat'            => $lat,
+                'lon'            => $lng,
+                'format'         => 'json',
+                'zoom'           => 18,
+                'addressdetails' => 1,
+            ]);
+
+            if ($response->successful()) {
+                $data = $response->json();
+                $displayName = $data['display_name'] ?? null;
+                if ($displayName) {
+                    // Buat format alamat lebih ringkas jika ada komponen address
+                    $addr = $data['address'] ?? [];
+                    $parts = array_filter([
+                        $addr['road'] ?? $addr['suburb'] ?? null,
+                        $addr['city_district'] ?? $addr['city'] ?? $addr['county'] ?? null,
+                        $addr['state'] ?? null,
+                    ]);
+                    return !empty($parts) ? implode(', ', $parts) : $displayName;
+                }
+            }
+        } catch (\Throwable $e) {
+            // Log silent / abaikan jika jaringan timeout
+        }
+
+        return null;
+    }
 }

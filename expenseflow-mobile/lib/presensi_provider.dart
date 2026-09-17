@@ -9,8 +9,15 @@ export 'models/attendance_model.dart';
 export 'models/leave_model.dart';
 
 class PresensiProvider extends ChangeNotifier {
+  // Flag akses presensi mobile app
+  bool attendanceEnabled = true;
   // Flag dari backend (diisi setelah login): true = boleh presensi WFH via app
   bool wfhEnabled = false;
+  // Flag dari backend (Kategori F): true = boleh presensi dinas luar / kunjungan klien
+  bool dinasLuarEnabled = false;
+  // Flag dari backend (Item 11): true = jam kerja fleksibel (Flexitime & Core Hours)
+  bool flexitimeEnabled = false;
+  Map<String, dynamic>? flexitimeConfig;
 
   final List<PresensiRecord> _records = [];
   final List<LeaveRequestRecord> _leaveRequests = [];
@@ -47,6 +54,17 @@ class PresensiProvider extends ChangeNotifier {
   bool get radiusEnabled => _radiusEnabled;
   bool get isRadiusEnforced => _radiusEnabled;
   bool get isWfhMode => wfhEnabled && !_radiusEnabled;
+  bool get canDinasLuar => dinasLuarEnabled;
+  String? get flexTargetCheckoutTime =>
+      flexitimeConfig?['target_checkout_time'] as String?;
+  String? get flexArrivalWindow => flexitimeConfig != null
+      ? '${flexitimeConfig!['arrival_start'] ?? '07:00'} - ${flexitimeConfig!['arrival_end'] ?? '10:00'}'
+      : null;
+  String? get flexCoreHours => flexitimeConfig != null
+      ? '${flexitimeConfig!['core_start'] ?? '10:00'} - ${flexitimeConfig!['core_end'] ?? '15:00'}'
+      : null;
+  int get flexTargetMinutes =>
+      (flexitimeConfig?['target_minutes'] as num?)?.toInt() ?? 480;
 
   CollectiveLeaveRecord? get activeCollectiveLeaveBanner {
     for (final item in _collectiveLeaves) {
@@ -72,8 +90,8 @@ class PresensiProvider extends ChangeNotifier {
   bool get loadingLeaves => _loadingLeaves;
   bool get loadingCollectiveLeaves => _loadingCollectiveLeaves;
 
-  bool get canCheckIn => _todayMasuk == null;
-  bool get canCheckOut => _todayMasuk != null && _todayPulang == null;
+  bool get canCheckIn => attendanceEnabled && _todayMasuk == null;
+  bool get canCheckOut => attendanceEnabled && _todayMasuk != null && _todayPulang == null;
   String get todayTotalJamKerja =>
       hitungDurasiKerja(_todayMasuk ?? '-', _todayPulang ?? '-');
 
@@ -110,12 +128,29 @@ class PresensiProvider extends ChangeNotifier {
   // ─── Presensi check-in/out ke API ─────────────────────────────────────────
   /// Kirim koordinat ke backend secara online.
   Future<void> simpanPresensi(double lat, double lng,
-      {bool isMocked = false}) async {
+      {bool isMocked = false,
+      bool isRooted = false,
+      bool isEmulator = false,
+      String? checkInType,
+      String? clientName,
+      String? clientAddress,
+      String? visitNotes,
+      Uint8List? photoBytes,
+      String? photoFileName}) async {
     final nowFormatted = _nowTime();
 
     if (canCheckIn) {
-      final res =
-          await ApiService.checkIn(lat, lng, isMocked: isMocked);
+      final safeCheckInType = checkInType == 'office' ? 'onsite' : checkInType;
+      final res = await ApiService.checkIn(lat, lng,
+          isMocked: isMocked,
+          isRooted: isRooted,
+          isEmulator: isEmulator,
+          checkInType: safeCheckInType,
+          clientName: clientName,
+          clientAddress: clientAddress,
+          visitNotes: visitNotes,
+          photoBytes: photoBytes,
+          photoFileName: photoFileName);
       final att = res['attendance'] as Map<String, dynamic>?;
       _todayMasuk = _extractTime(att?['check_in_time']) ?? nowFormatted;
       _todayStatus = att?['status'] as String? ?? 'present';
@@ -127,6 +162,11 @@ class PresensiProvider extends ChangeNotifier {
           masukTime: _todayMasuk!,
           pulangTime: '-',
           status: _todayStatus,
+          checkInType: att?['check_in_type'] as String? ?? checkInType,
+          clientName: att?['client_name'] as String? ?? clientName,
+          clientAddress: att?['client_address'] as String? ?? clientAddress,
+          visitNotes: att?['visit_notes'] as String? ?? visitNotes,
+          checkInPhoto: att?['check_in_photo'] as String?,
         ),
       );
 
@@ -143,8 +183,8 @@ class PresensiProvider extends ChangeNotifier {
 
       notifyListeners();
     } else if (canCheckOut) {
-      final res =
-          await ApiService.checkOut(lat, lng, isMocked: isMocked);
+      final res = await ApiService.checkOut(lat, lng,
+          isMocked: isMocked, isRooted: isRooted, isEmulator: isEmulator);
       final att = res['attendance'] as Map<String, dynamic>?;
       _todayPulang = _extractTime(att?['check_out_time']) ?? nowFormatted;
       _todayOvertimeMinutes = (att?['overtime_minutes'] as num?)?.toInt() ?? 0;
@@ -171,16 +211,34 @@ class PresensiProvider extends ChangeNotifier {
     final status = await notifSvc.checkAttendanceStatus(forceRefresh: forceRefresh);
     if (status == null) return;
 
-    // Sinkronkan flag WFH dan Radius dari backend (menentukan mode presensi).
-    final newWfhEnabled = status['wfh_enabled'] == true;
-    final newRadiusEnabled = status['radius_enabled'] == true;
+    // Sinkronkan flag attendance_enabled, WFH, Radius, dan Dinas Luar dari backend.
+    final newAttendanceEnabled = status['attendance_enabled'] != false;
+    final newIsWfhApproved = status['is_wfh_approved'] == true;
+    final newDinasLuarEnabled = status['dinas_luar_enabled'] == true;
+    final newWfhEnabled = newAttendanceEnabled && ((status['wfh_enabled'] == true) || newDinasLuarEnabled || newIsWfhApproved);
+    final newRadiusEnabled = newAttendanceEnabled && ((newDinasLuarEnabled || newIsWfhApproved) ? false : (status['radius_enabled'] == true));
+    final newFlexEnabled = status['flexitime_enabled'] == true;
+    final newFlexConfig = status['flexitime_config'] as Map<String, dynamic>?;
     bool needNotify = false;
+    if (newAttendanceEnabled != attendanceEnabled) {
+      attendanceEnabled = newAttendanceEnabled;
+      needNotify = true;
+    }
+    if (newDinasLuarEnabled != dinasLuarEnabled) {
+      dinasLuarEnabled = newDinasLuarEnabled;
+      needNotify = true;
+    }
     if (newWfhEnabled != wfhEnabled) {
       wfhEnabled = newWfhEnabled;
       needNotify = true;
     }
     if (newRadiusEnabled != _radiusEnabled) {
       _radiusEnabled = newRadiusEnabled;
+      needNotify = true;
+    }
+    if (newFlexEnabled != flexitimeEnabled || newFlexConfig != flexitimeConfig) {
+      flexitimeEnabled = newFlexEnabled;
+      flexitimeConfig = newFlexConfig;
       needNotify = true;
     }
     if (needNotify) {
@@ -339,14 +397,18 @@ class PresensiProvider extends ChangeNotifier {
 
   Future<void> _loadMyAttendanceData({bool forceRefresh = false}) async {
     final res = await ApiService.myAttendance(forceRefresh: forceRefresh);
-    if (res.containsKey('wfh_enabled')) {
-      final newWfhEnabled = res['wfh_enabled'] == true;
+    final isWfhApproved = res['is_wfh_approved'] == true;
+    if (res.containsKey('dinas_luar_enabled')) {
+      dinasLuarEnabled = res['dinas_luar_enabled'] == true;
+    }
+    if (res.containsKey('wfh_enabled') || isWfhApproved) {
+      final newWfhEnabled = res['wfh_enabled'] == true || dinasLuarEnabled || isWfhApproved;
       if (newWfhEnabled != wfhEnabled) {
         wfhEnabled = newWfhEnabled;
       }
     }
-    if (res.containsKey('radius_enabled')) {
-      _radiusEnabled = res['radius_enabled'] == true;
+    if (res.containsKey('radius_enabled') || isWfhApproved) {
+      _radiusEnabled = (dinasLuarEnabled || isWfhApproved) ? false : (res['radius_enabled'] == true);
     }
     final list = (res['data'] as List?) ?? [];
     _records
@@ -363,6 +425,10 @@ class PresensiProvider extends ChangeNotifier {
             masukTime: _extractTime(m['check_in_time']) ?? '-',
             pulangTime: _extractTime(m['check_out_time']) ?? '-',
             checkInType: (m['check_in_type'] ?? '').toString(),
+            clientName: m['client_name'] as String?,
+            clientAddress: m['client_address'] as String?,
+            visitNotes: m['visit_notes'] as String?,
+            checkInPhoto: m['check_in_photo'] as String?,
             overtimeMinutes:
                 (overtimeApproval?['overtime_minutes'] as num?)?.toInt() ??
                 (m['overtime_minutes'] as num?)?.toInt() ??
@@ -385,7 +451,7 @@ class PresensiProvider extends ChangeNotifier {
     bool foundToday = false;
     for (final e in list) {
       final m = e as Map<String, dynamic>;
-      if ((m['date'] ?? '').toString().startsWith(todayIso)) {
+      if (_dateOnly(m['date']) == todayIso) {
         foundToday = true;
         _todayMasuk = _extractTime(m['check_in_time']);
         _todayPulang = _extractTime(m['check_out_time']);
@@ -713,7 +779,7 @@ class PresensiProvider extends ChangeNotifier {
     if (s.isEmpty) return '-';
     final dt = DateTime.tryParse(s);
     if (dt == null) return s;
-    return DateFormat('d MMMM yyyy', 'id').format(dt);
+    return DateFormat('d MMMM yyyy', 'id').format(dt.toLocal());
   }
 
   String _nowTime() {
@@ -725,6 +791,13 @@ class PresensiProvider extends ChangeNotifier {
   String _dateOnly(dynamic raw) {
     if (raw == null) return '';
     final s = raw.toString();
+    if (s.contains('T')) {
+      final dt = DateTime.tryParse(s);
+      if (dt != null) {
+        final loc = dt.toLocal();
+        return '${loc.year}-${loc.month.toString().padLeft(2, '0')}-${loc.day.toString().padLeft(2, '0')}';
+      }
+    }
     return s.length >= 10 ? s.substring(0, 10) : s;
   }
 }

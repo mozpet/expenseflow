@@ -1206,8 +1206,17 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                           </div>
                         </div>
                       </td>
-                      <td className="py-3.5 px-3 text-xs font-semibold text-slate-700 dark:text-slate-300">
-                        {receipt.merchant}
+                      <td className="py-3.5 px-3">
+                        <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">{receipt.merchant}</p>
+                        {receipt.notes && receipt.notes.trim() !== '' && (
+                          <div
+                            className="text-[10.5px] text-slate-500 dark:text-slate-400 mt-1 flex items-start gap-1 bg-slate-50 dark:bg-slate-800/60 px-1.5 py-0.5 rounded border border-slate-200/60 dark:border-slate-700/50 max-w-[220px]"
+                            title={`Keterangan Karyawan: ${receipt.notes}`}
+                          >
+                            <FileText className="w-2.5 h-2.5 text-amber-500 shrink-0 mt-0.5" />
+                            <span className="truncate italic">"{receipt.notes}"</span>
+                          </div>
+                        )}
                       </td>
                       <td className="py-3.5 px-3 text-xs font-mono text-slate-500 dark:text-slate-400">
                         {formatCurrency(receipt.ocrNominal)}
@@ -2289,12 +2298,45 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                   </span>
                 </div>
                 <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Tanggal Pengajuan</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                    {selectedReceipt.submittedAt || '—'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Tanggal Nota (OCR)</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-indigo-500 shrink-0" />
+                    {selectedReceipt.ocrDate || selectedReceipt.tanggal || '—'}
+                  </span>
+                </div>
+                <div>
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Merchant Toko</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.merchant}</span>
                 </div>
-                <div className="col-span-2">
+                <div>
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Kategori</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">{selectedReceipt.kategori}</span>
+                </div>
+              </div>
+
+              {/* Keterangan / Catatan Pengajuan dari Karyawan */}
+              <div className="p-3 bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-900/40 rounded-xl text-xs space-y-1.5">
+                <div className="flex items-center gap-1.5 text-amber-900 dark:text-amber-300 font-bold text-[11px]">
+                  <FileText className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                  <span>Keterangan Pengajuan Karyawan</span>
+                </div>
+                <div className="bg-white/85 dark:bg-slate-900/60 p-2.5 rounded-lg border border-amber-100 dark:border-amber-900/30 shadow-xs">
+                  {selectedReceipt.notes && selectedReceipt.notes.trim() !== '' ? (
+                    <p className="text-slate-700 dark:text-slate-200 text-xs whitespace-pre-wrap leading-relaxed font-normal">
+                      {selectedReceipt.notes}
+                    </p>
+                  ) : (
+                    <p className="text-slate-400 dark:text-slate-500 italic text-[11px]">
+                      Tidak ada keterangan yang dicantumkan oleh karyawan saat pengajuan struk.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -2734,6 +2776,12 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                     <span className="text-slate-400">Tanggal:</span>
                     <span className="font-semibold">{selectedReceipt.tanggal}</span>
                   </div>
+                  {selectedReceipt.notes && selectedReceipt.notes.trim() !== '' && (
+                    <div className="flex justify-between items-start gap-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+                      <span className="text-slate-400 shrink-0">Keterangan:</span>
+                      <span className="font-semibold text-right italic line-clamp-2" title={selectedReceipt.notes}>"{selectedReceipt.notes}"</span>
+                    </div>
+                  )}
                 </div>
 
                 {/* Gambar Struk Baru */}
@@ -3322,7 +3370,7 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                         )}
                       </div>
                       <p className="text-[11px] text-slate-400 mt-0.5">
-                        Tanggal Struk: {formatTanggal(previewReportReceipt.receipt_date || previewReportReceipt.created_at)}
+                        Tanggal Nota (OCR): {formatTanggal(previewReportReceipt.ocr_raw_date || previewReportReceipt.receipt_date)} • Pengajuan: {formatTanggal(previewReportReceipt.submitted_at || previewReportReceipt.created_at)}
                       </p>
                       <button
                         type="button"
@@ -3485,6 +3533,20 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                   <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Kategori</span>
                   <span className="font-semibold text-slate-800 dark:text-slate-200">
                     {previewReportReceipt.category || 'Lain-lain / Operasional'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Tanggal Pengajuan</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                    {formatTanggal(previewReportReceipt.submitted_at || previewReportReceipt.created_at)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-slate-400 dark:text-slate-500 text-[10px] block">Tanggal Nota (OCR)</span>
+                  <span className="font-semibold text-slate-800 dark:text-slate-200 flex items-center gap-1">
+                    <Calendar className="w-3 h-3 text-indigo-500 shrink-0" />
+                    {formatTanggal(previewReportReceipt.ocr_raw_date || previewReportReceipt.receipt_date)}
                   </span>
                 </div>
                 <div>

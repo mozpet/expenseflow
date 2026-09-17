@@ -33,7 +33,7 @@ class AuthPlatformGuardTest extends TestCase
 
     public function test_employee_boleh_login_di_mobile(): void
     {
-        $this->makeUser('employee');
+        $this->makeUser('employee', attendance: true);
 
         $this->postJson('/api/v1/login', [
             'email'     => User::first()->email,
@@ -43,6 +43,19 @@ class AuthPlatformGuardTest extends TestCase
             ->assertStatus(200)
             ->assertJsonPath('user.can_access_receipts', true)
             ->assertJsonPath('user.role', 'employee');
+    }
+
+    public function test_user_diblokir_login_di_mobile_jika_presensi_mobile_nonaktif(): void
+    {
+        $this->makeUser('employee', attendance: false);
+
+        $this->postJson('/api/v1/login', [
+            'email'     => User::first()->email,
+            'password'  => 'password',
+            'device_id' => 'dev-test-blocked',
+        ], ['X-Platform' => 'mobile'])
+            ->assertStatus(403)
+            ->assertJson(['message' => 'Akses presensi mobile belum diaktifkan atau telah dinonaktifkan oleh HRD.']);
     }
 
     public function test_finance_boleh_login_di_web(): void
@@ -58,8 +71,8 @@ class AuthPlatformGuardTest extends TestCase
 
     public function test_finance_sekarang_boleh_login_di_mobile(): void
     {
-        // Perilaku BARU: non-employee kini boleh login via mobile (untuk presensi).
-        $this->makeUser('finance');
+        // Non-employee boleh login via mobile jika presensi mobile aktif.
+        $this->makeUser('finance', attendance: true);
 
         $this->postJson('/api/v1/login', [
             'email'     => User::first()->email,
@@ -111,5 +124,22 @@ class AuthPlatformGuardTest extends TestCase
             ->assertJsonPath('user.can_access_receipts', true)
             ->assertJsonPath('user.can_access_attendance', false)
             ->assertJsonPath('user.attendance_enabled', false);
+    }
+
+    public function test_me_mencabut_token_mobile_jika_presensi_mobile_dinonaktifkan(): void
+    {
+        $user = $this->makeUser('employee', attendance: false);
+        $token = $user->createToken('auth-token-mobile')->plainTextToken;
+
+        $this->getJson('/api/v1/me', [
+            'Authorization' => "Bearer {$token}",
+            'X-Platform'    => 'mobile',
+        ])
+            ->assertStatus(403)
+            ->assertJson(['message' => 'Akses presensi mobile Anda telah dinonaktifkan oleh HRD.']);
+
+        $this->assertDatabaseMissing('personal_access_tokens', [
+            'name' => 'auth-token-mobile',
+        ]);
     }
 }
