@@ -731,7 +731,65 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ),
               ),
             )
-          else
+          else if (presensiProv.todayOvertimeMinutes > 0 &&
+              (presensiProv.records.isNotEmpty &&
+                  presensiProv.records.first.canClaimOvertime)) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              decoration: BoxDecoration(
+                color: const Color(0xFFECFDF5),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.check_circle_rounded, color: Color(0xFF059669), size: 16),
+                  SizedBox(width: 6),
+                  Text(
+                    'Presensi Hari Ini Sudah Lengkap',
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF059669),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            InkWell(
+              borderRadius: BorderRadius.circular(10),
+              onTap: () {
+                final rec = presensiProv.records.first;
+                OvertimeClaimBottomSheet.show(context, rec);
+              },
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFFF7ED),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFED7AA)),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.timer_outlined, color: Color(0xFFEA580C), size: 16),
+                    const SizedBox(width: 6),
+                    Text(
+                      'Lembur Terdeteksi (${presensiProv.records.first.totalLembur}) • Ajukan Sekarang',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.bold,
+                        color: Color(0xFFEA580C),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ] else
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 10),

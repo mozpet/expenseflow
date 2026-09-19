@@ -714,12 +714,7 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
   }
 
   void _showOvertimeBottomSheet(BuildContext context, PresensiRecord record) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: Colors.transparent,
-      builder: (ctx) => _OvertimeClaimBottomSheet(record: record),
-    );
+    OvertimeClaimBottomSheet.show(context, record);
   }
 
   Widget _buildHistoryCard(PresensiRecord record) {
@@ -1030,17 +1025,26 @@ class _PresensiHistoryScreenState extends State<PresensiHistoryScreen> {
 
 // ─── Bottom Sheet Pengajuan & Detail Lembur ───────────────────────────────────
 
-class _OvertimeClaimBottomSheet extends StatefulWidget {
+class OvertimeClaimBottomSheet extends StatefulWidget {
   final PresensiRecord record;
 
-  const _OvertimeClaimBottomSheet({required this.record});
+  const OvertimeClaimBottomSheet({super.key, required this.record});
+
+  static Future<void> show(BuildContext context, PresensiRecord record) {
+    return showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => OvertimeClaimBottomSheet(record: record),
+    );
+  }
 
   @override
-  State<_OvertimeClaimBottomSheet> createState() =>
+  State<OvertimeClaimBottomSheet> createState() =>
       _OvertimeClaimBottomSheetState();
 }
 
-class _OvertimeClaimBottomSheetState extends State<_OvertimeClaimBottomSheet> {
+class _OvertimeClaimBottomSheetState extends State<OvertimeClaimBottomSheet> {
   final _reasonController = TextEditingController();
   bool _isSubmitting = false;
 

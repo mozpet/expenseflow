@@ -38,6 +38,7 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Multi-Foto per Struk (Lampiran Slip EDC / Nota Rincian - P1): SELESAI (Dukungan foto utama struk untuk OCR Gemini + hingga 3 foto lampiran tambahan berupa Slip EDC debit/kredit, bukti transfer QRIS, atau nota rincian item; tabel `receipt_images` dengan `image_type` 'primary' dan 'additional'; preview & thumbnail switcher di Mobile Step 1 & Step 2; thumbnail selector & fullscreen lightbox zoom switch di Dashboard Web; endpoint download/stream `GET /api/v1/receipts/{id}/image?image_id={imageId}`) — 2026-09-11
   - Laporan Pengeluaran Dinas / Bundling Struk (Expense Reports - P1): SELESAI (Pengelompokan banyak struk ke dalam bundle laporan dinas/perjalanan; tabel `expense_reports` dengan relasi `receipts.expense_report_id`; endpoint CRUD & submit bundle untuk karyawan, serta batch approval / rejection satu kali klik oleh Finance; tab khusus "Laporan Dinas" dengan review modal bundle lengkap di Web Dashboard) — 2026-09-11
   - Jam Kerja Fleksibel (Flexitime & Core Hours): SELESAI (Hak akses per karyawan `flexitime_enabled`; konfigurasi kantor cabang `flex_arrival_start`/`end`, `flex_core_start`/`end`, `flex_target_minutes`; check-in di jendela fleksibel tetap 'present'; titik jam masuk dinamis; deteksi 'early_leave' sebelum jam inti atau durasi belum cukup; lembur otomatis di atas target durasi; UI toggle web & modal/banner mobile Flutter) — 2026-09-16
+  - Proteksi & Penguncian Izin Profil Karyawan Terikat Shift (Akses Mobile, WFH, Radius Lapangan): SELESAI (Karyawan terikat shift aktif/mendatang dengan jadwal WFH atau Lapangan tidak dapat di-uncheck izinnya di Edit Profil ataupun di-toggle off di Attendance Dashboard; checkbox di-disable otomatis dengan ikon larangan `Ban`, label `Terkunci Shift`, tooltip mouse hover yang menjelaskan shift terkait, serta validasi HTTP 422 di backend `UserController::update` dan `AttendanceController`) — 2026-09-20
   - Approval Matrix Bertingkat: DI-KEEP DULU (multi-level expense approval ditunda atas arahan user — 2026-09-02)
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
   - Custom Role Management : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
@@ -150,14 +151,27 @@ bootstrap/
 | 19 | `leave_requests` | Pengajuan cuti/izin (user_id, company_id, leave_type [wfh/izin/sakit/cuti], start_date, end_date, total_days, reason, status [pending/approved/rejected], approved_by, approved_at, rejection_reason) |
 | 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type, quota, used) |
 | 20b | `holidays` | Kalender libur (company_id **nullable** → NULL = libur nasional semua company, date, name, is_national). Unique (company_id, date). Dipakai untuk hitung hari kerja cuti & lembur hari libur. |
-| 20c | `overtime_approvals` | Approval lembur (attendance_id, user_id, company_id, overtime_minutes, status [pending/approved/rejected], reviewed_by, reviewed_at, notes, is_auto_checkout). Dibuat saat checkout jika ada lembur. |
+| 20c | `overtime_approvals` | Approval lembur (attendance_id, user_id, company_id, overtime_minutes, status [pending/approved/rejected], reviewed_by, reviewed_at, notes, is_auto_checkout, overtime_reason). Dibuat saat karyawan mengajukan lembur via mobile (claimOvertime). |
 | 20d | `shifts` | Template shift (company_id, **attendance_setting_id** nullable=milik cabang/null=company-wide, name, description, is_active). Ditambah 2026-07-04. |
-| 20e | `shift_schedules` | Detail 7 hari per shift dengan **VERSIONING** (shift_id, **effective_date**, day_of_week 0=Minggu–6=Sabtu, work_start_time, work_end_time, is_off, is_cross_day). Unique(shift_id, day_of_week, effective_date). **Versi yang berlaku pada tanggal T = baris dengan effective_date ≤ T terbesar.** Edit jam kerja shift membuat VERSI BARU (effective_date = hari ini + max(1, shift_notice_days)); versi lama tetap berlaku sebelum tanggal efektif. |
+| 20e | `shift_schedules` | Detail 7 hari per shift dengan **VERSIONING** (shift_id, **effective_date**, day_of_week 0=Minggu–6=Sabtu, work_start_time, work_end_time, is_off, is_cross_day). Unique(shift_id, day_of_week, effective_date). **Versi yang berlaku pada tanggal T = baris dengan effective_date ≤ T terbesar.** Edit jam kerja shift: jika ada karyawan terpasang membuat VERSI BARU (effective_date = hari ini + max(1, shift_notice_days)); jika **TIDAK ada karyawan terpasang, langsung berlaku HARI INI** tanpa notice delay atau modal konfirmasi notice. |
 | 20f | `user_shifts` | Assignment shift ke karyawan (user_id, shift_id **nullable**=default kantor, start_date, **end_date nullable**, notes). Unique(user_id, start_date). **Shift berlaku pada tanggal T jika: start_date ≤ T DAN (end_date NULL ATAU end_date ≥ T).** Diurutkan DESC start_date → ambil first() = assignment terbaru yang mencakup tanggal T. |
 | 20g | `holiday_exclusions` | **Pengecualian karyawan pada hari libur** (holiday_id, user_id, timestamps, unique(holiday_id, user_id)). Ditambah 2026-08-20. Karyawan yang masuk daftar ini **TIDAK dianggap libur** pada tanggal tsb: tetap hari kerja normal, tidak dibuatkan leave_request cuti bersama, tidak dianggap libur di kalender mobile, dan tidak terpotong saldo. Dipakai `isNonWorkingDay()`, `countWorkingDays()`, `ShiftController::calendar()`. |
 | 20h | `shift_patterns` | Pola rotasi shift (company_id, **attendance_setting_id** nullable=cabang/null=company-wide, name, description, color, late_tolerance_minutes, cycle_days, is_active). Ditambah 2026-09-08. **Cabang kantor pola bersifat permanen** (tidak dapat dipindah antar cabang setelah dibuat). |
 | 20i | `shift_pattern_items` | Hari siklus pola rotasi (shift_pattern_id, day_order 1..N, shift_id nullable, name nullable, color nullable, is_off, work_start_time nullable, work_end_time nullable, break_minutes, late_tolerance_minutes nullable, is_cross_day, is_wfh, is_field). Kolom self-contained mandiri. |
 | 20j | `shift_pattern_day_overrides` | Override jadwal hari kalender per pola rotasi (shift_pattern_id, day_of_week 0=Minggu–6=Sabtu, work_start_time nullable, work_end_time nullable, break_minutes nullable, late_tolerance_minutes nullable). Unique(shift_pattern_id, day_of_week). Ditambah 2026-09-09. |
+
+> **Aturan Notice Days & Versioning Perubahan Jam Kerja Shift (2026-09-19):**
+> 1. **Jika Shift / Pola Rotasi TIDAK memiliki karyawan yang terpasang (`assigned_count == 0` / tidak ada assignment aktif atau yang akan datang):**
+>    - Tidak ada karyawan yang terganggu, sehingga **TIDAK DIBERLAKUKAN notice delay (H-N)**.
+>    - Jam kerja baru **LANGSUNG BERLAKU HARI INI** (`effective_date = hari ini`).
+>    - Di frontend web: **TIDAK MUNCUL modal konfirmasi notice** (*"Perubahan Jam Kerja Shift: Jam kerja baru berlaku sesuai pengaturan notice..."*). Form langsung menyimpan seketika (`doSave()`).
+>    - Versi jadwal masa depan sebelumnya (jika ada yang tertunda) otomatis dibersihkan agar versi hari ini menjadi jadwal aktif definitif.
+>    - Tidak ada notifikasi yang dikirim ke aplikasi mobile (karena tidak ada karyawan terpasang).
+>    - HRD bebas mengatur jam kerja shift kapan saja tanpa terhambat penundaan tanggal efektif.
+> 2. **Jika Shift / Pola Rotasi MEMILIKI karyawan terpasang (`assigned_count > 0`):**
+>    - Mekanisme proteksi jadwal karyawan tetap berlaku penuh: jam kerja baru berlaku mulai tanggal efektif `hari ini + max(1, shift_notice_days)` agar jadwal presensi hari ini tidak berubah mendadak.
+>    - Di web: menampilkan modal konfirmasi notice sebelum simpan agar HRD terinformasi kapan jadwal baru mulai berlaku.
+>    - Karyawan yang terpasang akan menerima notifikasi di aplikasi mobile Flutter.
 
 > **Aturan Calendar Day Override untuk Pola Rotasi Shift (2026-09-09):**
 > 1. Pola rotasi shift berputar berdasarkan urutan siklus (H1, H2, ..., HN), bukan berdasarkan nama hari kalender (Senin–Minggu).
@@ -330,18 +344,51 @@ Header `X-Platform: mobile` atau `web`
 - **semua role** → bisa akses: struk (receipt/scan), presensi (jika attendance_enabled)
 - Non-employee TIDAK bisa akses receipt di mobile
 
-### Aturan Fitur Presensi
-- Semua role bisa presensi di mobile
-- TAPI harus `attendance_enabled = true` di tabel users
-- HRD yang mengatur `attendance_enabled` per user (toggle via web)
-- Jika `attendance_enabled = false` → 403
+### Kebijakan Akses Presensi Mobile App (Edit Profil Karyawan vs Tab Karyawan & WFH)
 
-### WFH (Work From Home)
+Sistem presensi menggunakan **arsitektur 2 lapis (Master Permission vs Saklar Operasional)**:
+
+1. **Lapis 1 — Izin Master (Edit Profil Karyawan → Tab 5: Dokumen & Akses Perangkat)**
+   Dikelola melalui 3 checkbox utama pada kartu *"Kebijakan Akses Presensi Mobile App"*:
+   - **Checkbox 1: Akses Mobile (`allow_attendance` & `attendance_enabled`)**
+     - Keterangan: *"Bisa check-in/out di HP"*.
+     - Merupakan induk tertinggi dari seluruh fitur mobile.
+     - **Jika di-uncheck (OFF):**
+       - Checkbox WFH & Radius di form profil otomatis ikut mati & disabled berjenjang.
+       - Di tab **Karyawan & WFH**, seluruh saklar karyawan tersebut (**Mode WFH, Radius Lapangan, Dinas Luar**) otomatis **TERKUNCI OFF (Ikon Gembok 🔒)** dan tombol switch berstatus *disabled*.
+       - API toggle backend (`toggleWfh`, `toggleRadius`, `toggleDinasLuar`) menolak dengan **HTTP 422** (*"Akses Presensi Mobile sedang dinonaktifkan di Edit Profil Karyawan. Switch terkunci..."*).
+       - Seluruh token mobile karyawan (`auth-token-mobile`) **langsung dicabut (logout otomatis)**.
+       - Percobaan akses presensi mobile diblokir oleh `AttendanceAccessMiddleware` dengan **HTTP 403 Forbidden**.
+   - **Checkbox 2: Izinkan Presensi WFH (`allow_wfh` & `wfh_enabled`)**
+     - Keterangan: *"Boleh absen luar kantor"*.
+     - Terbuka hanya jika *Akses Mobile* aktif.
+     - **Jika di-uncheck (OFF):**
+       - Checkbox *Validasi Radius Geofence* otomatis ikut mati & disabled.
+       - Di tab **Karyawan & WFH**, switch **Mode WFH** dan **Radius Lapangan** otomatis **TERKUNCI OFF (Gembok 🔒)**.
+       - API backend menolak `toggleWfh` dan `toggleRadius` dengan **HTTP 422**.
+       - Karyawan tidak diizinkan presensi WFH di aplikasi mobile (hanya bisa presensi Onsite di kantor sesuai radius geofence, kecuali jika ditugaskan Dinas Luar).
+   - **Checkbox 3: Validasi Radius Geofence (`allow_radius` & `radius_enabled`)**
+     - Keterangan: *"Cek koordinat GPS kantor"*.
+     - Terbuka hanya jika *Akses Mobile* dan *Izinkan Presensi WFH* aktif.
+     - **Jika di-uncheck (OFF):**
+       - Di tab **Karyawan & WFH**, switch **Radius Lapangan** otomatis **TERKUNCI OFF (Gembok 🔒)**.
+       - API backend menolak `toggleRadius` dengan **HTTP 422**.
+       - Karyawan saat WFH bebas melakukan presensi dari mana saja tanpa validasi jarak radius geofence kantor (`isWfhMode = true`).
+   - **Jam Fleksibel (Flexitime - `flexitime_enabled`)**: Bersifat independen dari Akses Mobile karena berlaku untuk presensi onsite kantor maupun mobile.
+   - **Berhak Upah Lembur (`overtime_enabled`)**: Menentukan apakah karyawan berhak menerima kompensasi lembur sesuai rumus Depnaker (1/173 x Gaji Pokok).
+
+2. **Lapis 2 — Saklar Operasional (Tab "Karyawan & WFH" di Presensi & Cuti)**
+   - Kolom switch *Presensi Mobile* telah dihapus dari tabel ini; kontrol izin akses mobile murni 100% dari Edit Profil Karyawan.
+   - Tabel ini hanya berisi saklar operasional harian: **Mode WFH**, **Radius Lapangan**, **Dinas Luar**, dan **Flexitime**.
+   - Saklar hanya dapat diklik (interaktif ON/OFF) jika Izin Master pada Edit Profil Karyawan dalam status aktif (dicentang). Jika izin master mati, saklar otomatis menampilkan ikon **Gembok 🔒** dengan status disabled dan tooltip penjelasan.
+
+### WFH (Work From Home) & Mode Presensi
 - Karyawan request WFH → HRD approve → bisa absen dari rumah
-- HRD toggle `wfh_enabled` per user (via web)
-- Saat `wfh_enabled = true`, `attendance_enabled` otomatis true
-- Check-in WFH tidak validasi lokasi GPS (tanpa radius check)
-- Status present/late tetap dihitung dari jam kerja perusahaan
+- HRD toggle `wfh_enabled` per user (via tab Karyawan & WFH, selama `allow_wfh = true`)
+- Saat `wfh_enabled = true`, `attendance_enabled` tetap true
+- Check-in WFH murni tidak memvalidasi lokasi GPS (bebas radius kantor)
+- Check-in Onsite / Radius Lapangan wajib berada dalam radius geofence kantor terdekat
+- Status present/late tetap dihitung dari jam kerja perusahaan / shift aktif
 - Di layar Riwayat Presensi mobile, banner status "Mode WFH aktif" ditiadakan agar antarmuka bersih dan langsung menampilkan kartu ringkasan presensi & filter tanggal.
 
 ---
@@ -630,14 +677,14 @@ Karyawan check-out (via mobile)
   → Hitung work_minutes (check_in → check_out)
   → Hitung overtime_minutes otomatis (lihat Pipeline Lembur & Libur)
   → Simpan is_holiday (true jika weekend/libur)
-  → Jika overtime_minutes > 0 → buat overtime_approval (pending) + notifikasi HRD
+  → Jika overtime_minutes > 0 → simpan di attendances (status 'Belum Diajukan'); karyawan mengajukan mandiri via mobile
 
 Sistem Auto-Checkout (scheduler setiap 5 menit via attendance:auto-checkout)
   → Cari attendance yang check-in tapi belum check-out
   → Jika waktu ≥ work_end_time + checkout_reminder_minutes → kirim FCM reminder
   → Jika waktu ≥ work_end_time + auto_checkout_grace_minutes → auto-checkout
   → is_auto_checkout = true, auto_checkout_at = waktu sistem checkout
-  → Buat overtime_approval (pending, is_auto_checkout=true) jika ada lembur
+  → Jika overtime_minutes > 0, kirim notifikasi ke karyawan agar mengajukan via aplikasi jika ingin diklaim
 
 HRD Dashboard
   → today(): rekap presensi hari ini (checked_in / not_checked_in / on_leave)
@@ -657,10 +704,13 @@ Tabel overtime_approvals
   → status: pending / approved / rejected
   → is_auto_checkout: true jika dibuat oleh sistem auto-checkout
 
-Alur approval:
+Alur pengajuan & approval:
   checkout (manual/auto) → overtime_minutes > 0
+    → tersimpan di record attendance dengan status 'Belum Diajukan' (TIDAK langsung ke HRD)
+  karyawan ajukan via mobile (claimOvertime) dengan deskripsi/alasan tugas
     → buat overtime_approval (status: pending)
     → notifikasi HRD (DB notifications + FCM ke HRD jika ada fcm_token)
+    → data baru masuk ke dashboard Approval Lembur HRD
   HRD approve
     → status = approved
     → overtime_minutes di attendances TETAP (sudah dikonfirmasi)

@@ -22,6 +22,7 @@ import {
   AlertTriangle,
   Info,
   Lock,
+  Ban,
   RefreshCw,
   Landmark,
   BadgePercent,
@@ -1770,55 +1771,106 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
               Kebijakan Akses Presensi Mobile App
             </h3>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* Presensi Diizinkan */}
-              <label className={`flex items-start gap-3 p-3.5 rounded-2xl border transition cursor-pointer ${
-                form.attendanceEnabled !== false
-                  ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800'
-                  : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
-              }`}>
-                <input
-                  type="checkbox"
-                  checked={form.attendanceEnabled !== false}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    setForm({
-                      ...form,
-                      attendanceEnabled: checked,
-                      // Jika Presensi Mobile dimatikan, WFH dan radius otomatis dimatikan
-                      wfhEnabled: checked ? (form.wfhEnabled !== false) : false,
-                      radiusEnabled: checked ? ((form.wfhEnabled !== false) && (form.radiusEnabled !== false)) : false,
-                    });
-                  }}
-                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
-                />
-                <div>
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Akses Mobile</span>
-                  <span className="text-[10px] text-slate-400">Bisa check-in/out di HP</span>
+            {/* Banner informasi jika ada izin presensi yang terkunci oleh shift aktif */}
+            {(() => {
+              const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+              const hasLocks = Boolean(shiftLocks?.has_active_shift && (shiftLocks?.lock_attendance || shiftLocks?.lock_wfh || shiftLocks?.lock_radius));
+              if (!hasLocks) return null;
+              return (
+                <div className="flex items-start gap-2.5 p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-800 dark:text-amber-300">
+                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                  <div className="space-y-0.5">
+                    <p className="font-bold">Izin Presensi Terkunci oleh Penugasan Shift</p>
+                    <p className="text-[11px] text-amber-700 dark:text-amber-400/90 leading-relaxed">
+                      Karyawan terikat penugasan shift aktif/mendatang: <strong className="font-bold text-amber-900 dark:text-amber-200">'{shiftLocks.shift_name}'</strong>. Izin presensi yang dibutuhkan oleh shift ini dikunci dan tidak dapat dinonaktifkan di sini. Untuk mengubahnya, sesuaikan atau selesaikan penugasan shift di menu Manajemen Shift terlebih dahulu.
+                    </p>
+                  </div>
                 </div>
-              </label>
+              );
+            })()}
 
-              {/* Boleh WFH */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {/* Presensi Diizinkan (Akses Mobile) */}
               {(() => {
-                const isAttActive = form.attendanceEnabled !== false;
-                const isWfhChecked = isAttActive && form.wfhEnabled !== false;
+                const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+                const isAttendanceLocked = Boolean(shiftLocks?.lock_attendance);
+
                 return (
                   <label
                     className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
-                      !isAttActive
-                        ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
-                        : isWfhChecked
-                          ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 cursor-pointer'
+                      isAttendanceLocked
+                        ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
+                        : form.attendanceEnabled !== false
+                          ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800 cursor-pointer'
                           : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
                     }`}
-                    title={!isAttActive ? 'Presensi Mobile harus aktif terlebih dahulu' : undefined}
+                    title={isAttendanceLocked ? shiftLocks?.reason_attendance : undefined}
                   >
                     <input
                       type="checkbox"
-                      disabled={!isAttActive}
+                      disabled={isAttendanceLocked}
+                      checked={form.attendanceEnabled !== false}
+                      onChange={(e) => {
+                        if (isAttendanceLocked) return;
+                        const checked = e.target.checked;
+                        setForm({
+                          ...form,
+                          attendanceEnabled: checked,
+                          // Jika Presensi Mobile dimatikan, WFH dan radius otomatis dimatikan
+                          wfhEnabled: checked ? (form.wfhEnabled !== false) : false,
+                          radiusEnabled: checked ? ((form.wfhEnabled !== false) && (form.radiusEnabled !== false)) : false,
+                        });
+                      }}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Akses Mobile</span>
+                        {isAttendanceLocked && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
+                            title={shiftLocks?.reason_attendance}
+                          >
+                            <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-400 block truncate">Bisa check-in/out di HP</span>
+                    </div>
+                  </label>
+                );
+              })()}
+
+              {/* Boleh WFH */}
+              {(() => {
+                const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+                const isWfhLocked = Boolean(shiftLocks?.lock_wfh);
+                const isAttActive = form.attendanceEnabled !== false;
+                const isWfhChecked = isAttActive && form.wfhEnabled !== false;
+                const isWfhDisabled = !isAttActive || isWfhLocked;
+                const wfhTitle = isWfhLocked
+                  ? shiftLocks?.reason_wfh
+                  : (!isAttActive ? 'Presensi Mobile harus aktif terlebih dahulu' : undefined);
+
+                return (
+                  <label
+                    className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
+                      isWfhLocked
+                        ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
+                        : !isAttActive
+                          ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
+                          : isWfhChecked
+                            ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 cursor-pointer'
+                            : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                    }`}
+                    title={wfhTitle}
+                  >
+                    <input
+                      type="checkbox"
+                      disabled={isWfhDisabled}
                       checked={isWfhChecked}
                       onChange={(e) => {
-                        if (!isAttActive) return;
+                        if (isWfhDisabled) return;
                         const checked = e.target.checked;
                         setForm({
                           ...form,
@@ -1827,11 +1879,21 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                           ...(checked ? {} : { radiusEnabled: false }),
                         });
                       }}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50"
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
-                    <div>
-                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Izinkan Presensi WFH</span>
-                      <span className="text-[10px] text-slate-400">Boleh absen luar kantor</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Izinkan Presensi WFH</span>
+                        {isWfhLocked && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
+                            title={shiftLocks?.reason_wfh}
+                          >
+                            <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-400 block truncate">Boleh absen luar kantor</span>
                     </div>
                   </label>
                 );
@@ -1839,26 +1901,30 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
 
               {/* Validasi Radius */}
               {(() => {
+                const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+                const isRadiusLocked = Boolean(shiftLocks?.lock_radius);
                 const isAttActive = form.attendanceEnabled !== false;
                 const isWfhChecked = isAttActive && form.wfhEnabled !== false;
                 const isRadiusChecked = isAttActive && isWfhChecked && form.radiusEnabled !== false;
-                const isRadiusDisabled = !isAttActive || !isWfhChecked;
+                const isRadiusDisabled = !isAttActive || !isWfhChecked || isRadiusLocked;
+                const radiusTitle = isRadiusLocked
+                  ? shiftLocks?.reason_radius
+                  : (!isAttActive
+                      ? 'Presensi Mobile harus aktif terlebih dahulu'
+                      : (!isWfhChecked ? 'Izinkan Presensi WFH harus aktif terlebih dahulu' : undefined));
+
                 return (
                   <label
                     className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
-                      isRadiusDisabled
-                        ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
-                        : isRadiusChecked
-                          ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 cursor-pointer'
-                          : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                      isRadiusLocked
+                        ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
+                        : isRadiusDisabled
+                          ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
+                          : isRadiusChecked
+                            ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 cursor-pointer'
+                            : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
                     }`}
-                    title={
-                      !isAttActive
-                        ? 'Presensi Mobile harus aktif terlebih dahulu'
-                        : !isWfhChecked
-                          ? 'Izinkan Presensi WFH harus aktif terlebih dahulu'
-                          : undefined
-                    }
+                    title={radiusTitle}
                   >
                     <input
                       type="checkbox"
@@ -1868,11 +1934,21 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                         if (isRadiusDisabled) return;
                         setForm({ ...form, radiusEnabled: e.target.checked });
                       }}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50"
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
                     />
-                    <div>
-                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Validasi Radius Geofence</span>
-                      <span className="text-[10px] text-slate-400">Cek koordinat GPS kantor</span>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Validasi Radius Geofence</span>
+                        {isRadiusLocked && (
+                          <span
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
+                            title={shiftLocks?.reason_radius}
+                          >
+                            <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-400 block truncate">Cek koordinat GPS kantor</span>
                     </div>
                   </label>
                 );

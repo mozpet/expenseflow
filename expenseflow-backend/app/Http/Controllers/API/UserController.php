@@ -50,7 +50,7 @@ class UserController extends Controller
 
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
-        $users = $query->with('office:id,office_name')
+        $users = $query->with(['office:id,office_name', 'userShifts.shift.schedules', 'userShifts.shiftPattern.items'])
             ->select([
                 'id', 'company_id', 'employee_code', 'name', 'email', 'phone',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
@@ -379,9 +379,19 @@ class UserController extends Controller
             $validated['is_pregnant'] = false;
         }
 
+        $shiftLocks = $user->getActiveShiftRequirements();
+
         // Izin master presensi mobile & WFH & Radius dari Edit Profil Karyawan
         if (array_key_exists('allow_attendance', $validated) || array_key_exists('attendance_enabled', $validated)) {
             $allowAtt = (bool) ($validated['allow_attendance'] ?? $validated['attendance_enabled']);
+            if (! $allowAtt && $shiftLocks['lock_attendance']) {
+                return response()->json([
+                    'message' => $shiftLocks['reason_attendance'],
+                    'errors'  => [
+                        'allow_attendance' => [$shiftLocks['reason_attendance']],
+                    ],
+                ], 422);
+            }
             $validated['allow_attendance'] = $allowAtt;
             $validated['attendance_enabled'] = $allowAtt;
             if (! $allowAtt) {
@@ -396,6 +406,14 @@ class UserController extends Controller
         if (array_key_exists('allow_wfh', $validated) || array_key_exists('wfh_enabled', $validated)) {
             $currAllowAtt = $validated['allow_attendance'] ?? $user->allow_attendance ?? true;
             $allowWfh = $currAllowAtt ? (bool) ($validated['allow_wfh'] ?? $validated['wfh_enabled']) : false;
+            if (! $allowWfh && $shiftLocks['lock_wfh']) {
+                return response()->json([
+                    'message' => $shiftLocks['reason_wfh'],
+                    'errors'  => [
+                        'allow_wfh' => [$shiftLocks['reason_wfh']],
+                    ],
+                ], 422);
+            }
             $validated['allow_wfh'] = $allowWfh;
             $validated['wfh_enabled'] = $allowWfh;
             if (! $allowWfh) {
@@ -407,6 +425,14 @@ class UserController extends Controller
             $currAllowAtt = $validated['allow_attendance'] ?? $user->allow_attendance ?? true;
             $currAllowWfh = $validated['allow_wfh'] ?? $user->allow_wfh ?? true;
             $allowRadius = ($currAllowAtt && $currAllowWfh) ? (bool) ($validated['allow_radius'] ?? $validated['radius_enabled']) : false;
+            if (! $allowRadius && $shiftLocks['lock_radius']) {
+                return response()->json([
+                    'message' => $shiftLocks['reason_radius'],
+                    'errors'  => [
+                        'allow_radius' => [$shiftLocks['reason_radius']],
+                    ],
+                ], 422);
+            }
             $validated['allow_radius'] = $allowRadius;
             $validated['radius_enabled'] = $allowRadius;
         }
@@ -460,7 +486,7 @@ class UserController extends Controller
             'user'    => $user->only([
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'is_active', 'company_id',
+                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'shift_locks', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
                 'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',

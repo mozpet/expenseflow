@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Carbon;
 use Laravel\Sanctum\HasApiTokens;
 
 #[Fillable(['company_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
@@ -23,7 +24,7 @@ class User extends Authenticatable
      *
      * @var array<int, string>
      */
-    protected $appends = ['age'];
+    protected $appends = ['age', 'shift_locks'];
 
     /**
      * Get the attributes that should be cast.
@@ -90,6 +91,10 @@ class User extends Authenticatable
 
     public function canAccessAttendance(): bool
     {
+        if ($this->allow_attendance === false && ! $this->hasApprovedWfhToday()) {
+            return false;
+        }
+
         return (bool) ($this->attendance_enabled || $this->hasApprovedWfhToday());
     }
 
@@ -100,6 +105,11 @@ class User extends Authenticatable
             return false;
         }
 
+        // Izin master WFH harus aktif (kecuali jika dinas luar aktif atau ada pengajuan WFH approved hari ini)
+        if ($this->allow_wfh === false && ! $this->dinas_luar_enabled && ! $this->hasApprovedWfhToday()) {
+            return false;
+        }
+
         return (bool) ($this->wfh_enabled || $this->dinas_luar_enabled || $this->hasApprovedWfhToday());
     }
 
@@ -107,6 +117,11 @@ class User extends Authenticatable
     public function hasRadiusEnabled(): bool
     {
         if (! $this->canAccessAttendance()) {
+            return false;
+        }
+
+        // Izin master radius geofence harus aktif
+        if ($this->allow_radius === false) {
             return false;
         }
 
@@ -153,6 +168,100 @@ class User extends Authenticatable
             })
             ->orderByDesc('start_date')
             ->first();
+    }
+
+    /** Accessor untuk serialization: shift_locks */
+    public function getShiftLocksAttribute(): array
+    {
+        return $this->getActiveShiftRequirements();
+    }
+
+    /**
+     * Evaluasi apakah karyawan saat ini terikat shift atau pola rotasi aktif/mendatang
+     * yang membutuhkan hak akses tertentu (Akses Mobile, WFH, atau Radius Geofence).
+     *
+     * @return array{has_active_shift: bool, shift_name: ?string, lock_attendance: bool, lock_wfh: bool, lock_radius: bool, reason_attendance: ?string, reason_wfh: ?string, reason_radius: ?string}
+     */
+    public function getActiveShiftRequirements(?string $date = null): array
+    {
+        $targetDate = $date ?? now('Asia/Jakarta')->toDateString();
+
+        $assignments = $this->relationLoaded('userShifts')
+            ? $this->userShifts->filter(function ($us) use ($targetDate) {
+                if (! $us->shift_id && ! $us->shift_pattern_id) return false;
+                if ($us->end_date && Carbon::parse($us->end_date)->lt(Carbon::parse($targetDate))) return false;
+                return true;
+            })
+            : $this->userShifts()
+                ->with(['shift.schedules', 'shiftPattern.items'])
+                ->where(function ($q) {
+                    $q->whereNotNull('shift_id')->orWhereNotNull('shift_pattern_id');
+                })
+                ->where(function ($q) use ($targetDate) {
+                    $q->whereNull('end_date')->orWhereDate('end_date', '>=', $targetDate);
+                })
+                ->get();
+
+        $requiresWfh = false;
+        $requiresRadius = false;
+        $wfhShiftNames = [];
+        $radiusShiftNames = [];
+
+        foreach ($assignments as $assignment) {
+            $name = $assignment->shift?->name ?? $assignment->shiftPattern?->name ?? 'Shift';
+            if ($assignment->shift) {
+                $schedules = $assignment->shift->relationLoaded('schedules')
+                    ? $assignment->shift->schedules
+                    : $assignment->shift->schedules()->get();
+
+                if ($schedules->contains(fn ($s) => ! $s->is_off && (bool) $s->is_wfh)) {
+                    $requiresWfh = true;
+                    $wfhShiftNames[] = $name;
+                }
+                if ($schedules->contains(fn ($s) => ! $s->is_off && (bool) $s->is_field)) {
+                    $requiresRadius = true;
+                    $radiusShiftNames[] = $name;
+                }
+            } elseif ($assignment->shiftPattern) {
+                $items = $assignment->shiftPattern->relationLoaded('items')
+                    ? $assignment->shiftPattern->items
+                    : $assignment->shiftPattern->items()->get();
+
+                if ($items->contains(fn ($i) => ! $i->is_off && (bool) $i->is_wfh)) {
+                    $requiresWfh = true;
+                    $wfhShiftNames[] = $name;
+                }
+                if ($items->contains(fn ($i) => ! $i->is_off && (bool) $i->is_field)) {
+                    $requiresRadius = true;
+                    $radiusShiftNames[] = $name;
+                }
+            }
+        }
+
+        $wfhShiftNames = array_values(array_unique($wfhShiftNames));
+        $radiusShiftNames = array_values(array_unique($radiusShiftNames));
+        $mobileShiftNames = array_values(array_unique(array_merge($wfhShiftNames, $radiusShiftNames)));
+
+        $requiresMobile = ! empty($mobileShiftNames);
+
+        $shiftNameStr = ! empty($mobileShiftNames) ? implode(', ', $mobileShiftNames) : null;
+
+        return [
+            'has_active_shift'  => $assignments->isNotEmpty(),
+            'shift_name'        => $shiftNameStr,
+            'lock_attendance'   => $requiresMobile,
+            'lock_wfh'          => $requiresWfh,
+            'lock_radius'       => $requiresRadius,
+            'reason_attendance' => $requiresMobile
+                ? "Karyawan sedang terikat shift aktif '" . implode(', ', $mobileShiftNames) . "' yang memerlukan presensi mobile (WFH/Lapangan). Ubah atau akhiri penugasan shift di Manajemen Shift terlebih dahulu jika ingin menonaktifkan izin ini."
+                : null,
+            'reason_wfh'        => $requiresWfh
+                ? "Karyawan sedang terikat shift aktif '" . implode(', ', $wfhShiftNames) . "' yang memiliki jadwal WFH. Ubah atau akhiri penugasan shift di Manajemen Shift terlebih dahulu jika ingin menonaktifkan izin ini."
+                : null,
+            'reason_radius'     => $requiresRadius
+                ? "Karyawan sedang terikat shift aktif '" . implode(', ', $radiusShiftNames) . "' yang memiliki jadwal Lapangan. Ubah atau akhiri penugasan shift di Manajemen Shift terlebih dahulu jika ingin menonaktifkan izin ini."
+                : null,
+        ];
     }
 
     public function company()

@@ -157,6 +157,7 @@ class PresensiProvider extends ChangeNotifier {
       _records.insert(
         0,
         PresensiRecord(
+          id: (att?['id'] as num?)?.toInt() ?? 0,
           date: todayDateFormatted,
           rawDate: DateTime.now().toIso8601String().substring(0, 10),
           masukTime: _todayMasuk!,
@@ -186,14 +187,31 @@ class PresensiProvider extends ChangeNotifier {
       final res = await ApiService.checkOut(lat, lng,
           isMocked: isMocked, isRooted: isRooted, isEmulator: isEmulator);
       final att = res['attendance'] as Map<String, dynamic>?;
+      final attId = (att?['id'] as num?)?.toInt();
       _todayPulang = _extractTime(att?['check_out_time']) ?? nowFormatted;
       _todayOvertimeMinutes = (att?['overtime_minutes'] as num?)?.toInt() ?? 0;
       _todayStatus = att?['status'] as String?;
       if (_records.isNotEmpty && _records.first.date == todayDateFormatted) {
         _records[0] = _records[0].copyWith(
+          id: attId ?? _records[0].id,
           pulangTime: _todayPulang!,
           overtimeMinutes: _todayOvertimeMinutes,
           status: _todayStatus,
+          overtimeStatus: null,
+        );
+      } else {
+        _records.insert(
+          0,
+          PresensiRecord(
+            id: attId ?? 0,
+            date: todayDateFormatted,
+            rawDate: DateTime.now().toIso8601String().substring(0, 10),
+            masukTime: _todayMasuk ?? '-',
+            pulangTime: _todayPulang!,
+            status: _todayStatus,
+            overtimeMinutes: _todayOvertimeMinutes,
+            overtimeStatus: null,
+          ),
         );
       }
 
@@ -245,24 +263,37 @@ class PresensiProvider extends ChangeNotifier {
       notifyListeners();
     }
 
-    // Sinkronkan daftar kantor dan radius
+    // Sinkronkan kantor cabang penempatan karyawan
+    if (status['office'] is Map) {
+      final parsed =
+          OfficeArea.fromJson(status['office'] as Map<String, dynamic>);
+      if (parsed.latitude != 0.0 &&
+          parsed.longitude != 0.0 &&
+          parsed.latitude.isFinite &&
+          !parsed.latitude.isNaN &&
+          parsed.longitude.isFinite &&
+          !parsed.longitude.isNaN) {
+        _primaryOffice = parsed;
+      }
+    }
     if (status['offices'] is List) {
       _offices
         ..clear()
         ..addAll(
           (status['offices'] as List)
               .map((e) => OfficeArea.fromJson(e as Map<String, dynamic>))
-              .where((o) => o.latitude != 0.0 && o.longitude != 0.0),
+              .where((o) =>
+                  o.latitude != 0.0 &&
+                  o.longitude != 0.0 &&
+                  o.latitude.isFinite &&
+                  !o.latitude.isNaN &&
+                  o.longitude.isFinite &&
+                  !o.longitude.isNaN),
         );
-    }
-    if (status['office'] is Map) {
-      _primaryOffice =
-          OfficeArea.fromJson(status['office'] as Map<String, dynamic>);
-      if (_offices.isEmpty &&
-          _primaryOffice!.latitude != 0.0 &&
-          _primaryOffice!.longitude != 0.0) {
-        _offices.add(_primaryOffice!);
-      }
+    } else if (_primaryOffice != null) {
+      _offices
+        ..clear()
+        ..add(_primaryOffice!);
     }
 
     final att = status['attendance'] as Map<String, dynamic>?;

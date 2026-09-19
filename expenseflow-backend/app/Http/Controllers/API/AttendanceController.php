@@ -529,6 +529,17 @@ class AttendanceController extends Controller
             ], 422);
         }
 
+        // Jika presensi mobile sedang aktif dan mau dimatikan:
+        // Cek apakah karyawan terikat shift aktif yang memerlukan presensi mobile (WFH / Lapangan)
+        if ($target->attendance_enabled) {
+            $shiftLocks = $target->getActiveShiftRequirements();
+            if ($shiftLocks['lock_attendance']) {
+                return response()->json([
+                    'message' => $shiftLocks['reason_attendance'],
+                ], 422);
+            }
+        }
+
         // Toggle status harian presensi mobile
         $target->attendance_enabled = ! $target->attendance_enabled;
 
@@ -597,6 +608,17 @@ class AttendanceController extends Controller
         $attEnabled = (bool) $validated['attendance_enabled'];
         $wfhEnabled = $attEnabled ? (bool) ($validated['wfh_enabled'] ?? false) : false;
         $radiusEnabled = $attEnabled ? (bool) ($validated['radius_enabled'] ?? false) : false;
+
+        $shiftLocks = $target->getActiveShiftRequirements();
+        if (! $attEnabled && $shiftLocks['lock_attendance']) {
+            return response()->json(['message' => $shiftLocks['reason_attendance']], 422);
+        }
+        if (! $wfhEnabled && $shiftLocks['lock_wfh']) {
+            return response()->json(['message' => $shiftLocks['reason_wfh']], 422);
+        }
+        if (! $radiusEnabled && $shiftLocks['lock_radius']) {
+            return response()->json(['message' => $shiftLocks['reason_radius']], 422);
+        }
 
         $target->attendance_enabled = $attEnabled;
         $target->wfh_enabled = $wfhEnabled;
@@ -685,6 +707,17 @@ class AttendanceController extends Controller
         }
 
         $newWfhState = ! $target->wfh_enabled;
+
+        // Jika mau mematikan mode WFH, pastikan tidak terikat shift aktif yang membutuhkan WFH
+        if (! $newWfhState) {
+            $shiftLocks = $target->getActiveShiftRequirements();
+            if ($shiftLocks['lock_wfh']) {
+                return response()->json([
+                    'message' => $shiftLocks['reason_wfh'],
+                ], 422);
+            }
+        }
+
         $target->wfh_enabled = $newWfhState;
 
         // Jika mode WFH dimatikan, radius lapangan juga otomatis dimatikan
@@ -782,6 +815,16 @@ class AttendanceController extends Controller
             return response()->json([
                 'message' => "Radius lapangan tidak dapat diaktifkan untuk '{$target->name}' karena karyawan sedang dalam mode Dinas Luar (bebas radius).",
             ], 422);
+        }
+
+        // Jika sedang aktif dan mau dimatikan, periksa apakah karyawan terikat shift aktif yang membutuhkan Lapangan
+        if ($target->radius_enabled) {
+            $shiftLocks = $target->getActiveShiftRequirements();
+            if ($shiftLocks['lock_radius']) {
+                return response()->json([
+                    'message' => $shiftLocks['reason_radius'],
+                ], 422);
+            }
         }
 
         $target->radius_enabled = ! $target->radius_enabled;
@@ -1524,7 +1567,7 @@ class AttendanceController extends Controller
                     'shift_date'            => $attDateStr,
                     'checkout_date'         => $isCrossDay ? $today : null,
                     'is_cross_day'          => $isCrossDay,
-                    'is_wfh'                => $att->check_in_type === 'wfh' || isset($approvedWfhToday[$emp->id]) || (bool) $emp->wfh_enabled,
+                    'is_wfh'                => $att->check_in_type === 'wfh' || isset($approvedWfhToday[$emp->id]) || (bool) $emp->canWfh(),
                 ];
             } elseif (isset($onLeave[$emp->id])) {
                 $leaveList[] = [
@@ -1583,7 +1626,7 @@ class AttendanceController extends Controller
 
                 $status = $isOff ? 'libur' : ($isAlpha ? 'alpha' : 'belum_hadir');
                 $isWfhApproved = isset($approvedWfhToday[$emp->id]);
-                $isWfh         = $isWfhApproved || (bool) $emp->wfh_enabled || ! empty($schedule['is_wfh']);
+                $isWfh         = $isWfhApproved || (bool) $emp->canWfh() || (! empty($schedule['is_wfh']) && $emp->allow_wfh !== false && $emp->allow_attendance !== false);
 
                 $notCheckedIn[] = [
                     'user_id'               => $emp->id,
@@ -5330,6 +5373,12 @@ class AttendanceController extends Controller
 
         $user = $request->user();
 
+        if (! $user->canAccessAttendance()) {
+            return response()->json([
+                'message' => 'Akses presensi aplikasi Anda telah dinonaktifkan oleh HRD. Hubungi administrator.',
+            ], 403);
+        }
+
         $lock = \Illuminate\Support\Facades\Cache::lock("checkin_{$user->id}", 10);
         if (!$lock->get()) {
             return response()->json(['message' => 'Permintaan check-in sedang diproses. Silakan tunggu sebentar.'], 409);
@@ -5363,8 +5412,8 @@ class AttendanceController extends Controller
 
         $today = $checkInTime->toDateString();
         $jadwalHariIni = $this->getWorkSchedule($user, $today);
-        $isWfhScheduled = ! empty($jadwalHariIni['is_wfh']);
-        $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
+        $isWfhScheduled = ! empty($jadwalHariIni['is_wfh']) && ($user->allow_wfh !== false) && ($user->allow_attendance !== false);
+        $isFieldScheduled = ! empty($jadwalHariIni['is_field']) && ($user->allow_radius !== false) && ($user->allow_attendance !== false);
 
         // Cek apakah ada pengajuan WFH yang sudah disetujui (approved) oleh HRD untuk hari ini
         $isWfhApproved = LeaveRequest::where('user_id', $user->id)
@@ -5518,16 +5567,19 @@ class AttendanceController extends Controller
         // (2) user memiliki radius_enabled=true & hari ini bukan shift WFH murni terjadwal
         $needRadiusCheck = ! $isDinasLuarRequest && ! $isWfhApproved && ($isFieldScheduled || ($user->hasRadiusEnabled() && ! $isWfhScheduled));
 
-        // Kantor acuan presensi hari ini — dipakai untuk validasi radius & snapshot.
-        // Default: kantor penempatan karyawan; ditimpa kantor TERDEKAT bila radius check berjalan.
-        $acuanOffice = $jadwalHariIni['office'];
+        // Kantor acuan presensi hari ini — kantor cabang penempatan karyawan
+        $acuanOffice = $jadwalHariIni['office'] ?? $user->office;
+        if (! $acuanOffice && $user->attendance_setting_id) {
+            $acuanOffice = AttendanceSetting::find($user->attendance_setting_id);
+        }
+        if (! $acuanOffice && $user->company_id) {
+            $acuanOffice = AttendanceSetting::where('company_id', $user->company_id)->orderBy('id')->first();
+        }
 
         if ($needRadiusCheck) {
-            $offices = AttendanceSetting::where('company_id', $user->company_id)->get();
-
-            if ($offices->isEmpty()) {
+            if (! $acuanOffice || $acuanOffice->office_latitude === null || $acuanOffice->office_longitude === null) {
                 return response()->json([
-                    'message' => 'Validasi radius tidak bisa dilakukan: belum ada pengaturan lokasi kantor. Hubungi HRD.',
+                    'message' => 'Validasi radius tidak bisa dilakukan: belum ada pengaturan lokasi kantor untuk cabang Anda. Hubungi HRD.',
                 ], 422);
             }
 
@@ -5535,28 +5587,19 @@ class AttendanceController extends Controller
             $lat             = (float) $validated['latitude'];
             $lng             = (float) $validated['longitude'];
 
-            // Cari kantor terdekat dari posisi karyawan
-            $nearest  = null;
-            $minDist  = PHP_FLOAT_MAX;
-            foreach ($offices as $office) {
-                $dist = $locationService->calculateDistance($lat, $lng, (float) $office->office_latitude, (float) $office->office_longitude);
-                if ($dist < $minDist) {
-                    $minDist = $dist;
-                    $nearest = $office;
-                }
-            }
+            $dist = $locationService->calculateDistance(
+                $lat, $lng,
+                (float) $acuanOffice->office_latitude,
+                (float) $acuanOffice->office_longitude
+            );
+            $distanceMeters = (int) round($dist);
 
-            $distanceMeters = (int) round($minDist);
-
-            // Kantor acuan = kantor terdekat (acuan radius check-in & checkout)
-            $acuanOffice = $nearest;
-
-            if ($minDist > $nearest->radius_meters) {
+            if ($dist > $acuanOffice->radius_meters) {
                 return response()->json([
-                    'message'          => "Anda berada di luar area kerja. Jarak Anda {$distanceMeters} meter, batas radius {$nearest->radius_meters} meter dari {$nearest->office_name}.",
+                    'message'          => "Anda berada di luar area kerja. Jarak Anda {$distanceMeters} meter, batas radius {$acuanOffice->radius_meters} meter dari {$acuanOffice->office_name}.",
                     'distance_meters'  => $distanceMeters,
-                    'radius_meters'    => $nearest->radius_meters,
-                    'office_name'      => $nearest->office_name,
+                    'radius_meters'    => $acuanOffice->radius_meters,
+                    'office_name'      => $acuanOffice->office_name,
                 ], 403);
             }
 
@@ -5900,9 +5943,10 @@ class AttendanceController extends Controller
         $attendance->update($updateData);
         $attendance->refresh();
 
-        if ($overtimeMinutes > 0) {
-            $this->createOvertimeApproval($attendance, false);
-        }
+        // Catatan: Jika ada lembur (overtime_minutes > 0), sistem TIDAK otomatis
+        // membuat OvertimeApproval berstatus pending atau mengirim notifikasi ke HRD.
+        // Karyawan di mobile wajib mengajukan lembur terlebih dahulu via claimOvertime()
+        // dengan menyertakan deskripsi tugas lembur, barulah masuk ke dashboard HRD.
 
         // ─── Queue Job: activity log di background ─────────────────────
         ProcessAttendanceBackgroundJob::dispatch(
@@ -6228,26 +6272,8 @@ class AttendanceController extends Controller
             'require_selfie' => (bool) $primaryOffice->require_selfie,
         ] : null;
 
-        // Multi-geofence roaming: ambil seluruh cabang aktif milik perusahaan
-        $allCompanyOffices = AttendanceSetting::where('company_id', $user->company_id)
-            ->whereNotNull('office_latitude')
-            ->whereNotNull('office_longitude')
-            ->get();
-
-        $userOffices = $allCompanyOffices->map(function ($off) {
-            return [
-                'id'             => $off->id,
-                'name'           => $off->office_name,
-                'latitude'       => (float) $off->office_latitude,
-                'longitude'      => (float) $off->office_longitude,
-                'radius_meters'  => (int) $off->radius_meters,
-                'require_selfie' => (bool) $off->require_selfie,
-            ];
-        })->values()->all();
-
-        if (empty($userOffices) && $officeData) {
-            $userOffices = [$officeData];
-        }
+        // Kantor yang ditampilkan dan diizinkan untuk presensi karyawan adalah kantor cabang penempatannya sendiri
+        $userOffices = $officeData ? [$officeData] : [];
 
         $isWfhApproved = $user->hasApprovedWfhToday($today);
 
@@ -6287,8 +6313,8 @@ class AttendanceController extends Controller
 
         if (! $attendance || ! $attendance->check_in_time) {
             $jadwalHariIni    = $this->getWorkSchedule($user, (string) $today);
-            $isWfhScheduled   = ! empty($jadwalHariIni['is_wfh']);
-            $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
+            $isWfhScheduled   = ! empty($jadwalHariIni['is_wfh']) && ($user->allow_wfh !== false) && ($user->allow_attendance !== false);
+            $isFieldScheduled = ! empty($jadwalHariIni['is_field']) && ($user->allow_radius !== false) && ($user->allow_attendance !== false);
 
             return response()->json([
                 'checked_in'          => false,
@@ -6527,6 +6553,13 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Data lembur tidak ditemukan.'], 404);
         }
 
+        if ($approval->status === 'approved') {
+            return response()->json([
+                'message'  => 'Pengajuan lembur sudah disetujui sebelumnya.',
+                'approval' => $approval->only(['id', 'status', 'overtime_minutes', 'reviewed_at', 'notes']),
+            ]);
+        }
+
         if ($approval->status !== 'pending') {
             return response()->json(['message' => 'Pengajuan lembur sudah diproses sebelumnya.'], 403);
         }
@@ -6597,6 +6630,16 @@ class AttendanceController extends Controller
 
         if (! $approval) {
             return response()->json(['message' => 'Data lembur tidak ditemukan.'], 404);
+        }
+
+        if ($approval->status === 'rejected') {
+            if ($request->filled('notes')) {
+                $approval->update(['notes' => $request->notes]);
+            }
+            return response()->json([
+                'message'  => 'Pengajuan lembur sudah ditolak sebelumnya.',
+                'approval' => $approval->only(['id', 'status', 'overtime_minutes', 'reviewed_at', 'notes']),
+            ]);
         }
 
         if ($approval->status !== 'pending') {
@@ -6903,12 +6946,13 @@ class AttendanceController extends Controller
             ->exists();
 
         $jadwalHariIni    = $this->getWorkSchedule($user, $todayStr);
-        $isWfhScheduled   = ! empty($jadwalHariIni['is_wfh']);
-        $isFieldScheduled = ! empty($jadwalHariIni['is_field']);
+        $isWfhScheduled   = ! empty($jadwalHariIni['is_wfh']) && ($user->allow_wfh !== false) && ($user->allow_attendance !== false);
+        $isFieldScheduled = ! empty($jadwalHariIni['is_field']) && ($user->allow_radius !== false) && ($user->allow_attendance !== false);
 
         $responseData = $attendances->toArray();
-        $responseData['wfh_enabled']        = (bool) ($user->canWfh() || $isWfhApprovedToday || $isWfhScheduled || $isFieldScheduled);
-        $responseData['radius_enabled']     = (bool) ($user->canDinasLuar() ? false : ($isWfhApprovedToday ? false : ($user->radius_enabled || $isFieldScheduled)));
+        $responseData['attendance_enabled'] = (bool) $user->canAccessAttendance();
+        $responseData['wfh_enabled']        = (bool) ($user->canAccessAttendance() && ($user->canWfh() || $isWfhApprovedToday || $isWfhScheduled || $isFieldScheduled));
+        $responseData['radius_enabled']     = (bool) ($user->canAccessAttendance() && ($user->canDinasLuar() ? false : ($isWfhApprovedToday ? false : ($user->radius_enabled || $isFieldScheduled))));
         $responseData['dinas_luar_enabled'] = (bool) ($user->canDinasLuar() || $isFieldScheduled);
         $responseData['is_wfh_approved']    = $isWfhApprovedToday;
         $responseData['office']             = $officeData;
@@ -7217,7 +7261,7 @@ class AttendanceController extends Controller
                     continue;
                 }
                 $sch = \App\Http\Controllers\API\ShiftController::resolveSchedule($user, $ds);
-                if (! empty($sch['is_wfh'])) {
+                if (! empty($sch['is_wfh']) && ($user->allow_wfh !== false) && ($user->allow_attendance !== false)) {
                     $alreadyWfhMap[$ds] = 'Jadwal shift sudah WFH';
                 }
             }

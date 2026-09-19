@@ -91,6 +91,7 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
   const [notes, setNotes] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [isProcessed, setIsProcessed] = useState(false);
 
   const isReject = mode === 'reject';
 
@@ -106,7 +107,17 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
       await onConfirm(notes.trim());
       onClose();
     } catch (ex: unknown) {
-      setErr(ex instanceof ApiError ? ex.message : 'Terjadi kesalahan.');
+      const msg = ex instanceof ApiError ? ex.message : 'Terjadi kesalahan.';
+      const alreadyHandled =
+        msg.toLowerCase().includes('sudah diproses') ||
+        (ex instanceof ApiError && (ex.status === 403 || ex.status === 409));
+
+      if (alreadyHandled) {
+        setIsProcessed(true);
+        setErr('Pengajuan lembur ini sudah diproses sebelumnya. Daftar pengajuan telah disinkronkan.');
+      } else {
+        setErr(msg);
+      }
       setBusy(false);
     }
   };
@@ -183,29 +194,56 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
               rows={3}
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 rounded-lg resize-none focus:ring-1 focus:ring-indigo-400 focus:outline-none focus:border-indigo-400 placeholder:text-slate-300 dark:placeholder:text-slate-500"
             />
-            {err && <p className="text-[11px] text-rose-600 dark:text-rose-400 mt-1">{err}</p>}
+            {err && (
+              <div className={`mt-2 p-2.5 rounded-lg text-xs flex items-start gap-2 ${isProcessed
+                ? 'bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300'
+                : 'bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 text-rose-600 dark:text-rose-400'
+              }`}>
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold">{err}</p>
+                  {isProcessed && (
+                    <p className="text-[11px] text-amber-700 dark:text-amber-400 mt-0.5">
+                      Status lembur telah diperbarui di sistem. Silakan tutup jendela ini untuk melihat perubahan terbaru.
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="flex gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="flex-1 py-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition cursor-pointer"
-            >
-              Batal
-            </button>
-            <button
-              type="submit"
-              disabled={busy}
-              className={`flex-1 py-2 text-xs font-bold rounded-lg text-white transition flex items-center justify-center gap-1.5 cursor-pointer ${isReject
-                  ? 'bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300 dark:disabled:bg-rose-900/50'
-                  : 'bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 dark:disabled:bg-emerald-900/50'
-                }`}
-            >
-              {busy && <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
-              {isReject ? 'Tolak Lembur' : 'Setujui Lembur'}
-            </button>
-          </div>
+          {isProcessed ? (
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={onClose}
+                className="w-full py-2.5 text-xs font-bold rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white transition cursor-pointer flex items-center justify-center gap-1.5 shadow-sm"
+              >
+                Tutup & Perbarui Tampilan
+              </button>
+            </div>
+          ) : (
+            <div className="flex gap-2 pt-1">
+              <button
+                type="button"
+                onClick={onClose}
+                className="flex-1 py-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 text-slate-600 dark:text-slate-300 transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="submit"
+                disabled={busy}
+                className={`flex-1 py-2 text-xs font-bold rounded-lg text-white transition flex items-center justify-center gap-1.5 cursor-pointer ${isReject
+                    ? 'bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300 dark:disabled:bg-rose-900/50'
+                    : 'bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 dark:disabled:bg-emerald-900/50'
+                  }`}
+              >
+                {busy && <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
+                {isReject ? 'Tolak Lembur' : 'Setujui Lembur'}
+              </button>
+            </div>
+          )}
         </form>
       </div>
     </div>
@@ -330,20 +368,26 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
 
   const doApprove = async (notes: string) => {
     if (!modal) return;
-    await overtimeApi.approve(modal.record.id, notes);
-    invalidateCache('/dashboard/attendance/overtime-approvals');
-    invalidateCache('/dashboard/notifications');
-    await loadRecords(page, true);
-    onActionSuccess?.();
+    try {
+      await overtimeApi.approve(modal.record.id, notes);
+      onActionSuccess?.();
+    } finally {
+      invalidateCache('/dashboard/attendance/overtime-approvals');
+      invalidateCache('/dashboard/notifications');
+      await loadRecords(page, true);
+    }
   };
 
   const doReject = async (notes: string) => {
     if (!modal) return;
-    await overtimeApi.reject(modal.record.id, notes);
-    invalidateCache('/dashboard/attendance/overtime-approvals');
-    invalidateCache('/dashboard/notifications');
-    await loadRecords(page, true);
-    onActionSuccess?.();
+    try {
+      await overtimeApi.reject(modal.record.id, notes);
+      onActionSuccess?.();
+    } finally {
+      invalidateCache('/dashboard/attendance/overtime-approvals');
+      invalidateCache('/dashboard/notifications');
+      await loadRecords(page, true);
+    }
   };
 
   const debouncedSearch = useDebounce(search, 500);
@@ -737,7 +781,10 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
           mode={modal.mode}
           record={modal.record}
           onConfirm={modal.mode === 'approve' ? doApprove : doReject}
-          onClose={() => setModal(null)}
+          onClose={() => {
+            setModal(null);
+            loadRecords(page, true);
+          }}
         />
       )}
     </div>

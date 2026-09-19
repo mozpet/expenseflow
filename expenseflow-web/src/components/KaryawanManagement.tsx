@@ -158,6 +158,18 @@ interface Employee {
   exitNotes?: string | null;
   severanceStatus?: string | null;
   clearanceStatus?: string | null;
+
+  // Lock status dari shift aktif/mendatang
+  shiftLocks?: {
+    has_active_shift: boolean;
+    shift_name: string | null;
+    lock_attendance: boolean;
+    lock_wfh: boolean;
+    lock_radius: boolean;
+    reason_attendance: string | null;
+    reason_wfh: string | null;
+    reason_radius: string | null;
+  } | null;
 }
 
 // Kantor perusahaan (dari attendance_settings) untuk dropdown penempatan.
@@ -264,6 +276,7 @@ function mapEmployee(u: any): Employee {
     exitNotes: u.exit_notes ?? null,
     severanceStatus: u.severance_status ?? null,
     clearanceStatus: u.clearance_status ?? null,
+    shiftLocks: u.shift_locks ?? null,
   };
 }
 
@@ -1009,9 +1022,9 @@ export const KaryawanManagement: React.FC<{
       hasJkk: emp.hasJkk ?? true,
       hasJkm: emp.hasJkm ?? true,
       overtimeEligible: emp.overtimeEligible ?? (emp.role === 'employee'),
-      attendanceEnabled: Boolean(emp.attendanceEnabled),
-      wfhEnabled: emp.attendanceEnabled ? Boolean(emp.wfhEnabled) : false,
-      radiusEnabled: (emp.attendanceEnabled && emp.wfhEnabled) ? Boolean(emp.radiusEnabled) : false,
+      attendanceEnabled: emp.shiftLocks?.lock_attendance ? true : Boolean(emp.attendanceEnabled),
+      wfhEnabled: emp.shiftLocks?.lock_wfh ? true : (emp.attendanceEnabled ? Boolean(emp.wfhEnabled) : false),
+      radiusEnabled: emp.shiftLocks?.lock_radius ? true : ((emp.attendanceEnabled && emp.wfhEnabled) ? Boolean(emp.radiusEnabled) : false),
       flexitimeEnabled: Boolean(emp.flexitimeEnabled),
 
       // Prioritas 1 — Kontak Darurat

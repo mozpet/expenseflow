@@ -212,11 +212,56 @@ class AttendanceTimezoneAndReportTest extends TestCase
         $response->assertOk()
             ->assertJsonPath('attendance.overtime_minutes', 45);
 
+        // Saat checkout, OvertimeApproval BELUM terbuat (tidak otomatis push ke HRD)
+        $this->assertDatabaseMissing('overtime_approvals', [
+            'user_id' => $employee->id,
+        ]);
+
+        // Karyawan mengajukan lembur via mobile endpoint claim-overtime dengan alasan tugas
+        $attId = $response->json('attendance.id');
+        $claimResp = $this->postJson("/api/v1/attendance/{$attId}/claim-overtime", [
+            'reason' => 'Menyelesaikan laporan bulanan departemen',
+        ], $this->token($employee));
+
+        $claimResp->assertOk()
+            ->assertJsonPath('approval.status', 'pending')
+            ->assertJsonPath('approval.overtime_minutes', 45)
+            ->assertJsonPath('approval.overtime_reason', 'Menyelesaikan laporan bulanan departemen');
+
+        // Setelah diajukan oleh karyawan, barulah OvertimeApproval berstatus pending terbuat di HRD
         $this->assertDatabaseHas('overtime_approvals', [
+            'attendance_id'    => $attId,
             'user_id'          => $employee->id,
             'overtime_minutes' => 45,
             'status'           => 'pending',
+            'overtime_reason'  => 'Menyelesaikan laporan bulanan departemen',
         ]);
+
+        $approvalId = $claimResp->json('approval.id');
+        $admin = $this->admin;
+
+        // HRD tolak lembur
+        $reject1 = $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/v1/dashboard/attendance/overtime-approvals/{$approvalId}/reject", [
+                'notes' => 'Tugas tidak terjadwal',
+            ]);
+        $reject1->assertOk()
+            ->assertJsonPath('approval.status', 'rejected');
+
+        // Idempotensi: Jika HRD tolak lagi (misal stale modal / submit ulang), harus sukses 200 OK bukan 403
+        $reject2 = $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/v1/dashboard/attendance/overtime-approvals/{$approvalId}/reject", [
+                'notes' => 'Catatan revisi',
+            ]);
+        $reject2->assertOk()
+            ->assertJsonPath('message', 'Pengajuan lembur sudah ditolak sebelumnya.');
+
+        // Mencoba approve pengajuan yang sudah ditolak harus menghasilkan status 403
+        $approveConflict = $this->actingAs($admin, 'sanctum')
+            ->postJson("/api/v1/dashboard/attendance/overtime-approvals/{$approvalId}/approve", [
+                'notes' => 'Coba approve',
+            ]);
+        $approveConflict->assertStatus(403);
     }
 
     // ─── 7. Uji Shift Malam Lintas Hari (Cross-day: 22:00 -> 06:00 Besok) ───

@@ -46,6 +46,7 @@ interface ShiftTemplate {
   late_tolerance_minutes?: number | null;
   attendance_setting_id: number | null;
   office?: { id: number; office_name: string; late_tolerance_minutes?: number | null } | null;
+  assigned_count?: number;
   schedules: ScheduleRow[];
 }
 
@@ -59,6 +60,9 @@ interface RosterRow {
   birth_date?: string | null;
   age?: number | null;
   is_pregnant?: boolean;
+  allow_attendance?: boolean;
+  allow_wfh?: boolean;
+  allow_radius?: boolean;
   source: 'shift' | 'office' | 'none';
   shift_name: string | null;
   pattern_id?: number | null;
@@ -408,6 +412,27 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
   // Konfirmasi perubahan jam kerja shift yang berlaku mulai tanggal efektif
   const [pendingScheduleSave, setPendingScheduleSave] = useState<(() => void) | null>(null);
 
+  // Jumlah karyawan terpasang (aktif / akan datang) pada shift ini
+  const [assignedCount, setAssignedCount] = useState<number>(editing?.assigned_count ?? 0);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (editing) {
+      if (editing.assigned_count !== undefined) {
+        setAssignedCount(editing.assigned_count);
+      } else {
+        // Fallback jika properti assigned_count belum di-preload
+        shiftApi.users(editing.id).then((res: any) => {
+          if (!cancelled) {
+            const activeOrUpcoming = (res?.data ?? []).filter((r: any) => r && (r.status === 'active' || r.status === 'upcoming'));
+            setAssignedCount(activeOrUpcoming.length);
+          }
+        }).catch(() => {});
+      }
+    }
+    return () => { cancelled = true; };
+  }, [editing]);
+
   // Ambil setting kantor yang dipilih (untuk validasi & hitung tanggal efektif)
   const selectedOffice = useMemo(
     () => offices.find((o) => String(o.id) === String(editing?.attendance_setting_id ?? branchId)) ?? offices[0] ?? null,
@@ -451,8 +476,10 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
   }, [editing, schedules]);
 
   // Tanggal efektif jam kerja baru = hari ini + max(1, shift_notice_days kantor)
+  // HANYA dihitung jika shift MEMILIKI karyawan terpasang (assignedCount > 0).
+  // Jika tidak ada karyawan yang di-assign (assignedCount === 0), perubahan langsung berlaku hari ini (null).
   const effectiveDate = useMemo(() => {
-    if (!editing || !scheduleChanged) return null;
+    if (!editing || !scheduleChanged || assignedCount === 0) return null;
     const noticeDays = selectedOffice?.shift_notice_days && Number(selectedOffice.shift_notice_days) > 0
       ? Number(selectedOffice.shift_notice_days)
       : 1;
@@ -462,7 +489,7 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
     const month = String(d.getMonth() + 1).padStart(2, '0');
     const day = String(d.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
-  }, [editing, scheduleChanged, selectedOffice]);
+  }, [editing, scheduleChanged, selectedOffice, assignedCount]);
 
   // Hitung jeda K3 antar hari secara real-time saat user ubah jam
   const k3Gaps = useMemo(() => computeTemplateGaps(schedules), [schedules]);
@@ -592,9 +619,11 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
     const colorErr = validateColorLocal();
     if (colorErr) { setErr(colorErr); return; }
 
-    // Saat EDIT dan jam kerja (schedules) berubah → konfirmasi tanggal efektif.
-    // Nama/warna/deskripsi saja → langsung simpan (tidak mengubah jadwal karyawan).
-    if (editing && scheduleChanged && effectiveDate) {
+    // Saat EDIT dan jam kerja (schedules) berubah:
+    // HANYA minta konfirmasi tanggal efektif jika ADA karyawan yang terpasang pada shift ini (assignedCount > 0).
+    // Jika tidak ada karyawan yang di-assign (assignedCount === 0), perubahan langsung disimpan dan berlaku hari ini
+    // tanpa notice period dan tanpa popup modal konfirmasi notice.
+    if (editing && scheduleChanged && assignedCount > 0 && effectiveDate) {
       setPendingScheduleSave(() => doSave);
       return; // tampilkan modal konfirmasi
     }
@@ -633,11 +662,11 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 space-y-4">
-          {/* Banner nama cabang jika sedang EDIT */}
+          {/* Banner nama cabang & status penugasan jika sedang EDIT */}
           {editing && (
-            <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl p-3 flex items-center justify-between">
+            <div className="bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 rounded-xl p-3 flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
-                <Building2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                <Building2 className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
                 <div>
                   <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">Cabang Terikat</p>
                   <p className="text-xs font-bold text-slate-800 dark:text-slate-100">
@@ -645,9 +674,20 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
                   </p>
                 </div>
               </div>
-              <span className="text-[10px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-0.5 rounded-md">
-                Cabang Permanen
-              </span>
+              <div className="flex items-center gap-2">
+                {assignedCount === 0 ? (
+                  <span className="text-[10px] font-semibold bg-emerald-100 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 px-2.5 py-1 rounded-md flex items-center gap-1 border border-emerald-200 dark:border-emerald-800">
+                    <Users className="w-3 h-3 text-emerald-600 dark:text-emerald-400" /> Bebas Atur (0 Karyawan · Langsung Berlaku)
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-semibold bg-indigo-100 dark:bg-indigo-950/60 text-indigo-700 dark:text-indigo-300 px-2.5 py-1 rounded-md flex items-center gap-1 border border-indigo-200 dark:border-indigo-800">
+                    <Users className="w-3 h-3 text-indigo-600 dark:text-indigo-400" /> {assignedCount} Karyawan Terpasang
+                  </span>
+                )}
+                <span className="text-[10px] font-medium bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 px-2 py-1 rounded-md">
+                  Cabang Permanen
+                </span>
+              </div>
             </div>
           )}
 
@@ -2643,6 +2683,39 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
     return adv;
   }, [isNight, k3BlockReason, user]);
 
+  const profilePermissionBlock = useMemo(() => {
+    if (assignType === 'shift' && selectedShift) {
+      const schedules = selectedShift.schedules || [];
+      const hasWfh = schedules.some((s) => !s.is_off && s.is_wfh);
+      const hasField = schedules.some((s) => !s.is_off && s.is_field);
+
+      if (user.allow_attendance === false && (hasWfh || hasField)) {
+        return `Penugasan shift ditolak: Shift '${selectedShift.name}' memiliki jadwal presensi mobile (WFH/Lapangan), sedangkan hak akses 'Akses Mobile' untuk '${user.name}' sedang dinonaktifkan di Edit Profil Karyawan.`;
+      }
+      if (hasWfh && user.allow_wfh === false) {
+        return `Penugasan shift ditolak: Shift '${selectedShift.name}' memiliki jadwal WFH, sedangkan izin 'Izinkan Presensi WFH' untuk '${user.name}' sedang dinonaktifkan di Edit Profil Karyawan.`;
+      }
+      if (hasField && user.allow_radius === false) {
+        return `Penugasan shift ditolak: Shift '${selectedShift.name}' memiliki jadwal Lapangan, sedangkan izin 'Validasi Radius Geofence' untuk '${user.name}' sedang dinonaktifkan di Edit Profil Karyawan.`;
+      }
+    } else if (assignType === 'pattern' && selectedPattern) {
+      const items = selectedPattern.items || [];
+      const hasWfh = items.some((i) => !i.is_off && i.is_wfh);
+      const hasField = items.some((i) => !i.is_off && i.is_field);
+
+      if (user.allow_attendance === false && (hasWfh || hasField)) {
+        return `Penugasan shift ditolak: Pola rotasi '${selectedPattern.name}' memiliki jadwal presensi mobile (WFH/Lapangan), sedangkan hak akses 'Akses Mobile' untuk '${user.name}' sedang dinonaktifkan di Edit Profil Karyawan.`;
+      }
+      if (hasWfh && user.allow_wfh === false) {
+        return `Penugasan shift ditolak: Pola rotasi '${selectedPattern.name}' memiliki jadwal WFH, sedangkan izin 'Izinkan Presensi WFH' untuk '${user.name}' sedang dinonaktifkan di Edit Profil Karyawan.`;
+      }
+      if (hasField && user.allow_radius === false) {
+        return `Penugasan shift ditolak: Pola rotasi '${selectedPattern.name}' memiliki jadwal Lapangan, sedangkan izin 'Validasi Radius Geofence' untuk '${user.name}' sedang dinonaktifkan di Edit Profil Karyawan.`;
+      }
+    }
+    return null;
+  }, [assignType, selectedShift, selectedPattern, user]);
+
   const loadHistory = useCallback(async (forceRefresh = false) => {
     setLoadingHist(true);
     try {
@@ -2666,6 +2739,10 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
     }
     if (assignType === 'pattern' && !patternId) {
       setErr('Silakan pilih pola rotasi terlebih dahulu.');
+      return;
+    }
+    if (profilePermissionBlock) {
+      setErr(profilePermissionBlock);
       return;
     }
     if (endDate && endDate <= startDate) {
@@ -2965,6 +3042,16 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
               </div>
             )}
 
+            {profilePermissionBlock && (
+              <div className="flex items-start gap-2 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-lg p-2.5 text-[11px] text-rose-700 dark:text-rose-400">
+                <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                <div className="space-y-0.5">
+                  <p className="font-bold">Izin Profil Karyawan Tidak Sesuai</p>
+                  <p>{profilePermissionBlock}</p>
+                </div>
+              </div>
+            )}
+
             {k3BlockReason && (
               <div className="flex items-start gap-2 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900 rounded-lg p-2.5 text-[11px] text-rose-700 dark:text-rose-400">
                 <AlertCircle className="w-4 h-4 mt-0.5 shrink-0" />
@@ -2988,7 +3075,7 @@ function AssignModal({ user, shifts, patterns = [], onClose, onSaved }: AssignMo
 
             <button
               type="submit"
-              disabled={busy || !!k3BlockReason}
+              disabled={busy || !!k3BlockReason || !!profilePermissionBlock}
               className="w-full py-2.5 text-xs font-bold rounded-lg text-white bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 dark:disabled:bg-indigo-900/50 transition flex items-center justify-center gap-1.5 cursor-pointer disabled:cursor-not-allowed"
             >
               {busy && <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
@@ -3295,20 +3382,38 @@ function BulkAssignModal({ userIds, userNames, shifts, patterns = [], selectedBr
                   </select>
                   {(() => {
                     const sTarget = availableShifts.find((s) => String(s.id) === String(shiftId));
-                    if (sTarget && isNightShift(sTarget)) {
-                      return (
-                        <div className="mt-2 p-2.5 rounded-lg bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/40 text-[11px] text-purple-700 dark:text-purple-300 flex items-start gap-1.5">
-                          <span className="shrink-0">🌙</span>
-                          <div>
-                            <strong className="font-semibold">Proteksi K3 Shift Malam Aktif:</strong>
-                            <p className="mt-0.5 text-[10.5px] text-purple-600 dark:text-purple-400">
-                              Karyawan berusia di bawah 17 tahun atau tercatat sedang hamil akan otomatis dilindungi dan dilewati (skip) oleh sistem sesuai UU No. 13/2003 Pasal 76.
-                            </p>
+                    if (!sTarget) return null;
+                    const schedules = sTarget.schedules || [];
+                    const hasWfh = schedules.some((s) => !s.is_off && s.is_wfh);
+                    const hasField = schedules.some((s) => !s.is_off && s.is_field);
+                    const isNight = isNightShift(sTarget);
+
+                    return (
+                      <div className="space-y-2 mt-2">
+                        {isNight && (
+                          <div className="p-2.5 rounded-lg bg-purple-50 dark:bg-purple-950/30 border border-purple-200 dark:border-purple-800/40 text-[11px] text-purple-700 dark:text-purple-300 flex items-start gap-1.5">
+                            <span className="shrink-0">🌙</span>
+                            <div>
+                              <strong className="font-semibold">Proteksi K3 Shift Malam Aktif:</strong>
+                              <p className="mt-0.5 text-[10.5px] text-purple-600 dark:text-purple-400">
+                                Karyawan berusia di bawah 17 tahun atau tercatat sedang hamil akan otomatis dilindungi dan dilewati (skip) oleh sistem sesuai UU No. 13/2003 Pasal 76.
+                              </p>
+                            </div>
                           </div>
-                        </div>
-                      );
-                    }
-                    return null;
+                        )}
+                        {(hasWfh || hasField) && (
+                          <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/40 text-[11px] text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
+                            <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                            <div>
+                              <strong className="font-semibold">Validasi Hak Akses Profil:</strong>
+                              <p className="mt-0.5 text-[10.5px] text-amber-600 dark:text-amber-400">
+                                Shift ini memiliki jadwal {hasWfh ? 'WFH' : ''}{hasWfh && hasField ? ' & ' : ''}{hasField ? 'Lapangan' : ''}. Karyawan yang hak aksesnya dinonaktifkan di Edit Profil akan otomatis dilewati (skip) dengan laporan detail.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
                   })()}
                   <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-1">
                     {selectedBranchIds.size > 0
@@ -3370,6 +3475,25 @@ function BulkAssignModal({ userIds, userNames, shifts, patterns = [], selectedBr
                       <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
                         💡 Seluruh {userIds.length} karyawan terpilih akan mulai berjalan serempak dari fase siklus yang ditentukan.
                       </p>
+                      {(() => {
+                        const items = selectedPattern.items || [];
+                        const hasWfh = items.some((it) => !it.is_off && it.is_wfh);
+                        const hasField = items.some((it) => !it.is_off && it.is_field);
+                        if (hasWfh || hasField) {
+                          return (
+                            <div className="p-2.5 rounded-lg bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/40 text-[11px] text-amber-700 dark:text-amber-300 flex items-start gap-1.5">
+                              <AlertTriangle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                              <div>
+                                <strong className="font-semibold">Validasi Hak Akses Profil:</strong>
+                                <p className="mt-0.5 text-[10.5px] text-amber-600 dark:text-amber-400">
+                                  Pola rotasi ini mencakup jadwal {hasWfh ? 'WFH' : ''}{hasWfh && hasField ? ' & ' : ''}{hasField ? 'Lapangan' : ''}. Karyawan yang hak aksesnya dinonaktifkan di Edit Profil akan otomatis dilewati (skip) dengan laporan detail.
+                                </p>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                   )}
                 </div>

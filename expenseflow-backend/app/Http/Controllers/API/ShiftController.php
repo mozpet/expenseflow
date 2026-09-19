@@ -209,7 +209,16 @@ class ShiftController extends Controller
             'attendance_setting_id' => 'nullable|integer', // filter per cabang
         ]);
 
+        $today = now('Asia/Jakarta')->toDateString();
+
         $shifts = Shift::with(['schedules', 'office:id,office_name,late_tolerance_minutes'])
+            ->withCount(['userShifts as assigned_count' => function ($q) use ($today) {
+                $q->where(function ($sub) use ($today) {
+                    $sub->where('start_date', '<=', $today)
+                        ->where(fn ($q2) => $q2->whereNull('end_date')->orWhere('end_date', '>=', $today))
+                        ->orWhere('start_date', '>', $today);
+                });
+            }])
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
@@ -506,25 +515,34 @@ class ShiftController extends Controller
             }
 
             if ($hasScheduleChanges) {
-                $branchForNotice = $shift->office
-                    ?? AttendanceSetting::find($shift->attendance_setting_id)
-                    ?? AttendanceSetting::where('company_id', $actor->company_id)->orderBy('id')->first();
-
-                $noticeDays = (int) ($branchForNotice?->shift_notice_days ?? 0);
-                if ($noticeDays < 1) {
-                    $noticeDays = 1; // default aman: berlaku besok
-                }
-
-                $scheduleEffectiveDate = Carbon::now('Asia/Jakarta')->startOfDay()
-                    ->addDays($noticeDays)
-                    ->toDateString();
-
-                // Pre-load assignment aktif SEKALI — dipakai untuk count + notifikasi sekaligus
+                // Pre-load assignment aktif SEKALI — dipakai untuk cek assigned, hitung tanggal efektif, dan notifikasi
                 $liveAssignments = $this->liveAssignmentsForShift($shift->id);
+
+                if ($liveAssignments->isEmpty()) {
+                    // TIDAK ADA KARYAWAN TERPASANG:
+                    // Tidak ada karyawan yang terganggu, sehingga tidak memerlukan notice period (H-N).
+                    // Jam kerja baru LANGSUNG BERLAKU HARI INI (effective_date = today).
+                    $scheduleEffectiveDate = Carbon::now('Asia/Jakarta')->startOfDay()->toDateString();
+                } else {
+                    // ADA KARYAWAN TERPASANG:
+                    // Jam kerja baru berlaku sesuai pengaturan notice kantor (H-N, min 1 hari)
+                    $branchForNotice = $shift->office
+                        ?? AttendanceSetting::find($shift->attendance_setting_id)
+                        ?? AttendanceSetting::where('company_id', $actor->company_id)->orderBy('id')->first();
+
+                    $noticeDays = (int) ($branchForNotice?->shift_notice_days ?? 0);
+                    if ($noticeDays < 1) {
+                        $noticeDays = 1; // default aman: berlaku besok
+                    }
+
+                    $scheduleEffectiveDate = Carbon::now('Asia/Jakarta')->startOfDay()
+                        ->addDays($noticeDays)
+                        ->toDateString();
+                }
             }
         }
 
-        DB::transaction(function () use ($shift, $validated, $scheduleEffectiveDate, $hasScheduleChanges) {
+        DB::transaction(function () use ($shift, $validated, $scheduleEffectiveDate, $hasScheduleChanges, $liveAssignments) {
             // Nama/deskripsi/warna/toleransi → langsung (tidak memengaruhi jadwal)
             $data = collect($validated)->only(['name', 'description', 'color'])->toArray();
             if (isset($data['color'])) {
@@ -539,13 +557,20 @@ class ShiftController extends Controller
             // Jam kerja (schedules) → versi baru HANYA jika jadwal benar-benar berubah
             if (isset($validated['schedules']) && $hasScheduleChanges && $scheduleEffectiveDate) {
                 $this->syncSchedules($shift, $validated['schedules'], $scheduleEffectiveDate);
+
+                // Jika tidak ada karyawan yang terpasang, hapus versi masa depan (jika ada dari penyesuaian sebelumnya)
+                // agar jadwal yang diperbarui hari ini langsung menjadi versi definitif yang aktif.
+                if ($liveAssignments->isEmpty()) {
+                    ShiftSchedule::where('shift_id', $shift->id)
+                        ->where('effective_date', '>', $scheduleEffectiveDate)
+                        ->delete();
+                }
             }
         });
 
-        // Kirim notifikasi ke karyawan yang ter-assign shift ini (DB + FCM)
+        // Kirim notifikasi HANYA ke karyawan yang ter-assign shift ini (DB + FCM)
         // bahwa jam kerja shift akan berubah mulai tanggal efektif.
-        // Menggunakan $liveAssignments yang sudah di-load di atas (hindari double query).
-        if ($scheduleEffectiveDate) {
+        if ($scheduleEffectiveDate && $liveAssignments->isNotEmpty()) {
             $tglEfektif = Carbon::parse($scheduleEffectiveDate)->translatedFormat('d F Y');
 
             foreach ($liveAssignments as $assignment) {
@@ -560,19 +585,27 @@ class ShiftController extends Controller
             }
         }
 
+        $isImmediate = $scheduleEffectiveDate && $liveAssignments->isEmpty();
+        $message = 'Shift berhasil diperbarui.';
+        if ($scheduleEffectiveDate) {
+            if ($liveAssignments->isNotEmpty()) {
+                $message = "Shift berhasil diperbarui. Jam kerja baru berlaku mulai " . Carbon::parse($scheduleEffectiveDate)->translatedFormat('d F Y') . ".";
+            } else {
+                $message = "Shift berhasil diperbarui dan langsung berlaku.";
+            }
+        }
+
         $this->logActivity(
             $actor->id,
             $actor->company_id,
             'shift_updated',
-            "Mengubah template shift: {$shift->name}" . ($scheduleEffectiveDate ? " (jam kerja baru efektif {$scheduleEffectiveDate})" : ''),
+            "Mengubah template shift: {$shift->name}" . ($scheduleEffectiveDate ? ($isImmediate ? " (jam kerja baru langsung berlaku hari ini)" : " (jam kerja baru efektif {$scheduleEffectiveDate})") : ''),
             'shift',
             $shift->id
         );
 
         return response()->json([
-            'message'  => $scheduleEffectiveDate
-                ? "Shift berhasil diperbarui. Jam kerja baru berlaku mulai " . Carbon::parse($scheduleEffectiveDate)->translatedFormat('d F Y') . "."
-                : 'Shift berhasil diperbarui.',
+            'message'        => $message,
             'warnings'       => $k3Warnings,
             'effective_date' => $scheduleEffectiveDate,
             'notified_users' => $liveAssignments->count(),
@@ -917,6 +950,11 @@ class ShiftController extends Controller
                 return response()->json(['message' => $err], 422);
             }
 
+            // Validasi hak akses profil: pastikan izin WFH/lapangan/mobile cocok
+            if ($err = $this->assertShiftProfilePermissions($shift, $targetUser)) {
+                return response()->json(['message' => $err], 422);
+            }
+
             $todayStr = now('Asia/Jakarta')->toDateString();
             $duplicateActive = UserShift::where('user_id', $validated['user_id'])
                 ->where('shift_id', $validated['shift_id'])
@@ -965,6 +1003,11 @@ class ShiftController extends Controller
 
             // Validasi cabang: cegah karyawan cabang A memakai pola cabang B
             if ($err = $this->assertPatternBranchMatch($pattern, $targetUser)) {
+                return response()->json(['message' => $err], 422);
+            }
+
+            // Validasi hak akses profil: pastikan izin WFH/lapangan/mobile cocok
+            if ($err = $this->assertPatternProfilePermissions($pattern, $targetUser)) {
                 return response()->json(['message' => $err], 422);
             }
         }
@@ -1342,6 +1385,83 @@ class ShiftController extends Controller
         return null;
     }
 
+    // ─── Helper: validasi hak akses profil karyawan terhadap jadwal shift template ───────
+    //     Jika shift memiliki jadwal WFH, karyawan wajib memiliki allow_wfh = true.
+    //     Jika shift memiliki jadwal Lapangan, karyawan wajib memiliki allow_radius = true.
+    //     Jika shift memerlukan presensi mobile, karyawan wajib memiliki allow_attendance = true.
+    private function assertShiftProfilePermissions(Shift $shift, User $user): ?string
+    {
+        $schedules = $shift->relationLoaded('schedules')
+            ? $shift->schedules
+            : $shift->schedules()->get();
+
+        $wfhSchedules = $schedules->filter(fn ($s) => ! $s->is_off && (bool) $s->is_wfh);
+        $fieldSchedules = $schedules->filter(fn ($s) => ! $s->is_off && (bool) $s->is_field);
+
+        $hasWfh = $wfhSchedules->isNotEmpty();
+        $hasField = $fieldSchedules->isNotEmpty();
+
+        if (! $hasWfh && ! $hasField) {
+            return null;
+        }
+
+        // Cek 1: Hak Akses Mobile
+        if ($user->allow_attendance === false) {
+            return "Penugasan shift ditolak: Shift '{$shift->name}' memiliki jadwal presensi mobile (WFH/Lapangan), sedangkan hak akses 'Akses Mobile' untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan.";
+        }
+
+        // Cek 2: Hak Akses WFH
+        if ($hasWfh && $user->allow_wfh === false) {
+            $days = $wfhSchedules->map(fn ($s) => $s->day_name)->unique()->implode(', ');
+            return "Penugasan shift ditolak: Shift '{$shift->name}' memiliki jadwal WFH pada hari ({$days}), sedangkan izin 'Izinkan Presensi WFH' untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan.";
+        }
+
+        // Cek 3: Hak Akses Lapangan (Validasi Radius Geofence)
+        if ($hasField && $user->allow_radius === false) {
+            $days = $fieldSchedules->map(fn ($s) => $s->day_name)->unique()->implode(', ');
+            return "Penugasan shift ditolak: Shift '{$shift->name}' memiliki jadwal Lapangan pada hari ({$days}), sedangkan izin 'Validasi Radius Geofence' untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan.";
+        }
+
+        return null;
+    }
+
+    // ─── Helper: validasi hak akses profil karyawan terhadap jadwal pola rotasi shift ───────
+    private function assertPatternProfilePermissions(ShiftPattern $pattern, User $user): ?string
+    {
+        $items = $pattern->relationLoaded('items')
+            ? $pattern->items
+            : $pattern->items()->get();
+
+        $wfhItems = $items->filter(fn ($item) => ! $item->is_off && (bool) $item->is_wfh);
+        $fieldItems = $items->filter(fn ($item) => ! $item->is_off && (bool) $item->is_field);
+
+        $hasWfh = $wfhItems->isNotEmpty();
+        $hasField = $fieldItems->isNotEmpty();
+
+        if (! $hasWfh && ! $hasField) {
+            return null;
+        }
+
+        // Cek 1: Hak Akses Mobile
+        if ($user->allow_attendance === false) {
+            return "Penugasan shift ditolak: Pola rotasi '{$pattern->name}' memiliki jadwal presensi mobile (WFH/Lapangan), sedangkan hak akses 'Akses Mobile' untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan.";
+        }
+
+        // Cek 2: Hak Akses WFH
+        if ($hasWfh && $user->allow_wfh === false) {
+            $days = $wfhItems->map(fn ($item) => "H{$item->day_order}")->implode(', ');
+            return "Penugasan shift ditolak: Pola rotasi '{$pattern->name}' memiliki jadwal WFH pada siklus ({$days}), sedangkan izin 'Izinkan Presensi WFH' untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan.";
+        }
+
+        // Cek 3: Hak Akses Lapangan (Validasi Radius Geofence)
+        if ($hasField && $user->allow_radius === false) {
+            $days = $fieldItems->map(fn ($item) => "H{$item->day_order}")->implode(', ');
+            return "Penugasan shift ditolak: Pola rotasi '{$pattern->name}' memiliki jadwal Lapangan pada siklus ({$days}), sedangkan izin 'Validasi Radius Geofence' untuk '{$user->name}' sedang dinonaktifkan di Edit Profil Karyawan.";
+        }
+
+        return null;
+    }
+
     // ─── Helper: cek minimum notice period perubahan jadwal shift ─────────
     //     Memeriksa apakah start_date memenuhi minimum notice N hari (shift_notice_days).
     //     Return string error (422) jika kurang dari N hari, atau null jika valid/fitur off.
@@ -1424,6 +1544,9 @@ class ShiftController extends Controller
             if ($err = $this->assertBranchMatch($shift, $targetUser)) {
                 return response()->json(['message' => $err], 422);
             }
+            if ($err = $this->assertShiftProfilePermissions($shift, $targetUser)) {
+                return response()->json(['message' => $err], 422);
+            }
 
             // Cegah assign shift yang sedang AKTIF atau SEGERA (belum mulai) untuk
             // karyawan yang sama (duplikat), kecuali assignment itu sendiri
@@ -1479,6 +1602,9 @@ class ShiftController extends Controller
             }
 
             if ($err = $this->assertPatternBranchMatch($pattern, $targetUser)) {
+                return response()->json(['message' => $err], 422);
+            }
+            if ($err = $this->assertPatternProfilePermissions($pattern, $targetUser)) {
                 return response()->json(['message' => $err], 422);
             }
         }
@@ -1924,8 +2050,20 @@ class ShiftController extends Controller
                     continue;
                 }
 
+                // Hak akses profil tidak cocok dengan jadwal WFH / Lapangan shift
+                if ($shift && ($err = $this->assertShiftProfilePermissions($shift, $user))) {
+                    $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $err];
+                    continue;
+                }
+
                 // Cabang pola rotasi tidak cocok dengan cabang karyawan
                 if ($pattern && ($err = $this->assertPatternBranchMatch($pattern, $user))) {
+                    $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $err];
+                    continue;
+                }
+
+                // Hak akses profil tidak cocok dengan jadwal WFH / Lapangan pola rotasi
+                if ($pattern && ($err = $this->assertPatternProfilePermissions($pattern, $user))) {
                     $dilewati[] = ['user_id' => $uid, 'name' => $user->name, 'reason' => $err];
                     continue;
                 }
@@ -2630,6 +2768,9 @@ class ShiftController extends Controller
                 'is_pregnant'            => (bool) $user->is_pregnant,
                 'department'             => $user->department,
                 'branch'                 => optional($user->office)->office_name,
+                'allow_attendance'       => (bool) ($user->allow_attendance ?? $user->attendance_enabled ?? true),
+                'allow_wfh'              => (bool) ($user->allow_wfh ?? $user->wfh_enabled ?? true),
+                'allow_radius'           => (bool) ($user->allow_radius ?? $user->radius_enabled ?? true),
                 'source'                 => $source,
                 'shift_name'             => $shiftName,
                 'pattern_name'           => $patternName,
@@ -3988,10 +4129,19 @@ class ShiftController extends Controller
                 $q->where('attendance_setting_id', $request->query('attendance_setting_id'));
             })
             ->with(['office:id,office_name', 'items.shift:id,name,color,is_active', 'dayOverrides'])
-            ->withCount(['userShifts as active_users_count' => function ($q) use ($today) {
-                $q->whereDate('start_date', '<=', $today)
-                  ->where(fn ($sub) => $sub->whereNull('end_date')->orWhereDate('end_date', '>=', $today));
-            }])
+            ->withCount([
+                'userShifts as active_users_count' => function ($q) use ($today) {
+                    $q->whereDate('start_date', '<=', $today)
+                      ->where(fn ($sub) => $sub->whereNull('end_date')->orWhereDate('end_date', '>=', $today));
+                },
+                'userShifts as assigned_count' => function ($q) use ($today) {
+                    $q->where(function ($sub) use ($today) {
+                        $sub->where('start_date', '<=', $today)
+                            ->where(fn ($q2) => $q2->whereNull('end_date')->orWhere('end_date', '>=', $today))
+                            ->orWhere('start_date', '>', $today);
+                    });
+                },
+            ])
             ->orderBy('name')
             ->get();
 
