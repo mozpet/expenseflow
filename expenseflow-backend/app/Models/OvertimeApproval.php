@@ -13,6 +13,10 @@ class OvertimeApproval extends Model
         'company_id',
         'overtime_minutes',
         'status',
+        'current_step',
+        'spv_id',
+        'spv_approved_at',
+        'spv_notes',
         'reviewed_by',
         'reviewed_at',
         'notes',
@@ -24,6 +28,7 @@ class OvertimeApproval extends Model
     {
         return [
             'overtime_minutes' => 'integer',
+            'spv_approved_at'  => 'datetime',
             'reviewed_at'      => 'datetime',
             'is_auto_checkout' => 'boolean',
         ];
@@ -37,6 +42,11 @@ class OvertimeApproval extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
+    }
+
+    public function spv(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'spv_id');
     }
 
     public function reviewer(): BelongsTo

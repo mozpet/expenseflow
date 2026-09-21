@@ -1,4 +1,4 @@
-export type ReceiptStatus = 'Review' | 'Pending' | 'Disetujui' | 'Dibayar' | 'Ditolak';
+export type ReceiptStatus = 'Review' | 'Pending' | 'Partially Approved' | 'Disetujui' | 'Dibayar' | 'Ditolak';
 
 export interface ReceiptItem {
   name: string;
@@ -19,6 +19,20 @@ export interface Receipt {
   approvedAmount?: number;
   kategori: string;
   status: ReceiptStatus;
+  rawStatus?: string;
+  approvalTier?: number;
+  requiredApprovals?: number;
+  currentApprovals?: number;
+  alreadyApprovedByMe?: boolean;
+  approvalsHistory?: Array<{
+    id: number;
+    user_name: string;
+    role: string;
+    tier: number;
+    approved_amount: number;
+    catatan?: string;
+    created_at: string;
+  }>;
   varianceFlag?: boolean;
   variancePct?: number;
   tanggal: string;

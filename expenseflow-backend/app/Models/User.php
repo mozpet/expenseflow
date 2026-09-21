@@ -13,11 +13,72 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['company_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
+#[Fillable(['company_id', 'role_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
+
+    protected static function booted(): void
+    {
+        static::saving(function (User $user) {
+            try {
+                // 1. Jika role_id secara eksplisit di-set NULL:
+                if ($user->isDirty('role_id') && is_null($user->role_id)) {
+                    if (! $user->isDirty('role') || ! in_array($user->role, ['super_admin', 'admin', 'hrd', 'finance', 'employee'])) {
+                        $user->role = 'employee';
+                        $employeeRole = Role::whereNull('company_id')->where('slug', 'employee')->first();
+                        if ($employeeRole) {
+                            $user->role_id = $employeeRole->id;
+                        }
+                    }
+                    return;
+                }
+
+                // 2. Jika role_id terisi dan dirty, dan role string TIDAK diubah secara eksplisit:
+                if ($user->isDirty('role_id') && $user->role_id && ! $user->isDirty('role')) {
+                    $roleModel = Role::find($user->role_id);
+                    if ($roleModel) {
+                        $user->role = $roleModel->slug;
+                    }
+                    return;
+                }
+
+                // 3. Jika users.role terisi tapi role_id kosong/belum terisi:
+                if (empty($user->role_id) && ! empty($user->role)) {
+                    $roleModel = Role::where(function ($q) use ($user) {
+                        $q->whereNull('company_id');
+                        if ($user->company_id) {
+                            $q->orWhere('company_id', $user->company_id);
+                        }
+                    })->where('slug', $user->role)->first();
+
+                    if ($roleModel) {
+                        $user->role_id = $roleModel->id;
+                    } elseif (! in_array($user->role, ['super_admin', 'admin', 'hrd', 'finance', 'employee'])) {
+                        $user->role = 'employee';
+                    }
+                    return;
+                }
+
+                // 4. Jika users.role berubah:
+                if ($user->isDirty('role') && ! $user->isDirty('role_id')) {
+                    $roleModel = Role::where(function ($q) use ($user) {
+                        $q->whereNull('company_id');
+                        if ($user->company_id) {
+                            $q->orWhere('company_id', $user->company_id);
+                        }
+                    })->where('slug', $user->role)->first();
+
+                    if ($roleModel) {
+                        $user->role_id = $roleModel->id;
+                    }
+                }
+            } catch (\Throwable) {
+                // Jangan menggagalkan operasi jika tabel roles belum tersedia
+            }
+        });
+    }
 
     /**
      * The accessors to append to the model's array and JSON form.
@@ -267,6 +328,93 @@ class User extends Authenticatable
     public function company()
     {
         return $this->belongsTo(Company::class);
+    }
+
+    /** Relasi ke Role akun (roles.id). */
+    public function roleRelation()
+    {
+        return $this->belongsTo(Role::class, 'role_id');
+    }
+
+    /**
+     * Cek apakah user memiliki izin terhadap modul dan level tertentu (read / manage).
+     */
+    public function hasPermission(string $module, string $requiredLevel = 'read'): bool
+    {
+        if ($this->role === 'super_admin') {
+            return true;
+        }
+
+        if ($this->role_id) {
+            $role = $this->relationLoaded('roleRelation') ? $this->roleRelation : $this->roleRelation()->with('permissions')->first();
+            if ($role) {
+                return $role->hasPermission($module, $requiredLevel);
+            }
+        }
+
+        // Fallback backward-compatibility untuk built-in role lama jika belum disinkronkan ke role_id
+        return match ($this->role) {
+            'admin' => true,
+            'finance' => match ($module) {
+                Role::MODULE_RECEIPT, Role::MODULE_EXPENSE_REPORT, Role::MODULE_INVOICE, Role::MODULE_VENDOR, Role::MODULE_SETTINGS => true,
+                Role::MODULE_AUDIT_LOG => $requiredLevel === 'read',
+                default => false,
+            },
+            'hrd' => match ($module) {
+                Role::MODULE_USER, Role::MODULE_ATTENDANCE, Role::MODULE_LEAVE, Role::MODULE_OVERTIME, Role::MODULE_SHIFT => true,
+                Role::MODULE_AUDIT_LOG => $requiredLevel === 'read',
+                default => false,
+            },
+            'employee' => match ($module) {
+                Role::MODULE_RECEIPT, Role::MODULE_ATTENDANCE, Role::MODULE_LEAVE => $requiredLevel === 'read',
+                default => false,
+            },
+            default => false,
+        };
+    }
+
+    /**
+     * Ambil array ID cabang yang boleh diakses user (null berarti semua cabang).
+     *
+     * @return int[]|null
+     */
+    public function allowedBranchIds(): ?array
+    {
+        if ($this->role === 'super_admin') {
+            return null;
+        }
+
+        if ($this->role_id) {
+            $role = $this->relationLoaded('roleRelation') ? $this->roleRelation : $this->roleRelation()->with('branches')->first();
+            if ($role) {
+                return $role->getAllowedBranchIds($this);
+            }
+        }
+
+        // Fallback default: admin, finance & hrd bisa semua cabang, lainnya cabang penempatan
+        if (in_array($this->role, ['admin', 'finance', 'hrd'])) {
+            return null;
+        }
+
+        return $this->attendance_setting_id ? [(int) $this->attendance_setting_id] : [];
+    }
+
+    /**
+     * Cek apakah user boleh mengakses data kantor cabang tertentu.
+     * Jika $branchId === null (data umum / tanpa cabang), return true.
+     */
+    public function allowsBranch(?int $branchId): bool
+    {
+        $allowed = $this->allowedBranchIds();
+        if ($allowed === null) {
+            return true;
+        }
+
+        if ($branchId === null) {
+            return true;
+        }
+
+        return in_array((int) $branchId, $allowed, true);
     }
 
     /** Kantor tempat karyawan bekerja (attendance_settings). */

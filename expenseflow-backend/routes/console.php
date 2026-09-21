@@ -30,6 +30,12 @@ Schedule::command('attendance:auto-decline-collective-leave')
     ->withoutOverlapping()
     ->runInBackground();
 
+// Auto-reject semua jenis permohonan izin/cuti yang belum diproses HRD saat hari H tiba.
+Schedule::command('attendance:auto-reject-expired-leaves')
+    ->hourly()
+    ->withoutOverlapping()
+    ->runInBackground();
+
 // Kirim notifikasi FCM & dering cuti bersama saat memasuki H-7 s/d Hari H (berbarengan).
 // Berjalan secara berkala agar notifikasi langsung terkirim tepat saat hari H-7 tiba.
 Schedule::command('attendance:notify-collective-leaves')

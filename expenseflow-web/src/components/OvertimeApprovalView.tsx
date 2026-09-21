@@ -23,6 +23,11 @@ interface OvertimeRecord {
   overtime_minutes: number;
   overtime_formatted: string;
   status: 'pending' | 'approved' | 'rejected';
+  current_step?: 'spv' | 'hrd';
+  spv_id?: number | null;
+  spv_name?: string | null;
+  spv_approved_at?: string | null;
+  spv_notes?: string | null;
   is_auto_checkout: boolean;
   overtime_reason: string | null;
   reviewed_at: string | null;
@@ -38,6 +43,7 @@ interface PaginationMeta {
 }
 
 type FilterStatus = 'all' | 'pending' | 'approved' | 'rejected';
+type FilterStep = 'all' | 'spv' | 'hrd';
 
 // ─── Helpers ─────────────────────────────────────────────────
 const fmtDate = (iso: string | null) => {
@@ -94,6 +100,8 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
   const [isProcessed, setIsProcessed] = useState(false);
 
   const isReject = mode === 'reject';
+  const isSpvStep = record.current_step === 'spv';
+  const isHrdStep = record.current_step === 'hrd';
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,16 +138,20 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
       <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-md p-6 border border-slate-100 dark:border-slate-800 animate-in fade-in slide-in-from-bottom-4 duration-200">
         {/* Header */}
         <div className={`flex items-center gap-3 mb-4 pb-4 border-b ${isReject ? 'border-rose-100 dark:border-rose-900/40' : 'border-emerald-100 dark:border-emerald-900/40'}`}>
-          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isReject ? 'bg-rose-100 dark:bg-rose-950/70' : 'bg-emerald-100 dark:bg-emerald-950/70'}`}>
+          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${isReject ? 'bg-rose-100 dark:bg-rose-950/70' : isSpvStep ? 'bg-amber-100 dark:bg-amber-950/70' : 'bg-emerald-100 dark:bg-emerald-950/70'}`}>
             {isReject
               ? <XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />
-              : <CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
+              : <CheckCircle2 className={`w-5 h-5 ${isSpvStep ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`} />}
           </div>
           <div>
-            <p className={`font-bold text-sm ${isReject ? 'text-rose-700 dark:text-rose-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
-              {isReject ? 'Tolak Lembur' : 'Setujui Lembur'}
+            <p className={`font-bold text-sm ${isReject ? 'text-rose-700 dark:text-rose-400' : isSpvStep ? 'text-amber-700 dark:text-amber-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
+              {isReject 
+                ? 'Tolak Pengajuan Lembur' 
+                : isSpvStep 
+                  ? 'Setujui Lembur (Tahap 1 — SPV)' 
+                  : 'Setujui Final Lembur (Tahap 2 — HRD)'}
             </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{record.user_name}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">{record.user_name} • {record.department || 'Staff'}</p>
           </div>
         </div>
 
@@ -172,6 +184,38 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
             </div>
           )}
         </div>
+
+        {/* Info SPV jika di tahap HRD */}
+        {isHrdStep && record.spv_name && (
+          <div className="bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800/60 rounded-xl p-3 mb-4 text-xs text-emerald-800 dark:text-emerald-300">
+            <div className="flex items-center gap-1.5 font-bold">
+              <CheckCircle2 className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0" />
+              <span>Disetujui SPV: {record.spv_name}</span>
+              {record.spv_approved_at && (
+                <span className="text-[10px] text-slate-400 font-normal">({fmtDate(record.spv_approved_at)})</span>
+              )}
+            </div>
+            {record.spv_notes && (
+              <p className="text-[11px] text-emerald-700 dark:text-emerald-400 mt-1 italic pl-5">
+                Catatan SPV: "{record.spv_notes}"
+              </p>
+            )}
+          </div>
+        )}
+
+        {/* Info Tahap Persetujuan */}
+        {!isReject && isSpvStep && (
+          <div className="flex items-start gap-2 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-900/60 rounded-lg p-3 mb-4 text-xs text-amber-800 dark:text-amber-300">
+            <Hourglass className="w-3.5 h-3.5 mt-0.5 shrink-0 text-amber-600 dark:text-amber-400" />
+            <span>Persetujuan ini adalah <strong>Tahap 1 (Rekomendasi SPV)</strong>. Setelah Anda menyetujui, pengajuan akan masuk ke antrean HRD untuk persetujuan final.</span>
+          </div>
+        )}
+        {!isReject && isHrdStep && (
+          <div className="flex items-start gap-2 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-900/60 rounded-lg p-3 mb-4 text-xs text-blue-800 dark:text-blue-300">
+            <BadgeCheck className="w-3.5 h-3.5 mt-0.5 shrink-0 text-blue-600 dark:text-blue-400" />
+            <span>Persetujuan ini adalah <strong>Tahap 2 (Final HRD)</strong>. Jam lembur akan disahkan masuk ke rekapitulasi penggajian (payroll).</span>
+          </div>
+        )}
 
         {/* Peringatan jika reject */}
         {isReject && (
@@ -236,11 +280,13 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
                 disabled={busy}
                 className={`flex-1 py-2 text-xs font-bold rounded-lg text-white transition flex items-center justify-center gap-1.5 cursor-pointer ${isReject
                     ? 'bg-rose-500 hover:bg-rose-600 disabled:bg-rose-300 dark:disabled:bg-rose-900/50'
+                    : isSpvStep
+                    ? 'bg-amber-600 hover:bg-amber-700 disabled:bg-amber-300 dark:disabled:bg-amber-900/50'
                     : 'bg-emerald-500 hover:bg-emerald-600 disabled:bg-emerald-300 dark:disabled:bg-emerald-900/50'
                   }`}
               >
                 {busy && <div className="w-3 h-3 border-2 border-white/40 border-t-white rounded-full animate-spin" />}
-                {isReject ? 'Tolak Lembur' : 'Setujui Lembur'}
+                {isReject ? 'Tolak Lembur' : isSpvStep ? 'Setujui (Teruskan ke HRD)' : 'Setujui Final HRD'}
               </button>
             </div>
           )}
@@ -272,7 +318,7 @@ function SummaryCard({
 }
 
 // ─── Status badge ─────────────────────────────────────────────
-function StatusBadge({ status }: { status: string }) {
+function StatusBadge({ status, step, spvName }: { status: string; step?: 'spv' | 'hrd'; spvName?: string | null }) {
   switch (status) {
     case 'approved':
       return (
@@ -287,6 +333,27 @@ function StatusBadge({ status }: { status: string }) {
         </span>
       );
     default:
+      if (step === 'spv') {
+        return (
+          <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 animate-pulse" title="Menunggu persetujuan SPV cabang">
+            <Hourglass className="w-3 h-3" /> Tahap 1: SPV
+          </span>
+        );
+      }
+      if (step === 'hrd') {
+        return (
+          <div className="flex flex-col items-center gap-0.5">
+            <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 dark:bg-blue-950/60 text-blue-700 dark:text-blue-400 animate-pulse" title="Telah disetujui SPV, menunggu persetujuan akhir HRD">
+              <Hourglass className="w-3 h-3" /> Tahap 2: HRD Final
+            </span>
+            {spvName && (
+              <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-medium">
+                ✓ SPV: {spvName}
+              </span>
+            )}
+          </div>
+        );
+      }
       return (
         <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-100 dark:bg-amber-950/60 text-amber-700 dark:text-amber-400 animate-pulse">
           <Hourglass className="w-3 h-3" /> Menunggu
@@ -307,13 +374,17 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
   const [error, setError] = useState('');
 
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('pending');
+  const [filterStep, setFilterStep] = useState<FilterStep>('all');
+  const [activeTab, setActiveTab] = useState<'all' | 'spv' | 'hrd' | 'approved' | 'rejected'>('all');
   const [filterStart, setFilterStart] = useState('');
   const [filterEnd, setFilterEnd] = useState('');
   const [search, setSearch] = useState('');
   const [page, setPage] = useState(1);
 
-  // Summary counts (dihitung dari data pending dan all)
+  // Summary counts (dihitung dari backend summary)
   const [countPending, setCountPending] = useState(0);
+  const [countPendingSpv, setCountPendingSpv] = useState(0);
+  const [countPendingHrd, setCountPendingHrd] = useState(0);
   const [countApproved, setCountApproved] = useState(0);
   const [countRejected, setCountRejected] = useState(0);
 
@@ -327,6 +398,7 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       if (forceRefresh) invalidateCache('/dashboard/attendance/overtime-approvals');
       const params: Record<string, string | number> = { page: pg };
       if (filterStatus !== 'all') params.status = filterStatus;
+      if (filterStep !== 'all') params.step = filterStep;
       if (filterStart) params.start_date = filterStart;
       if (filterEnd) params.end_date = filterEnd;
 
@@ -335,6 +407,8 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       setRecords(data);
       if (res?.summary) {
         setCountPending(res.summary.pending ?? 0);
+        setCountPendingSpv(res.summary.pending_spv ?? 0);
+        setCountPendingHrd(res.summary.pending_hrd ?? 0);
         setCountApproved(res.summary.approved ?? 0);
         setCountRejected(res.summary.rejected ?? 0);
       }
@@ -351,7 +425,7 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
     } finally {
       setLoading(false);
     }
-  }, [filterStatus, filterStart, filterEnd]);
+  }, [filterStatus, filterStep, filterStart, filterEnd]);
 
   useEffect(() => {
     loadRecords(1);
@@ -360,10 +434,33 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
   const handleApply = () => loadRecords(1);
 
   const handleReset = () => {
-    setFilterStatus('pending');
+    setActiveTab('all');
+    setFilterStatus('all');
+    setFilterStep('all');
     setFilterStart('');
     setFilterEnd('');
     setSearch('');
+  };
+
+  const handleTabChange = (tab: 'all' | 'spv' | 'hrd' | 'approved' | 'rejected') => {
+    setActiveTab(tab);
+    setPage(1);
+    if (tab === 'all') {
+      setFilterStatus('all');
+      setFilterStep('all');
+    } else if (tab === 'spv') {
+      setFilterStatus('pending');
+      setFilterStep('spv');
+    } else if (tab === 'hrd') {
+      setFilterStatus('pending');
+      setFilterStep('hrd');
+    } else if (tab === 'approved') {
+      setFilterStatus('approved');
+      setFilterStep('all');
+    } else if (tab === 'rejected') {
+      setFilterStatus('rejected');
+      setFilterStep('all');
+    }
   };
 
   const doApprove = async (notes: string) => {
@@ -413,39 +510,51 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       </div>
 
       {/* ── Summary cards ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
         <button
-          onClick={() => { setFilterStatus('pending'); setPage(1); }}
+          onClick={() => handleTabChange('spv')}
           className="text-left transition hover:scale-[1.01] cursor-pointer"
         >
           <SummaryCard
-            label="Menunggu Persetujuan"
-            value={countPending}
-            sub="klik untuk filter"
+            label="Menunggu SPV (Tahap 1)"
+            value={countPendingSpv}
+            sub="Rekomendasi lembur dari SPV"
             icon={<Hourglass className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
             color="bg-amber-50 dark:bg-amber-950/40"
           />
         </button>
         <button
-          onClick={() => { setFilterStatus('approved'); setPage(1); }}
+          onClick={() => handleTabChange('hrd')}
           className="text-left transition hover:scale-[1.01] cursor-pointer"
         >
           <SummaryCard
-            label="Disetujui"
+            label="Menunggu HRD (Tahap 2)"
+            value={countPendingHrd}
+            sub="Pengesahan final masuk payroll"
+            icon={<BadgeCheck className="w-5 h-5 text-blue-600 dark:text-blue-400" />}
+            color="bg-blue-50 dark:bg-blue-950/40"
+          />
+        </button>
+        <button
+          onClick={() => handleTabChange('approved')}
+          className="text-left transition hover:scale-[1.01] cursor-pointer"
+        >
+          <SummaryCard
+            label="Lembur Disetujui"
             value={countApproved}
-            sub="klik untuk filter"
+            sub="Total lembur disahkan"
             icon={<CheckCircle2 className="w-5 h-5 text-emerald-600 dark:text-emerald-400" />}
             color="bg-emerald-50 dark:bg-emerald-950/40"
           />
         </button>
         <button
-          onClick={() => { setFilterStatus('rejected'); setPage(1); }}
+          onClick={() => handleTabChange('rejected')}
           className="text-left transition hover:scale-[1.01] cursor-pointer"
         >
           <SummaryCard
-            label="Ditolak"
+            label="Lembur Ditolak"
             value={countRejected}
-            sub="klik untuk filter"
+            sub="Jam lembur di-reset 0"
             icon={<XCircle className="w-5 h-5 text-rose-600 dark:text-rose-400" />}
             color="bg-rose-50 dark:bg-rose-950/40"
           />
@@ -456,21 +565,22 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800">
         {[
           { key: 'all' as const, label: 'Semua Lembur', count: countPending + countApproved + countRejected, icon: <Clock className="w-3.5 h-3.5" /> },
-          { key: 'pending' as const, label: 'Menunggu', count: countPending, icon: <Hourglass className="w-3.5 h-3.5" /> },
-          { key: 'approved' as const, label: 'Disetujui', count: countApproved, icon: <CheckCircle2 className="w-3.5 h-3.5" /> },
-          { key: 'rejected' as const, label: 'Ditolak', count: countRejected, icon: <XCircle className="w-3.5 h-3.5" /> },
+          { key: 'spv' as const, label: 'Menunggu SPV (Tahap 1)', count: countPendingSpv, icon: <Hourglass className="w-3.5 h-3.5 text-amber-500" /> },
+          { key: 'hrd' as const, label: 'Menunggu HRD (Tahap 2)', count: countPendingHrd, icon: <BadgeCheck className="w-3.5 h-3.5 text-blue-500" /> },
+          { key: 'approved' as const, label: 'Disetujui', count: countApproved, icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> },
+          { key: 'rejected' as const, label: 'Ditolak', count: countRejected, icon: <XCircle className="w-3.5 h-3.5 text-rose-500" /> },
         ].map((t) => (
           <button
             key={t.key}
-            onClick={() => { setFilterStatus(t.key); setPage(1); }}
-            className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${filterStatus === t.key
+            onClick={() => handleTabChange(t.key)}
+            className={`flex items-center gap-1.5 px-3 sm:px-4 py-2.5 text-xs font-bold border-b-2 -mb-px transition cursor-pointer ${activeTab === t.key
               ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
               : 'border-transparent text-slate-400 hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300'
               }`}
           >
             {t.icon}
             {t.label}
-            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${filterStatus === t.key ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
+            <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-mono ${activeTab === t.key ? 'bg-indigo-50 dark:bg-indigo-900/40 text-indigo-600 dark:text-indigo-400' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
               {t.count}
             </span>
           </button>
@@ -480,9 +590,9 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       {/* ── Filter bar ── */}
       <div className="bg-white dark:bg-slate-900 rounded-xl border border-slate-100 dark:border-slate-800 p-3 shadow-sm space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-slate-600 dark:text-slate-300">
-          <Filter className="w-3.5 h-3.5" /> Filter
+          <Filter className="w-3.5 h-3.5" /> Filter Pengajuan
         </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2.5">
           {/* Status */}
           <div>
             <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Status</label>
@@ -491,10 +601,24 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
               onChange={(e) => setFilterStatus(e.target.value as FilterStatus)}
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
             >
-              <option value="all">Semua status</option>
+              <option value="all">Semua Status</option>
               <option value="pending">Menunggu</option>
               <option value="approved">Disetujui</option>
               <option value="rejected">Ditolak</option>
+            </select>
+          </div>
+
+          {/* Tahap Step */}
+          <div>
+            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Tahap Approval</label>
+            <select
+              value={filterStep}
+              onChange={(e) => setFilterStep(e.target.value as FilterStep)}
+              className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
+            >
+              <option value="all">Semua Tahap</option>
+              <option value="spv">Tahap 1 (SPV)</option>
+              <option value="hrd">Tahap 2 (HRD Final)</option>
             </select>
           </div>
 
@@ -687,7 +811,7 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
 
                     {/* Status */}
                     <td className="py-3 px-3 text-center">
-                      <StatusBadge status={r.status} />
+                      <StatusBadge status={r.status} step={r.current_step} spvName={r.spv_name} />
                       {r.reviewed_at && !isPending && (
                         <p className="text-[10px] text-slate-400 dark:text-slate-500 mt-0.5">{fmtDate(r.reviewed_at)}</p>
                       )}

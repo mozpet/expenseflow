@@ -376,6 +376,13 @@ class ReceiptController extends Controller
         if ($receipt->claimed_amount === null) {
             $receipt->claimed_amount = $claimVal;
         }
+
+        // Hitung multi-approval tier berdasarkan nominal klaim
+        $tierConfig = Receipt::resolveApprovalTier($claimVal);
+        $receipt->approval_tier      = $tierConfig['tier'];
+        $receipt->required_approvals = $tierConfig['required_approvals'];
+        $receipt->current_approvals  = 0;
+
         $receipt->save();
 
         // 5. Cek potensi duplikat heuristik
@@ -394,6 +401,9 @@ class ReceiptController extends Controller
                 'id'                     => $receipt->id,
                 'status'                 => $receipt->status,
                 'submitted_at'           => $receipt->submitted_at,
+                'approval_tier'          => $receipt->approval_tier,
+                'required_approvals'     => $receipt->required_approvals,
+                'current_approvals'      => $receipt->current_approvals,
                 'variance_flag'          => $receipt->variance_flag,
                 'variance_pct'           => $receipt->variance_pct,
                 'is_potential_duplicate' => $receipt->is_potential_duplicate,
@@ -532,11 +542,56 @@ class ReceiptController extends Controller
 
         try {
 
-        if (! in_array($receipt->status, ['submitted', 'pending'])) {
-            return response()->json(['message' => 'Hanya struk submitted yang bisa diapprove.'], 403);
+        if (! in_array($receipt->status, ['submitted', 'pending', 'partially_approved'])) {
+            return response()->json(['message' => 'Hanya struk submitted atau partially_approved yang bisa diapprove.'], 403);
         }
 
         $user = $request->user();
+
+        // 1. Cek hak akses cabang
+        if (! $user->allowsBranch($receipt->attendance_setting_id)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang struk ini.'], 403);
+        }
+
+        // 2. Anti double-approval: satu user tidak boleh menyetujui dua kali pada struk yang sama
+        if ($receipt->isApprovedBy($user->id)) {
+            return response()->json([
+                'message' => 'Anda sudah menyetujui struk ini sebelumnya.',
+                'code'    => 'ALREADY_APPROVED_BY_YOU',
+            ], 422);
+        }
+
+        $requiredApprovals = $receipt->required_approvals > 0 ? (int) $receipt->required_approvals : 1;
+        $currentApprovals  = (int) ($receipt->current_approvals ?? 0);
+
+        // 3. Aturan Tier 3 (> 1.000.000): Approval tahap 2 wajib dilakukan oleh SPV/Manager Finance atau Admin/Superadmin
+        $isTier3 = str_contains((string) $receipt->approval_tier, 'Tier 3') || $receipt->approval_tier == 3;
+        if ($isTier3 && $currentApprovals === 1) {
+            $userRoleCode = strtolower($user->roleRelation?->slug ?? $user->role ?? '');
+            $userRoleName = strtolower($user->roleRelation?->name ?? '');
+
+            $isSpvOrAbove = in_array($userRoleCode, ['super_admin', 'admin'])
+                // Keyword Inggris
+                || str_contains($userRoleCode, 'spv') || str_contains($userRoleCode, 'supervisor')
+                || str_contains($userRoleCode, 'manager') || str_contains($userRoleCode, 'head')
+                || str_contains($userRoleName, 'spv') || str_contains($userRoleName, 'supervisor')
+                || str_contains($userRoleName, 'manager') || str_contains($userRoleName, 'head')
+                // Keyword Indonesia
+                || str_contains($userRoleCode, 'kepala') || str_contains($userRoleCode, 'kabag')
+                || str_contains($userRoleCode, 'ketua') || str_contains($userRoleCode, 'lead')
+                || str_contains($userRoleCode, 'direktur') || str_contains($userRoleCode, 'vp')
+                || str_contains($userRoleName, 'kepala') || str_contains($userRoleName, 'kabag')
+                || str_contains($userRoleName, 'ketua') || str_contains($userRoleName, 'lead')
+                || str_contains($userRoleName, 'direktur') || str_contains($userRoleName, 'vp')
+                || str_contains($userRoleName, 'otorisator') || str_contains($userRoleName, 'koordinator');
+
+            if (! $isSpvOrAbove) {
+                return response()->json([
+                    'message' => 'Persetujuan tahap kedua untuk struk di atas Rp 1.000.000 wajib dilakukan oleh Supervisor/Manager Finance.',
+                    'code'    => 'SPV_FINANCE_REQUIRED',
+                ], 422);
+            }
+        }
 
         $claimed = (float) ($receipt->claimed_amount ?: $receipt->total_amount);
         $approvedAmount = $request->has('approved_amount') && $request->approved_amount !== null
@@ -567,16 +622,22 @@ class ReceiptController extends Controller
             ], 422);
         }
 
+        $newApprovals    = $currentApprovals + 1;
+        $isFullyApproved = ($newApprovals >= $requiredApprovals);
+        $newStatus       = $isFullyApproved ? 'approved' : 'partially_approved';
+
         $receipt->update([
-            'status'          => 'approved',
-            'approved_amount' => $approvedAmount,
+            'status'            => $newStatus,
+            'approved_amount'   => $approvedAmount,
+            'current_approvals' => $newApprovals,
         ]);
 
         ReceiptApproval::create([
-            'receipt_id' => $receipt->id,
-            'user_id'    => $user->id,
-            'status'     => 'approved',
-            'notes'      => $request->notes,
+            'receipt_id'     => $receipt->id,
+            'user_id'        => $user->id,
+            'status'         => 'approved',
+            'approval_level' => $newApprovals,
+            'notes'          => $request->notes,
         ]);
 
         // Auto-hitung variance
@@ -585,35 +646,52 @@ class ReceiptController extends Controller
         // Catat ke activity_logs dengan entity_type & entity_id
         $this->logActivity(
             $user->id, $receipt->company_id,
-            'receipt_approved', 'Approve struk ' . $receipt->receipt_number . ($approvedAmount < $claimed ? ' (disesuaikan: Rp ' . number_format($approvedAmount, 0, ',', '.') . ')' : ''),
+            'receipt_approved',
+            ($isFullyApproved ? 'Final approve' : "Approve tahap {$newApprovals}/{$requiredApprovals}") . ' struk ' . $receipt->receipt_number . ($approvedAmount < $claimed ? ' (disesuaikan: Rp ' . number_format($approvedAmount, 0, ',', '.') . ')' : ''),
             $receipt->id,
             'receipt', $receipt->id
         );
 
-        // Hapus notifikasi pending struk untuk para approver
-        DB::table('notifications')
-            ->where('entity_type', 'receipt')
-            ->where('entity_id', $receipt->id)
-            ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
-            ->delete();
+        if ($isFullyApproved) {
+            // Hapus notifikasi pending struk untuk para approver
+            DB::table('notifications')
+                ->where('entity_type', 'receipt')
+                ->where('entity_id', $receipt->id)
+                ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
+                ->delete();
 
-        // Kirim notifikasi ke user yang submit struk
-        $this->notifyUser($receipt->user_id, 'receipt_approved', [
-            'message'         => 'Struk Anda telah diapprove: ' . $receipt->receipt_number . ($approvedAmount < $claimed ? ' dengan nominal disesuaikan Rp ' . number_format($approvedAmount, 0, ',', '.') : ''),
-            'receipt_id'      => $receipt->id,
-            'receipt_number'  => $receipt->receipt_number,
-            'status'          => 'approved',
-            'approved_amount' => $approvedAmount,
-        ], 'receipt', $receipt->id);
+            // Kirim notifikasi ke user yang submit struk
+            $this->notifyUser($receipt->user_id, 'receipt_approved', [
+                'message'         => 'Struk Anda telah diapprove: ' . $receipt->receipt_number . ($approvedAmount < $claimed ? ' dengan nominal disesuaikan Rp ' . number_format($approvedAmount, 0, ',', '.') : ''),
+                'receipt_id'      => $receipt->id,
+                'receipt_number'  => $receipt->receipt_number,
+                'status'          => 'approved',
+                'approved_amount' => $approvedAmount,
+            ], 'receipt', $receipt->id);
+        } else {
+            // Kirim notifikasi persetujuan bertahap
+            $this->notifyUser($receipt->user_id, 'receipt_partially_approved', [
+                'message'            => "Struk {$receipt->receipt_number} disetujui tahap {$newApprovals}/{$requiredApprovals} oleh {$user->name}. Menunggu persetujuan berikutnya.",
+                'receipt_id'         => $receipt->id,
+                'receipt_number'     => $receipt->receipt_number,
+                'status'             => 'partially_approved',
+                'current_approvals'  => $newApprovals,
+                'required_approvals' => $requiredApprovals,
+            ], 'receipt', $receipt->id);
+        }
 
         return response()->json([
-            'message' => 'Struk berhasil diapprove.',
-            'receipt' => $receipt->only(['id', 'receipt_number', 'status', 'claimed_amount', 'approved_amount', 'variance_flag', 'variance_pct']),
+            'message' => $isFullyApproved ? 'Struk berhasil diapprove.' : "Struk berhasil diapprove tahap {$newApprovals} dari {$requiredApprovals}.",
+            'receipt' => array_merge(
+                $receipt->only(['id', 'receipt_number', 'status', 'claimed_amount', 'approved_amount', 'variance_flag', 'variance_pct', 'approval_tier', 'required_approvals', 'current_approvals']),
+                ['is_fully_approved' => $isFullyApproved]
+            ),
             'approved_by' => [
-                'id'    => $user->id,
-                'name'  => $user->name,
-                'email' => $user->email,
-                'role'  => $user->role,
+                'id'             => $user->id,
+                'name'           => $user->name,
+                'email'          => $user->email,
+                'role'           => $user->role,
+                'approval_level' => $newApprovals,
             ],
             'approved_at' => now()->toIso8601String(),
         ]);
@@ -964,15 +1042,20 @@ class ReceiptController extends Controller
 
         try {
 
-        if (! in_array($receipt->status, ['submitted', 'pending'])) {
-            return response()->json(['message' => 'Hanya struk submitted yang bisa direject.'], 403);
+        if (! in_array($receipt->status, ['submitted', 'pending', 'partially_approved'])) {
+            return response()->json(['message' => 'Hanya struk submitted atau partially_approved yang bisa direject.'], 403);
+        }
+
+        $user = $request->user();
+
+        // Cek hak akses cabang
+        if (! $user->allowsBranch($receipt->attendance_setting_id)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang struk ini.'], 403);
         }
 
         $request->validate([
             'notes' => 'required|string|max:1000',
         ]);
-
-        $user = $request->user();
 
         $receipt->update(['status' => 'rejected']);
 
@@ -1142,6 +1225,10 @@ class ReceiptController extends Controller
                 'receipt_date'           => $receipt->receipt_date,
                 'currency'               => $receipt->currency,
                 'status'                 => $receipt->status,
+                'approval_tier'          => $receipt->approval_tier,
+                'required_approvals'     => $receipt->required_approvals,
+                'current_approvals'      => $receipt->current_approvals,
+                'already_approved_by_me' => $receipt->isApprovedBy($user->id),
                 'submitted_at'           => $receipt->submitted_at,
                 'paid_at'                => $receipt->paid_at,
                 'paid_by'                => $receipt->paidBy,
@@ -1187,8 +1274,8 @@ class ReceiptController extends Controller
                 'id', 'receipt_number', 'vendor_name', 'total_amount',
                 'claimed_amount', 'approved_amount', 'ocr_raw_amount', 'ocr_raw_subtotal',
                 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items', 'ocr_raw_merchant',
-                'ocr_raw_date', 'receipt_date', 'status', 'submitted_at', 'paid_at',
-                'payment_method', 'payment_ref_no', 'ocr_status', 'ocr_error',
+                'ocr_raw_date', 'receipt_date', 'status', 'approval_tier', 'required_approvals', 'current_approvals',
+                'submitted_at', 'paid_at', 'payment_method', 'payment_ref_no', 'ocr_status', 'ocr_error',
                 'category', 'notes', 'variance_flag', 'variance_pct',
                 'is_potential_duplicate', 'duplicate_reference_id', 'duplicate_reason', 'created_at',
                 'expense_report_id', 'image_path',
@@ -1203,16 +1290,31 @@ class ReceiptController extends Controller
     }
 
     // ═══════════════════════════════════════════════════════════
-    // 8. inbox() — list struk submitted (menunggu approval) untuk finance
+    // 8. inbox() — list struk submitted / partially_approved untuk finance
     // ═══════════════════════════════════════════════════════════
     public function inbox(Request $request): JsonResponse
     {
-        $companyId = $request->user()->company_id;
+        $user      = $request->user();
+        $companyId = $user->company_id;
         $branchId  = $request->query('attendance_setting_id') ?? $request->query('branch_id');
         $limit     = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         $query = Receipt::where('company_id', $companyId)
-            ->where('status', 'submitted');
+            ->whereIn('status', ['submitted', 'partially_approved']);
+
+        // Scoping cabang approver jika bukan super_admin
+        if ($user->role !== 'super_admin') {
+            $allowedBranches = $user->allowedBranchIds();
+            if ($allowedBranches !== null) {
+                $query->where(function ($q) use ($allowedBranches) {
+                    $q->whereIn('attendance_setting_id', $allowedBranches)
+                      ->orWhere(function ($sub) use ($allowedBranches) {
+                          $sub->whereNull('attendance_setting_id')
+                              ->whereHas('user', fn ($uq) => $uq->whereIn('attendance_setting_id', $allowedBranches));
+                      });
+                });
+            }
+        }
 
         if ($branchId !== null && $branchId !== '' && $branchId !== 'all') {
             if ($branchId === 'none' || $branchId === 'tanpa_cabang') {
@@ -1235,6 +1337,7 @@ class ReceiptController extends Controller
             'office:id,office_name,variance_limit,max_claim_limit',
             'expenseReport:id,report_number,title,status',
             'images:id,receipt_id,file_path,file_name,file_size,mime_type,image_type',
+            'approvals.user:id,name,role',
             'user:id,name,email,department,bank_name,bank_account_no,bank_account_holder,attendance_setting_id',
             'user.office:id,office_name,variance_limit,max_claim_limit',
             'duplicateReference:id,receipt_number,total_amount,receipt_date,image_path,user_id,attendance_setting_id',
@@ -1246,12 +1349,19 @@ class ReceiptController extends Controller
             'id', 'company_id', 'user_id', 'attendance_setting_id', 'expense_report_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
             'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
             'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
-            'ocr_raw_date', 'receipt_date', 'status', 'ocr_status', 'category', 'notes',
+            'ocr_raw_date', 'receipt_date', 'status', 'approval_tier', 'required_approvals', 'current_approvals',
+            'ocr_status', 'category', 'notes',
             'variance_flag', 'variance_pct', 'is_potential_duplicate',
             'duplicate_reference_id', 'duplicate_reason', 'submitted_at', 'created_at',
         ])
         ->latest()
         ->paginate($limit);
+
+        // Tambahkan metadata apakah user yang sedang login sudah pernah approve struk ini
+        $receipts->getCollection()->transform(function ($item) use ($user) {
+            $item->already_approved_by_me = $item->isApprovedBy($user->id);
+            return $item;
+        });
 
         return response()->json($receipts);
     }
@@ -1262,15 +1372,30 @@ class ReceiptController extends Controller
     // ═══════════════════════════════════════════════════════════
     public function dashboardReceipts(Request $request): JsonResponse
     {
-        $companyId = $request->user()->company_id;
+        $user      = $request->user();
+        $companyId = $user->company_id;
         $status    = $request->query('status');
         $branchId  = $request->query('attendance_setting_id') ?? $request->query('branch_id');
         $limit     = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         // Valid status values
-        $validStatuses = ['submitted', 'approved', 'rejected', 'paid'];
+        $validStatuses = ['submitted', 'partially_approved', 'approved', 'rejected', 'paid'];
 
         $query = Receipt::where('company_id', $companyId);
+
+        // Scoping cabang jika bukan super_admin
+        if ($user->role !== 'super_admin') {
+            $allowedBranches = $user->allowedBranchIds();
+            if ($allowedBranches !== null) {
+                $query->where(function ($q) use ($allowedBranches) {
+                    $q->whereIn('attendance_setting_id', $allowedBranches)
+                      ->orWhere(function ($sub) use ($allowedBranches) {
+                          $sub->whereNull('attendance_setting_id')
+                              ->whereHas('user', fn ($uq) => $uq->whereIn('attendance_setting_id', $allowedBranches));
+                      });
+                });
+            }
+        }
 
         if ($branchId !== null && $branchId !== '' && $branchId !== 'all') {
             if ($branchId === 'none' || $branchId === 'tanpa_cabang') {
@@ -1295,7 +1420,7 @@ class ReceiptController extends Controller
         if ($status && in_array($status, $validStatuses)) {
             $receiptsQuery->where('status', $status);
         } else {
-            // Default: tampilkan submitted + approved + rejected + paid (bukan draft)
+            // Default: tampilkan submitted + partially_approved + approved + rejected + paid (bukan draft)
             $receiptsQuery->whereIn('status', $validStatuses);
         }
 
@@ -1316,7 +1441,8 @@ class ReceiptController extends Controller
             'id', 'company_id', 'user_id', 'attendance_setting_id', 'expense_report_id', 'receipt_number', 'image_path', 'vendor_name', 'ocr_raw_merchant',
             'total_amount', 'claimed_amount', 'approved_amount', 'ocr_raw_amount',
             'ocr_raw_subtotal', 'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items',
-            'ocr_raw_date', 'receipt_date', 'status', 'ocr_status', 'category', 'notes',
+            'ocr_raw_date', 'receipt_date', 'status', 'approval_tier', 'required_approvals', 'current_approvals',
+            'ocr_status', 'category', 'notes',
             'variance_flag', 'variance_pct', 'is_potential_duplicate',
             'duplicate_reference_id', 'duplicate_reason', 'paid_at', 'paid_by', 'payment_method',
             'payment_ref_no', 'submitted_at', 'created_at',
@@ -1333,10 +1459,11 @@ class ReceiptController extends Controller
 
         return response()->json([
             'summary' => [
-                'submitted' => $summary['submitted'] ?? 0,
-                'approved'  => $summary['approved'] ?? 0,
-                'paid'      => $summary['paid'] ?? 0,
-                'rejected'  => $summary['rejected'] ?? 0,
+                'submitted'          => ($summary['submitted'] ?? 0) + ($summary['partially_approved'] ?? 0),
+                'partially_approved' => $summary['partially_approved'] ?? 0,
+                'approved'           => $summary['approved'] ?? 0,
+                'paid'               => $summary['paid'] ?? 0,
+                'rejected'           => $summary['rejected'] ?? 0,
             ],
             'receipts' => $receipts,
         ]);

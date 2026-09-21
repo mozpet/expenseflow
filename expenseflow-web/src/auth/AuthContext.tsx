@@ -8,6 +8,11 @@ export interface AuthUser {
   email: string;
   role: string;
   company_id: number;
+  role_id?: number | null;
+  allowed_branch_ids?: number[] | null;
+  branch_scope?: 'all' | 'specific' | 'self';
+  can_manage_roles?: boolean;
+  can_read_roles?: boolean;
   [key: string]: unknown;
 }
 

@@ -28,6 +28,8 @@ import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png';
 import { attendanceApi } from '../services/endpoints';
 import { AppSettings } from '../types';
 import { SettingsView } from './SettingsView';
+import { RoleManagementTab } from './RoleManagementTab';
+import { useAuth } from '../auth/AuthContext';
 
 // Fix Leaflet default marker icon (Vite menghapus path asset saat build)
 delete (L.Icon.Default.prototype as any)._getIconUrl;
@@ -2061,10 +2063,11 @@ const OfficesTab: React.FC<{
 };
 
 // ─── Tipe tab ────────────────────────────────────────────────
-type TabKey = 'offices' | 'rules';
+type TabKey = 'offices' | 'roles' | 'rules';
 
 const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
   { key: 'offices', label: 'Kantor Presensi', icon: Building2 },
+  { key: 'roles', label: 'Manajemen Role & Hak Akses', icon: ShieldCheck },
   { key: 'rules', label: 'Aturan Klaim & Invoice', icon: Settings },
 ];
 
@@ -2100,6 +2103,26 @@ export const SettingsManagement: React.FC<Props> = ({
     }
   }, []);
 
+  const { user } = useAuth();
+  const canAccessRoles =
+    user?.role === 'super_admin' ||
+    user?.role === 'admin' ||
+    Boolean((user as any)?.can_read_roles || (user as any)?.can_manage_roles);
+
+  const availableTabs = useMemo(() => {
+    return TABS.filter((t) => {
+      if (t.key === 'roles' && !canAccessRoles) return false;
+      return true;
+    });
+  }, [canAccessRoles]);
+
+  // Fallback jika role akses tidak diizinkan tapi tab bernilai 'roles'
+  React.useEffect(() => {
+    if (tab === 'roles' && !canAccessRoles) {
+      setTab('offices');
+    }
+  }, [tab, canAccessRoles]);
+
   // Muat data saat pertama kali render
   React.useEffect(() => {
     loadOffices();
@@ -2109,7 +2132,7 @@ export const SettingsManagement: React.FC<Props> = ({
     <div className="space-y-5">
       {/* Tab Navigation */}
       <div className="flex gap-1.5 overflow-x-auto pb-1">
-        {TABS.map(({ key, label, icon: Icon }) => (
+        {availableTabs.map(({ key, label, icon: Icon }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
@@ -2137,6 +2160,15 @@ export const SettingsManagement: React.FC<Props> = ({
         <OfficesTab
           offices={offices}
           reload={loadOffices}
+          onAddAuditLog={onAddAuditLog}
+          onError={reportApiError}
+        />
+      )}
+
+      {/* ─── TAB: Manajemen Role & Hak Akses ─── */}
+      {tab === 'roles' && (
+        <RoleManagementTab
+          offices={offices}
           onAddAuditLog={onAddAuditLog}
           onError={reportApiError}
         />

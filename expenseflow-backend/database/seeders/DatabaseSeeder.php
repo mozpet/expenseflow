@@ -263,6 +263,9 @@ class DatabaseSeeder extends Seeder
         // ─── 13. Data Pribadi & K3 Dummy ──────────────────────────
         $this->call(DummyPersonalDataSeeder::class);
 
+        // ─── 14. Built-in Roles & Permission Setup ─────────────────
+        $this->call(RoleSeeder::class);
+
         $this->command?->info('✅ Dataset dummy siap (termasuk presensi & libur nasional). Password semua user: "password".');
         $this->command?->info('   Kantor: -6.200000, 106.816667 (radius 100m). Employee budi & siti: attendance_enabled = true.');
     }

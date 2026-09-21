@@ -5,6 +5,7 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use App\Models\AttendanceSetting;
 use App\Models\LeaveBalance;
+use App\Models\Role;
 use App\Models\User;
 use App\Services\AuditLogger;
 use Illuminate\Http\JsonResponse;
@@ -36,7 +37,8 @@ class UserController extends Controller
      */
     public function index(Request $request): JsonResponse
     {
-        $companyId = $request->user()->company_id;
+        $actor     = $request->user();
+        $companyId = $actor->company_id;
 
         $query = User::where('company_id', $companyId);
 
@@ -48,11 +50,17 @@ class UserController extends Controller
             }
         }
 
+        // Branch scoping: filter karyawan berdasarkan cabang yang diizinkan role
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $query->whereIn('attendance_setting_id', $allowedBranches);
+        }
+
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
-        $users = $query->with(['office:id,office_name', 'userShifts.shift.schedules', 'userShifts.shiftPattern.items'])
+        $users = $query->with(['office:id,office_name', 'roleRelation:id,name,slug,platform,branch_scope', 'userShifts.shift.schedules', 'userShifts.shiftPattern.items'])
             ->select([
-                'id', 'company_id', 'employee_code', 'name', 'email', 'phone',
+                'id', 'company_id', 'role_id', 'employee_code', 'name', 'email', 'phone',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
                 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit',
                 'is_active', 'employment_type', 'joined_date', 'identity_number',
@@ -88,6 +96,43 @@ class UserController extends Controller
     {
         $companyId = $request->user()->company_id;
 
+        $roleId = $request->input('role_id');
+        $roleInput = $request->input('role');
+        $roleModel = null;
+
+        if ($roleId) {
+            $roleModel = Role::where(function ($q) use ($companyId) {
+                $q->whereNull('company_id');
+                if ($companyId) {
+                    $q->orWhere('company_id', $companyId);
+                }
+            })->where('id', $roleId)->first();
+
+            if (! $roleModel) {
+                return response()->json(['message' => 'Role yang dipilih tidak valid atau bukan milik perusahaan Anda.'], 422);
+            }
+        } elseif ($roleInput) {
+            $roleModel = Role::where(function ($q) use ($companyId) {
+                $q->whereNull('company_id');
+                if ($companyId) {
+                    $q->orWhere('company_id', $companyId);
+                }
+            })->where('slug', $roleInput)->first();
+        }
+
+        if ($roleModel) {
+            if ($roleModel->slug === 'super_admin' && $request->user()->role !== 'super_admin') {
+                return response()->json(['message' => 'Anda tidak berwenang memberikan role super admin.'], 403);
+            }
+            if ($roleModel->slug !== 'employee' && ! $request->user()->hasPermission(\App\Models\Role::MODULE_ROLE_MANAGEMENT, 'manage')) {
+                return response()->json(['message' => 'Akses ditolak. Anda tidak memiliki wewenang untuk menetapkan hak akses / role karyawan ini.'], 403);
+            }
+            $request->merge([
+                'role'    => $roleModel->slug,
+                'role_id' => $roleModel->id,
+            ]);
+        }
+
         if ($request->has('identity_number') && trim((string) $request->identity_number) === '') {
             $request->merge(['identity_number' => null]);
         }
@@ -96,7 +141,8 @@ class UserController extends Controller
             'name'                  => 'required|string|max:255',
             'email'                 => 'required|email|unique:users,email',
             'password'              => 'required|string|min:8',
-            'role'                  => ['required', Rule::in(['employee', 'finance', 'hrd', 'admin', 'super_admin'])],
+            'role'                  => 'required|string',
+            'role_id'               => 'nullable|integer',
             'employee_code'         => 'nullable|string|max:50|unique:users,employee_code',
             'identity_number'       => 'nullable|string|size:16|unique:users,identity_number',
             'department'            => 'nullable|string|max:100',
@@ -180,6 +226,7 @@ class UserController extends Controller
             'email'                 => $validated['email'],
             'password'              => Hash::make($validated['password']),
             'role'                  => $validated['role'],
+            'role_id'               => $roleModel?->id ?? ($validated['role_id'] ?? null),
             'department'            => $validated['department'] ?? null,
             'identity_number'       => $identityNumber,
             'phone'                 => $validated['phone'] ?? null,
@@ -284,6 +331,46 @@ class UserController extends Controller
             return $deny;
         }
 
+        if ($request->has('role_id') || $request->has('role')) {
+            $roleId = $request->input('role_id');
+            $roleInput = $request->input('role');
+            $roleModel = null;
+
+            if ($roleId) {
+                $roleModel = Role::where(function ($q) use ($user) {
+                    $q->whereNull('company_id');
+                    if ($user->company_id) {
+                        $q->orWhere('company_id', $user->company_id);
+                    }
+                })->where('id', $roleId)->first();
+
+                if (! $roleModel) {
+                    return response()->json(['message' => 'Role yang dipilih tidak valid atau bukan milik perusahaan Anda.'], 422);
+                }
+            } elseif ($roleInput) {
+                $roleModel = Role::where(function ($q) use ($user) {
+                    $q->whereNull('company_id');
+                    if ($user->company_id) {
+                        $q->orWhere('company_id', $user->company_id);
+                    }
+                })->where('slug', $roleInput)->first();
+            }
+
+            if ($roleModel) {
+                if ($roleModel->slug === 'super_admin' && $actor->role !== 'super_admin') {
+                    return response()->json(['message' => 'Anda tidak berwenang memberikan role super admin.'], 403);
+                }
+                $isRoleChanged = ($roleModel->id !== $user->role_id) || ($roleModel->slug !== $user->role);
+                if ($isRoleChanged && ! $actor->hasPermission(\App\Models\Role::MODULE_ROLE_MANAGEMENT, 'manage')) {
+                    return response()->json(['message' => 'Akses ditolak. Anda tidak memiliki wewenang untuk mengubah role akun karyawan.'], 403);
+                }
+                $request->merge([
+                    'role'    => $roleModel->slug,
+                    'role_id' => $roleModel->id,
+                ]);
+            }
+        }
+
         if ($request->has('identity_number') && trim((string) $request->identity_number) === '') {
             $request->merge(['identity_number' => null]);
         }
@@ -291,7 +378,8 @@ class UserController extends Controller
         $validated = $request->validate([
             'name'                  => 'sometimes|required|string|max:255',
             'email'                 => ['sometimes', 'required', 'email', Rule::unique('users')->ignore($user->id)],
-            'role'                  => ['sometimes', 'required', Rule::in(['employee', 'finance', 'hrd', 'admin', 'super_admin'])],
+            'role'                  => 'sometimes|required|string',
+            'role_id'               => 'sometimes|nullable|integer',
             'employee_code'         => ['nullable', 'string', 'max:50', Rule::unique('users')->ignore($user->id)],
             'identity_number'       => ['nullable', 'string', 'size:16', Rule::unique('users')->ignore($user->id)],
             'department'            => 'nullable|string|max:100',

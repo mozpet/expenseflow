@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Upload,
   FileSpreadsheet,
@@ -262,6 +262,12 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
 
   // Default Values
   const [defaultOfficeId, setDefaultOfficeId] = useState<number | ''>(offices[0]?.id ?? '');
+
+  useEffect(() => {
+    if (offices.length === 1 && !defaultOfficeId) {
+      setDefaultOfficeId(offices[0].id);
+    }
+  }, [offices, defaultOfficeId]);
   const [defaultRole, setDefaultRole] = useState<string>('employee');
   const [defaultEmploymentType, setDefaultEmploymentType] = useState<string>('PKWTT');
   const [defaultPassword, setDefaultPassword] = useState<string>('Karyawan123!');
@@ -929,7 +935,9 @@ export const ImportEmployeeModal: React.FC<ImportEmployeeModalProps> = ({
                     onChange={(e) => setDefaultOfficeId(e.target.value ? Number(e.target.value) : '')}
                     className="w-full py-2 px-3 rounded-xl border border-slate-300 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-medium text-slate-800 dark:text-slate-200 focus:ring-2 focus:ring-emerald-500"
                   >
-                    <option value="">-- Tanpa Kantor Penempatan --</option>
+                    {offices.length !== 1 && (
+                      <option value="">-- Tanpa Kantor Penempatan --</option>
+                    )}
                     {offices.map((off) => (
                       <option key={off.id} value={off.id}>
                         {off.office_name}

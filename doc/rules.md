@@ -41,7 +41,8 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Proteksi & Penguncian Izin Profil Karyawan Terikat Shift (Akses Mobile, WFH, Radius Lapangan): SELESAI (Karyawan terikat shift aktif/mendatang dengan jadwal WFH atau Lapangan tidak dapat di-uncheck izinnya di Edit Profil ataupun di-toggle off di Attendance Dashboard; checkbox di-disable otomatis dengan ikon larangan `Ban`, label `Terkunci Shift`, tooltip mouse hover yang menjelaskan shift terkait, serta validasi HTTP 422 di backend `UserController::update` dan `AttendanceController`) — 2026-09-20
   - Approval Matrix Bertingkat: DI-KEEP DULU (multi-level expense approval ditunda atas arahan user — 2026-09-02)
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
-  - Custom Role Management : BELUM (rencana fitur — lihat section "Role System" → Custom Role)
+  - Multi-Level Approval Struk & Lembur (Fase 2 - Backend & Workflows): SELESAI (Struk: Tier 1 [<500k 1 Finance], Tier 2 [500k-1jt 2 Finance anti-double], Tier 3 [>1jt Step 1 Finance -> Step 2 SPV/Head], status partially_approved, log aktivitas per level; Lembur: Step 1 SPV -> Step 2 HRD finalisasi menit payroll, penolakan di tiap tahap me-reset overtime_minutes=0, filter per step & counter summary, 11 Feature tests lulus 100%) — 2026-09-22
+  - Audit & Penguatan Custom Role & Multi-Approval (Temuan 1 s/d 8): SELESAI (Bypass login web mobile_only, hardware device binding semua role mobile, proteksi reserved slug collision, perbaikan atribut slug lembur, otorisator struk Tier 3 kata kunci Indonesia, pemetaan presisi controller & hierarki path RoleMiddleware bebas tabrakan, proteksi penghapusan role dan pencegahan zombie state User::saving & Role::deleting, Super Admin multi-tenant isolation dan company filtering RoleController) — 2026-09-22
   - Fitur yang Di-Keep / Ditunda Sementara (Arahan User 2026-09-02):
     - Approval Matrix Bertingkat (keep dulu)
     - Invoice PRD (masih tahap PRD)
@@ -240,7 +241,7 @@ Sistem role ExpenseFlow menggunakan **dua lapis**:
 
 ### Custom Role — Fitur Manajemen Role (Roadmap)
 
-> **Status:** BELUM DIIMPLEMENTASI — dicatat sebagai rencana fitur ke depan.
+> **Status:** SELESAI DIIMPLEMENTASIKAN (Fase 1 Foundation, Fase 2 Multi-Approval, Fase 3 Web UI, dan Audit Findings #1-#8). Dokumen spesifikasi teknis lengkap mengacu ke `doc/14-CUSTOM-ROLE-DAN-MULTI-APPROVAL.md`.
 
 `admin` dan `super_admin` dapat membuat role baru sesuai kebutuhan perusahaan (mis. `operational_manager`, `branch_head`, `it_support`), kemudian mengatur permission apa saja yang bisa diakses oleh role tersebut.
 

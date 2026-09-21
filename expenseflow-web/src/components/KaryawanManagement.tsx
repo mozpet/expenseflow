@@ -359,7 +359,11 @@ export const KaryawanManagement: React.FC<{
       const list: Office[] = Array.isArray(res?.settings) ? res.settings
         : Array.isArray(res?.data) ? res.data
           : Array.isArray(res) ? res : [];
-      setOffices(list.map((o: any) => ({ id: o.id, office_name: o.office_name })));
+      const mapped = list.map((o: any) => ({ id: o.id, office_name: o.office_name }));
+      setOffices(mapped);
+      if (mapped.length === 1) {
+        setSelectedOffice(String(mapped[0].id));
+      }
     } catch { /* diam — kantor opsional, tidak kritis */ }
   };
 
@@ -1423,11 +1427,15 @@ export const KaryawanManagement: React.FC<{
                   onChange={(e) => setSelectedOffice(e.target.value)}
                   className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                 >
-                  <option value="Semua kantor">Semua kantor</option>
+                  {offices.length !== 1 && (
+                    <option value="Semua kantor">Semua kantor</option>
+                  )}
                   {offices.map(o => (
                     <option key={o.id} value={o.id}>{o.office_name}</option>
                   ))}
-                  <option value="tanpa_kantor">Tanpa Kantor</option>
+                  {offices.length !== 1 && (
+                    <option value="tanpa_kantor">Tanpa Kantor</option>
+                  )}
                 </select>
 
                 <select

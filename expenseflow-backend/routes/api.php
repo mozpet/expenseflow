@@ -10,6 +10,7 @@ use App\Http\Controllers\API\NotificationController;
 use App\Http\Controllers\API\PublicRecruitmentController;
 use App\Http\Controllers\API\ReceiptController;
 use App\Http\Controllers\API\RecruitmentController;
+use App\Http\Controllers\API\RoleController;
 use App\Http\Controllers\API\SettingsController;
 use App\Http\Controllers\API\ShiftController;
 use App\Http\Controllers\API\SyncVersionController;
@@ -287,6 +288,14 @@ Route::prefix('v1')->group(function () {
                 Route::patch('/users/{user}/deactivate', [UserController::class, 'deactivate'])->middleware('throttle:actions');
                 Route::patch('/users/{user}/activate', [UserController::class, 'activate'])->middleware('throttle:actions');
                 Route::delete('/users/{user}', [UserController::class, 'destroy']);
+
+                // Manajemen Role & Hak Akses (Custom Role Engine)
+                Route::get('/roles/modules', [RoleController::class, 'modules']);
+                Route::get('/roles', [RoleController::class, 'index']);
+                Route::post('/roles', [RoleController::class, 'store'])->middleware('throttle:actions');
+                Route::get('/roles/{role}', [RoleController::class, 'show']);
+                Route::put('/roles/{role}', [RoleController::class, 'update'])->middleware('throttle:actions');
+                Route::delete('/roles/{role}', [RoleController::class, 'destroy'])->middleware('throttle:actions');
             });
 
             // Pengarsipan Berkas Digital Karyawan (user_documents)
@@ -304,6 +313,11 @@ Route::prefix('v1')->group(function () {
             // Daftar kantor / cabang perusahaan (read-only untuk filter struk & fitur bersama: Finance, HRD, Admin, Super Admin)
             Route::get('/settings', [AttendanceController::class, 'listSettings'])
                 ->middleware('role:finance,hrd,admin,super_admin');
+
+            // Approval lembur karyawan (Multi-level: Step 1 SPV, Step 2 HRD — otorisasi per step diperiksa di AttendanceController)
+            Route::get('/overtime-approvals', [AttendanceController::class, 'listOvertimeApprovals']);
+            Route::post('/overtime-approvals/{id}/approve', [AttendanceController::class, 'approveOvertime']);
+            Route::post('/overtime-approvals/{id}/reject', [AttendanceController::class, 'rejectOvertime']);
 
             // Fitur manajemen presensi khusus HRD, Admin, Super Admin
             Route::middleware('role:hrd,admin,super_admin')->group(function () {
@@ -353,10 +367,6 @@ Route::prefix('v1')->group(function () {
             // Rekap opt-in karyawan per cuti bersama (HRD)
             Route::get('/collective-leaves/{holiday}/detail', [AttendanceController::class, 'collectiveLeaveDetail']);
 
-            // Approval lembur karyawan (sistem auto-checkout & reminder)
-            Route::get('/overtime-approvals', [AttendanceController::class, 'listOvertimeApprovals']);
-            Route::post('/overtime-approvals/{id}/approve', [AttendanceController::class, 'approveOvertime']);
-            Route::post('/overtime-approvals/{id}/reject', [AttendanceController::class, 'rejectOvertime']);
 
             // Approval pindah perangkat karyawan (device binding — cegah titip absen)
             Route::get('/device-changes', [AttendanceController::class, 'listDeviceChanges']);

@@ -21,6 +21,7 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->trustProxies(at: '*');
         $middleware->alias([
             'role'              => RoleMiddleware::class,
+            'permission'        => \App\Http\Middleware\CheckPermission::class,
             'company'           => CompanyMiddleware::class,
             'receipt_access'    => ReceiptAccessMiddleware::class,
             'attendance_access' => AttendanceAccessMiddleware::class,

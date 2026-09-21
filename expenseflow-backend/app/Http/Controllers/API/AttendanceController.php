@@ -995,6 +995,12 @@ class AttendanceController extends Controller
             )
             ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'attendance_setting_id', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'is_active']);
 
+        // Branch scoping: filter karyawan berdasarkan cabang yang diizinkan role
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $query->whereIn('attendance_setting_id', $allowedBranches);
+        }
+
         if ($filter === 'enabled') {
             $query->where('attendance_enabled', true);
         } elseif ($filter === 'disabled') {
@@ -1116,6 +1122,28 @@ class AttendanceController extends Controller
     {
         $actor = $request->user();
 
+        // Jalankan autoRejectExpiredLeaves terlebih dahulu agar status ter-update jika sudah hari H
+        if ($actor->company_id) {
+            LeaveRequest::autoRejectExpiredLeaves($actor->company_id);
+        } else {
+            LeaveRequest::autoRejectExpiredLeaves();
+        }
+
+        $preCheck = LeaveRequest::when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if ($preCheck) {
+            $today = now('Asia/Jakarta')->toDateString();
+            $startDateStr = Carbon::parse($preCheck->start_date)->toDateString();
+            if ($startDateStr <= $today) {
+                return response()->json([
+                    'message' => 'Pengajuan izin tidak dapat disetujui karena sudah memasuki Hari H (otomatis ditolak oleh sistem).'
+                ], 422);
+            }
+        }
+
         // FIX BUG #6 (race condition): seluruh cek-saldo + update status + potong saldo
         // dibungkus DB::transaction + lockForUpdate agar dua approval hampir bersamaan
         // (HRD ganda) tidak bisa sama-sama lolos cek saldo lalu membuat saldo minus.
@@ -1139,6 +1167,13 @@ class AttendanceController extends Controller
             // Karyawan yang memutuskan sendiri via aplikasi mobile (accept/decline).
             if ($leave->holiday_id !== null) {
                 abort(403, 'Cuti bersama tidak bisa disetujui secara manual. Karyawan memilih sendiri via aplikasi mobile.');
+            }
+
+            // Guard: Jika sudah memasuki hari H (start_date <= today), tidak dapat di-approve
+            $today = now('Asia/Jakarta')->toDateString();
+            $startDateStr = Carbon::parse($leave->start_date)->toDateString();
+            if ($startDateStr <= $today) {
+                abort(422, 'Pengajuan izin tidak dapat disetujui karena sudah memasuki Hari H (otomatis ditolak oleh sistem).');
             }
 
             $balance = null;
@@ -1366,7 +1401,9 @@ class AttendanceController extends Controller
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         if ($actor->company_id) {
-            LeaveRequest::autoDeclineExpiredCollectiveLeaves($actor->company_id);
+            LeaveRequest::autoRejectExpiredLeaves($actor->company_id);
+        } else {
+            LeaveRequest::autoRejectExpiredLeaves();
         }
 
         $leaves = LeaveRequest::query()
@@ -1377,8 +1414,15 @@ class AttendanceController extends Controller
             )
             ->when($validated['status'] ?? null, fn ($q, $s) => $q->where('leave_requests.status', $s))
             ->when($validated['leave_type'] ?? null, fn ($q, $t) => $q->where('leave_requests.leave_type', $t))
-            ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('leave_requests.user_id', $u))
-            ->select([
+            ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('leave_requests.user_id', $u));
+
+        // Branch scoping: filter cuti berdasarkan cabang yang diizinkan role
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $leaves->whereIn('users.attendance_setting_id', $allowedBranches);
+        }
+
+        $leaves = $leaves->select([
                 'leave_requests.id', 'leave_requests.user_id', 'users.name as user_name',
                 'users.department', 'users.attendance_setting_id',
                 'leave_requests.leave_type', 'leave_requests.start_date',
@@ -1443,8 +1487,15 @@ class AttendanceController extends Controller
             ->where('is_active', true)
             ->whereIn('role', ['employee', 'finance', 'hrd', 'admin'])
             ->select(['id', 'name', 'department', 'employee_code', 'attendance_setting_id', 'wfh_enabled', 'radius_enabled', 'company_id'])
-            ->orderBy('name')
-            ->get();
+            ->orderBy('name');
+
+        // Branch scoping: filter karyawan berdasarkan cabang yang diizinkan role
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $employees->whereIn('attendance_setting_id', $allowedBranches);
+        }
+
+        $employees = $employees->get();
 
         // Presensi hari ini, di-index per user_id
         // where() (bukan whereDate) agar index('date') terpakai — kolom sudah bertipe DATE
@@ -1516,7 +1567,9 @@ class AttendanceController extends Controller
         $leaveList = [];
 
         if ($actor->company_id) {
-            \App\Models\LeaveRequest::autoDeclineExpiredCollectiveLeaves($actor->company_id);
+            \App\Models\LeaveRequest::autoRejectExpiredLeaves($actor->company_id);
+        } else {
+            \App\Models\LeaveRequest::autoRejectExpiredLeaves();
         }
 
         // Cek apakah hari ini libur nasional/perusahaan/cabang beserta pengecualian karyawan (holiday_exclusions)
@@ -1681,6 +1734,12 @@ class AttendanceController extends Controller
             )
             ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('id', $u))
             ->orderBy('name');
+
+        // Branch scoping: filter karyawan berdasarkan cabang yang diizinkan role
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $usersQuery->whereIn('attendance_setting_id', $allowedBranches);
+        }
 
         $users = $usersQuery->get(['id', 'name', 'company_id', 'employee_code', 'attendance_setting_id']);
 
@@ -2005,6 +2064,11 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'User tidak ditemukan di perusahaan Anda.'], 404);
         }
 
+        // Branch scoping: verifikasi target user ada di cabang yang diizinkan role
+        if (! $actor->allowsBranch($target->attendance_setting_id)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
+        }
+
         $start      = Carbon::create($year, $month, 1, 0, 0, 0, 'Asia/Jakarta')->startOfMonth();
         $end        = (clone $start)->endOfMonth();
         $rangeStart = $start->toDateString();
@@ -2187,7 +2251,8 @@ class AttendanceController extends Controller
         ?int $officeId = null,
         array $filters = [],
         ?int $page = null,
-        ?int $perPage = null
+        ?int $perPage = null,
+        ?array $allowedBranches = null
     ): array {
         // 1. Ambil daftar karyawan
         $users = User::where(function ($q) use ($companyId) {
@@ -2196,6 +2261,7 @@ class AttendanceController extends Controller
             ->when($department, fn ($q) => $q->where('department', $department))
             ->when($officeId, fn ($q) => $q->where('attendance_setting_id', $officeId))
             ->where('role', '!=', 'super_admin')
+            ->when($allowedBranches !== null, fn ($q) => $q->whereIn('attendance_setting_id', $allowedBranches))
             ->orderBy('name')
             ->get(['id', 'name', 'department', 'employee_code', 'company_id', 'attendance_setting_id']);
 
@@ -2818,7 +2884,8 @@ class AttendanceController extends Controller
             $validated['office_id'] ?? null,
             $validated,
             $page,
-            $perPage
+            $perPage,
+            $actor->allowedBranchIds()
         );
 
         return response()->json([
@@ -2870,7 +2937,10 @@ class AttendanceController extends Controller
             $endDate,
             $validated['department'] ?? null,
             $validated['office_id'] ?? null,
-            $validated
+            $validated,
+            null,
+            null,
+            $actor->allowedBranchIds()
         );
 
         $filename = 'laporan-presensi-' . now()->format('Ymd-His') . '.csv';
@@ -3004,10 +3074,18 @@ class AttendanceController extends Controller
     {
         $actor = $request->user();
 
-        $settings = AttendanceSetting::when(
+        $query = AttendanceSetting::when(
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
-        )->orderBy('office_name')->get();
+        );
+
+        // Branch scoping: hanya tampilkan cabang yang diizinkan oleh role
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $query->whereIn('id', $allowedBranches);
+        }
+
+        $settings = $query->orderBy('office_name')->get();
 
         return response()->json(['settings' => $settings]);
     }
@@ -3353,8 +3431,18 @@ class AttendanceController extends Controller
             ->where(function ($q) use ($companyId) {
                 $q->whereNull('company_id')->orWhere('company_id', $companyId);
             })
-            ->whereYear('date', $year)
-            ->orderBy('date')
+            ->whereYear('date', $year);
+
+        // Branch scoping: hanya tampilkan libur nasional, company-wide, dan cabang yang diizinkan
+        $allowedBranches = $user->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $holidays->where(function ($q) use ($allowedBranches) {
+                $q->whereNull('attendance_setting_id') // nasional & company-wide
+                  ->orWhereIn('attendance_setting_id', $allowedBranches);
+            });
+        }
+
+        $holidays = $holidays->orderBy('date')
             ->get(['id', 'company_id', 'attendance_setting_id', 'date', 'name', 'is_national', 'is_collective'])
             ->map(function ($h) use ($companyId) {
                 $item = [
@@ -6135,6 +6223,7 @@ class AttendanceController extends Controller
             'company_id'      => $attendance->company_id,
             'overtime_minutes'=> $attendance->overtime_minutes,
             'status'          => 'pending',
+            'current_step'    => 'spv',
             'is_auto_checkout'=> $isAutoCheckout,
             'overtime_reason' => $overtimeReason,
         ]);
@@ -6457,13 +6546,14 @@ class AttendanceController extends Controller
     // BAGIAN C — HRD: manajemen approval lembur
     // ═══════════════════════════════════════════════════════════
 
-    // listOvertimeApprovals() — daftar pengajuan lembur untuk HRD (filter status/user/tanggal)
+    // listOvertimeApprovals() — daftar pengajuan lembur untuk SPV & HRD (filter status/user/tanggal/step)
     public function listOvertimeApprovals(Request $request): JsonResponse
     {
         $actor = $request->user();
 
         $validated = $request->validate([
             'status'     => 'nullable|in:pending,approved,rejected',
+            'step'       => 'nullable|in:spv,hrd',
             'user_id'    => 'nullable|integer',
             'start_date' => 'nullable|date',
             'end_date'   => 'nullable|date|after_or_equal:start_date',
@@ -6472,36 +6562,53 @@ class AttendanceController extends Controller
 
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
-        $approvals = OvertimeApproval::query()
+        $approvalsQuery = OvertimeApproval::query()
             ->join('users', 'overtime_approvals.user_id', '=', 'users.id')
             ->join('attendances', 'overtime_approvals.attendance_id', '=', 'attendances.id')
+            ->leftJoin('users as spv_user', 'overtime_approvals.spv_id', '=', 'spv_user.id')
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('overtime_approvals.company_id', $actor->company_id)
             )
             ->when($validated['status'] ?? null, fn ($q, $s) => $q->where('overtime_approvals.status', $s))
+            ->when($validated['step'] ?? null, fn ($q, $step) => $q->where('overtime_approvals.current_step', $step))
             ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('overtime_approvals.user_id', $u))
             ->when($validated['start_date'] ?? null, fn ($q, $d) => $q->where('attendances.date', '>=', $d))
-            ->when($validated['end_date']   ?? null, fn ($q, $d) => $q->where('attendances.date', '<=', $d))
-            ->select([
-                'overtime_approvals.id',
-                'overtime_approvals.attendance_id',
-                'overtime_approvals.user_id',
-                'users.name as user_name',
-                'users.department',
-                'attendances.date as attendance_date',
-                'attendances.check_in_time',
-                'attendances.check_out_time',
-                'overtime_approvals.overtime_minutes',
-                'overtime_approvals.status',
-                'overtime_approvals.is_auto_checkout',
-                'overtime_approvals.overtime_reason',
-                'overtime_approvals.reviewed_at',
-                'overtime_approvals.notes',
-                'overtime_approvals.created_at',
-            ])
-            ->orderByDesc('attendances.date')
-            ->paginate($limit);
+            ->when($validated['end_date']   ?? null, fn ($q, $d) => $q->where('attendances.date', '<=', $d));
+
+        // Scoping cabang approver jika bukan super_admin
+        if ($actor->role !== 'super_admin') {
+            $allowedBranches = $actor->allowedBranchIds();
+            if ($allowedBranches !== null) {
+                $approvalsQuery->whereIn('users.attendance_setting_id', $allowedBranches);
+            }
+        }
+
+        $approvals = $approvalsQuery->select([
+            'overtime_approvals.id',
+            'overtime_approvals.attendance_id',
+            'overtime_approvals.user_id',
+            'users.name as user_name',
+            'users.department',
+            'attendances.date as attendance_date',
+            'attendances.check_in_time',
+            'attendances.check_out_time',
+            'overtime_approvals.overtime_minutes',
+            'overtime_approvals.status',
+            'overtime_approvals.current_step',
+            'overtime_approvals.spv_id',
+            'spv_user.name as spv_name',
+            'overtime_approvals.spv_approved_at',
+            'overtime_approvals.spv_notes',
+            'overtime_approvals.is_auto_checkout',
+            'overtime_approvals.overtime_reason',
+            'overtime_approvals.reviewed_by',
+            'overtime_approvals.reviewed_at',
+            'overtime_approvals.notes',
+            'overtime_approvals.created_at',
+        ])
+        ->orderByDesc('attendances.date')
+        ->paginate($limit);
 
         // Tambahkan format jam untuk kemudahan tampilan
         $approvals->getCollection()->transform(function ($a) {
@@ -6517,25 +6624,46 @@ class AttendanceController extends Controller
             return $a;
         });
 
-        $summary = OvertimeApproval::when(
+        $summaryRaw = OvertimeApproval::when(
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
         )
-        ->selectRaw('status, COUNT(*) as total')
-        ->groupBy('status')
-        ->pluck('total', 'status');
+        ->selectRaw('status, current_step, COUNT(*) as total')
+        ->groupBy('status', 'current_step')
+        ->get();
+
+        $pendingSpv = 0;
+        $pendingHrd = 0;
+        $approved   = 0;
+        $rejected   = 0;
+
+        foreach ($summaryRaw as $row) {
+            if ($row->status === 'pending') {
+                if ($row->current_step === 'hrd') {
+                    $pendingHrd += (int) $row->total;
+                } else {
+                    $pendingSpv += (int) $row->total;
+                }
+            } elseif ($row->status === 'approved') {
+                $approved += (int) $row->total;
+            } elseif ($row->status === 'rejected') {
+                $rejected += (int) $row->total;
+            }
+        }
 
         $result = $approvals->toArray();
         $result['summary'] = [
-            'pending'  => (int) ($summary['pending'] ?? 0),
-            'approved' => (int) ($summary['approved'] ?? 0),
-            'rejected' => (int) ($summary['rejected'] ?? 0),
+            'pending'     => $pendingSpv + $pendingHrd,
+            'pending_spv' => $pendingSpv,
+            'pending_hrd' => $pendingHrd,
+            'approved'    => $approved,
+            'rejected'    => $rejected,
         ];
 
         return response()->json($result);
     }
 
-    // approveOvertime() — HRD setujui lembur (overtime_minutes dikonfirmasi)
+    // approveOvertime() — SPV (tahap 1) atau HRD (tahap 2 final) setujui lembur
     public function approveOvertime(Request $request, int $id): JsonResponse
     {
         $actor = $request->user();
@@ -6544,7 +6672,7 @@ class AttendanceController extends Controller
             'notes' => 'nullable|string|max:1000',
         ]);
 
-        $approval = OvertimeApproval::when(
+        $approval = OvertimeApproval::with(['attendance', 'user'])->when(
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
         )->find($id);
@@ -6553,10 +6681,16 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Data lembur tidak ditemukan.'], 404);
         }
 
+        // Cek cabang
+        $branchId = $approval->user?->attendance_setting_id;
+        if (! $actor->allowsBranch($branchId)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
+        }
+
         if ($approval->status === 'approved') {
             return response()->json([
                 'message'  => 'Pengajuan lembur sudah disetujui sebelumnya.',
-                'approval' => $approval->only(['id', 'status', 'overtime_minutes', 'reviewed_at', 'notes']),
+                'approval' => $approval->only(['id', 'status', 'current_step', 'overtime_minutes', 'reviewed_at', 'notes']),
             ]);
         }
 
@@ -6564,57 +6698,157 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Pengajuan lembur sudah diproses sebelumnya.'], 403);
         }
 
-        $approval->update([
-            'status'      => 'approved',
-            'reviewed_by' => $actor->id,
-            'reviewed_at' => now(),
-            'notes'       => $validated['notes'] ?? null,
-        ]);
-
-        // overtime_minutes di attendances TETAP sesuai hitungan (sudah disetujui)
-        $this->logActivity(
-            $actor->id,
-            $approval->company_id,
-            'overtime_approved',
-            "Approve lembur #{$approval->id} ({$this->formatMinutes($approval->overtime_minutes)}) karyawan #{$approval->user_id}",
-            'overtime_approval',
-            $approval->id
-        );
-
-        // Hapus notifikasi pending lembur untuk para approver
-        DB::table('notifications')
-            ->where('entity_type', 'overtime_approval')
-            ->where('entity_id', $approval->id)
-            ->where('type', 'overtime_pending')
-            ->delete();
-
-        // Notifikasi ke karyawan
-        $employee = User::find($approval->user_id);
-        $tanggal  = Carbon::parse($approval->attendance->date)->format('d/m/Y');
-        $this->notifyUser($approval->user_id, 'overtime_approved', [
-            'message'          => "Lembur Anda ({$this->formatMinutes($approval->overtime_minutes)}) pada {$tanggal} telah disetujui.",
-            'overtime_id'      => $approval->id,
-            'overtime_minutes' => $approval->overtime_minutes,
-            'status'           => 'approved',
-        ], 'overtime_approval', $approval->id);
-
-        // Kirim push notification FCM ke karyawan
-        if ($employee && $employee->fcm_token) {
-            $this->sendFcmPush(
-                $employee->fcm_token,
-                '✅ Lembur Disetujui',
-                "Lembur {$this->formatMinutes($approval->overtime_minutes)} pada {$tanggal} telah disetujui oleh HRD.",
-                ['type' => 'overtime_approved', 'overtime_id' => (string) $approval->id]
-            );
+        // Karyawan tidak boleh menyetujui lemburnya sendiri
+        if ($actor->id === $approval->user_id && ! in_array($actor->role, ['super_admin'])) {
+            return response()->json(['message' => 'Anda tidak dapat menyetujui pengajuan lembur Anda sendiri.'], 403);
         }
 
-        return response()->json([
-            'message'  => 'Lembur berhasil disetujui.',
-            'approval' => $approval->only(['id', 'status', 'overtime_minutes', 'reviewed_at', 'notes']),
-        ]);
+        $step = $approval->current_step ?: 'spv';
+
+        // ── STEP 1: SPV APPROVAL ──
+        if ($step === 'spv') {
+            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+            $userRoleName = strtolower($actor->roleRelation?->name ?? '');
+
+            $isSpvOrAbove = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
+                // Keyword Inggris
+                || str_contains($userRoleCode, 'spv') || str_contains($userRoleCode, 'supervisor')
+                || str_contains($userRoleCode, 'manager') || str_contains($userRoleCode, 'head') || str_contains($userRoleCode, 'lead')
+                || str_contains($userRoleName, 'spv') || str_contains($userRoleName, 'supervisor')
+                || str_contains($userRoleName, 'manager') || str_contains($userRoleName, 'head') || str_contains($userRoleName, 'lead')
+                // Keyword Indonesia
+                || str_contains($userRoleCode, 'kepala') || str_contains($userRoleCode, 'kabag')
+                || str_contains($userRoleCode, 'ketua') || str_contains($userRoleCode, 'direktur')
+                || str_contains($userRoleName, 'kepala') || str_contains($userRoleName, 'kabag')
+                || str_contains($userRoleName, 'ketua') || str_contains($userRoleName, 'direktur')
+                || str_contains($userRoleName, 'koordinator') || str_contains($userRoleName, 'otorisator');
+
+            if (! $isSpvOrAbove) {
+                return response()->json([
+                    'message' => 'Persetujuan tahap pertama lembur harus dilakukan oleh SPV/Atasan.',
+                    'code'    => 'SPV_REQUIRED',
+                ], 403);
+            }
+
+            $approval->update([
+                'spv_id'          => $actor->id,
+                'spv_approved_at' => now(),
+                'spv_notes'       => $validated['notes'] ?? null,
+                'current_step'    => 'hrd',
+            ]);
+
+            $this->logActivity(
+                $actor->id,
+                $approval->company_id,
+                'overtime_spv_approved',
+                "SPV {$actor->name} menyetujui lembur #{$approval->id} ({$this->formatMinutes($approval->overtime_minutes)}) karyawan #{$approval->user_id}. Diteruskan ke HRD.",
+                'overtime_approval',
+                $approval->id
+            );
+
+            // Notifikasi ke HRD
+            $hrds = DB::table('users')
+                ->where('company_id', $approval->company_id)
+                ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+                ->where('is_active', true)
+                ->pluck('id');
+
+            $employee = $approval->user ?: User::find($approval->user_id);
+            $overtimeFormatted = $this->formatMinutes($approval->overtime_minutes);
+            $tanggal = $approval->attendance ? Carbon::parse($approval->attendance->date)->format('d/m/Y') : '';
+
+            foreach ($hrds as $hrdId) {
+                $this->notifyUser($hrdId, 'overtime_pending_hrd', [
+                    'message'          => "Lembur {$employee?->name} ({$overtimeFormatted}, {$tanggal}) telah disetujui SPV ({$actor->name}) dan menunggu persetujuan HRD.",
+                    'overtime_id'      => $approval->id,
+                    'attendance_id'    => $approval->attendance_id,
+                    'user_id'          => $approval->user_id,
+                    'user_name'        => $employee?->name,
+                    'overtime_minutes' => $approval->overtime_minutes,
+                    'spv_name'         => $actor->name,
+                ], 'overtime_approval', $approval->id);
+            }
+
+            return response()->json([
+                'message'  => 'Persetujuan tahap 1 (SPV) berhasil. Pengajuan lembur diteruskan ke HRD.',
+                'approval' => $approval->only([
+                    'id', 'status', 'current_step', 'spv_id', 'spv_approved_at', 'spv_notes',
+                    'overtime_minutes', 'reviewed_at', 'notes'
+                ]),
+            ]);
+        }
+
+        // ── STEP 2: HRD FINAL APPROVAL ──
+        if ($step === 'hrd') {
+            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+            $userRoleName = strtolower($actor->roleRelation?->name ?? '');
+
+            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
+                || str_contains($userRoleCode, 'hr') || str_contains($userRoleName, 'hr')
+                // Keyword Indonesia
+                || str_contains($userRoleName, 'personalia') || str_contains($userRoleName, 'kepegawaian')
+                || str_contains($userRoleCode, 'personalia') || str_contains($userRoleCode, 'kepegawaian');
+
+            if (! $isHrdOrAdmin) {
+                return response()->json([
+                    'message' => 'Persetujuan tahap akhir lembur hanya dapat dilakukan oleh HRD atau Admin.',
+                    'code'    => 'HRD_REQUIRED',
+                ], 403);
+            }
+
+            $approval->update([
+                'status'      => 'approved',
+                'reviewed_by' => $actor->id,
+                'reviewed_at' => now(),
+                'notes'       => $validated['notes'] ?? null,
+            ]);
+
+            $this->logActivity(
+                $actor->id,
+                $approval->company_id,
+                'overtime_approved',
+                "HRD {$actor->name} menyetujui final lembur #{$approval->id} ({$this->formatMinutes($approval->overtime_minutes)}) karyawan #{$approval->user_id}",
+                'overtime_approval',
+                $approval->id
+            );
+
+            // Hapus notifikasi pending lembur
+            DB::table('notifications')
+                ->where('entity_type', 'overtime_approval')
+                ->where('entity_id', $approval->id)
+                ->whereIn('type', ['overtime_pending', 'overtime_pending_hrd'])
+                ->delete();
+
+            // Notifikasi ke karyawan
+            $employee = $approval->user ?: User::find($approval->user_id);
+            $tanggal  = $approval->attendance ? Carbon::parse($approval->attendance->date)->format('d/m/Y') : '';
+            $this->notifyUser($approval->user_id, 'overtime_approved', [
+                'message'          => "Lembur Anda ({$this->formatMinutes($approval->overtime_minutes)}) pada {$tanggal} telah disetujui oleh HRD.",
+                'overtime_id'      => $approval->id,
+                'overtime_minutes' => $approval->overtime_minutes,
+                'status'           => 'approved',
+            ], 'overtime_approval', $approval->id);
+
+            // FCM Push
+            if ($employee && $employee->fcm_token) {
+                $this->sendFcmPush(
+                    $employee->fcm_token,
+                    '✅ Lembur Disetujui',
+                    "Lembur {$this->formatMinutes($approval->overtime_minutes)} pada {$tanggal} telah disetujui penuh oleh HRD.",
+                    ['type' => 'overtime_approved', 'overtime_id' => (string) $approval->id]
+                );
+            }
+
+            return response()->json([
+                'message'  => 'Lembur berhasil disetujui (Final).',
+                'approval' => $approval->only(['id', 'status', 'current_step', 'overtime_minutes', 'reviewed_at', 'notes', 'spv_id', 'spv_approved_at', 'spv_notes']),
+            ]);
+        }
+
+        return response()->json(['message' => 'Tahap persetujuan tidak valid.'], 422);
     }
 
-    // rejectOvertime() — HRD tolak lembur (overtime_minutes di attendance di-set 0)
+    // rejectOvertime() — Tolak lembur pada tahap SPV atau HRD (overtime_minutes di attendance di-set 0)
     public function rejectOvertime(Request $request, int $id): JsonResponse
     {
         $request->validate([
@@ -6623,13 +6857,18 @@ class AttendanceController extends Controller
 
         $actor = $request->user();
 
-        $approval = OvertimeApproval::when(
+        $approval = OvertimeApproval::with(['attendance', 'user'])->when(
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
         )->find($id);
 
         if (! $approval) {
             return response()->json(['message' => 'Data lembur tidak ditemukan.'], 404);
+        }
+
+        $branchId = $approval->user?->attendance_setting_id;
+        if (! $actor->allowsBranch($branchId)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
         }
 
         if ($approval->status === 'rejected') {
@@ -6646,12 +6885,25 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Pengajuan lembur sudah diproses sebelumnya.'], 403);
         }
 
-        $approval->update([
-            'status'      => 'rejected',
-            'reviewed_by' => $actor->id,
-            'reviewed_at' => now(),
-            'notes'       => $request->notes,
-        ]);
+        $step = $approval->current_step ?: 'spv';
+        if ($step === 'spv') {
+            $approval->update([
+                'status'          => 'rejected',
+                'spv_id'          => $actor->id,
+                'spv_approved_at' => now(),
+                'spv_notes'       => $request->notes,
+                'reviewed_by'     => $actor->id,
+                'reviewed_at'     => now(),
+                'notes'           => $request->notes,
+            ]);
+        } else {
+            $approval->update([
+                'status'      => 'rejected',
+                'reviewed_by' => $actor->id,
+                'reviewed_at' => now(),
+                'notes'       => $request->notes,
+            ]);
+        }
 
         // Jika ditolak → reset overtime_minutes ke 0 di tabel attendances
         Attendance::where('id', $approval->attendance_id)
@@ -6666,36 +6918,36 @@ class AttendanceController extends Controller
             $approval->id
         );
 
-        // Hapus notifikasi pending lembur untuk para approver
+        // Hapus notifikasi pending
         DB::table('notifications')
             ->where('entity_type', 'overtime_approval')
             ->where('entity_id', $approval->id)
-            ->where('type', 'overtime_pending')
+            ->whereIn('type', ['overtime_pending', 'overtime_pending_hrd'])
             ->delete();
 
         // Notifikasi ke karyawan
-        $employee = User::find($approval->user_id);
-        $tanggal  = Carbon::parse($approval->attendance->date)->format('d/m/Y');
+        $employee = $approval->user ?: User::find($approval->user_id);
+        $tanggal  = $approval->attendance ? Carbon::parse($approval->attendance->date)->format('d/m/Y') : '';
         $this->notifyUser($approval->user_id, 'overtime_rejected', [
-            'message'          => "Lembur Anda pada {$tanggal} tidak disetujui.",
+            'message'          => "Pengajuan lembur Anda pada {$tanggal} ditolak: {$request->notes}",
             'overtime_id'      => $approval->id,
+            'overtime_minutes' => $approval->overtime_minutes,
             'status'           => 'rejected',
-            'notes'            => $request->notes,
+            'reason'           => $request->notes,
         ], 'overtime_approval', $approval->id);
 
-        // Kirim push notification FCM ke karyawan
         if ($employee && $employee->fcm_token) {
             $this->sendFcmPush(
                 $employee->fcm_token,
                 '❌ Lembur Ditolak',
-                "Lembur pada {$tanggal} tidak disetujui. Alasan: {$request->notes}",
+                "Pengajuan lembur Anda pada {$tanggal} ditolak: {$request->notes}",
                 ['type' => 'overtime_rejected', 'overtime_id' => (string) $approval->id]
             );
         }
 
         return response()->json([
-            'message'  => 'Lembur ditolak. Jam lembur karyawan di-reset ke 0.',
-            'approval' => $approval->only(['id', 'status', 'reviewed_at', 'notes']),
+            'message'  => 'Lembur berhasil ditolak.',
+            'approval' => $approval->only(['id', 'status', 'current_step', 'overtime_minutes', 'reviewed_at', 'notes']),
         ]);
     }
 
@@ -6968,6 +7220,7 @@ class AttendanceController extends Controller
 
         $approvals = OvertimeApproval::where('overtime_approvals.user_id', $user->id)
             ->join('attendances', 'overtime_approvals.attendance_id', '=', 'attendances.id')
+            ->leftJoin('users as spv_user', 'overtime_approvals.spv_id', '=', 'spv_user.id')
             ->select([
                 'overtime_approvals.id',
                 'overtime_approvals.attendance_id',
@@ -6976,6 +7229,11 @@ class AttendanceController extends Controller
                 'attendances.check_out_time',
                 'overtime_approvals.overtime_minutes',
                 'overtime_approvals.status',
+                'overtime_approvals.current_step',
+                'overtime_approvals.spv_id',
+                'spv_user.name as spv_name',
+                'overtime_approvals.spv_approved_at',
+                'overtime_approvals.spv_notes',
                 'overtime_approvals.is_auto_checkout',
                 'overtime_approvals.overtime_reason',
                 'overtime_approvals.reviewed_at',
@@ -7033,6 +7291,10 @@ class AttendanceController extends Controller
             $approval->update([
                 'overtime_minutes' => $attendance->overtime_minutes,
                 'status'           => 'pending',
+                'current_step'     => 'spv',
+                'spv_id'           => null,
+                'spv_approved_at'  => null,
+                'spv_notes'        => null,
                 'overtime_reason'  => $validated['reason'],
                 'notes'            => null,
                 'reviewed_by'      => null,
@@ -7045,6 +7307,7 @@ class AttendanceController extends Controller
                 'company_id'       => $attendance->company_id,
                 'overtime_minutes' => $attendance->overtime_minutes,
                 'status'           => 'pending',
+                'current_step'     => 'spv',
                 'is_auto_checkout' => (bool) $attendance->is_auto_checkout,
                 'overtime_reason'  => $validated['reason'],
             ]);
@@ -7059,7 +7322,7 @@ class AttendanceController extends Controller
             $approval->id
         );
 
-        // Notifikasi ke semua HRD/admin
+        // Notifikasi ke semua HRD/admin/SPV
         $overtimeFormatted = $this->formatMinutes($attendance->overtime_minutes);
         $tanggal = Carbon::parse($attendance->date)->format('d/m/Y');
 
@@ -7071,7 +7334,7 @@ class AttendanceController extends Controller
 
         foreach ($approvers as $approverId) {
             $this->notifyUser($approverId, 'overtime_pending', [
-                'message'          => "{$user->name} mengajukan lembur {$overtimeFormatted} ({$tanggal}).",
+                'message'          => "{$user->name} mengajukan lembur {$overtimeFormatted} ({$tanggal}). Menunggu persetujuan SPV.",
                 'overtime_id'      => $approval->id,
                 'attendance_id'    => $attendance->id,
                 'user_id'          => $attendance->user_id,
@@ -7084,10 +7347,11 @@ class AttendanceController extends Controller
         }
 
         return response()->json([
-            'message'  => 'Pengajuan lembur berhasil dikirim ke HRD.',
+            'message'  => 'Pengajuan lembur berhasil dikirim (Menunggu persetujuan SPV).',
             'approval' => [
                 'id'               => $approval->id,
                 'status'           => $approval->status,
+                'current_step'     => $approval->current_step,
                 'overtime_minutes' => $approval->overtime_minutes,
                 'overtime_reason'  => $approval->overtime_reason,
             ],
@@ -7183,6 +7447,9 @@ class AttendanceController extends Controller
     public function myLeaves(Request $request): JsonResponse
     {
         $user = $request->user();
+        if ($user->company_id) {
+            LeaveRequest::autoRejectExpiredLeaves($user->company_id);
+        }
 
         $leaves = LeaveRequest::where('user_id', $user->id)
             ->orderByDesc('created_at')

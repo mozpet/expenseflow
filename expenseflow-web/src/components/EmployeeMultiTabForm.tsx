@@ -4,6 +4,7 @@ import {
   UserCheck,
   Wallet,
   ShieldCheck,
+  Shield,
   Smartphone,
   Check,
   ChevronLeft,
@@ -39,7 +40,9 @@ import {
 } from 'lucide-react';
 import CustomDatePicker from './CustomDatePicker';
 import { FormTabType, FORM_TABS } from './KaryawanManagement';
-import { userDocumentApi, UserDocument } from '../services/endpoints';
+import { userDocumentApi, UserDocument, roleApi, RoleItem } from '../services/endpoints';
+import { RoleFormModal } from './RoleFormModal';
+import { useAuth } from '../auth/AuthContext';
 
 interface Office {
   id: number;
@@ -106,6 +109,61 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
   const [previewDoc, setPreviewDoc] = React.useState<{ url: string; title: string; isPdf: boolean; isImage: boolean } | null>(null);
   const [customDocType, setCustomDocType] = React.useState<string>('lainnya');
   const [customDocTitle, setCustomDocTitle] = React.useState<string>('');
+
+  // ─── State Role Dinamis & In-place Role Creator ──────────────────
+  const { user: currentUser } = useAuth();
+  const canManageRoles =
+    currentUser?.role === 'super_admin' ||
+    currentUser?.role === 'admin' ||
+    Boolean((currentUser as any)?.can_manage_roles);
+
+  const [availableRoles, setAvailableRoles] = React.useState<RoleItem[]>([]);
+  const [isRoleModalOpen, setIsRoleModalOpen] = React.useState<boolean>(false);
+  const [roleToEditInModal, setRoleToEditInModal] = React.useState<RoleItem | null>(null);
+
+  React.useEffect(() => {
+    roleApi
+      .list()
+      .then((res: any) => {
+        if (res?.data && Array.isArray(res.data)) {
+          setAvailableRoles(res.data);
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  React.useEffect(() => {
+    if (offices.length === 1 && !form.officeId) {
+      setForm((prev: any) => ({ ...prev, officeId: offices[0].id }));
+    }
+  }, [offices, form.officeId, setForm]);
+
+  const currentSelectedRole = React.useMemo(() => {
+    const roleIdOrSlug = form.role_id || form.role;
+    return availableRoles.find(
+      (r) => r.id === roleIdOrSlug || String(r.id) === String(roleIdOrSlug) || r.slug === roleIdOrSlug
+    ) || null;
+  }, [availableRoles, form.role_id, form.role]);
+
+  const handleRoleSavedInEmployeeForm = (savedRole: RoleItem) => {
+    setAvailableRoles((prev) => {
+      const exists = prev.some((r) => r.id === savedRole.id);
+      if (exists) {
+        return prev.map((r) => (r.id === savedRole.id ? savedRole : r));
+      }
+      return [...prev, savedRole];
+    });
+
+    // Otomatis pasang role yang baru dibuat / diedit ke form karyawan
+    setForm((prev: any) => ({
+      ...prev,
+      role: savedRole.slug,
+      role_id: savedRole.id,
+    }));
+
+    setIsRoleModalOpen(false);
+    setRoleToEditInModal(null);
+  };
 
   // Muat dokumen digital saat mode edit dan tab access dibuka
   React.useEffect(() => {
@@ -659,21 +717,96 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
               </div>
 
               {/* Role Sistem */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Hak Akses / Role Sistem *
-                </label>
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Hak Akses / Role Sistem *
+                  </label>
+                  {canManageRoles && (
+                    <div className="flex items-center gap-2">
+                      {currentSelectedRole && !currentSelectedRole.is_builtin && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRoleToEditInModal(currentSelectedRole);
+                            setIsRoleModalOpen(true);
+                          }}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-200 transition"
+                          title="Ubah hak akses atau cabang untuk role kustom ini"
+                        >
+                          <Shield className="w-3 h-3 text-indigo-500" />
+                          <span>Edit Role Ini</span>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRoleToEditInModal(null);
+                          setIsRoleModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1 text-[11px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition hover:underline"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>+ Buat Role Baru</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <select
                   required
-                  value={form.role || 'employee'}
-                  onChange={(e) => setForm({ ...form, role: e.target.value })}
-                  className="w-full text-xs px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
+                  disabled={!canManageRoles}
+                  value={form.role_id || form.role || 'employee'}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    const selectedRole = availableRoles.find((r) => String(r.id) === val || r.slug === val);
+                    if (selectedRole) {
+                      setForm({ ...form, role: selectedRole.slug, role_id: selectedRole.id });
+                    } else {
+                      setForm({ ...form, role: val });
+                    }
+                  }}
+                  className={`w-full text-xs px-3.5 py-2.5 rounded-xl border transition ${
+                    !canManageRoles
+                      ? 'bg-slate-100 dark:bg-slate-800/40 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-800 cursor-not-allowed'
+                      : 'bg-slate-50 dark:bg-slate-800/60 border-slate-200 dark:border-slate-700 focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600'
+                  }`}
                 >
-                  <option value="employee">Pegawai (Presensi & Klaim Biasa)</option>
-                  <option value="hrd">Staf HRD (Kelola Karyawan & Roster)</option>
-                  <option value="finance">Staf Finance (Approval Keuangan)</option>
-                  <option value="admin">Administrator (Akses Penuh)</option>
+                  {availableRoles.length > 0 ? (
+                    availableRoles.map((r) => (
+                      <option key={r.id} value={r.id}>
+                        {r.name} ({r.platform === 'mobile_only' ? 'Mobile' : 'Mobile & Web'}{!r.is_builtin ? ' — Kustom' : ''})
+                      </option>
+                    ))
+                  ) : (
+                    <>
+                      <option value="employee">Pegawai (Presensi & Klaim Biasa)</option>
+                      <option value="hrd">Staf HRD (Kelola Karyawan & Roster)</option>
+                      <option value="finance">Staf Finance (Approval Keuangan)</option>
+                      <option value="admin">Administrator (Akses Penuh)</option>
+                    </>
+                  )}
                 </select>
+                {!canManageRoles ? (
+                  <p className="text-[10px] text-amber-600 dark:text-amber-400 flex items-center gap-1 font-medium">
+                    <Lock className="w-3 h-3" />
+                    <span>Perubahan role dikunci. Anda tidak memiliki izin <strong>Manajemen Role & Hak Akses</strong>.</span>
+                  </p>
+                ) : (
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 flex items-center gap-1">
+                    <span>💡 Ingin wewenang khusus atau batasan cabang? Klik</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRoleToEditInModal(null);
+                        setIsRoleModalOpen(true);
+                      }}
+                      className="font-bold text-indigo-600 dark:text-indigo-400 hover:underline"
+                    >
+                      + Buat Role Baru
+                    </button>
+                    <span>untuk merancang peran langsung dari form ini.</span>
+                  </p>
+                )}
               </div>
 
               {/* Kantor Penempatan */}
@@ -691,7 +824,9 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                   }
                   className="w-full text-xs px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
                 >
-                  <option value="">Belum ditentukan / Semua Kantor</option>
+                  {offices.length !== 1 && (
+                    <option value="">Belum ditentukan / Semua Kantor</option>
+                  )}
                   {offices.map((o) => (
                     <option key={o.id} value={o.id}>
                       {o.office_name}
@@ -2545,6 +2680,20 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Modal Buat / Edit Custom Role Langsung dari Form Karyawan */}
+      {isRoleModalOpen && (
+        <RoleFormModal
+          isOpen={isRoleModalOpen}
+          roleToEdit={roleToEditInModal}
+          offices={offices}
+          onClose={() => {
+            setIsRoleModalOpen(false);
+            setRoleToEditInModal(null);
+          }}
+          onSaved={handleRoleSavedInEmployeeForm}
+        />
       )}
     </form>
   );

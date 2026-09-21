@@ -8,7 +8,7 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 class ReceiptApproval extends Model
 {
     protected $fillable = [
-        'receipt_id', 'user_id', 'status', 'notes',
+        'receipt_id', 'user_id', 'status', 'approval_level', 'notes',
     ];
 
     public function receipt(): BelongsTo

@@ -666,10 +666,11 @@ export const shiftApi = {
   },
 };
 
-// ─── Overtime approvals — HRD ───────────────────────────────
+// ─── Overtime approvals — HRD & SPV ─────────────────────────
 export const overtimeApi = {
   list: (filters?: {
     status?: 'pending' | 'approved' | 'rejected';
+    step?: 'spv' | 'hrd';
     user_id?: number;
     start_date?: string;
     end_date?: string;
@@ -682,6 +683,83 @@ export const overtimeApi = {
 
   reject: (id: number | string, notes: string) =>
     apiPost(`/dashboard/attendance/overtime-approvals/${id}/reject`, { notes }),
+};
+
+// ─── Role & Permission Management (Custom Role Engine) ──────
+export interface RolePermissionItem {
+  id?: number;
+  module: string;
+  access_level: 'none' | 'read' | 'manage';
+}
+
+export interface RoleBranchItem {
+  id: number;
+  office_name?: string;
+}
+
+export interface RoleItem {
+  id: number;
+  company_id: number | null;
+  name: string;
+  slug: string;
+  description: string | null;
+  platform: 'mobile_only' | 'both';
+  branch_scope: 'all' | 'specific' | 'self';
+  is_builtin: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+  permissions?: RolePermissionItem[];
+  branches?: RoleBranchItem[];
+  users_count?: number;
+}
+
+export interface RoleModuleOption {
+  key: string;
+  label: string;
+  description?: string;
+}
+
+export const roleApi = {
+  list: (params?: { search?: string; platform?: string; is_active?: boolean }, forceRefresh = false) =>
+    apiGet<{ success: boolean; data: RoleItem[] }>('/admin/roles', params, { forceRefresh }),
+
+  modules: () =>
+    apiGet<{
+      success: boolean;
+      modules: Record<string, string>;
+      access_levels: Record<string, string>;
+      platforms: Record<string, string>;
+      branch_scopes: Record<string, string>;
+    }>('/admin/roles/modules'),
+
+  get: (id: number | string) =>
+    apiGet<{ success: boolean; data: RoleItem }>(`/admin/roles/${id}`),
+
+  create: (payload: {
+    name: string;
+    description?: string;
+    platform: 'mobile_only' | 'both';
+    branch_scope: 'all' | 'specific' | 'self';
+    branch_ids?: number[];
+    permissions: Record<string, 'none' | 'read' | 'manage'> | { module: string; access_level: 'none' | 'read' | 'manage' }[];
+  }) => apiPost<{ success: boolean; message: string; data: RoleItem }>('/admin/roles', payload),
+
+  update: (
+    id: number | string,
+    payload: {
+      name?: string;
+      description?: string;
+      platform?: 'mobile_only' | 'both';
+      branch_scope?: 'all' | 'specific' | 'self';
+      branch_ids?: number[];
+      is_active?: boolean;
+      permissions?: Record<string, 'none' | 'read' | 'manage'> | { module: string; access_level: 'none' | 'read' | 'manage' }[];
+    }
+  ) => apiPut<{ success: boolean; message: string; data: RoleItem }>(`/admin/roles/${id}`, payload),
+
+  destroy: (id: number | string) =>
+    apiDelete<{ success: boolean; message: string }>(`/admin/roles/${id}`),
 };
 
 // ─── Device change approvals — HRD (device binding, cegah titip absen) ──

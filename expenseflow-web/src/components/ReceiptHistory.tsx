@@ -62,6 +62,9 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
           const list = res?.settings ?? [];
           if (Array.isArray(list) && list.length > 0) {
             setOffices(list);
+            if (list.length === 1) {
+              setSelectedBranch(String(list[0].id));
+            }
           }
         })
         .catch(() => { });
@@ -71,6 +74,9 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
   useEffect(() => {
     if (propOffices && propOffices.length > 0) {
       setOffices(propOffices);
+      if (propOffices.length === 1) {
+        setSelectedBranch(String(propOffices[0].id));
+      }
     }
   }, [propOffices]);
 
@@ -293,7 +299,9 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                 className="w-full pl-8 pr-7 py-1.5 border border-slate-200 dark:border-slate-700 rounded-lg text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-none cursor-pointer appearance-none truncate"
                 title="Filter Riwayat berdasarkan Cabang Kantor"
               >
-                <option value="all">Semua Cabang {offices.length > 0 ? `(${offices.length})` : ''}</option>
+                {offices.length !== 1 && (
+                  <option value="all">Semua Cabang {offices.length > 0 ? `(${offices.length})` : ''}</option>
+                )}
                 {offices.map((office) => (
                   <option key={office.id} value={String(office.id)}>
                     {office.office_name}

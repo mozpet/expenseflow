@@ -690,7 +690,20 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   }, [debouncedBalanceSearch, balanceOfficeFilter]);
 
   useEffect(() => {
-    attendanceApi.settings.list().then(res => setOffices((res as any)?.settings ?? [])).catch(() => { });
+    attendanceApi.settings.list().then(res => {
+      const list = (res as any)?.settings ?? [];
+      setOffices(list);
+      if (list.length === 1) {
+        const singleId = String(list[0].id);
+        setTodayOfficeFilter(singleId);
+        setLeaveOfficeFilter(singleId);
+        setUserOfficeFilter(singleId);
+        setBalanceOfficeFilter(singleId);
+        setBalanceHistoryOfficeFilter(singleId);
+        setCalOfficeFilter(singleId);
+        setReportFilterAndReset((prev: any) => ({ ...prev, office_id: singleId }));
+      }
+    }).catch(() => { });
   }, []);
 
   useEffect(() => {
@@ -1298,11 +1311,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   onChange={(e) => setTodayOfficeFilter(e.target.value)}
                   className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
                 >
-                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                  {offices.length !== 1 && (
+                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                  )}
                   {offices.map(o => (
                     <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                   ))}
-                  <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                  {offices.length !== 1 && (
+                    <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                  )}
                 </select>
               </div>
             </div>
@@ -1556,7 +1573,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       {/* ─── TAB: Izin & Cuti ─── */}
       {tab === 'leaves' && (
         loading ? <TabSkeleton tab="leaves" /> : (() => {
-          const todayStr = new Date().toISOString().slice(0, 10);
+          const todayStr = new Date().toLocaleDateString('en-CA');
 
           // ── Filter lokal ──────────────────────────────────────
           const displayedLeaves = (() => {
@@ -1568,7 +1585,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 (l.end_date ?? '').slice(0, 10) >= todayStr
               );
             } else {
-              if (leaveStatus) result = result.filter((l: any) => l.status === leaveStatus);
+              if (leaveStatus === 'pending') {
+                // Hanya pengajuan yang masih pending dan belum memasuki hari H
+                result = result.filter((l: any) => l.status === 'pending' && ((l.start_date ?? '').slice(0, 10) > todayStr));
+              } else if (leaveStatus === 'rejected') {
+                // Pengajuan yang ditolak atau pending yang sudah hari H
+                result = result.filter((l: any) => l.status === 'rejected' || (l.status === 'pending' && (l.start_date ?? '').slice(0, 10) <= todayStr));
+              } else if (leaveStatus) {
+                result = result.filter((l: any) => l.status === leaveStatus);
+              }
               if (leaveTypeFilter) result = result.filter((l: any) => l.leave_type === leaveTypeFilter);
             }
             // Filter sumber cuti — berlaku di semua mode (normal maupun mendatang)
@@ -1674,17 +1699,21 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </select>
 
                   {/* Dropdown kantor cabang */}
-                  {offices.length > 1 && (
+                  {offices.length > 0 && (
                     <select
                       value={leaveOfficeFilter}
                       onChange={(e) => setLeaveOfficeFilter(e.target.value)}
                       className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                     >
-                      <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                      {offices.length !== 1 && (
+                        <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                      )}
                       {offices.map((o: any) => (
                         <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                       ))}
-                      <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                      {offices.length !== 1 && (
+                        <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                      )}
                     </select>
                   )}
 
@@ -1842,12 +1871,22 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                               )}
                             </td>
                             <td className="py-2.5 px-2 text-center">
-                              <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${leaveBadge(l.status)}`}>
-                                {l.status === 'approved' ? 'Disetujui' : l.status === 'rejected' ? 'Ditolak' : 'Menunggu'}
-                              </span>
+                              {l.status === 'pending' && ((l.start_date ?? '').slice(0, 10) <= todayStr) ? (
+                                <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400" title="Tidak ada aksi approval dari HRD hingga hari H — otomatis ditolak sistem">
+                                  Ditolak (Hari H)
+                                </span>
+                              ) : (
+                                <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${leaveBadge(l.status)}`}>
+                                  {l.status === 'approved' ? 'Disetujui' : l.status === 'rejected' ? 'Ditolak' : 'Menunggu'}
+                                </span>
+                              )}
                             </td>
                             <td className="py-2.5 px-2 text-right">
-                              {l.status === 'pending' && l.holiday_id == null ? (
+                              {l.status === 'pending' && ((l.start_date ?? '').slice(0, 10) <= todayStr) ? (
+                                <span className="text-[10px] text-rose-500 italic">
+                                  Otomatis ditolak (Hari H)
+                                </span>
+                              ) : l.status === 'pending' && l.holiday_id == null ? (
                                 // Cuti mandiri pending: tampilkan tombol approve/tolak
                                 <div className="flex justify-end gap-1.5">
                                   <button
@@ -1986,11 +2025,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 onChange={(e) => setUserOfficeFilter(e.target.value)}
                 className="py-2 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
               >
-                <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                {offices.length !== 1 && (
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                )}
                 {offices.map(o => (
                   <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                 ))}
-                <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                {offices.length !== 1 && (
+                  <option value="null" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                )}
               </select>
             </div>
             <div className="overflow-x-auto">
@@ -2357,11 +2400,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         onChange={(e) => setBalanceOfficeFilter(e.target.value)}
                         className="py-1.5 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 max-w-[180px]"
                       >
-                        <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                        {offices.length !== 1 && (
+                          <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                        )}
                         {offices.map(o => (
                           <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                         ))}
-                        <option value="none" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                        {offices.length !== 1 && (
+                          <option value="none" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                        )}
                       </select>
                       <div className="relative">
                         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
@@ -2659,11 +2706,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     onChange={(e) => setBalanceHistoryOfficeFilter(e.target.value)}
                     className="py-1.5 px-3 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                   >
-                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                    {offices.length !== 1 && (
+                      <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                    )}
                     {offices.map(o => (
                       <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                     ))}
-                    <option value="none" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                    {offices.length !== 1 && (
+                      <option value="none" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tanpa Kantor</option>
+                    )}
                   </select>
                 </div>
 
@@ -2867,7 +2918,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <div className="space-y-1.5">
                 <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Kantor</label>
                 <select value={reportFilter.office_id || ''} onChange={(e) => setReportFilterAndReset({ ...reportFilter, office_id: e.target.value })} className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 transition-colors cursor-pointer">
-                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                  {offices.length !== 1 && (
+                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                  )}
                   {offices.map(o => (
                     <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                   ))}
@@ -4164,7 +4217,9 @@ const HolidaysTab: React.FC<{
                 className="py-1.5 px-3 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                 title="Filter libur mingguan per kantor"
               >
-                <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                {offices.length !== 1 && (
+                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
+                )}
                 {offices.map((o: any) => (
                   <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                 ))}
@@ -4232,9 +4287,9 @@ const HolidaysTab: React.FC<{
                 required={!isSuperAdmin}
               >
                 {isSuperAdmin ? (
-                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor (Semua Cabang)</option>
+                  offices.length !== 1 && <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor (Semua Cabang)</option>
                 ) : (
-                  <option value="" disabled className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Pilih Kantor Cabang...</option>
+                  offices.length !== 1 && <option value="" disabled className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Pilih Kantor Cabang...</option>
                 )}
                 {offices.map((o: any) => (
                   <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>

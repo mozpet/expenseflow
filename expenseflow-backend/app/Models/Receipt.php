@@ -19,6 +19,7 @@ class Receipt extends Model
         'ocr_raw_amount', 'ocr_raw_merchant', 'ocr_raw_date', 'ocr_raw_subtotal',
         'ocr_raw_tax', 'ocr_raw_discount', 'ocr_raw_items', 'ocr_error', 'ocr_attempts',
         'variance_flag', 'variance_pct', 'submitted_at',
+        'approval_tier', 'required_approvals', 'current_approvals',
         'notes', 'category', 'paid_at', 'paid_by', 'payment_method',
         'payment_ref_no', 'payment_proof_path', 'is_potential_duplicate',
         'duplicate_reference_id', 'duplicate_reason',
@@ -52,7 +53,55 @@ class Receipt extends Model
             'variance_pct'           => 'decimal:2',
             'is_potential_duplicate' => 'boolean',
             'ocr_attempts'           => 'integer',
+            'required_approvals'     => 'integer',
+            'current_approvals'      => 'integer',
         ];
+    }
+
+    /**
+     * Hitung syarat approval (tiering) berdasarkan nominal klaim.
+     * Aturan:
+     * - Tier 1: Nominal < Rp 500.000 (1 Finance)
+     * - Tier 2: Nominal Rp 500.000 s/d Rp 1.000.000 (2 Finance)
+     * - Tier 3: Nominal > Rp 1.000.000 (1 Finance Staff + 1 SPV Finance / Finance Manager)
+     *
+     * @return array{tier: string, required_approvals: int, description: string}
+     */
+    public static function resolveApprovalTier(float $amount): array
+    {
+        if ($amount < 500000) {
+            return [
+                'tier'               => 'Tier 1 (< Rp 500.000)',
+                'required_approvals' => 1,
+                'description'        => 'Persetujuan tunggal oleh Tim Finance atau Admin',
+            ];
+        }
+
+        if ($amount <= 1000000) {
+            return [
+                'tier'               => 'Tier 2 (Rp 500.000 - Rp 1.000.000)',
+                'required_approvals' => 2,
+                'description'        => 'Membutuhkan persetujuan dari 2 orang Finance/Admin yang berbeda',
+            ];
+        }
+
+        return [
+            'tier'               => 'Tier 3 (> Rp 1.000.000)',
+            'required_approvals' => 2,
+            'description'        => 'Membutuhkan persetujuan berjenjang: Tim Finance dan SPV Finance / Finance Head',
+        ];
+    }
+
+    /**
+     * Cek apakah user tertentu sudah pernah menyetujui struk ini.
+     */
+    public function isApprovedBy(int $userId): bool
+    {
+        if ($this->relationLoaded('approvals')) {
+            return $this->approvals->where('user_id', $userId)->where('status', 'approved')->isNotEmpty();
+        }
+
+        return $this->approvals()->where('user_id', $userId)->where('status', 'approved')->exists();
     }
 
     protected static function booted(): void

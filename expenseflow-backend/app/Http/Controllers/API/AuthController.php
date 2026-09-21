@@ -67,6 +67,23 @@ class AuthController extends Controller
             ], 403);
         }
 
+        // Custom Role dengan platform mobile_only TIDAK boleh login via web dashboard.
+        // Cek via relasi role_id → roles.platform. Jika role ber-platform 'mobile_only',
+        // akun hanya boleh menggunakan aplikasi mobile (presensi, cuti, scan struk).
+        if ($platform === 'web' && $user->role_id) {
+            $roleModel = $user->relationLoaded('roleRelation')
+                ? $user->roleRelation
+                : $user->roleRelation()->first();
+
+            if ($roleModel && $roleModel->platform === 'mobile_only') {
+                $this->logAttempt($user, $request, 'failed');
+
+                return response()->json([
+                    'message' => 'Role Anda (' . $roleModel->name . ') hanya dapat mengakses aplikasi mobile.',
+                ], 403);
+            }
+        }
+
         // Mobile platform guard: jika presensi mobile (attendance_enabled) tidak aktif, tolak login mobile
         if ($platform === 'mobile' && ! $user->attendance_enabled) {
             $this->logAttempt($user, $request, 'failed');
@@ -76,13 +93,14 @@ class AuthController extends Controller
             ], 403);
         }
 
-        // ─── DEVICE BINDING (mobile, role employee) — cegah "titip absen" ───
+        // ─── DEVICE BINDING (mobile, SEMUA role) — cegah "titip absen" ───
+        // Berlaku untuk seluruh akun mobile (built-in & custom role).
         // 1 akun karyawan terikat 1 device. Pindah device wajib approval HR.
         //   - Device pertama         → auto-bind (trust-on-first-use).
         //   - Device sama            → lolos.
         //   - Device beda            → login DITOLAK + buat permintaan pindah
         //                              device (pending) untuk di-approve HR.
-        if ($platform === 'mobile' && in_array($role, ['employee', 'hrd', 'finance', 'admin', 'super_admin']) && config('app.device_binding_enabled', true)) {
+        if ($platform === 'mobile' && config('app.device_binding_enabled', true)) {
             $deviceId   = $request->input('device_id');
             $deviceName = $request->input('device_name');
 
@@ -173,6 +191,10 @@ class AuthController extends Controller
             'is_wfh_approved_today' => $user->hasApprovedWfhToday(),
             'can_access_receipts'   => $user->canAccessReceipts(),
             'can_access_attendance' => $user->canAccessAttendance(),
+            'can_manage_roles'      => $user->hasPermission(\App\Models\Role::MODULE_ROLE_MANAGEMENT, 'manage'),
+            'can_read_roles'        => $user->hasPermission(\App\Models\Role::MODULE_ROLE_MANAGEMENT, 'read'),
+            'allowed_branch_ids'    => $user->allowedBranchIds(),
+            'branch_scope'          => $user->roleRelation?->branch_scope ?? 'all',
         ];
     }
 

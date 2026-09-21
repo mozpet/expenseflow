@@ -373,9 +373,11 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
   const [description, setDescription] = useState(editing?.description ?? '');
   const [isActive, setIsActive] = useState(editing?.is_active ?? true);
   const [color, setColor] = useState(editing?.color ?? '#6366f1');
-  const [branchId, setBranchId] = useState<string>(
-    editing?.attendance_setting_id ? String(editing.attendance_setting_id) : '',
-  );
+  const [branchId, setBranchId] = useState<string>(() => {
+    if (editing?.attendance_setting_id) return String(editing.attendance_setting_id);
+    if (offices.length === 1) return String(offices[0].id);
+    return '';
+  });
   const [customToleranceEnabled, setCustomToleranceEnabled] = useState<boolean>(
     editing?.late_tolerance_minutes != null,
   );
@@ -710,7 +712,9 @@ function ShiftFormModal({ offices, shifts, patterns = [], editing, onClose, onSa
                   onChange={(e) => setBranchId(e.target.value)}
                   className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
                 >
-                  <option value="">— Pilih cabang —</option>
+                  {offices.length !== 1 && (
+                    <option value="">— Pilih cabang —</option>
+                  )}
                   {offices.map((o) => (
                     <option key={o.id} value={o.id}>{o.office_name}</option>
                   ))}
@@ -4022,7 +4026,15 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
     try {
       if (forceRefresh) invalidateCache('/dashboard/attendance/settings');
       const res: any = await attendanceApi.settings.list(forceRefresh);
-      setOffices((res?.settings ?? []) as OfficeOpt[]);
+      const list = (res?.settings ?? []) as OfficeOpt[];
+      setOffices(list);
+      if (list.length === 1) {
+        const singleId = String(list[0].id);
+        setRosterBranch(singleId);
+        setTemplateBranch(singleId);
+        setPatternBranch(singleId);
+        setCalBranch(singleId);
+      }
     } catch { /* diam */ }
   }, []);
 
@@ -4435,7 +4447,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   onChange={(e) => setRosterBranch(e.target.value)}
                   className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
                 >
-                  <option value="">Semua cabang</option>
+                  {offices.length !== 1 && (
+                    <option value="">Semua cabang</option>
+                  )}
                   {offices.map((o) => (
                     <option key={o.id} value={o.id}>{o.office_name}</option>
                   ))}
@@ -4842,12 +4856,14 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   onChange={(e) => setTemplateBranch(e.target.value)}
                   className="flex-1 max-w-xs text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
                 >
-                  <option value="">Semua cabang</option>
+                  {offices.length !== 1 && (
+                    <option value="">Semua cabang</option>
+                  )}
                   {offices.map((o) => (
                     <option key={o.id} value={o.id}>{o.office_name}</option>
                   ))}
                 </select>
-                {templateBranch && (
+                {templateBranch && offices.length !== 1 && (
                   <button
                     onClick={() => setTemplateBranch('')}
                     className="flex items-center gap-1 text-xs font-semibold text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
@@ -5095,7 +5111,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                   onChange={(e) => setPatternBranch(e.target.value)}
                   className="text-xs px-2.5 py-1.5 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                 >
-                  <option value="">Semua Cabang</option>
+                  {offices.length !== 1 && (
+                    <option value="">Semua Cabang</option>
+                  )}
                   {offices.map((o) => (
                     <option key={o.id} value={String(o.id)}>
                       {o.office_name}
@@ -5390,7 +5408,9 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                 onChange={(e) => setCalBranch(e.target.value)}
                 className="flex-1 min-w-[130px] max-w-xs text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
               >
-                <option value="">Semua cabang</option>
+                {offices.length !== 1 && (
+                  <option value="">Semua cabang</option>
+                )}
                 {offices.map((o) => <option key={o.id} value={o.id}>{o.office_name}</option>)}
               </select>
               <select

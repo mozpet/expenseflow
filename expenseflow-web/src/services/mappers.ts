@@ -82,6 +82,8 @@ function mapReceiptStatus(status: string, varianceFlag?: boolean): ReceiptStatus
       return 'Disetujui';
     case 'rejected':
       return 'Ditolak';
+    case 'partially_approved':
+      return 'Partially Approved';
     case 'submitted':
     case 'pending':
       return varianceFlag ? 'Review' : 'Pending';
@@ -138,6 +140,20 @@ export function mapReceipt(r: any): Receipt {
     approvedAmount,
     kategori: r.category ?? '—',
     status: mapReceiptStatus(r.status, isVariance),
+    rawStatus: r.status,
+    approvalTier: r.approval_tier ? Number(r.approval_tier) : 1,
+    requiredApprovals: r.required_approvals ? Number(r.required_approvals) : 1,
+    currentApprovals: r.current_approvals ? Number(r.current_approvals) : 0,
+    alreadyApprovedByMe: Boolean(r.already_approved_by_me),
+    approvalsHistory: Array.isArray(r.approvals) ? r.approvals.map((a: any) => ({
+      id: Number(a.id),
+      user_name: a.user?.name ?? 'Finance',
+      role: a.user?.role ?? 'finance',
+      tier: Number(a.tier ?? 1),
+      approved_amount: Number(a.approved_amount ?? 0),
+      catatan: a.catatan,
+      created_at: a.created_at,
+    })) : undefined,
     varianceFlag: isVariance,
     variancePct,
     tanggal: formatTanggal(r.receipt_date ?? r.submitted_at ?? r.created_at),
