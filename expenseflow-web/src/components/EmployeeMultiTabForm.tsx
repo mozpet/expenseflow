@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Award,
   Briefcase,
   UserCheck,
   Wallet,
@@ -37,12 +38,15 @@ import {
   Loader2,
   GraduationCap,
   UserX,
+  Receipt,
+  Monitor,
+  Infinity as InfinityIcon,
 } from 'lucide-react';
 import CustomDatePicker from './CustomDatePicker';
-import { FormTabType, FORM_TABS } from './KaryawanManagement';
-import { userDocumentApi, UserDocument, roleApi, RoleItem } from '../services/endpoints';
+import { userDocumentApi, UserDocument, roleApi, RoleItem, userApi, DivisionItem, PositionItem } from '../services/endpoints';
 import { RoleFormModal } from './RoleFormModal';
 import { useAuth } from '../auth/AuthContext';
+import { FormTabType, FORM_TABS } from './KaryawanManagement';
 
 interface Office {
   id: number;
@@ -61,6 +65,8 @@ interface EmployeeMultiTabFormProps {
   editEmployee?: any | null;
   offices: Office[];
   departments: string[];
+  divisions?: DivisionItem[];
+  positions?: PositionItem[];
 }
 
 export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
@@ -75,6 +81,8 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
   editEmployee,
   offices,
   departments,
+  divisions = [],
+  positions = [],
 }) => {
   // Hitung kategori TER berdasarkan status PTKP
   const getTerCategory = (ptkp: string): { cat: 'A' | 'B' | 'C'; desc: string } => {
@@ -100,6 +108,96 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
     }
     return age >= 0 ? age : null;
   }, [form.birthDate]);
+
+  // Indikator kelengkapan tab untuk visual stepper (Hanya hijau jika data esensial tab telah terisi)
+  const getTabStatus = React.useCallback((tabId: FormTabType): { isComplete: boolean } => {
+    const isDeskless = form.can_login === false;
+
+    // Tab 1: Pekerjaan & Organisasi
+    if (tabId === 'work') {
+      const hasName = Boolean(form.nama && String(form.nama).trim().length > 0);
+      const hasEmail = isDeskless ? true : Boolean(form.email && String(form.email).trim().length > 0);
+      const hasRole = Boolean(form.role || form.role_id);
+      return { isComplete: hasName && hasEmail && hasRole };
+    }
+
+    // Tab 2: Data Pribadi & Kontak Darurat (Wajib NIK 16 digit, No HP, & Tgl Lahir)
+    if (tabId === 'personal') {
+      const hasNik = Boolean(form.nikKtp && String(form.nikKtp).replace(/\D/g, '').length === 16);
+      const hasHp = Boolean(form.hp && String(form.hp).replace(/\D/g, '').length >= 10);
+      const hasBirthDate = Boolean(form.birthDate && String(form.birthDate).trim().length > 0);
+      return { isComplete: hasNik && hasHp && hasBirthDate };
+    }
+
+    // Tab 3: Finansial & Payroll (Wajib Gaji Pokok > 0 & No Rekening)
+    if (tabId === 'payroll') {
+      const hasSalary = Boolean(form.basicSalary && Number(form.basicSalary) > 0);
+      const hasAccount = Boolean(form.bankAccountNo && String(form.bankAccountNo).trim().length >= 5);
+      return { isComplete: hasSalary && hasAccount };
+    }
+
+    // Tab 4: BPJS & Perpajakan (Minimal salah satu nomor BPJS atau NPWP terisi)
+    if (tabId === 'bpjs') {
+      const hasBpjsKes = Boolean(form.bpjsKesehatanNo && String(form.bpjsKesehatanNo).trim().length >= 10);
+      const hasBpjsTk = Boolean(form.bpjsKetenagakerjaanNo && String(form.bpjsKetenagakerjaanNo).trim().length >= 10);
+      const hasNpwp = Boolean(form.npwp && String(form.npwp).replace(/\D/g, '').length >= 15);
+      return { isComplete: hasBpjsKes || hasBpjsTk || hasNpwp };
+    }
+
+    // Tab 5: Akses Sistem & Dokumen
+    if (tabId === 'access') {
+      if (isEdit) return { isComplete: true };
+      if (isDeskless) {
+        // Mode non-sistem tidak butuh password, tapi nama karyawan harus sudah mulai diisi
+        return { isComplete: Boolean(form.nama && String(form.nama).trim().length > 0) };
+      }
+      const hasPass = Boolean(form.password && String(form.password).length >= 8);
+      const match = Boolean(hasPass && form.password === form.confirmPassword);
+      return { isComplete: match };
+    }
+
+    return { isComplete: false };
+  }, [
+    form.nama,
+    form.email,
+    form.role,
+    form.role_id,
+    form.can_login,
+    form.nikKtp,
+    form.hp,
+    form.birthDate,
+    form.basicSalary,
+    form.bankAccountNo,
+    form.bpjsKesehatanNo,
+    form.bpjsKetenagakerjaanNo,
+    form.npwp,
+    form.password,
+    form.confirmPassword,
+    isEdit,
+  ]);
+
+  // Generator password acak 1-klik untuk akun baru
+  const generateRandomPassword = () => {
+    const uppercase = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const lowercase = 'abcdefghijkmnpqrstuvwxyz';
+    const numbers = '23456789';
+    const specials = '!@#$%&*';
+    let res = '';
+    res += uppercase[Math.floor(Math.random() * uppercase.length)];
+    res += lowercase[Math.floor(Math.random() * lowercase.length)];
+    res += numbers[Math.floor(Math.random() * numbers.length)];
+    res += specials[Math.floor(Math.random() * specials.length)];
+    const all = uppercase + lowercase + numbers + specials;
+    for (let i = 0; i < 6; i++) {
+      res += all[Math.floor(Math.random() * all.length)];
+    }
+    setForm((prev: any) => ({
+      ...prev,
+      password: res,
+      confirmPassword: res,
+      showPassword: true,
+    }));
+  };
 
   // ─── State Dokumen Digital Karyawan (Fitur 4) ────────────────────
   const [documents, setDocuments] = React.useState<UserDocument[]>([]);
@@ -145,6 +243,19 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
     ) || null;
   }, [availableRoles, form.role_id, form.role]);
 
+  // Sinkronisasi otomatis role_id dan role slug ke state form saat role ditemukan
+  React.useEffect(() => {
+    if (currentSelectedRole) {
+      if (form.role_id !== currentSelectedRole.id || form.role !== currentSelectedRole.slug) {
+        setForm((prev: any) => ({
+          ...prev,
+          role: currentSelectedRole.slug,
+          role_id: currentSelectedRole.id,
+        }));
+      }
+    }
+  }, [currentSelectedRole, form.role_id, form.role, setForm]);
+
   const handleRoleSavedInEmployeeForm = (savedRole: RoleItem) => {
     setAvailableRoles((prev) => {
       const exists = prev.some((r) => r.id === savedRole.id);
@@ -164,6 +275,56 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
     setIsRoleModalOpen(false);
     setRoleToEditInModal(null);
   };
+
+  // ─── State Supervisor (Atasan Langsung) & Posisi ────────────────
+  const [supervisors, setSupervisors] = React.useState<any[]>([]);
+  const [loadingSupervisors, setLoadingSupervisors] = React.useState<boolean>(false);
+
+  React.useEffect(() => {
+    let active = true;
+    setLoadingSupervisors(true);
+    userApi
+      .supervisors({
+        division_id: form.division_id || undefined,
+        attendance_setting_id: form.officeId || undefined,
+        exclude_user_id: editEmployee?.backendId || undefined,
+      })
+      .then((res: any) => {
+        if (active) {
+          const list = Array.isArray(res?.data)
+            ? res.data
+            : Array.isArray(res?.supervisors)
+            ? res.supervisors
+            : Array.isArray(res)
+            ? res
+            : [];
+          setSupervisors(list);
+        }
+      })
+      .catch((err) => {
+        console.error('Gagal memuat supervisor:', err);
+      })
+      .finally(() => {
+        if (active) setLoadingSupervisors(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [form.division_id, form.officeId, editEmployee?.backendId]);
+
+  // Daftar posisi yang sesuai divisi terpilih
+  const availablePositions = React.useMemo(() => {
+    if (!positions || positions.length === 0) return [];
+    if (!form.division_id) return positions;
+    return positions.filter(
+      (p) => !p.division_id || String(p.division_id) === String(form.division_id)
+    );
+  }, [positions, form.division_id]);
+
+  const selectedPosition = React.useMemo(() => {
+    return positions.find((p) => String(p.id) === String(form.position_id));
+  }, [positions, form.position_id]);
 
   // Muat dokumen digital saat mode edit dan tab access dibuka
   React.useEffect(() => {
@@ -418,13 +579,18 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                 }`}
               >
                 <div
-                  className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black shrink-0 ${
+                  className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-black shrink-0 relative ${
                     isActive
                       ? 'bg-white/20 text-white'
                       : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
                   }`}
                 >
                   {tab.step}
+                  {getTabStatus(tab.id).isComplete && (
+                    <span className="absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-xs" title="Data pada tab ini lengkap">
+                      <Check className="w-2 h-2 stroke-[3]" />
+                    </span>
+                  )}
                 </div>
                 <div className="min-w-0 pr-1">
                   <div className="text-xs font-extrabold leading-tight flex items-center gap-1.5">
@@ -656,15 +822,22 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
 
               {/* Email */}
               <div className="space-y-1">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Email Perusahaan (Login) *
-                </label>
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    {form.can_login === false ? 'Email Perusahaan (Opsional)' : 'Email Perusahaan (Login) *'}
+                  </label>
+                  {form.can_login === false && (
+                    <span className="text-[9px] font-semibold text-slate-400 bg-slate-100 dark:bg-slate-800 px-1.5 py-0.5 rounded">
+                      Non-Sistem
+                    </span>
+                  )}
+                </div>
                 <input
                   type="email"
-                  required
+                  required={form.can_login !== false}
                   value={form.email || ''}
                   onChange={(e) => setForm({ ...form, email: e.target.value })}
-                  placeholder="karyawan@perusahaan.com"
+                  placeholder={form.can_login === false ? 'Opsional (otomatis dibuat jika kosong)' : 'karyawan@perusahaan.com'}
                   className="w-full text-xs px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
                 />
               </div>
@@ -683,37 +856,132 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                 />
               </div>
 
-              {/* Departemen */}
+              {/* Divisi */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Departemen *
+                  Divisi *
                 </label>
                 <select
-                  value={form.dept || ''}
-                  onChange={(e) => setForm({ ...form, dept: e.target.value })}
+                  required
+                  value={form.division_id ? String(form.division_id) : ''}
+                  onChange={(e) => {
+                    const divId = e.target.value ? Number(e.target.value) : '';
+                    const chosenDiv = divisions.find((d) => d.id === divId);
+                    setForm((prev: any) => {
+                      const curPos = positions.find((p) => p.id === Number(prev.position_id));
+                      const shouldResetPos = curPos && curPos.division_id && curPos.division_id !== divId;
+                      return {
+                        ...prev,
+                        division_id: divId,
+                        dept: chosenDiv ? chosenDiv.name : '',
+                        position_id: shouldResetPos ? '' : prev.position_id,
+                        jabatan: shouldResetPos ? '' : prev.jabatan,
+                      };
+                    });
+                  }}
                   className="w-full text-xs px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
                 >
-                  <option value="">Pilih Departemen</option>
-                  {departments.map((d) => (
-                    <option key={d} value={d}>
-                      {d}
-                    </option>
-                  ))}
+                  <option value="">Pilih Divisi</option>
+                  {divisions.length > 0 ? (
+                    divisions.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} {d.code ? `(${d.code})` : ''}
+                      </option>
+                    ))
+                  ) : (
+                    departments.map((d) => (
+                      <option key={d} value={d}>
+                        {d}
+                      </option>
+                    ))
+                  )}
                 </select>
               </div>
 
-              {/* Jabatan */}
+              {/* Jabatan / Posisi Kerja */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
                   Jabatan / Posisi Kerja
                 </label>
-                <input
-                  type="text"
-                  value={form.jabatan || ''}
-                  onChange={(e) => setForm({ ...form, jabatan: e.target.value })}
-                  placeholder="Contoh: Senior Staff, Supervisor"
+                {availablePositions.length > 0 ? (
+                  <select
+                    value={form.position_id ? String(form.position_id) : ''}
+                    onChange={(e) => {
+                      const posId = e.target.value ? Number(e.target.value) : '';
+                      const chosenPos = positions.find((p) => p.id === posId);
+                      setForm((prev: any) => ({
+                        ...prev,
+                        position_id: posId,
+                        jabatan: chosenPos ? chosenPos.name : '',
+                        division_id: (!prev.division_id && chosenPos?.division_id) ? chosenPos.division_id : prev.division_id,
+                        dept: (!prev.dept && chosenPos?.division?.name) ? chosenPos.division.name : prev.dept,
+                      }));
+                    }}
+                    className="w-full text-xs px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
+                  >
+                    <option value="">Pilih Jabatan</option>
+                    {availablePositions.map((pos) => (
+                      <option key={pos.id} value={pos.id}>
+                        {pos.name} {pos.is_supervisor ? '⭐ (SPV — Approval Lembur & Cuti Step 1)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <input
+                    type="text"
+                    value={form.jabatan || ''}
+                    onChange={(e) => setForm({ ...form, jabatan: e.target.value })}
+                    placeholder="Contoh: Senior Staff, Supervisor"
+                    className="w-full text-xs px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
+                  />
+                )}
+                {selectedPosition?.is_supervisor && (
+                  <div className="mt-2 p-2.5 rounded-xl bg-amber-50/90 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/60 text-[11px] text-amber-900 dark:text-amber-200 flex items-start gap-2">
+                    <Sparkles className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold">Posisi Atasan (Supervisor): </span>
+                      <span>Jabatan ini memiliki wewenang approval bawahan. Disarankan menetapkan Role Sistem ke <strong>Supervisor</strong> agar menu persetujuan aktif.</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+
+
+              {/* Atasan Langsung (SPV) */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Atasan Langsung (SPV) — Approver Lembur Lv1
+                </label>
+                <select
+                  value={form.manager_id ? String(form.manager_id) : ''}
+                  onChange={(e) => {
+                    const mgrId = e.target.value ? Number(e.target.value) : '';
+                    const chosenMgr = supervisors.find((s) => s.id === mgrId);
+                    setForm((prev: any) => ({
+                      ...prev,
+                      manager_id: mgrId,
+                      atasan: chosenMgr ? chosenMgr.name : '',
+                    }));
+                  }}
                   className="w-full text-xs px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
-                />
+                >
+                  <option value="">Belum Ditentukan / Tanpa Atasan Langsung</option>
+                  {supervisors.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name} ({s.position_name || s.position?.name || 'Supervisor'} - {s.division_name || s.division?.name || 'Divisi'}) {s.office_name ? `• ${s.office_name}` : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[9px] text-slate-400">
+                  {loadingSupervisors ? (
+                    'Memuat kandidat SPV...'
+                  ) : form.division_id ? (
+                    'Pemegang jabatan SPV pada divisi ini yang dapat meng-approve lembur Level 1.'
+                  ) : (
+                    'Pilih divisi terlebih dahulu untuk memfilter SPV terkait divisi.'
+                  )}
+                </p>
               </div>
 
               {/* Role Sistem */}
@@ -755,14 +1023,14 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                 <select
                   required
                   disabled={!canManageRoles}
-                  value={form.role_id || form.role || 'employee'}
+                  value={currentSelectedRole?.id ? String(currentSelectedRole.id) : (form.role_id ? String(form.role_id) : (form.role || 'employee'))}
                   onChange={(e) => {
                     const val = e.target.value;
                     const selectedRole = availableRoles.find((r) => String(r.id) === val || r.slug === val);
                     if (selectedRole) {
-                      setForm({ ...form, role: selectedRole.slug, role_id: selectedRole.id });
+                      setForm((prev: any) => ({ ...prev, role: selectedRole.slug, role_id: selectedRole.id }));
                     } else {
-                      setForm({ ...form, role: val });
+                      setForm((prev: any) => ({ ...prev, role: val }));
                     }
                   }}
                   className={`w-full text-xs px-3.5 py-2.5 rounded-xl border transition ${
@@ -912,31 +1180,197 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                 </>
               )}
 
-              {/* Batas Klaim Struk Bulanan */}
-              <div className="space-y-1 sm:col-span-2 lg:col-span-3">
-                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                  Batas Klaim Struk Bulanan (Nominal IDR)
-                </label>
-                <div className="relative">
-                  <span className="absolute left-3.5 top-2.5 text-xs text-slate-400 font-semibold">Rp</span>
-                  <input
-                    type="number"
-                    min="0"
-                    step="10000"
-                    value={form.limit === null || form.limit === '' ? '' : form.limit}
-                    onChange={(e) =>
+              {/* Batas & Hak Akses Klaim Struk Bulanan (3 Pilihan Segmen) */}
+              <div className="space-y-3 sm:col-span-2 lg:col-span-3 pt-2 border-t border-slate-100 dark:border-slate-800">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                    <Receipt className="w-3.5 h-3.5 text-indigo-500" />
+                    Kebijakan Batas Klaim Struk Bulanan
+                  </label>
+                  <span className="text-[10px] font-semibold text-slate-400">
+                    Pilih batas plafon atau nonaktifkan fitur klaim
+                  </span>
+                </div>
+
+
+
+                {/* 3 Opsi Kartu / Segment */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Opsi 1: Nominal Tertentu */}
+                  <button
+                    type="button"
+                    onClick={() => {
                       setForm({
                         ...form,
-                        limit: e.target.value === '' ? '' : Number(e.target.value),
-                      })
-                    }
-                    placeholder="Kosongkan jika tanpa batas klaim (Unlimited)"
-                    className="w-full text-xs pl-10 pr-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition"
-                  />
+                        allow_receipt_claim: true,
+                        limit: form.limit && Number(form.limit) > 0 ? form.limit : 2000000,
+                      });
+                    }}
+                    className={`p-3.5 rounded-2xl border text-left transition-all relative flex flex-col justify-between ${
+                      form.allow_receipt_claim !== false && form.limit !== null && form.limit !== '' && Number(form.limit) > 0
+                        ? 'border-indigo-500 bg-indigo-50/50 dark:bg-indigo-950/30 text-indigo-900 dark:text-indigo-200 ring-2 ring-indigo-500/20 shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-800/40 text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="w-7 h-7 rounded-xl bg-indigo-100 dark:bg-indigo-900/60 text-indigo-600 dark:text-indigo-400 flex items-center justify-center font-bold text-xs">
+                          Rp
+                        </span>
+                        {form.allow_receipt_claim !== false && form.limit !== null && form.limit !== '' && Number(form.limit) > 0 && (
+                          <span className="w-4 h-4 rounded-full bg-indigo-600 text-white flex items-center justify-center">
+                            <Check className="w-2.5 h-2.5 stroke-[3]" />
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-bold">Nominal Tertentu</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                        Dibatasi plafon anggaran per bulan
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Opsi 2: Unlimited (Tanpa Batas) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForm({
+                        ...form,
+                        allow_receipt_claim: true,
+                        limit: null,
+                      });
+                    }}
+                    className={`p-3.5 rounded-2xl border text-left transition-all relative flex flex-col justify-between ${
+                      form.allow_receipt_claim !== false && (form.limit === null || form.limit === '' || Number(form.limit) <= 0)
+                        ? 'border-emerald-500 bg-emerald-50/50 dark:bg-emerald-950/30 text-emerald-900 dark:text-emerald-200 ring-2 ring-emerald-500/20 shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-800/40 text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="w-7 h-7 rounded-xl bg-emerald-100 dark:bg-emerald-900/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center font-bold text-xs">
+                          <InfinityIcon className="w-4 h-4" />
+                        </span>
+                        {form.allow_receipt_claim !== false && (form.limit === null || form.limit === '' || Number(form.limit) <= 0) && (
+                          <span className="w-4 h-4 rounded-full bg-emerald-600 text-white flex items-center justify-center">
+                            <Check className="w-2.5 h-2.5 stroke-[3]" />
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-bold">Unlimited</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                        Bebas klaim tanpa limit anggaran
+                      </div>
+                    </div>
+                  </button>
+
+                  {/* Opsi 3: Dinonaktifkan (Tidak Berhak Klaim) */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForm({
+                        ...form,
+                        allow_receipt_claim: false,
+                        limit: null,
+                      });
+                    }}
+                    className={`p-3.5 rounded-2xl border text-left transition-all relative flex flex-col justify-between ${
+                      form.allow_receipt_claim === false
+                        ? 'border-rose-500 bg-rose-50/50 dark:bg-rose-950/30 text-rose-900 dark:text-rose-200 ring-2 ring-rose-500/20 shadow-xs'
+                        : 'border-slate-200 dark:border-slate-700 hover:border-slate-300 dark:hover:border-slate-600 bg-white dark:bg-slate-800/40 text-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="w-7 h-7 rounded-xl bg-rose-100 dark:bg-rose-900/60 text-rose-600 dark:text-rose-400 flex items-center justify-center font-bold text-xs">
+                          <Ban className="w-4 h-4" />
+                        </span>
+                        {form.allow_receipt_claim === false && (
+                          <span className="w-4 h-4 rounded-full bg-rose-600 text-white flex items-center justify-center">
+                            <Check className="w-2.5 h-2.5 stroke-[3]" />
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-xs font-bold">Dinonaktifkan</div>
+                      <div className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                        Klaim struk mobile di-disable
+                      </div>
+                    </div>
+                  </button>
                 </div>
-                <p className="text-[10px] text-slate-400 mt-1">
-                  Karyawan tidak dapat mengajukan klaim struk reimbursement jika total klaim bulanan melebihi limit ini.
-                </p>
+
+                {/* Dynamic Panel Berdasarkan Opsi Terpilih */}
+                {form.allow_receipt_claim !== false && form.limit !== null && form.limit !== '' && Number(form.limit) > 0 ? (
+                  <div className="p-3.5 rounded-2xl bg-indigo-50/40 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40 space-y-2">
+                    <label className="text-[10px] font-bold text-indigo-950 dark:text-indigo-300 uppercase tracking-wider block">
+                      Nominal Plafon Bulanan (IDR)
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3.5 top-2.5 text-xs text-indigo-500 dark:text-indigo-400 font-bold">Rp</span>
+                      <input
+                        type="number"
+                        min="10000"
+                        step="50000"
+                        value={form.limit === null || form.limit === '' ? '' : form.limit}
+                        onChange={(e) =>
+                          setForm({
+                            ...form,
+                            limit: e.target.value === '' ? '' : Number(e.target.value),
+                          })
+                        }
+                        placeholder="Masukkan nominal batas, misal 2000000"
+                        className="w-full text-xs pl-10 pr-3.5 py-2.5 bg-white dark:bg-slate-800 border border-indigo-200 dark:border-indigo-800/60 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition font-mono font-semibold"
+                      />
+                    </div>
+                    {/* Quick preset chips */}
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[10px] text-slate-400 font-medium">Preset cepat:</span>
+
+                      {[1000000, 2000000, 3000000, 5000000, 10000000].map((presetVal) => (
+                        <button
+                          key={presetVal}
+                          type="button"
+                          onClick={() => setForm({ ...form, limit: presetVal })}
+                          className={`px-2 py-0.5 rounded-lg text-[10px] font-semibold transition ${
+                            Number(form.limit) === presetVal
+                              ? 'bg-indigo-600 text-white'
+                              : 'bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-700'
+                          }`}
+                        >
+                          Rp {(presetVal / 1000000).toFixed(presetVal % 1000000 === 0 ? 0 : 1)} Juta
+                        </button>
+                      ))}
+                    </div>
+                    <p className="text-[10px] text-indigo-700 dark:text-indigo-300 mt-1 flex items-center gap-1">
+                      <Info className="w-3 h-3 shrink-0" />
+                      Karyawan tidak dapat mengajukan klaim struk baru jika akumulasi klaim bulan berjalan melebihi batas ini.
+                    </p>
+                  </div>
+                ) : form.allow_receipt_claim === false ? (
+                  <div className="p-3.5 rounded-2xl bg-rose-50/60 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 flex items-start gap-2.5">
+                    <Ban className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="text-xs font-bold text-rose-800 dark:text-rose-300">
+                        Fitur Klaim Struk Terkunci (Nonaktif)
+                      </div>
+                      <p className="text-[10px] text-rose-700 dark:text-rose-400 mt-0.5 leading-relaxed">
+                        Fitur klaim struk di aplikasi mobile karyawan akan dinonaktifkan secara otomatis (seperti sistem penonaktifan presensi mobile). Tombol &ldquo;Foto Struk&rdquo; dan formulir klaim akan terkunci, serta request API ditolak oleh backend (HTTP 403 Forbidden).
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="p-3.5 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-900/40 flex items-start gap-2.5">
+                    <InfinityIcon className="w-4 h-4 text-emerald-600 dark:text-emerald-400 shrink-0 mt-0.5" />
+                    <div>
+                      <div className="text-xs font-bold text-emerald-800 dark:text-emerald-300">
+                        Klaim Tanpa Batas Anggaran (Unlimited)
+                      </div>
+                      <p className="text-[10px] text-emerald-700 dark:text-emerald-400 mt-0.5 leading-relaxed">
+                        Karyawan dapat mengajukan klaim struk reimbursement dan laporan pengeluaran dinas secara bebas tanpa batasan plafon bulanan.
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>
@@ -1640,6 +2074,11 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                     className="w-full text-xs pl-10 pr-3.5 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition font-mono font-bold"
                   />
                 </div>
+                {form.basicSalary && Number(form.basicSalary) > 0 ? (
+                  <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold mt-1">
+                    Terbaca: Rp {Number(form.basicSalary).toLocaleString('id-ID')} / {form.salaryType === 'daily' ? 'hari' : form.salaryType === 'hourly' ? 'jam' : 'bulan'}
+                  </p>
+                ) : null}
               </div>
 
 
@@ -1899,227 +2338,332 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
       {/* ─── 7. TAB 5: DOKUMEN & AKSES PERANGKAT ────────────────────────── */}
       {formTab === 'access' && (
         <div className="space-y-6">
-          {/* Pengaturan Presensi Mobile */}
-          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-4">
-            <h3 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
-              <Smartphone className="w-4 h-4 text-indigo-600" />
-              Kebijakan Akses Presensi Mobile App
-            </h3>
+          {/* ─── FITUR AKSES SISTEM & PRESENSI (SISTEM CHECKBOX BERTINGKAT / PARENT-CHILD) ─── */}
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl p-6 shadow-xs space-y-5">
+            <div className="pb-3 border-b border-slate-100 dark:border-slate-800">
+              <h3 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                <Smartphone className="w-4 h-4 text-indigo-600" />
+                Akses Akun Sistem & Kebijakan Presensi
+              </h3>
+              <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-0.5">
+                Atur kepemilikan akun login karyawan (digital vs non-sistem) serta hak presensi mobile dan jam kerja.
+              </p>
+            </div>
 
-            {/* Banner informasi jika ada izin presensi yang terkunci oleh shift aktif */}
-            {(() => {
-              const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
-              const hasLocks = Boolean(shiftLocks?.has_active_shift && (shiftLocks?.lock_attendance || shiftLocks?.lock_wfh || shiftLocks?.lock_radius));
-              if (!hasLocks) return null;
-              return (
-                <div className="flex items-start gap-2.5 p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-800 dark:text-amber-300">
-                  <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
-                  <div className="space-y-0.5">
-                    <p className="font-bold">Izin Presensi Terkunci oleh Penugasan Shift</p>
-                    <p className="text-[11px] text-amber-700 dark:text-amber-400/90 leading-relaxed">
-                      Karyawan terikat penugasan shift aktif/mendatang: <strong className="font-bold text-amber-900 dark:text-amber-200">'{shiftLocks.shift_name}'</strong>. Izin presensi yang dibutuhkan oleh shift ini dikunci dan tidak dapat dinonaktifkan di sini. Untuk mengubahnya, sesuaikan atau selesaikan penugasan shift di menu Manajemen Shift terlebih dahulu.
-                    </p>
+            {/* LEVEL 1: MASTER PARENT CHECKBOX */}
+            <div className={`p-4 rounded-2xl border transition-all ${
+              form.can_login !== false
+                ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800'
+                : 'bg-slate-50 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700'
+            }`}>
+              <label className="flex items-start gap-3.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={form.can_login !== false}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setForm((prev: any) => ({
+                      ...prev,
+                      can_login: checked,
+                      // Jika dimatikan (Non-Sistem), matikan presensi mobile dll.
+                      attendanceEnabled: checked ? (prev.attendanceEnabled ?? true) : false,
+                      wfhEnabled: checked ? prev.wfhEnabled : false,
+                      radiusEnabled: checked ? prev.radiusEnabled : false,
+                    }));
+                  }}
+                  className="w-5 h-5 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs font-bold text-slate-900 dark:text-white">
+                      Karyawan Memiliki Akun Login (Akses Digital Sistem)
+                    </span>
+                    {form.can_login !== false ? (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300">
+                        Akun Digital Aktif
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300">
+                        Mode Non-Sistem (Deskless)
+                      </span>
+                    )}
                   </div>
-                </div>
-              );
-            })()}
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-              {/* Presensi Diizinkan (Akses Mobile) */}
-              {(() => {
-                const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
-                const isAttendanceLocked = Boolean(shiftLocks?.lock_attendance);
-
-                return (
-                  <label
-                    className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
-                      isAttendanceLocked
-                        ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
-                        : form.attendanceEnabled !== false
-                          ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800 cursor-pointer'
-                          : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
-                    }`}
-                    title={isAttendanceLocked ? shiftLocks?.reason_attendance : undefined}
-                  >
-                    <input
-                      type="checkbox"
-                      disabled={isAttendanceLocked}
-                      checked={form.attendanceEnabled !== false}
-                      onChange={(e) => {
-                        if (isAttendanceLocked) return;
-                        const checked = e.target.checked;
-                        setForm({
-                          ...form,
-                          attendanceEnabled: checked,
-                          // Jika Presensi Mobile dimatikan, WFH dan radius otomatis dimatikan
-                          wfhEnabled: checked ? (form.wfhEnabled !== false) : false,
-                          radiusEnabled: checked ? ((form.wfhEnabled !== false) && (form.radiusEnabled !== false)) : false,
-                        });
-                      }}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Akses Mobile</span>
-                        {isAttendanceLocked && (
-                          <span
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
-                            title={shiftLocks?.reason_attendance}
-                          >
-                            <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-slate-400 block truncate">Bisa check-in/out di HP</span>
-                    </div>
-                  </label>
-                );
-              })()}
-
-              {/* Boleh WFH */}
-              {(() => {
-                const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
-                const isWfhLocked = Boolean(shiftLocks?.lock_wfh);
-                const isAttActive = form.attendanceEnabled !== false;
-                const isWfhChecked = isAttActive && form.wfhEnabled !== false;
-                const isWfhDisabled = !isAttActive || isWfhLocked;
-                const wfhTitle = isWfhLocked
-                  ? shiftLocks?.reason_wfh
-                  : (!isAttActive ? 'Presensi Mobile harus aktif terlebih dahulu' : undefined);
-
-                return (
-                  <label
-                    className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
-                      isWfhLocked
-                        ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
-                        : !isAttActive
-                          ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
-                          : isWfhChecked
-                            ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 cursor-pointer'
-                            : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
-                    }`}
-                    title={wfhTitle}
-                  >
-                    <input
-                      type="checkbox"
-                      disabled={isWfhDisabled}
-                      checked={isWfhChecked}
-                      onChange={(e) => {
-                        if (isWfhDisabled) return;
-                        const checked = e.target.checked;
-                        setForm({
-                          ...form,
-                          wfhEnabled: checked,
-                          // Jika Izinkan Presensi WFH di-uncheck, otomatis Validasi Radius Geofence ikut uncheck
-                          ...(checked ? {} : { radiusEnabled: false }),
-                        });
-                      }}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Izinkan Presensi WFH</span>
-                        {isWfhLocked && (
-                          <span
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
-                            title={shiftLocks?.reason_wfh}
-                          >
-                            <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-slate-400 block truncate">Boleh absen luar kantor</span>
-                    </div>
-                  </label>
-                );
-              })()}
-
-              {/* Validasi Radius */}
-              {(() => {
-                const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
-                const isRadiusLocked = Boolean(shiftLocks?.lock_radius);
-                const isAttActive = form.attendanceEnabled !== false;
-                const isWfhChecked = isAttActive && form.wfhEnabled !== false;
-                const isRadiusChecked = isAttActive && isWfhChecked && form.radiusEnabled !== false;
-                const isRadiusDisabled = !isAttActive || !isWfhChecked || isRadiusLocked;
-                const radiusTitle = isRadiusLocked
-                  ? shiftLocks?.reason_radius
-                  : (!isAttActive
-                      ? 'Presensi Mobile harus aktif terlebih dahulu'
-                      : (!isWfhChecked ? 'Izinkan Presensi WFH harus aktif terlebih dahulu' : undefined));
-
-                return (
-                  <label
-                    className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
-                      isRadiusLocked
-                        ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
-                        : isRadiusDisabled
-                          ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
-                          : isRadiusChecked
-                            ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 cursor-pointer'
-                            : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
-                    }`}
-                    title={radiusTitle}
-                  >
-                    <input
-                      type="checkbox"
-                      disabled={isRadiusDisabled}
-                      checked={isRadiusChecked}
-                      onChange={(e) => {
-                        if (isRadiusDisabled) return;
-                        setForm({ ...form, radiusEnabled: e.target.checked });
-                      }}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Validasi Radius Geofence</span>
-                        {isRadiusLocked && (
-                          <span
-                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
-                            title={shiftLocks?.reason_radius}
-                          >
-                            <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
-                          </span>
-                        )}
-                      </div>
-                      <span className="text-[10px] text-slate-400 block truncate">Cek koordinat GPS kantor</span>
-                    </div>
-                  </label>
-                );
-              })()}
-              {/* Jam Fleksibel (Flexitime) - Independen dari Akses Mobile */}
-              <label className={`flex items-start gap-3 p-3.5 rounded-2xl border transition cursor-pointer ${
-                Boolean(form.flexitimeEnabled)
-                  ? 'bg-teal-50/40 dark:bg-teal-950/20 border-teal-200 dark:border-teal-800'
-                  : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
-              }`}>
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.flexitimeEnabled)}
-                  onChange={(e) => setForm({ ...form, flexitimeEnabled: e.target.checked })}
-                  className="w-4 h-4 rounded text-teal-600 focus:ring-teal-500 mt-0.5"
-                />
-                <div>
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Jam Fleksibel (Flexitime)</span>
-                  <span className="text-[10px] text-slate-400">Jadwal datang & pulang fleksibel</span>
-                </div>
-              </label>
-
-              {/* Hak Lembur Overtime */}
-              <label className="flex items-start gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={Boolean(form.overtimeEligible)}
-                  onChange={(e) => setForm({ ...form, overtimeEligible: e.target.checked })}
-                  className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
-                />
-                <div>
-                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Berhak Upah Lembur</span>
-                  <span className="text-[10px] text-slate-400">Rumus Depnaker 1/173 x Gaji</span>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
+                    {form.can_login !== false
+                      ? 'Karyawan memiliki akun digital untuk login ke sistem ExpenseFlow (aplikasi mobile / web dashboard).'
+                      : 'Centang kotak ini jika karyawan membutuhkan akun login. Jika tidak dicentang (contoh: OB, Satpam, Driver), karyawan tidak dapat login dan tidak memerlukan password. Data tetap tersimpan untuk Payroll & BPJS.'}
+                  </p>
                 </div>
               </label>
             </div>
+
+            {/* JIKA PARENT TIDAK DICENTANG (NON-SISTEM): BANNER INFORMATIF */}
+            {form.can_login === false ? (
+              <div className="p-4 rounded-2xl bg-amber-50/80 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-900 dark:text-amber-200 space-y-2.5">
+                <div className="flex items-center gap-2 font-bold">
+                  <ShieldCheck className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                  <span>Mode Karyawan Non-Sistem Aktif (Deskless Worker)</span>
+                </div>
+                <p className="text-[11px] text-amber-800 dark:text-amber-300/90 leading-relaxed">
+                  Karyawan ini tidak memiliki akun login (Web maupun HP) dan tidak memerlukan password. Kehadiran dapat dicatat menggunakan <strong>Kios Presensi Cabang</strong>, <strong>Mesin Fingerprint / Kartu RFID</strong>, atau <strong>Diabsenkan langsung oleh Atasan</strong>.
+                </p>
+                <div className="flex flex-wrap gap-2 pt-1">
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-white/80 dark:bg-slate-900 border border-amber-300 dark:border-amber-700/80 text-amber-800 dark:text-amber-300">
+                    ✓ Terdata di Payroll & Slip Gaji
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-white/80 dark:bg-slate-900 border border-amber-300 dark:border-amber-700/80 text-amber-800 dark:text-amber-300">
+                    ✓ Terdata di Laporan BPJS & Pajak
+                  </span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-white/80 dark:bg-slate-900 border border-amber-300 dark:border-amber-700/80 text-amber-800 dark:text-amber-300">
+                    ✓ Tanpa Beban Kredensial Login
+                  </span>
+                </div>
+              </div>
+            ) : (
+              /* LEVEL 2: CHILD CHECKBOXES (JIKA PARENT DICENTANG) */
+              <div className="space-y-4 pt-1 border-l-2 border-indigo-200 dark:border-indigo-800/60 ml-3 pl-4 sm:ml-4 sm:pl-5">
+                {/* Banner informasi jika ada izin presensi yang terkunci oleh shift aktif */}
+                {(() => {
+                  const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+                  const hasLocks = Boolean(shiftLocks?.has_active_shift && (shiftLocks?.lock_attendance || shiftLocks?.lock_wfh || shiftLocks?.lock_radius));
+                  if (!hasLocks) return null;
+                  return (
+                    <div className="flex items-start gap-2.5 p-3.5 rounded-2xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800/60 text-xs text-amber-800 dark:text-amber-300">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                      <div className="space-y-0.5">
+                        <p className="font-bold">Izin Presensi Terkunci oleh Penugasan Shift</p>
+                        <p className="text-[11px] text-amber-700 dark:text-amber-400/90 leading-relaxed">
+                          Karyawan terikat penugasan shift aktif/mendatang: <strong className="font-bold text-amber-900 dark:text-amber-200">'{shiftLocks.shift_name}'</strong>. Izin presensi yang dibutuhkan oleh shift ini dikunci dan tidak dapat dinonaktifkan di sini. Untuk mengubahnya, sesuaikan atau selesaikan penugasan shift di menu Manajemen Shift terlebih dahulu.
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                    Hak Akses Platform & Izin Presensi
+                  </span>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Pilih platform yang boleh diakses dan metode kehadiran karyawan.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {/* Akses Web Dashboard (Info sesuai Role) */}
+                  <div className="p-3.5 rounded-2xl border bg-slate-50/80 dark:bg-slate-800/40 border-slate-200 dark:border-slate-700/80 space-y-1.5">
+                    <div className="flex items-center gap-2">
+                      <Monitor className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100">Akses Web Dashboard</span>
+                    </div>
+                    <p className="text-[10px] text-slate-400 leading-relaxed">
+                      {form.role === 'employee'
+                        ? 'Role "Employee" diarahkan login via aplikasi mobile. Akses web terbuka otomatis untuk role Staff Admin/Finance/SPV.'
+                        : 'Karyawan memiliki wewenang untuk login ke dashboard web sesuai dengan modul pada Role-nya.'}
+                    </p>
+                    <span className="inline-block text-[9px] font-bold px-1.5 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/60 text-indigo-600 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-800">
+                      Role: {form.role || 'employee'}
+                    </span>
+                  </div>
+
+                  {/* Presensi Diizinkan (Akses Mobile HP) */}
+                  {(() => {
+                    const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+                    const isAttendanceLocked = Boolean(shiftLocks?.lock_attendance);
+
+                    return (
+                      <label
+                        className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
+                          isAttendanceLocked
+                            ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
+                            : form.attendanceEnabled !== false
+                              ? 'bg-indigo-50/40 dark:bg-indigo-950/20 border-indigo-200 dark:border-indigo-800 cursor-pointer'
+                              : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                        }`}
+                        title={isAttendanceLocked ? shiftLocks?.reason_attendance : undefined}
+                      >
+                        <input
+                          type="checkbox"
+                          disabled={isAttendanceLocked}
+                          checked={form.attendanceEnabled !== false}
+                          onChange={(e) => {
+                            if (isAttendanceLocked) return;
+                            const checked = e.target.checked;
+                            setForm({
+                              ...form,
+                              attendanceEnabled: checked,
+                              wfhEnabled: checked ? (form.wfhEnabled !== false) : false,
+                              radiusEnabled: checked ? ((form.wfhEnabled !== false) && (form.radiusEnabled !== false)) : false,
+                            });
+                          }}
+                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                              Presensi di HP (Akses Mobile)
+                            </span>
+                            {isAttendanceLocked && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
+                                title={shiftLocks?.reason_attendance}
+                              >
+                                <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-400 block truncate">Bisa check-in/out mandiri di smartphone</span>
+                        </div>
+                      </label>
+                    );
+                  })()}
+
+                  {/* Boleh WFH */}
+                  {(() => {
+                    const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+                    const isWfhLocked = Boolean(shiftLocks?.lock_wfh);
+                    const isAttActive = form.attendanceEnabled !== false;
+                    const isWfhChecked = isAttActive && form.wfhEnabled !== false;
+                    const isWfhDisabled = !isAttActive || isWfhLocked;
+                    const wfhTitle = isWfhLocked
+                      ? shiftLocks?.reason_wfh
+                      : (!isAttActive ? 'Presensi di HP harus aktif terlebih dahulu' : undefined);
+
+                    return (
+                      <label
+                        className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
+                          isWfhLocked
+                            ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
+                            : !isAttActive
+                              ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
+                              : isWfhChecked
+                                ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200 dark:border-emerald-800 cursor-pointer'
+                                : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                        }`}
+                        title={wfhTitle}
+                      >
+                        <input
+                          type="checkbox"
+                          disabled={isWfhDisabled}
+                          checked={isWfhChecked}
+                          onChange={(e) => {
+                            if (isWfhDisabled) return;
+                            const checked = e.target.checked;
+                            setForm({
+                              ...form,
+                              wfhEnabled: checked,
+                              radiusEnabled: false,
+                            });
+                          }}
+                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Izinkan Presensi WFH</span>
+                            {isWfhLocked && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
+                                title={shiftLocks?.reason_wfh}
+                              >
+                                <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-400 block truncate">Boleh absen di luar kantor / dinas</span>
+                        </div>
+                      </label>
+                    );
+                  })()}
+
+                  {/* Validasi Radius */}
+                  {(() => {
+                    const shiftLocks = isEdit ? (editEmployee?.shiftLocks || editEmployee?.shift_locks) : null;
+                    const isRadiusLocked = Boolean(shiftLocks?.lock_radius);
+                    const isAttActive = form.attendanceEnabled !== false;
+                    const isWfhChecked = isAttActive && form.wfhEnabled !== false;
+                    const isRadiusChecked = isAttActive && isWfhChecked && Boolean(form.radiusEnabled);
+                    const isRadiusDisabled = !isAttActive || !isWfhChecked || isRadiusLocked;
+                    const radiusTitle = isRadiusLocked
+                      ? shiftLocks?.reason_radius
+                      : (!isAttActive
+                          ? 'Presensi di HP harus aktif terlebih dahulu'
+                          : (!isWfhChecked ? 'Izinkan Presensi WFH harus aktif terlebih dahulu' : undefined));
+
+                    return (
+                      <label
+                        className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
+                          isRadiusLocked
+                            ? 'cursor-not-allowed bg-amber-50/40 dark:bg-amber-950/20 border-amber-300 dark:border-amber-700/60'
+                            : isRadiusDisabled
+                              ? 'opacity-50 cursor-not-allowed bg-slate-100/60 dark:bg-slate-800/20 border-slate-200 dark:border-slate-800'
+                              : isRadiusChecked
+                                ? 'bg-amber-50/40 dark:bg-amber-950/20 border-amber-200 dark:border-amber-800 cursor-pointer'
+                                : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                        }`}
+                        title={radiusTitle}
+                      >
+                        <input
+                          type="checkbox"
+                          disabled={isRadiusDisabled}
+                          checked={isRadiusChecked}
+                          onChange={(e) => {
+                            if (isRadiusDisabled) return;
+                            setForm({ ...form, radiusEnabled: e.target.checked });
+                          }}
+                          className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5 disabled:opacity-50 disabled:cursor-not-allowed"
+                        />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Validasi Radius Geofence</span>
+                            {isRadiusLocked && (
+                              <span
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-400 border border-rose-200 dark:border-rose-800"
+                                title={shiftLocks?.reason_radius}
+                              >
+                                <Ban className="w-2.5 h-2.5 shrink-0" /> Terkunci
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[10px] text-slate-400 block truncate">Kunci presensi sesuai koordinat GPS</span>
+                        </div>
+                      </label>
+                    );
+                  })()}
+
+                  {/* Jam Fleksibel (Flexitime) */}
+                  <label className={`flex items-start gap-3 p-3.5 rounded-2xl border transition cursor-pointer ${
+                    Boolean(form.flexitimeEnabled)
+                      ? 'bg-teal-50/40 dark:bg-teal-950/20 border-teal-200 dark:border-teal-800'
+                      : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700'
+                  }`}>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(form.flexitimeEnabled)}
+                      onChange={(e) => setForm({ ...form, flexitimeEnabled: e.target.checked })}
+                      className="w-4 h-4 rounded text-teal-600 focus:ring-teal-500 mt-0.5"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Jam Fleksibel (Flexitime)</span>
+                      <span className="text-[10px] text-slate-400">Jadwal datang & pulang fleksibel</span>
+                    </div>
+                  </label>
+
+                  {/* Hak Lembur Overtime */}
+                  <label className="flex items-start gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={Boolean(form.overtimeEligible)}
+                      onChange={(e) => setForm({ ...form, overtimeEligible: e.target.checked })}
+                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
+                    />
+                    <div>
+                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Berhak Upah Lembur</span>
+                      <span className="text-[10px] text-slate-400">Rumus Depnaker 1/173 x Gaji</span>
+                    </div>
+                  </label>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Keamanan Akun / Perangkat Binding */}
@@ -2129,9 +2673,27 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
               {isEdit ? 'Status Perangkat Terikat (Device Binding)' : 'Kredensial Akun & Kata Sandi Baru'}
             </h3>
 
-            {!isEdit ? (
+            {form.can_login === false ? (
+              <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700 text-xs text-slate-600 dark:text-slate-300 flex items-center gap-2.5">
+                <Lock className="w-4 h-4 text-slate-400 shrink-0" />
+                <span>Password tidak diperlukan karena akun ini tidak memiliki akses login (Non-Sistem / Deskless).</span>
+              </div>
+            ) : !isEdit ? (
               /* Add Mode: Password & Confirm Password */
               <div className="space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                    Tentukan password sementara untuk login karyawan pertama kali.
+                  </span>
+                  <button
+                    type="button"
+                    onClick={generateRandomPassword}
+                    className="self-start sm:self-auto text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 flex items-center gap-1 cursor-pointer bg-indigo-50 dark:bg-indigo-950/40 px-2.5 py-1 rounded-lg border border-indigo-100 dark:border-indigo-800 transition"
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    Buat Password Acak
+                  </button>
+                </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="space-y-1">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">

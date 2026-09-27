@@ -96,8 +96,17 @@ export default function App() {
   const isFinance = user?.role === 'finance';
   const MANAGEMENT_PAGES = ['karyawan', 'presensi', 'shift', 'overtime', 'device-changes', 'rekrutmen'];
 
-  // Pengaturan Aturan hanya untuk admin & super_admin.
+  // Pengaturan Aturan: admin, super_admin, atau pengguna yang memiliki hak akses settings / roles.
   const isAdminOrSuperAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const canAccessSettings =
+    isAdminOrSuperAdmin ||
+    Boolean(
+      (user as any)?.can_read_settings ||
+      (user as any)?.can_manage_settings ||
+      (user as any)?.can_read_roles ||
+      (user as any)?.can_manage_roles ||
+      (user as any)?.can_manage_receipt
+    );
   const SETTINGS_PAGES = ['setting'];
 
   // Global React States
@@ -161,7 +170,7 @@ export default function App() {
 
   const loadSettings = useCallback(async (forceRefresh = false) => {
     const res = await settingsApi.get(forceRefresh);
-    setSettings(mapSettings(res.settings, res.branch_settings));
+    setSettings(mapSettings(res.settings, res.branch_settings, res.receipt_approval_rules));
   }, []);
 
   // Muat semua data awal saat user terautentikasi.
@@ -216,8 +225,8 @@ export default function App() {
     if (isFinance && MANAGEMENT_PAGES.includes(activePage)) {
       setActivePage('inbox');
     }
-    // HRD & finance tidak boleh di Pengaturan Aturan → alihkan ke halaman default.
-    if (!isAdminOrSuperAdmin && SETTINGS_PAGES.includes(activePage)) {
+    // Pengguna tanpa hak akses Pengaturan Aturan → alihkan ke halaman default.
+    if (!canAccessSettings && SETTINGS_PAGES.includes(activePage)) {
       setActivePage(user?.role === 'hrd' ? 'karyawan' : 'inbox');
     }
   }, [isHrd, isFinance, isAdminOrSuperAdmin, activePage]);
@@ -404,8 +413,11 @@ export default function App() {
       threshold_single: newSettings.thresholdSingle,
       threshold_two: newSettings.thresholdTwo,
       threshold_three: newSettings.thresholdThree,
+      receipt_tier1_threshold: newSettings.receiptTier1Threshold,
+      receipt_tier2_threshold: newSettings.receiptTier2Threshold,
+      receipt_tier2_mode: newSettings.receiptTier2Mode,
     });
-    setSettings(mapSettings(res.settings, res.branch_settings));
+    setSettings(mapSettings(res.settings, res.branch_settings, res.receipt_approval_rules));
     // audit log tidak perlu di-refresh dari sini — AuditLogView mengurus sendiri
   };
 
@@ -1158,8 +1170,8 @@ export default function App() {
 
             {/* Separator block */}
             <div className="border-t border-slate-800/80 pt-4 space-y-1">
-              {/* Pengaturan Aturan — hanya admin & super_admin */}
-              {isAdminOrSuperAdmin && (
+              {/* Pengaturan Aturan — admin, super_admin, atau role dengan izin settings/roles */}
+              {canAccessSettings && (
               <button
                 onClick={() => navigateTo('setting')}
                 className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${

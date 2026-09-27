@@ -44,6 +44,17 @@ class AccessMiddlewareTest extends TestCase
         $this->assertStringContainsString('tidak memiliki akses', $response->getContent());
     }
 
+    public function test_receipt_middleware_blokir_user_tanpa_izin_klaim_struk(): void
+    {
+        $user = new User(['role' => 'employee', 'is_active' => true, 'allow_receipt_claim' => false]);
+
+        $response = (new ReceiptAccessMiddleware())
+            ->handle($this->requestAs($user), $this->pass());
+
+        $this->assertSame(403, $response->getStatusCode());
+        $this->assertStringContainsString('Akses klaim struk dinonaktifkan', $response->getContent());
+    }
+
     public function test_attendance_middleware_izinkan_jika_enabled(): void
     {
         $user = new User(['role' => 'finance', 'attendance_enabled' => true]);

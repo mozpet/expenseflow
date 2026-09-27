@@ -23,8 +23,13 @@ class LeaveRequest extends Model
         'reason',
         'document_path',
         'status',
+        'current_step',
+        'spv_id',
+        'spv_approved_at',
+        'spv_notes',
         'approved_by',
         'approved_at',
+        'notes',
         'rejection_reason',
         'holiday_id',
         'collective_status',
@@ -37,6 +42,7 @@ class LeaveRequest extends Model
             'end_date'                 => 'date:Y-m-d',
             'total_days'               => 'integer',
             'holiday_compensated_days' => 'integer',
+            'spv_approved_at'          => 'datetime',
             'approved_at'              => 'datetime',
         ];
     }
@@ -49,6 +55,11 @@ class LeaveRequest extends Model
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
+    }
+
+    public function spv(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'spv_id');
     }
 
     public function approver(): BelongsTo

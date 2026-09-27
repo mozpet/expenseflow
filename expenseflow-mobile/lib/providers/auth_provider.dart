@@ -15,6 +15,12 @@ class AppUser {
   final String? bankAccountNo;
   final String? bankAccountHolder;
   final double? monthlyClaimLimit;
+  final int? divisionId;
+  final String? divisionName;
+  final int? positionId;
+  final String? positionName;
+  final bool isSupervisor;
+  final bool allowReceiptClaim;
 
   AppUser({
     required this.id,
@@ -28,6 +34,12 @@ class AppUser {
     this.bankAccountNo,
     this.bankAccountHolder,
     this.monthlyClaimLimit,
+    this.divisionId,
+    this.divisionName,
+    this.positionId,
+    this.positionName,
+    this.isSupervisor = false,
+    this.allowReceiptClaim = true,
   });
 
   factory AppUser.fromJson(Map<String, dynamic> json) {
@@ -49,6 +61,12 @@ class AppUser {
       bankAccountNo: json['bank_account_no'] as String?,
       bankAccountHolder: json['bank_account_holder'] as String?,
       monthlyClaimLimit: parseLimit(json['monthly_claim_limit']),
+      divisionId: json['division_id'] as int?,
+      divisionName: json['division_name'] as String?,
+      positionId: json['position_id'] as int?,
+      positionName: json['position_name'] as String?,
+      isSupervisor: json['is_supervisor'] == true,
+      allowReceiptClaim: json['allow_receipt_claim'] != false && json['can_access_receipts'] != false,
     );
   }
 
@@ -65,6 +83,12 @@ class AppUser {
       'bank_account_no': bankAccountNo,
       'bank_account_holder': bankAccountHolder,
       'monthly_claim_limit': monthlyClaimLimit,
+      'division_id': divisionId,
+      'division_name': divisionName,
+      'position_id': positionId,
+      'position_name': positionName,
+      'is_supervisor': isSupervisor,
+      'allow_receipt_claim': allowReceiptClaim,
     };
   }
 }
@@ -82,6 +106,7 @@ class AuthProvider extends ChangeNotifier {
   int? get retryAfter => _retryAfter;
   bool get isLoggedIn => _user != null;
   bool get wfhEnabled => _user?.wfhEnabled ?? false;
+  bool get canClaimReceipt => _user?.allowReceiptClaim ?? true;
 
   /// Dipanggil saat app start: cek token & user cache tersimpan → auto login persistent.
   Future<bool> loadSession() async {

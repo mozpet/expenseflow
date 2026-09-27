@@ -58,12 +58,20 @@ class UserController extends Controller
 
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
-        $users = $query->with(['office:id,office_name', 'roleRelation:id,name,slug,platform,branch_scope', 'userShifts.shift.schedules', 'userShifts.shiftPattern.items'])
+        $users = $query->with([
+            'office:id,office_name',
+            'roleRelation:id,name,slug,platform,branch_scope',
+            'division:id,name,code',
+            'position:id,name,is_supervisor',
+            'manager:id,name,employee_code',
+            'userShifts.shift.schedules',
+            'userShifts.shiftPattern.items',
+        ])
             ->select([
-                'id', 'company_id', 'role_id', 'employee_code', 'name', 'email', 'phone',
+                'id', 'company_id', 'role_id', 'division_id', 'position_id', 'manager_id', 'employee_code', 'name', 'email', 'phone',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'role', 'department', 'attendance_setting_id', 'monthly_claim_limit',
-                'is_active', 'employment_type', 'joined_date', 'identity_number',
+                'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim',
+                'is_active', 'can_login', 'employment_type', 'joined_date', 'identity_number',
                 'contract_start_date', 'contract_end_date', 'bank_name',
                 'bank_account_no', 'bank_account_holder',
                 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled',
@@ -137,12 +145,43 @@ class UserController extends Controller
             $request->merge(['identity_number' => null]);
         }
 
+        $canLogin = $request->has('can_login') ? filter_var($request->input('can_login'), FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE) ?? true : true;
+
+        if (! $canLogin) {
+            if (empty($request->input('password'))) {
+                $request->merge(['password' => \Illuminate\Support\Str::random(32)]);
+            }
+            if (empty($request->input('email'))) {
+                $code = $request->input('employee_code') ?: ($request->input('identity_number') ?: uniqid());
+                $request->merge(['email' => 'deskless_' . $code . '@internal.expenseflow.local']);
+            }
+            $request->merge([
+                'attendance_enabled' => false,
+                'allow_attendance'   => false,
+                'wfh_enabled'        => false,
+                'radius_enabled'     => false,
+            ]);
+        }
+
         $validated = $request->validate([
             'name'                  => 'required|string|max:255',
             'email'                 => 'required|email|unique:users,email',
             'password'              => 'required|string|min:8',
+            'can_login'             => 'nullable|boolean',
             'role'                  => 'required|string',
             'role_id'               => 'nullable|integer',
+            'division_id'           => [
+                'nullable',
+                Rule::exists('divisions', 'id')->where('company_id', $companyId),
+            ],
+            'position_id'           => [
+                'nullable',
+                Rule::exists('positions', 'id')->where('company_id', $companyId),
+            ],
+            'manager_id'            => [
+                'nullable',
+                Rule::exists('users', 'id')->where('company_id', $companyId),
+            ],
             'employee_code'         => 'nullable|string|max:50|unique:users,employee_code',
             'identity_number'       => 'nullable|string|size:16|unique:users,identity_number',
             'department'            => 'nullable|string|max:100',
@@ -157,6 +196,7 @@ class UserController extends Controller
                 Rule::exists('attendance_settings', 'id')->where('company_id', $companyId),
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
+            'allow_receipt_claim'   => 'nullable|boolean',
             'overtime_enabled'      => 'nullable|boolean',
             'attendance_enabled'    => 'nullable|boolean',
             'wfh_enabled'           => 'nullable|boolean',
@@ -227,6 +267,9 @@ class UserController extends Controller
             'password'              => Hash::make($validated['password']),
             'role'                  => $validated['role'],
             'role_id'               => $roleModel?->id ?? ($validated['role_id'] ?? null),
+            'division_id'           => $validated['division_id'] ?? null,
+            'position_id'           => $validated['position_id'] ?? null,
+            'manager_id'            => $validated['manager_id'] ?? null,
             'department'            => $validated['department'] ?? null,
             'identity_number'       => $identityNumber,
             'phone'                 => $validated['phone'] ?? null,
@@ -245,7 +288,9 @@ class UserController extends Controller
             'dinas_luar_enabled'    => $dinasLuarEnabled,
             'flexitime_enabled'     => $flexitimeEnabled,
             'monthly_claim_limit'   => $validated['monthly_claim_limit'] ?? null,
+            'allow_receipt_claim'   => $validated['allow_receipt_claim'] ?? true,
             'is_active'             => true,
+            'can_login'             => $canLogin,
             'employment_type'       => $validated['employment_type'] ?? null,
             'joined_date'           => $validated['joined_date'] ?? null,
             'contract_start_date'   => $validated['contract_start_date'] ?? null,
@@ -299,10 +344,17 @@ class UserController extends Controller
             ])
         );
 
+        $user->load([
+            'roleRelation:id,name,slug,platform,branch_scope',
+            'division:id,name,code',
+            'position:id,name,is_supervisor',
+            'manager:id,name,employee_code',
+        ]);
+
         return response()->json([
             'message' => 'Karyawan berhasil ditambahkan.',
-            'user'    => $user->only([
-                'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
+            'user'    => array_merge($user->only([
+                'id', 'employee_code', 'name', 'email', 'phone', 'role', 'role_id', 'division_id', 'position_id', 'manager_id', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
                 'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
@@ -314,6 +366,12 @@ class UserController extends Controller
                 'religion', 'marital_status', 'number_of_dependents',
                 'blood_type', 'medical_conditions',
                 'education_level', 'institution_name', 'major', 'graduation_year',
+            ]), [
+                'role_relation' => $user->roleRelation,
+                'division'      => $user->division,
+                'position'      => $user->position,
+                'effective_monthly_claim_limit' => $user->effective_monthly_claim_limit,
+                'manager'       => $user->manager,
             ]),
         ], 201);
     }
@@ -335,12 +393,13 @@ class UserController extends Controller
             $roleId = $request->input('role_id');
             $roleInput = $request->input('role');
             $roleModel = null;
+            $companyId = $user->company_id ?? $actor->company_id;
 
             if ($roleId) {
-                $roleModel = Role::where(function ($q) use ($user) {
+                $roleModel = Role::where(function ($q) use ($companyId) {
                     $q->whereNull('company_id');
-                    if ($user->company_id) {
-                        $q->orWhere('company_id', $user->company_id);
+                    if ($companyId) {
+                        $q->orWhere('company_id', $companyId);
                     }
                 })->where('id', $roleId)->first();
 
@@ -348,10 +407,10 @@ class UserController extends Controller
                     return response()->json(['message' => 'Role yang dipilih tidak valid atau bukan milik perusahaan Anda.'], 422);
                 }
             } elseif ($roleInput) {
-                $roleModel = Role::where(function ($q) use ($user) {
+                $roleModel = Role::where(function ($q) use ($companyId) {
                     $q->whereNull('company_id');
-                    if ($user->company_id) {
-                        $q->orWhere('company_id', $user->company_id);
+                    if ($companyId) {
+                        $q->orWhere('company_id', $companyId);
                     }
                 })->where('slug', $roleInput)->first();
             }
@@ -380,6 +439,29 @@ class UserController extends Controller
             'email'                 => ['sometimes', 'required', 'email', Rule::unique('users')->ignore($user->id)],
             'role'                  => 'sometimes|required|string',
             'role_id'               => 'sometimes|nullable|integer',
+            'division_id'           => [
+                'sometimes',
+                'nullable',
+                Rule::exists('divisions', 'id')->where('company_id', $user->company_id),
+            ],
+            'position_id'           => [
+                'sometimes',
+                'nullable',
+                Rule::exists('positions', 'id')->where('company_id', $user->company_id),
+            ],
+            'manager_id'            => [
+                'sometimes',
+                'nullable',
+                Rule::exists('users', 'id')->where('company_id', $user->company_id),
+                function ($attribute, $value, $fail) use ($user) {
+                    if ($value && (int) $value === (int) $user->id) {
+                        $fail('Karyawan tidak dapat memilih dirinya sendiri sebagai atasan langsung.');
+                    }
+                    if ($value && $user->isAncestorOf((int) $value)) {
+                        $fail('Atasan langsung yang dipilih menyebabkan hubungan hirarki sirkular.');
+                    }
+                },
+            ],
             'employee_code'         => ['nullable', 'string', 'max:50', Rule::unique('users')->ignore($user->id)],
             'identity_number'       => ['nullable', 'string', 'size:16', Rule::unique('users')->ignore($user->id)],
             'department'            => 'nullable|string|max:100',
@@ -395,6 +477,8 @@ class UserController extends Controller
                 Rule::exists('attendance_settings', 'id')->where('company_id', $user->company_id),
             ],
             'monthly_claim_limit'   => 'nullable|numeric|min:0',
+            'allow_receipt_claim'   => 'sometimes|nullable|boolean',
+            'can_login'             => 'sometimes|nullable|boolean',
             'overtime_enabled'      => 'sometimes|nullable|boolean',
             'attendance_enabled'    => 'sometimes|nullable|boolean',
             'wfh_enabled'           => 'sometimes|nullable|boolean',
@@ -467,6 +551,19 @@ class UserController extends Controller
             $validated['is_pregnant'] = false;
         }
 
+        if (array_key_exists('can_login', $validated)) {
+            $canLogin = (bool) $validated['can_login'];
+            $validated['can_login'] = $canLogin;
+            if (! $canLogin) {
+                $validated['allow_attendance'] = false;
+                $validated['attendance_enabled'] = false;
+                $validated['allow_wfh'] = false;
+                $validated['wfh_enabled'] = false;
+                $validated['allow_radius'] = false;
+                $validated['radius_enabled'] = false;
+            }
+        }
+
         $shiftLocks = $user->getActiveShiftRequirements();
 
         // Izin master presensi mobile & WFH & Radius dari Edit Profil Karyawan
@@ -527,8 +624,8 @@ class UserController extends Controller
 
         $original = $user->only([
             'name', 'email', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-            'role', 'department', 'employee_code',
-            'identity_number', 'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled',
+            'role', 'role_id', 'division_id', 'position_id', 'manager_id', 'department', 'employee_code',
+            'identity_number', 'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim', 'overtime_enabled',
             'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled',
             'allow_attendance', 'allow_wfh', 'allow_radius',
             'employment_type', 'joined_date', 'contract_start_date',
@@ -550,8 +647,10 @@ class UserController extends Controller
         // Tentukan tingkat severity: jika rekening bank, role, NIK, atau limit klaim berubah -> CRITICAL
         $isCriticalChange = (isset($original['bank_account_no']) && $original['bank_account_no'] != ($updated['bank_account_no'] ?? null))
             || (isset($original['role']) && $original['role'] != ($updated['role'] ?? null))
+            || (isset($original['role_id']) && $original['role_id'] != ($updated['role_id'] ?? null))
             || (isset($original['identity_number']) && $original['identity_number'] != ($updated['identity_number'] ?? null))
-            || (isset($original['monthly_claim_limit']) && $original['monthly_claim_limit'] != ($updated['monthly_claim_limit'] ?? null));
+            || (isset($original['monthly_claim_limit']) && $original['monthly_claim_limit'] != ($updated['monthly_claim_limit'] ?? null))
+            || (isset($original['allow_receipt_claim']) && $original['allow_receipt_claim'] != ($updated['allow_receipt_claim'] ?? null));
 
         $severity = $isCriticalChange ? AuditLogger::SEVERITY_CRITICAL : AuditLogger::SEVERITY_INFO;
         $category = (isset($original['bank_account_no']) && $original['bank_account_no'] != ($updated['bank_account_no'] ?? null))
@@ -569,12 +668,19 @@ class UserController extends Controller
             updated: $updated
         );
 
+        $user->load([
+            'roleRelation:id,name,slug,platform,branch_scope',
+            'division:id,name,code',
+            'position:id,name,is_supervisor',
+            'manager:id,name,employee_code',
+        ]);
+
         return response()->json([
             'message' => 'Data karyawan berhasil diperbarui.',
-            'user'    => $user->only([
-                'id', 'employee_code', 'name', 'email', 'phone', 'role', 'department',
+            'user'    => array_merge($user->only([
+                'id', 'employee_code', 'name', 'email', 'phone', 'role', 'role_id', 'division_id', 'position_id', 'manager_id', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'attendance_setting_id', 'monthly_claim_limit', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'shift_locks', 'is_active', 'company_id',
+                'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'shift_locks', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
                 'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',
@@ -585,6 +691,12 @@ class UserController extends Controller
                 'blood_type', 'medical_conditions',
                 'education_level', 'institution_name', 'major', 'graduation_year',
                 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status',
+            ]), [
+                'role_relation' => $user->roleRelation,
+                'division'      => $user->division,
+                'position'      => $user->position,
+                'effective_monthly_claim_limit' => $user->effective_monthly_claim_limit,
+                'manager'       => $user->manager,
             ]),
         ]);
     }
@@ -764,7 +876,11 @@ class UserController extends Controller
             'users.*.birth_place'            => 'nullable|string|max:100',
             'users.*.birth_date'             => 'nullable|string',
             'users.*.attendance_setting_id'  => 'nullable|integer',
+            'users.*.division_id'            => 'nullable|integer',
+            'users.*.position_id'            => 'nullable|integer',
+            'users.*.manager_id'             => 'nullable|integer',
             'users.*.monthly_claim_limit'    => 'nullable|numeric|min:0',
+            'users.*.allow_receipt_claim'    => 'nullable|boolean',
             'users.*.employment_type'        => 'nullable|string',
             'users.*.joined_date'            => 'nullable|string',
             'users.*.contract_start_date'    => 'nullable|string',
@@ -1012,7 +1128,11 @@ class UserController extends Controller
                     'birth_date'            => $birthDate,
                     'is_pregnant'           => false,
                     'attendance_setting_id' => $officeId,
+                    'division_id'           => !empty($row['division_id']) ? (int) $row['division_id'] : null,
+                    'position_id'           => !empty($row['position_id']) ? (int) $row['position_id'] : null,
+                    'manager_id'            => !empty($row['manager_id']) ? (int) $row['manager_id'] : null,
                     'monthly_claim_limit'   => isset($row['monthly_claim_limit']) && is_numeric($row['monthly_claim_limit']) ? (float) $row['monthly_claim_limit'] : null,
+                    'allow_receipt_claim'   => isset($row['allow_receipt_claim']) ? (bool) $row['allow_receipt_claim'] : true,
                     'is_active'             => true,
                     'allow_attendance'      => $defaultAttendanceEnabled,
                     'allow_wfh'             => $defaultAttendanceEnabled ? $defaultWfhEnabled : false,
@@ -1115,5 +1235,77 @@ class UserController extends Controller
             'errors'         => $errors,
             'imported_users' => $importedUsers,
         ], 200);
+    }
+
+    /**
+     * List kandidat Atasan Langsung (SPV) untuk dropdown di form karyawan.
+     * GET /api/v1/admin/users/supervisors
+     */
+    public function supervisors(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+        $companyId = $actor->company_id;
+
+        $query = User::where('company_id', $companyId)
+            ->where('is_active', true)
+            ->with(['position:id,name,is_supervisor', 'division:id,name,code', 'roleRelation:id,name,slug', 'office:id,office_name']);
+
+        // Filter divisi jika diberikan
+        if ($request->filled('division_id')) {
+            $divId = (int) $request->query('division_id');
+            $query->where(function ($q) use ($divId) {
+                $q->where('division_id', $divId)
+                  ->orWhereNull('division_id');
+            });
+        }
+
+        // Filter cabang/kantor jika diberikan (bisa berupa spesifik cabang atau atasan lintas cabang)
+        if ($request->filled('attendance_setting_id')) {
+            $branchId = (int) $request->query('attendance_setting_id');
+            $query->where(function ($q) use ($branchId) {
+                $q->where('attendance_setting_id', $branchId)
+                  ->orWhereNull('attendance_setting_id');
+            });
+        }
+
+        // Exclude user yang sedang diedit dan seluruh bawahannya (mencegah hierarki sirkular)
+        $excludeUser = null;
+        if ($request->filled('exclude_user_id')) {
+            $excludeId = (int) $request->query('exclude_user_id');
+            $query->where('id', '!=', $excludeId);
+            $excludeUser = User::find($excludeId);
+        }
+
+        $supervisors = $query->get()->filter(function ($u) use ($excludeUser) {
+            // Filter anti-sirkular: jangan tampilkan bawahan sebagai kandidat atasan
+            if ($excludeUser && $excludeUser->isAncestorOf((int) $u->id)) {
+                return false;
+            }
+
+            // Penegasan batas Role vs Jabatan: evaluasi wewenang struktural (jabatan/bawahan) dan hak akses sistem secara konsisten
+            return $u->isSupervisor();
+        })->values();
+
+        $mapped = $supervisors->map(function ($s) {
+            return [
+                'id'                    => $s->id,
+                'name'                  => $s->name,
+                'employee_code'         => $s->employee_code,
+                'division_id'           => $s->division_id,
+                'division_name'         => $s->division?->name ?? $s->department,
+                'position_id'           => $s->position_id,
+                'position_name'         => $s->position?->name ?? ($s->roleRelation?->name ?? ucfirst($s->role)),
+                'is_supervisor'         => (bool) ($s->position?->is_supervisor ?? true),
+                'attendance_setting_id' => $s->attendance_setting_id,
+                'office_name'           => $s->office?->office_name ?? 'Semua Cabang',
+                'role'                  => $s->role,
+            ];
+        });
+
+        return response()->json([
+            'success'     => true,
+            'data'        => $mapped,
+            'supervisors' => $mapped,
+        ]);
     }
 }

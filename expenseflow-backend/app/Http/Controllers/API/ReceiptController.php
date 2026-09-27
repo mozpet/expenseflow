@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Jobs\ProcessOcrJob;
 use App\Models\Receipt;
 use App\Models\ReceiptApproval;
+use App\Models\Role;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -15,7 +16,7 @@ use Illuminate\Validation\Rule;
 
 class ReceiptController extends Controller
 {
-    // ─── Helper: catat aktivitas ──────────────────────────────
+    // â”€â”€â”€ Helper: catat aktivitas â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private function logActivity(int $userId, int $companyId, string $action, string $description, ?int $subjectId = null, ?string $entityType = null, ?int $entityId = null): void
     {
         DB::table('activity_logs')->insert([
@@ -32,7 +33,7 @@ class ReceiptController extends Controller
         ]);
     }
 
-    // ─── Helper: kirim notifikasi ke user ─────────────────────
+    // â”€â”€â”€ Helper: kirim notifikasi ke user â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private function notifyUser(int $userId, string $type, array $data, ?string $entityType = null, ?int $entityId = null): void
     {
         DB::table('notifications')->insert([
@@ -49,7 +50,7 @@ class ReceiptController extends Controller
         ]);
     }
 
-    // ─── Helper: generate nomor receipt ────────────────────────
+    // â”€â”€â”€ Helper: generate nomor receipt â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private function generateReceiptNumber(): string
     {
         $prefix = 'RCP-' . now()->format('Ymd') . '-';
@@ -64,11 +65,30 @@ class ReceiptController extends Controller
         return $prefix . str_pad((string) $num, 4, '0', STR_PAD_LEFT);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 1. store() — upload foto, SHA256, langsung dispatch OCR
+    /**
+     * Ambil konfigurasi aturan approval struk dari company_settings.
+     * Mengembalikan array dengan keys: tier1_threshold, tier2_threshold, tier2_mode.
+     */
+    private function getReceiptApprovalConfig(int $companyId): array
+    {
+        $rows = DB::table('company_settings')
+            ->where('company_id', $companyId)
+            ->whereIn('key', ['receipt_tier1_threshold', 'receipt_tier2_threshold', 'receipt_tier2_mode'])
+            ->pluck('value', 'key')
+            ->toArray();
+
+        return [
+            'tier1_threshold' => (float) ($rows['receipt_tier1_threshold'] ?? 500000),
+            'tier2_threshold' => (float) ($rows['receipt_tier2_threshold'] ?? 1000000),
+            'tier2_mode'      => (string) ($rows['receipt_tier2_mode'] ?? 'two_finance'),
+        ];
+    }
+
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 1. store() â€” upload foto, SHA256, langsung dispatch OCR
     //    Karyawan hanya wajib: image + category.
-    //    total_amount, claimed_amount, receipt_date → diisi OCR.
-    // ═══════════════════════════════════════════════════════════
+    //    total_amount, claimed_amount, receipt_date â†’ diisi OCR.
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function store(Request $request): JsonResponse
     {
         $request->validate([
@@ -84,6 +104,12 @@ class ReceiptController extends Controller
 
         $user      = $request->user();
         $companyId = $user->company_id;
+
+        if (! $user->canAccessReceipts()) {
+            return response()->json([
+                'message' => 'Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.',
+            ], 403);
+        }
 
         // Ambil file utama
         if ($request->hasFile('image')) {
@@ -109,7 +135,7 @@ class ReceiptController extends Controller
         // Simpan file utama ke storage/app/receipts/
         $imagePath = $primaryFile->store('receipts');
 
-        // Buat receipt — field nominal/tanggal kosong dulu, diisi OCR
+        // Buat receipt â€” field nominal/tanggal kosong dulu, diisi OCR
         $receipt = Receipt::create([
             'company_id'            => $companyId,
             'user_id'               => $user->id,
@@ -152,7 +178,7 @@ class ReceiptController extends Controller
             $receipt->expenseReport?->recalculateTotals();
         }
 
-        // Dispatch OCR job ke queue — semua ocr_raw_* + claimed_amount diisi di sini
+        // Dispatch OCR job ke queue â€” semua ocr_raw_* + claimed_amount diisi di sini
         ProcessOcrJob::dispatch($receipt->id);
 
         // Layer 1: Deteksi duplikat instan via SHA-256 hash saat upload
@@ -174,11 +200,11 @@ class ReceiptController extends Controller
         ], 201);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 2. updateClaim() — karyawan update category & notes.
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 2. updateClaim() â€” karyawan update category & notes.
     //    Jika OCR gagal, karyawan boleh isi manual: claimed_amount,
     //    total_amount, receipt_date, vendor_name.
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function updateClaim(Request $request, Receipt $receipt): JsonResponse
     {
         $lock = \Illuminate\Support\Facades\Cache::lock("receipt_action_{$receipt->id}", 10);
@@ -202,7 +228,7 @@ class ReceiptController extends Controller
             'claimed_amount' => 'sometimes|required|numeric|min:0',
         ];
 
-        // Jika OCR gagal — cek apakah ditolak karena buram/bergoyang
+        // Jika OCR gagal â€” cek apakah ditolak karena buram/bergoyang
         if ($receipt->ocr_status === 'failed') {
             $ocrError = strtolower($receipt->ocr_error ?? '');
             $isBlurry = str_contains($ocrError, 'buram') ||
@@ -251,9 +277,15 @@ class ReceiptController extends Controller
         }
     }
 
-    // ─── Helper: validasi batas klaim per-transaksi & plafon bulanan ─────
+    // â”€â”€â”€ Helper: validasi batas klaim per-transaksi & plafon bulanan â”€â”€â”€â”€â”€
     private function validateClaimLimits(User $user, float $claimedAmount, ?int $ignoreReceiptId = null): ?JsonResponse
     {
+        if (! $user->canAccessReceipts()) {
+            return response()->json([
+                'message' => 'Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.',
+            ], 403);
+        }
+
         $companyId = $user->company_id;
 
         // 1. Cek max_claim_limit per transaksi: prioritaskan batas khusus cabang karyawan jika ada
@@ -284,14 +316,8 @@ class ReceiptController extends Controller
             ], 422);
         }
 
-        // 2. Cek monthly_claim_limit akumulasi bulanan user (fallback ke company setting)
-        $monthlyLimit = (float) ($user->monthly_claim_limit ?? 0);
-        if ($monthlyLimit <= 0) {
-            $monthlyLimit = (float) (DB::table('company_settings')
-                ->where('company_id', $companyId)
-                ->where('key', 'monthly_claim_limit')
-                ->value('value') ?? 0);
-        }
+        // 2. Cek monthly_claim_limit akumulasi bulanan user (cascading: User Override → User Grade → Position Grade → Company Setting)
+        $monthlyLimit = $user->effective_monthly_claim_limit;
 
         if ($monthlyLimit > 0) {
             $currentMonthSpend = (float) Receipt::where('user_id', $user->id)
@@ -317,16 +343,16 @@ class ReceiptController extends Controller
         return null;
     }
 
-    // ─── Helper: deteksi potensi struk duplikat cerdas ─────────
+    // â”€â”€â”€ Helper: deteksi potensi struk duplikat cerdas â”€â”€â”€â”€â”€â”€â”€â”€â”€
     private function checkPotentialDuplicate(Receipt $receipt): void
     {
         $receipt->detectPotentialDuplicate();
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 3. submit() — ubah status menjadi submitted.
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 3. submit() â€” ubah status menjadi submitted.
     //    Cek ownership, cek OCR status, validasi limit, cek duplikat lalu submit.
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function submit(Request $request, Receipt $receipt): JsonResponse
     {
         // 1. Cek apakah receipt milik user yang login
@@ -377,8 +403,9 @@ class ReceiptController extends Controller
             $receipt->claimed_amount = $claimVal;
         }
 
-        // Hitung multi-approval tier berdasarkan nominal klaim
-        $tierConfig = Receipt::resolveApprovalTier($claimVal);
+        // Hitung multi-approval tier berdasarkan nominal klaim (config dari company_settings)
+        $approvalConfig = $this->getReceiptApprovalConfig((int) $receipt->company_id);
+        $tierConfig = Receipt::resolveApprovalTier($claimVal, $approvalConfig);
         $receipt->approval_tier      = $tierConfig['tier'];
         $receipt->required_approvals = $tierConfig['required_approvals'];
         $receipt->current_approvals  = 0;
@@ -412,9 +439,9 @@ class ReceiptController extends Controller
         ]);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 3a. retake() — foto ulang struk draf (replace foto & re-run OCR)
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 3a. retake() â€” foto ulang struk draf (replace foto & re-run OCR)
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function retake(Request $request, Receipt $receipt): JsonResponse
     {
         if ($receipt->user_id !== $request->user()->id) {
@@ -498,10 +525,10 @@ class ReceiptController extends Controller
         ]);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 3b. destroy() — karyawan hapus draft (soft delete).
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 3b. destroy() â€” karyawan hapus draft (soft delete).
     //     Hanya boleh jika status == 'draft' dan milik sendiri.
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function destroy(Request $request, Receipt $receipt): JsonResponse
     {
         if ($receipt->user_id !== $request->user()->id) {
@@ -515,7 +542,7 @@ class ReceiptController extends Controller
         }
 
         $receiptNumber = $receipt->receipt_number;
-        $receipt->delete(); // soft delete — deleted_at diisi, data tetap ada untuk audit
+        $receipt->delete(); // soft delete â€” deleted_at diisi, data tetap ada untuk audit
 
         $this->logActivity(
             $request->user()->id,
@@ -530,9 +557,9 @@ class ReceiptController extends Controller
         return response()->json(['message' => 'Draft struk berhasil dihapus.']);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 4. approve() — finance approve (mendukung nominal penyesuaian)
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 4. approve() â€” finance approve (mendukung nominal penyesuaian)
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function approve(Request $request, Receipt $receipt): JsonResponse
     {
         $lock = \Illuminate\Support\Facades\Cache::lock("receipt_action_{$receipt->id}", 10);
@@ -564,30 +591,42 @@ class ReceiptController extends Controller
         $requiredApprovals = $receipt->required_approvals > 0 ? (int) $receipt->required_approvals : 1;
         $currentApprovals  = (int) ($receipt->current_approvals ?? 0);
 
-        // 3. Aturan Tier 3 (> 1.000.000): Approval tahap 2 wajib dilakukan oleh SPV/Manager Finance atau Admin/Superadmin
-        $isTier3 = str_contains((string) $receipt->approval_tier, 'Tier 3') || $receipt->approval_tier == 3;
-        if ($isTier3 && $currentApprovals === 1) {
+        // 3. Aturan SPV berdasarkan tier & konfigurasi perusahaan
+        //    - Tier 3 ('finance_and_spv_required'): approval tahap 2 WAJIB oleh SPV Finance
+        //    - Tier 2 mode 'finance_and_spv': approval tahap 2 OPSIONAL boleh SPV atau Finance
+        //    - Tier 2 mode 'two_finance': cukup Finance biasa di kedua tahap
+        $approvalConfig = $this->getReceiptApprovalConfig((int) $receipt->company_id);
+        $tierKey = '';
+        // Deteksi tier dari string yang tersimpan
+        if (str_contains((string) $receipt->approval_tier, 'Tier 3')) {
+            $tierKey = 'tier3';
+        } elseif (str_contains((string) $receipt->approval_tier, 'Tier 2')) {
+            $tierKey = 'tier2';
+        } elseif (str_contains((string) $receipt->approval_tier, 'Tier 1')) {
+            $tierKey = 'tier1';
+        }
+
+        $needsSpvOnStep2 = ($tierKey === 'tier3');  // Tier 3 selalu wajib SPV
+
+        // Tier 2 dengan mode 'finance_and_spv': step 2 tidak wajib SPV tapi boleh siapa saja yang punya hak finance
+        // (validasi hak akses dasar sudah dicakup oleh middleware/permission cek di bawah)
+
+        if ($needsSpvOnStep2 && $currentApprovals === 1) {
             $userRoleCode = strtolower($user->roleRelation?->slug ?? $user->role ?? '');
             $userRoleName = strtolower($user->roleRelation?->name ?? '');
 
-            $isSpvOrAbove = in_array($userRoleCode, ['super_admin', 'admin'])
-                // Keyword Inggris
-                || str_contains($userRoleCode, 'spv') || str_contains($userRoleCode, 'supervisor')
-                || str_contains($userRoleCode, 'manager') || str_contains($userRoleCode, 'head')
-                || str_contains($userRoleName, 'spv') || str_contains($userRoleName, 'supervisor')
-                || str_contains($userRoleName, 'manager') || str_contains($userRoleName, 'head')
-                // Keyword Indonesia
-                || str_contains($userRoleCode, 'kepala') || str_contains($userRoleCode, 'kabag')
-                || str_contains($userRoleCode, 'ketua') || str_contains($userRoleCode, 'lead')
-                || str_contains($userRoleCode, 'direktur') || str_contains($userRoleCode, 'vp')
-                || str_contains($userRoleName, 'kepala') || str_contains($userRoleName, 'kabag')
-                || str_contains($userRoleName, 'ketua') || str_contains($userRoleName, 'lead')
-                || str_contains($userRoleName, 'direktur') || str_contains($userRoleName, 'vp')
-                || str_contains($userRoleName, 'otorisator') || str_contains($userRoleName, 'koordinator');
+            // 1. Integrasi Master Jabatan & Relasi Supervisor (Penegasan Batas Role vs Jabatan):
+            $hasSupervisorPosition = ($user->position && $user->position->is_supervisor) || $user->subordinates()->exists();
+
+            $isSpvOrAbove = $hasSupervisorPosition
+                || in_array($userRoleCode, ['super_admin', 'admin'], true)
+                || $user->hasPermission(Role::MODULE_RECEIPT, 'spv')
+                || ($user->hasPermission(Role::MODULE_RECEIPT, 'manage') && ($hasSupervisorPosition || $user->isSupervisor()));
 
             if (! $isSpvOrAbove) {
+                $tier2Fmt = 'Rp ' . number_format((float) $approvalConfig['tier2_threshold'], 0, ',', '.');
                 return response()->json([
-                    'message' => 'Persetujuan tahap kedua untuk struk di atas Rp 1.000.000 wajib dilakukan oleh Supervisor/Manager Finance.',
+                    'message' => "Persetujuan tahap kedua untuk struk di atas {$tier2Fmt} wajib dilakukan oleh Supervisor/Manager Finance (memerlukan wewenang Lv 2: SPV Finance).",
                     'code'    => 'SPV_FINANCE_REQUIRED',
                 ], 422);
             }
@@ -701,9 +740,9 @@ class ReceiptController extends Controller
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 4b. bulkApprove() — finance menyetujui banyak struk sekaligus
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 4b. bulkApprove() â€” finance menyetujui banyak struk sekaligus
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function bulkApprove(Request $request): JsonResponse
     {
         $request->validate([
@@ -718,11 +757,11 @@ class ReceiptController extends Controller
 
         $receipts = Receipt::where('company_id', $companyId)
             ->whereIn('id', $receiptIds)
-            ->whereIn('status', ['submitted', 'pending'])
+            ->whereIn('status', ['submitted', 'pending', 'partially_approved'])
             ->get();
 
         if ($receipts->isEmpty()) {
-            return response()->json(['message' => 'Tidak ada struk berstatus submitted yang dapat disetujui.'], 422);
+            return response()->json(['message' => 'Tidak ada struk berstatus submitted atau partially_approved yang dapat disetujui.'], 422);
         }
 
         $companyLimitVal = DB::table('company_settings')
@@ -740,11 +779,38 @@ class ReceiptController extends Controller
             ->pluck('variance_limit', 'id')
             ->toArray();
 
+        $userRoleCode = strtolower($user->roleRelation?->slug ?? $user->role ?? '');
+        $userRoleName = strtolower($user->roleRelation?->name ?? '');
+        $hasSupervisorPosition = ($user->position && $user->position->is_supervisor) || $user->subordinates()->exists();
+
+        $isSpvOrAbove = $hasSupervisorPosition
+            || in_array($userRoleCode, ['super_admin', 'admin'], true)
+            || $user->hasPermission(Role::MODULE_RECEIPT, 'spv')
+            || ($user->hasPermission(Role::MODULE_RECEIPT, 'manage') && ($hasSupervisorPosition || $user->isSupervisor()));
+
         $approvedCount = 0;
         $skippedVarianceCount = 0;
+        $skippedBranchCount = 0;
+        $skippedAlreadyApprovedCount = 0;
+        $skippedSpvCount = 0;
 
-        DB::transaction(function () use ($receipts, $user, $request, $defaultCompanyLimit, $branchLimits, &$approvedCount, &$skippedVarianceCount) {
+        DB::transaction(function () use (
+            $receipts, $user, $request, $defaultCompanyLimit, $branchLimits, $isSpvOrAbove,
+            &$approvedCount, &$skippedVarianceCount, &$skippedBranchCount, &$skippedAlreadyApprovedCount, &$skippedSpvCount
+        ) {
             foreach ($receipts as $receipt) {
+                // 1. Validasi hak akses cabang
+                if (! $user->allowsBranch($receipt->attendance_setting_id)) {
+                    $skippedBranchCount++;
+                    continue;
+                }
+
+                // 2. Anti double-approval: satu user tidak boleh menyetujui dua kali pada struk yang sama
+                if ($receipt->isApprovedBy($user->id)) {
+                    $skippedAlreadyApprovedCount++;
+                    continue;
+                }
+
                 $claimed = (float) ($receipt->claimed_amount ?: $receipt->total_amount);
                 $ocrAmount = (float) $receipt->ocr_raw_amount;
 
@@ -764,60 +830,106 @@ class ReceiptController extends Controller
                     }
                 }
 
-                // Hapus notifikasi pending struk untuk para approver
-                DB::table('notifications')
-                    ->where('entity_type', 'receipt')
-                    ->where('entity_id', $receipt->id)
-                    ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
-                    ->delete();
+                $requiredApprovals = $receipt->required_approvals > 0 ? (int) $receipt->required_approvals : 1;
+                $currentApprovals  = (int) ($receipt->current_approvals ?? 0);
+
+                // Validasi SPV untuk Tier 3 tahap kedua
+                $tierKey = '';
+                if (str_contains((string) $receipt->approval_tier, 'Tier 3')) {
+                    $tierKey = 'tier3';
+                }
+                $needsSpvOnStep2 = ($tierKey === 'tier3');
+                if ($needsSpvOnStep2 && $currentApprovals === 1 && ! $isSpvOrAbove) {
+                    $skippedSpvCount++;
+                    continue;
+                }
+
+                $newApprovals    = $currentApprovals + 1;
+                $isFullyApproved = ($newApprovals >= $requiredApprovals);
+                $newStatus       = $isFullyApproved ? 'approved' : 'partially_approved';
 
                 $receipt->update([
-                    'status'          => 'approved',
-                    'approved_amount' => $claimed,
+                    'status'            => $newStatus,
+                    'approved_amount'   => $claimed,
+                    'current_approvals' => $newApprovals,
                 ]);
 
                 ReceiptApproval::create([
-                    'receipt_id' => $receipt->id,
-                    'user_id'    => $user->id,
-                    'status'     => 'approved',
-                    'notes'      => $request->notes ?? 'Persetujuan masal',
+                    'receipt_id'     => $receipt->id,
+                    'user_id'        => $user->id,
+                    'status'         => 'approved',
+                    'approval_level' => $newApprovals,
+                    'notes'          => $request->notes ?? 'Persetujuan masal',
                 ]);
 
                 $receipt->recalculateVariance();
 
                 $this->logActivity(
                     $user->id, $receipt->company_id,
-                    'receipt_approved', 'Approve masal struk ' . $receipt->receipt_number,
+                    'receipt_approved',
+                    ($isFullyApproved ? 'Approve masal final' : "Approve masal tahap {$newApprovals}/{$requiredApprovals}") . ' struk ' . $receipt->receipt_number,
                     $receipt->id,
                     'receipt', $receipt->id
                 );
 
-                $this->notifyUser($receipt->user_id, 'receipt_approved', [
-                    'message'        => 'Struk Anda telah diapprove: ' . $receipt->receipt_number,
-                    'receipt_id'     => $receipt->id,
-                    'receipt_number' => $receipt->receipt_number,
-                    'status'         => 'approved',
-                ], 'receipt', $receipt->id);
+                if ($isFullyApproved) {
+                    // Hapus notifikasi pending struk untuk para approver
+                    DB::table('notifications')
+                        ->where('entity_type', 'receipt')
+                        ->where('entity_id', $receipt->id)
+                        ->whereIn('type', ['receipt_submitted', 'receipt_pending'])
+                        ->delete();
+
+                    $this->notifyUser($receipt->user_id, 'receipt_approved', [
+                        'message'        => 'Struk Anda telah diapprove: ' . $receipt->receipt_number,
+                        'receipt_id'     => $receipt->id,
+                        'receipt_number' => $receipt->receipt_number,
+                        'status'         => 'approved',
+                        'approved_amount' => $claimed,
+                    ], 'receipt', $receipt->id);
+                } else {
+                    $this->notifyUser($receipt->user_id, 'receipt_partially_approved', [
+                        'message'            => "Struk {$receipt->receipt_number} disetujui tahap {$newApprovals}/{$requiredApprovals} oleh {$user->name}. Menunggu persetujuan berikutnya.",
+                        'receipt_id'         => $receipt->id,
+                        'receipt_number'     => $receipt->receipt_number,
+                        'status'             => 'partially_approved',
+                        'current_approvals'  => $newApprovals,
+                        'required_approvals' => $requiredApprovals,
+                    ], 'receipt', $receipt->id);
+                }
 
                 $approvedCount++;
             }
         });
 
-        $msg = "{$approvedCount} struk berhasil disetujui.";
+        $msg = "{$approvedCount} struk berhasil diproses persetujuan.";
+        $skippedParts = [];
         if ($skippedVarianceCount > 0) {
-            $msg .= " ({$skippedVarianceCount} struk dilewati karena melebihi batas Variance Limit {$limit}%).";
+            $skippedParts[] = "{$skippedVarianceCount} melebihi batas Variance Limit ({$defaultCompanyLimit}%)";
+        }
+        if ($skippedBranchCount > 0) {
+            $skippedParts[] = "{$skippedBranchCount} di luar kantor cabang yang diizinkan";
+        }
+        if ($skippedAlreadyApprovedCount > 0) {
+            $skippedParts[] = "{$skippedAlreadyApprovedCount} sudah Anda setujui sebelumnya";
+        }
+        if ($skippedSpvCount > 0) {
+            $skippedParts[] = "{$skippedSpvCount} memerlukan persetujuan level SPV/Manager Finance";
+        }
+        if (!empty($skippedParts)) {
+            $msg .= " (Dilewati: " . implode(', ', $skippedParts) . ").";
         }
 
         return response()->json([
             'message'        => $msg,
             'approved_count' => $approvedCount,
-            'skipped_count'  => $skippedVarianceCount,
+            'skipped_count'  => $skippedVarianceCount + $skippedBranchCount + $skippedAlreadyApprovedCount + $skippedSpvCount,
         ]);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 4c. disburse() / pay() — finance mencairkan/mentransfer reimbursement
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 4c. disburse() / pay() â€” finance mencairkan/mentransfer reimbursement
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function disburse(Request $request, Receipt $receipt): JsonResponse
     {
         if ($receipt->status !== 'approved') {
@@ -872,9 +984,9 @@ class ReceiptController extends Controller
         ]);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 4d. bulkDisburse() — finance mencairkan banyak struk sekaligus
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 4d. bulkDisburse() â€” finance mencairkan banyak struk sekaligus
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function bulkDisburse(Request $request): JsonResponse
     {
         $request->validate([
@@ -935,9 +1047,9 @@ class ReceiptController extends Controller
         ]);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 4e. exportDisbursement() — ekspor rekap transfer bank CSV
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 4e. exportDisbursement() â€” ekspor rekap transfer bank CSV
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function exportDisbursement(Request $request)
     {
         $companyId = $request->user()->company_id;
@@ -1005,21 +1117,21 @@ class ReceiptController extends Controller
             foreach ($receipts as $r) {
                 $u = $r->user;
                 $approvedVal = (float) ($r->approved_amount ?: $r->claimed_amount ?: $r->total_amount);
-                $branchName = $r->office?->office_name ?? $u?->office?->office_name ?? '—';
+                $branchName = $r->office?->office_name ?? $u?->office?->office_name ?? 'â€”';
 
                 fputcsv($file, [
                     $no++,
-                    $u->employee_code ?? '—',
-                    $u->name ?? '—',
-                    $u->department ?? '—',
+                    $u->employee_code ?? 'â€”',
+                    $u->name ?? 'â€”',
+                    $u->department ?? 'â€”',
                     $branchName,
-                    $u->bank_name ?? '—',
-                    $u->bank_account_no ? "'" . $u->bank_account_no : '—',
-                    $u->bank_account_holder ?? $u->name ?? '—',
+                    $u->bank_name ?? 'â€”',
+                    $u->bank_account_no ? "'" . $u->bank_account_no : 'â€”',
+                    $u->bank_account_holder ?? $u->name ?? 'â€”',
                     $r->receipt_number,
-                    $r->category ?? '—',
+                    $r->category ?? 'â€”',
                     $approvedVal,
-                    $r->receipt_date ? $r->receipt_date->format('Y-m-d') : '—',
+                    $r->receipt_date ? $r->receipt_date->format('Y-m-d') : 'â€”',
                     ucfirst($r->status),
                 ]);
             }
@@ -1030,9 +1142,9 @@ class ReceiptController extends Controller
         return response()->stream($callback, 200, $headers);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 5. reject() — finance reject, catat ke receipt_approvals
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 5. reject() â€” finance reject, catat ke receipt_approvals
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function reject(Request $request, Receipt $receipt): JsonResponse
     {
         $lock = \Illuminate\Support\Facades\Cache::lock("receipt_action_{$receipt->id}", 10);
@@ -1102,11 +1214,11 @@ class ReceiptController extends Controller
         }
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 5b. image() — sajikan foto struk privat (untuk dashboard web).
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 5b. image() â€” sajikan foto struk privat (untuk dashboard web).
     //     File disimpan di disk 'local' (storage/app/private), tidak
     //     bisa diakses publik. Endpoint ini cek akses lalu stream file.
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function image(Request $request, Receipt $receipt)
     {
         $user = $request->user();
@@ -1149,7 +1261,7 @@ class ReceiptController extends Controller
         return $this->serveImageAsWebP($targetPath);
     }
 
-    // ─── Helper: Serve image as WebP untuk ringan/cepat di web ────
+    // â”€â”€â”€ Helper: Serve image as WebP untuk ringan/cepat di web â”€â”€â”€â”€
     private function serveImageAsWebP(string $imagePath)
     {
         $originalPath = Storage::disk('local')->path($imagePath);
@@ -1182,11 +1294,11 @@ class ReceiptController extends Controller
         return response()->file($webpCachePath, ['Content-Type' => 'image/webp']);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 6. show() — detail satu struk lengkap dengan semua field OCR & pembayaran.
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 6. show() â€” detail satu struk lengkap dengan semua field OCR & pembayaran.
     //    Employee: hanya boleh lihat struk sendiri.
     //    Finance/Admin: boleh lihat struk apa saja di perusahaan.
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function show(Request $request, Receipt $receipt): JsonResponse
     {
         $user = $request->user();
@@ -1261,9 +1373,9 @@ class ReceiptController extends Controller
         ]);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 7. myReceipts() — list struk milik karyawan yang login
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 7. myReceipts() â€” list struk milik karyawan yang login
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function myReceipts(Request $request): JsonResponse
     {
         $receipts = Receipt::where('user_id', $request->user()->id)
@@ -1289,9 +1401,9 @@ class ReceiptController extends Controller
         return response()->json($receipts);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 8. inbox() — list struk submitted / partially_approved untuk finance
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 8. inbox() â€” list struk submitted / partially_approved untuk finance
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function inbox(Request $request): JsonResponse
     {
         $user      = $request->user();
@@ -1366,10 +1478,10 @@ class ReceiptController extends Controller
         return response()->json($receipts);
     }
 
-    // ═══════════════════════════════════════════════════════════
-    // 9. dashboardReceipts() — list SEMUA struk dengan filter status & cabang
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+    // 9. dashboardReceipts() â€” list SEMUA struk dengan filter status & cabang
     //    GET /api/v1/dashboard/receipts/all?status=submitted|approved|rejected|paid&attendance_setting_id=
-    // ═══════════════════════════════════════════════════════════
+    // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
     public function dashboardReceipts(Request $request): JsonResponse
     {
         $user      = $request->user();

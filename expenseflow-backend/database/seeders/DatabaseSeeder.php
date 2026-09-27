@@ -266,6 +266,9 @@ class DatabaseSeeder extends Seeder
         // ─── 14. Built-in Roles & Permission Setup ─────────────────
         $this->call(RoleSeeder::class);
 
+        // ─── 15. Setup 50 Karyawan per Cabang (Semua 4 Cabang x 50 = 200 Karyawan) ────────────
+        $this->call(AllBranches50EmployeesDummySeeder::class);
+
         $this->command?->info('✅ Dataset dummy siap (termasuk presensi & libur nasional). Password semua user: "password".');
         $this->command?->info('   Kantor: -6.200000, 106.816667 (radius 100m). Employee budi & siti: attendance_enabled = true.');
     }

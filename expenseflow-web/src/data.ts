@@ -330,6 +330,9 @@ export const defaultSettings: AppSettings = {
   varianceLimit: 10,
   maxClaimLimit: 2000000,
   thresholdSingle: '< Rp 10.000.000',
-  thresholdTwo: 'Rp 10 jt — Rp 50 jt',
-  thresholdThree: '> Rp 50.000.000'
+  thresholdTwo: 'Rp 10 jt \u2014 Rp 50 jt',
+  thresholdThree: '> Rp 50.000.000',
+  receiptTier1Threshold: 500000,
+  receiptTier2Threshold: 1000000,
+  receiptTier2Mode: 'two_finance',
 };

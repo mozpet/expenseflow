@@ -55,6 +55,15 @@ class AuthController extends Controller
             ], 403);
         }
 
+        // Cek izin login (Deskless / Non-Login worker)
+        if ($user->can_login === false) {
+            $this->logAttempt($user, $request, 'failed');
+
+            return response()->json([
+                'message' => 'Akun ini terdaftar sebagai karyawan non-sistem (tanpa akses login aplikasi/web).',
+            ], 403);
+        }
+
         // Validasi role vs platform
         $role = $user->role;
 
@@ -190,11 +199,23 @@ class AuthController extends Controller
             'flexitime_enabled'     => $user->canFlexitime(),
             'is_wfh_approved_today' => $user->hasApprovedWfhToday(),
             'can_access_receipts'   => $user->canAccessReceipts(),
+            'allow_receipt_claim'   => (bool) ($user->allow_receipt_claim ?? true),
+            'monthly_claim_limit'   => $user->monthly_claim_limit,
             'can_access_attendance' => $user->canAccessAttendance(),
             'can_manage_roles'      => $user->hasPermission(\App\Models\Role::MODULE_ROLE_MANAGEMENT, 'manage'),
             'can_read_roles'        => $user->hasPermission(\App\Models\Role::MODULE_ROLE_MANAGEMENT, 'read'),
+            'can_manage_settings'   => $user->hasPermission(\App\Models\Role::MODULE_SETTINGS, 'manage'),
+            'can_read_settings'     => $user->hasPermission(\App\Models\Role::MODULE_SETTINGS, 'read'),
+            'can_manage_receipt'    => $user->hasPermission(\App\Models\Role::MODULE_RECEIPT, 'manage'),
+            'can_read_receipt'      => $user->hasPermission(\App\Models\Role::MODULE_RECEIPT, 'read'),
             'allowed_branch_ids'    => $user->allowedBranchIds(),
             'branch_scope'          => $user->roleRelation?->branch_scope ?? 'all',
+            'division_id'           => $user->division_id,
+            'division_name'         => $user->division?->name ?? $user->department,
+            'position_id'           => $user->position_id,
+            'position_name'         => $user->position?->name ?? ($user->roleRelation?->name ?? ucfirst($user->role)),
+            'is_supervisor'         => $user->isSupervisor(),
+            'can_approve_overtime'  => $user->isSupervisor(),
         ];
     }
 

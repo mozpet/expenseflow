@@ -89,11 +89,17 @@ class RoleMiddleware
                 'listLeaveBalances', 'setLeaveBalance', 'listLeaveBalanceHistories',
                 'collectiveLeaveDetail',
             ])) {
+                if (in_array($action, ['approveLeave', 'rejectLeave'])) {
+                    return $user->hasPermission(Role::MODULE_LEAVE, 'spv') || $user->hasPermission(Role::MODULE_LEAVE, 'hrd');
+                }
                 return $user->hasPermission(Role::MODULE_LEAVE, $level);
             }
 
             // Lembur / Overtime
             if (in_array($action, ['listOvertimeApprovals', 'approveOvertime', 'rejectOvertime'])) {
+                if (in_array($action, ['approveOvertime', 'rejectOvertime'])) {
+                    return $user->hasPermission(Role::MODULE_OVERTIME, 'spv') || $user->hasPermission(Role::MODULE_OVERTIME, 'hrd');
+                }
                 return $user->hasPermission(Role::MODULE_OVERTIME, $level);
             }
 
@@ -156,7 +162,13 @@ class RoleMiddleware
         }
 
         if ($controller instanceof \App\Http\Controllers\API\SettingsController) {
-            return $user->hasPermission(Role::MODULE_SETTINGS, $level);
+            if (! $isWrite) {
+                return $user->hasPermission(Role::MODULE_SETTINGS, 'read')
+                    || $user->hasPermission(Role::MODULE_RECEIPT, 'read');
+            }
+
+            return $user->hasPermission(Role::MODULE_SETTINGS, 'manage')
+                || $user->hasPermission(Role::MODULE_RECEIPT, 'manage');
         }
 
         if ($controller instanceof \App\Http\Controllers\API\ActivityLogController) {
@@ -283,7 +295,13 @@ class RoleMiddleware
         }
 
         if (str_contains($path, 'settings')) {
-            return $user->hasPermission(Role::MODULE_SETTINGS, $level);
+            if (! $isWrite) {
+                return $user->hasPermission(Role::MODULE_SETTINGS, 'read')
+                    || $user->hasPermission(Role::MODULE_RECEIPT, 'read');
+            }
+
+            return $user->hasPermission(Role::MODULE_SETTINGS, 'manage')
+                || $user->hasPermission(Role::MODULE_RECEIPT, 'manage');
         }
 
         // 10. Audit Log

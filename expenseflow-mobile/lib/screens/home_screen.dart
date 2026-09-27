@@ -14,6 +14,10 @@ import '../presensi_provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/receipt_provider.dart';
 import '../providers/shift_provider.dart';
+import '../providers/spv_overtime_provider.dart';
+import '../providers/spv_leave_provider.dart';
+import 'spv_overtime_approval_screen.dart';
+import 'spv_leave_approval_screen.dart';
 import '../utils.dart';
 import '../widgets/skeleton.dart';
 
@@ -37,6 +41,9 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       final receiptProv = Provider.of<ReceiptProvider>(context, listen: false);
       final shiftProv = Provider.of<ShiftProvider>(context, listen: false);
       final presensiProv = Provider.of<PresensiProvider>(context, listen: false);
+      final authProv = Provider.of<AuthProvider>(context, listen: false);
+      final spvProv = Provider.of<SpvOvertimeProvider>(context, listen: false);
+      final spvLeaveProv = Provider.of<SpvLeaveProvider>(context, listen: false);
 
       await Future.wait([
         receiptProv.fetchMyReceipts(forceRefresh: true),
@@ -44,6 +51,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         shiftProv.checkShiftUpdates(forceRefresh: true),
         presensiProv.syncStatusFromBackend(forceRefresh: true),
         presensiProv.fetchCollectiveLeaves(forceRefresh: true),
+        if (authProv.user?.isSupervisor == true) ...[
+          spvProv.fetchPendingCount(forceRefresh: true),
+          spvLeaveProv.fetchPendingCount(forceRefresh: true),
+        ],
       ]);
 
       if (mounted) {
@@ -99,6 +110,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       presensiProv.syncStatusFromBackend();
       // Cek cuti bersama H-7 → tampilkan banner Ya/Tidak di beranda
       presensiProv.fetchCollectiveLeaves();
+      // Cek pending overtime approval khusus SPV
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      if (auth.user?.isSupervisor == true) {
+        Provider.of<SpvOvertimeProvider>(context, listen: false).fetchPendingCount();
+        Provider.of<SpvLeaveProvider>(context, listen: false).fetchPendingCount();
+      }
     });
   }
 
@@ -118,6 +135,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
       );
       presensiProv.syncStatusFromBackend();
       presensiProv.fetchCollectiveLeaves();
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      if (auth.user?.isSupervisor == true) {
+        Provider.of<SpvOvertimeProvider>(context, listen: false).fetchPendingCount();
+        Provider.of<SpvLeaveProvider>(context, listen: false).fetchPendingCount();
+      }
     }
   }
 
@@ -349,6 +371,26 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     }
   }
 
+  void _goToFotoStruk() {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    if (!auth.canClaimReceipt) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const SubmitStep1Screen()),
+    ).then((_) {
+      if (!mounted) return;
+      Provider.of<ReceiptProvider>(context, listen: false).fetchMyReceipts();
+    });
+  }
+
   // ─── Beranda: welcome + jadwal hari ini ─────────────────────────────────
   Widget _buildBerandaTab() {
     return Consumer4<AuthProvider, ShiftProvider, PresensiProvider, ReceiptProvider>(
@@ -489,7 +531,12 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
                   // ─── Card Utama: Status Presensi Hari Ini ────────────
                   _buildAttendanceCard(presensiProv),
-                  const SizedBox(height: 22),
+                  const SizedBox(height: 20),
+
+                  // ─── Banner Khusus SPV: Persetujuan Lembur Tim ───────
+                  if (user?.isSupervisor == true) ...[
+                    _buildSpvApprovalBanner(),
+                  ],
 
                   // ─── Menu Cepat (Quick Access) ──────────────────────
                   _buildQuickActions(),
@@ -505,6 +552,177 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                 ],
               ),
             ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildSpvApprovalBanner() {
+    return Consumer2<SpvOvertimeProvider, SpvLeaveProvider>(
+      builder: (context, spvOvertimeProv, spvLeaveProv, _) {
+        final otPending = spvOvertimeProv.pendingCount;
+        final leavePending = spvLeaveProv.pendingCount;
+        final totalPending = otPending + leavePending;
+
+        return Container(
+          width: double.infinity,
+          margin: const EdgeInsets.only(bottom: 22),
+          decoration: BoxDecoration(
+            gradient: const LinearGradient(
+              colors: [Color(0xFFFFF7ED), Color(0xFFFFEDD5)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: const Color(0xFFFED7AA)),
+            boxShadow: [
+              BoxShadow(
+                color: const Color(0xFFEA580C).withValues(alpha: 0.08),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFEA580C).withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    child: const Icon(
+                      Icons.verified_user_rounded,
+                      color: Color(0xFFEA580C),
+                      size: 20,
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Persetujuan Tim (Supervisor)',
+                          style: TextStyle(
+                            fontSize: 14,
+                            fontWeight: FontWeight.bold,
+                            color: Color(0xFF9A3412),
+                          ),
+                        ),
+                        Text(
+                          'Wewenang Atasan Langsung Level 1',
+                          style: TextStyle(
+                            fontSize: 11,
+                            color: Color(0xFFC2410C),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (totalPending > 0)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFEA580C),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        '$totalPending Menunggu',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              Text(
+                totalPending > 0
+                    ? 'Ada $totalPending pengajuan dari anggota tim yang membutuhkan persetujuan Anda.'
+                    : 'Tidak ada pengajuan tim yang sedang pending saat ini.',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Colors.grey.shade800,
+                  height: 1.3,
+                ),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  // Button Lembur Tim
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const SpvOvertimeApprovalScreen(),
+                          ),
+                        ).then((_) {
+                          if (!mounted) return;
+                          spvOvertimeProv.fetchPendingCount(forceRefresh: true);
+                        });
+                      },
+                      icon: const Icon(Icons.timer_outlined, size: 15),
+                      label: Text(
+                        otPending > 0 ? 'Lembur ($otPending)' : 'Lembur',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFFEA580C),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // Button Izin/Cuti Tim
+                  Expanded(
+                    child: ElevatedButton.icon(
+                      onPressed: () {
+                        Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                            builder: (_) => const SpvLeaveApprovalScreen(),
+                          ),
+                        ).then((_) {
+                          if (!mounted) return;
+                          spvLeaveProv.fetchPendingCount(forceRefresh: true);
+                        });
+                      },
+                      icon: const Icon(Icons.event_note_outlined, size: 15),
+                      label: Text(
+                        leavePending > 0 ? 'Izin/Cuti ($leavePending)' : 'Izin/Cuti',
+                        style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 11.5),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: const Color(0xFF0284C7),
+                        foregroundColor: Colors.white,
+                        elevation: 0,
+                        padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 8),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
           ),
         );
       },
@@ -841,19 +1059,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               iconColor: const Color(0xFF2563EB),
               onTap: _goToPresensi,
             ),
-            _buildActionItem(
-              icon: Icons.camera_alt_outlined,
-              label: 'Foto Struk',
-              bgColor: const Color(0xFFF0FDF4),
-              iconColor: const Color(0xFF16A34A),
-              onTap: () {
-                Navigator.push(
-                  context,
-                  MaterialPageRoute(builder: (_) => const SubmitStep1Screen()),
-                ).then((_) {
-                  if (!mounted) return;
-                  Provider.of<ReceiptProvider>(context, listen: false).fetchMyReceipts();
-                });
+            Consumer<AuthProvider>(
+              builder: (context, auth, _) {
+                final canClaim = auth.canClaimReceipt;
+                return _buildActionItem(
+                  icon: canClaim ? Icons.camera_alt_outlined : Icons.no_photography_outlined,
+                  label: 'Foto Struk',
+                  bgColor: canClaim ? const Color(0xFFF0FDF4) : Colors.grey.shade100,
+                  iconColor: canClaim ? const Color(0xFF16A34A) : Colors.grey.shade400,
+                  onTap: _goToFotoStruk,
+                );
               },
             ),
             _buildActionItem(

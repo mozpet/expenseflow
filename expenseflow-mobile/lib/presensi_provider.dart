@@ -562,6 +562,7 @@ class PresensiProvider extends ChangeNotifier {
         ..addAll(
           list.map((e) {
             final m = e as Map<String, dynamic>;
+            final spv = m['spv'] as Map<String, dynamic>?;
             return LeaveRequestRecord(
               id: (m['id'] ?? 0) as int,
               leaveType: (m['leave_type'] ?? '').toString(),
@@ -572,6 +573,10 @@ class PresensiProvider extends ChangeNotifier {
               reason: (m['reason'] ?? '').toString(),
               status: (m['status'] ?? 'pending').toString(),
               rejectionReason: m['rejection_reason'] as String?,
+              currentStep: (m['current_step'] ?? 'spv').toString(),
+              spvName: m['spv_name'] as String? ?? spv?['name'] as String?,
+              spvApprovedAt: m['spv_approved_at'] as String?,
+              spvNotes: m['spv_notes'] as String?,
             );
           }),
         );

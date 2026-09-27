@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 import '../providers/receipt_provider.dart';
 import '../utils.dart';
 import '../widgets/receipt_thumbnail.dart';
@@ -197,6 +198,16 @@ class _DetailPengajuanScreenState extends State<DetailPengajuanScreen> {
 
   // ── Foto ulang: hapus draft lama → Step1 ─────────────────
   Future<void> _handleFotoUlang() async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    if (!auth.canClaimReceipt) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     setState(() => _isDeleting = true);
     try {
       await Provider.of<ReceiptProvider>(context, listen: false)

@@ -713,4 +713,87 @@ class ApiService {
   static Future<Map<String, dynamic>> declineOvertime(int attendanceId) async {
     return _request('POST', '/attendance/$attendanceId/decline-overtime');
   }
+
+  // ─── SPV Overtime Approvals (Persetujuan Lembur Bawahan Khusus SPV) ────
+  /// Ambil daftar pengajuan lembur bawahan. Status: 'pending', 'approved', 'rejected', atau null (semua).
+  static Future<Map<String, dynamic>> spvOvertimeApprovals({
+    String? status,
+    bool forceRefresh = false,
+  }) async {
+    final query = <String, String>{};
+    if (status != null && status.isNotEmpty) query['status'] = status;
+    return _request('GET', '/attendance/spv/overtime-approvals',
+        query: query.isNotEmpty ? query : null, forceRefresh: forceRefresh);
+  }
+
+  /// Ambil jumlah pengajuan lembur pending untuk badge counter di beranda.
+  static Future<int> spvPendingOvertimeCount({bool forceRefresh = false}) async {
+    try {
+      final res = await _request('GET', '/attendance/spv/overtime-approvals/count',
+          forceRefresh: forceRefresh);
+      return (res['pending_count'] as num?)?.toInt() ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// SPV menyetujui pengajuan lembur bawahan (Tahap 1 SPV).
+  static Future<Map<String, dynamic>> spvApproveOvertime(
+    int id, {
+    String? notes,
+  }) async {
+    return _request('POST', '/attendance/spv/overtime-approvals/$id/approve',
+        body: notes != null && notes.isNotEmpty ? {'notes': notes} : null);
+  }
+
+  /// SPV menolak pengajuan lembur bawahan (wajib menyertakan alasan).
+  static Future<Map<String, dynamic>> spvRejectOvertime(
+    int id, {
+    required String reason,
+  }) async {
+    return _request('POST', '/attendance/spv/overtime-approvals/$id/reject',
+        body: {'notes': reason});
+  }
+
+  /// Ambil daftar pengajuan izin/cuti bawahan untuk SPV (Tahap 1)
+  static Future<Map<String, dynamic>> spvLeaveApprovals({
+    String? status,
+    String? step,
+    bool forceRefresh = false,
+  }) async {
+    final query = <String, String>{};
+    if (status != null && status.isNotEmpty) query['status'] = status;
+    if (step != null && step.isNotEmpty) query['step'] = step;
+    return _request('GET', '/attendance/spv/leave-approvals',
+        query: query.isNotEmpty ? query : null, forceRefresh: forceRefresh);
+  }
+
+  /// Ambil jumlah pengajuan izin/cuti pending untuk badge counter di beranda.
+  static Future<int> spvPendingLeaveCount({bool forceRefresh = false}) async {
+    try {
+      final res = await _request('GET', '/attendance/spv/leave-approvals/count',
+          forceRefresh: forceRefresh);
+      return (res['pending_count'] as num?)?.toInt() ?? 0;
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  /// SPV menyetujui pengajuan izin/cuti bawahan (Tahap 1 SPV).
+  static Future<Map<String, dynamic>> spvApproveLeave(
+    int id, {
+    String? notes,
+  }) async {
+    return _request('POST', '/attendance/spv/leave-approvals/$id/approve',
+        body: notes != null && notes.isNotEmpty ? {'notes': notes} : null);
+  }
+
+  /// SPV menolak pengajuan izin/cuti bawahan (wajib menyertakan alasan).
+  static Future<Map<String, dynamic>> spvRejectLeave(
+    int id, {
+    required String reason,
+  }) async {
+    return _request('POST', '/attendance/spv/leave-approvals/$id/reject',
+        body: {'notes': reason, 'rejection_reason': reason});
+  }
 }

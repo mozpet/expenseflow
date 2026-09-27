@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../photo_provider.dart';
+import '../providers/auth_provider.dart';
 import 'submit_step2_screen.dart';
 
 class SubmitStep1Screen extends StatefulWidget {
@@ -18,9 +19,33 @@ class _SubmitStep1ScreenState extends State<SubmitStep1Screen> {
   void initState() {
     super.initState();
     _preselectedReportId = widget.preselectedReportId;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      if (!auth.canClaimReceipt) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        Navigator.pop(context);
+      }
+    });
   }
+
   // Tampilkan pilihan sumber (kamera / galeri / file PDF), lalu navigasi.
   Future<void> _handlePickPhoto(PhotoProvider photoProv) async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    if (!auth.canClaimReceipt) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     // Tipe pilihan: 0=kamera, 1=galeri, 2=file/pdf
     final choice = await showModalBottomSheet<int>(
       context: context,

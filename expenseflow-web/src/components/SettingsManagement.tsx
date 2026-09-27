@@ -7,6 +7,7 @@ import {
   Plus,
   Trash2,
   CalendarDays,
+  Users,
   X,
   AlertTriangle,
   Banknote,
@@ -18,6 +19,7 @@ import {
   HelpCircle,
   TrendingUp,
   CreditCard,
+  Briefcase,
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -29,6 +31,7 @@ import { attendanceApi } from '../services/endpoints';
 import { AppSettings } from '../types';
 import { SettingsView } from './SettingsView';
 import { RoleManagementTab } from './RoleManagementTab';
+import { OrganizationManagementTab } from './OrganizationManagementTab';
 import { useAuth } from '../auth/AuthContext';
 
 // Fix Leaflet default marker icon (Vite menghapus path asset saat build)
@@ -220,7 +223,8 @@ const OfficesTab: React.FC<{
   reload: () => Promise<void>;
   onAddAuditLog: (t: string, d: string, b: string) => void;
   onError: (e: unknown, f: string) => void;
-}> = ({ offices, reload, onAddAuditLog, onError }) => {
+  onSuccess?: (msg: string) => void;
+}> = ({ offices, reload, onAddAuditLog, onError, onSuccess }) => {
   const empty = {
     office_name: '',
     office_latitude: '',
@@ -234,6 +238,7 @@ const OfficesTab: React.FC<{
     late_checkin_cutoff_minutes: '' as number | '',
     wfh_checkin_window_minutes: 120,
     overtime_enabled: true,
+    overtime_multi_approval_enabled: true,
     min_overtime_minutes: 30,
     early_leave_enabled: true,
     early_leave_tolerance_minutes: 30,
@@ -244,6 +249,7 @@ const OfficesTab: React.FC<{
     checkout_reminder_minutes: 30,
     auto_checkout_grace_minutes: 60,
     default_leave_quota: 12,
+    leave_multi_approval_enabled: true,
     leave_reset_date: '',
     custom_schedules: {} as Record<number, { start: string; end: string; break_minutes?: number | '' }>,
     // ─── Jam Kerja Fleksibel (Flexitime) Cabang ───
@@ -333,6 +339,7 @@ const OfficesTab: React.FC<{
       late_checkin_cutoff_minutes: o.late_checkin_cutoff_minutes != null ? o.late_checkin_cutoff_minutes : '',
       wfh_checkin_window_minutes: o.wfh_checkin_window_minutes ?? 120,
       overtime_enabled: o.overtime_enabled ?? true,
+      overtime_multi_approval_enabled: o.overtime_multi_approval_enabled !== false,
       min_overtime_minutes: o.min_overtime_minutes ?? 30,
       early_leave_enabled: isEarlyLeaveEnabled,
       early_leave_tolerance_minutes: isEarlyLeaveEnabled ? o.early_leave_tolerance_minutes : 30,
@@ -343,6 +350,7 @@ const OfficesTab: React.FC<{
       checkout_reminder_minutes: o.checkout_reminder_minutes ?? 30,
       auto_checkout_grace_minutes: o.auto_checkout_grace_minutes ?? 60,
       default_leave_quota: o.default_leave_quota ?? 12,
+      leave_multi_approval_enabled: o.leave_multi_approval_enabled !== false,
       leave_reset_date: o.leave_reset_date ? String(o.leave_reset_date).slice(0, 5) : '',
       custom_schedules: o.custom_schedules ?? {},
       // Flexitime fields
@@ -577,6 +585,7 @@ const OfficesTab: React.FC<{
         late_checkin_cutoff_minutes: form.late_checkin_cutoff_minutes === '' || form.late_checkin_cutoff_minutes === null ? null : Number(form.late_checkin_cutoff_minutes),
         wfh_checkin_window_minutes: form.wfh_checkin_window_minutes === '' ? null : Number(form.wfh_checkin_window_minutes),
         overtime_enabled: !!form.overtime_enabled,
+        overtime_multi_approval_enabled: form.overtime_multi_approval_enabled !== false,
         min_overtime_minutes: Number(form.min_overtime_minutes),
         early_leave_tolerance_minutes: form.early_leave_enabled
           ? (form.early_leave_tolerance_minutes === '' || form.early_leave_tolerance_minutes === null ? 30 : Number(form.early_leave_tolerance_minutes))
@@ -596,6 +605,7 @@ const OfficesTab: React.FC<{
         flex_target_minutes: Number(form.flex_target_minutes ?? 480),
         // Kebijakan saldo cuti per kantor: kuota default & tanggal reset tahunan
         default_leave_quota: Number(form.default_leave_quota ?? 12),
+        leave_multi_approval_enabled: form.leave_multi_approval_enabled !== false,
         leave_reset_date: form.leave_reset_date ? form.leave_reset_date : null,
         // collective_leave_policy: dihapus — hardcode 'block' sejak 2026-08-20
         custom_schedules: (() => {
@@ -642,10 +652,12 @@ const OfficesTab: React.FC<{
   };
 
   const remove = async (o: any) => {
-    if (!window.confirm(`Hapus kantor "${o.office_name}"?`)) return;
     try {
-      await attendanceApi.settings.destroy(o.id);
+      const res: any = await attendanceApi.settings.destroy(o.id);
       onAddAuditLog('Kantor Presensi Dihapus', `Kantor ${o.office_name} dihapus`, 'bg-rose-600');
+      if (res?.message && onSuccess) {
+        onSuccess(res.message);
+      }
       await reload();
     } catch (e) {
       onError(e, 'Gagal menghapus kantor.');
@@ -668,12 +680,30 @@ const OfficesTab: React.FC<{
           offices.map((o) => (
             <div key={o.id} className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-2">
               <div className="flex justify-between items-start">
-                <h5 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
-                  <Building2 className="w-4 h-4 text-indigo-600" /> {o.office_name}
-                </h5>
+                <div className="space-y-1">
+                  <h5 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                    <Building2 className="w-4 h-4 text-indigo-600" /> {o.office_name}
+                  </h5>
+                  {o.users_count !== undefined && (
+                    <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border ${
+                      o.users_count > 0
+                        ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/40 dark:text-blue-400 dark:border-blue-800'
+                        : 'bg-slate-50 text-slate-500 border-slate-200 dark:bg-slate-800 dark:text-slate-400 dark:border-slate-700'
+                    }`}>
+                      <Users className="w-2.5 h-2.5" />
+                      {o.users_count} Karyawan Terikat
+                    </span>
+                  )}
+                </div>
                 <div className="flex gap-1.5">
                   <button onClick={() => openEdit(o)} className="px-2 py-1 text-[10px] font-semibold border border-slate-200 dark:border-slate-700 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800">Edit</button>
-                  <button onClick={() => remove(o)} className="p-1.5 text-rose-600 hover:bg-rose-50 rounded-lg"><Trash2 className="w-3.5 h-3.5" /></button>
+                  <button
+                    onClick={() => remove(o)}
+                    title="Hapus kantor"
+                    className="p-1.5 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-lg"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500">
@@ -749,6 +779,24 @@ const OfficesTab: React.FC<{
                   Flexitime:{' '}
                   <span className="text-cyan-600 dark:text-cyan-400 font-semibold">
                     Datang {(o.flex_arrival_start ?? '07:00').slice(0, 5)} - {(o.flex_arrival_end ?? '10:00').slice(0, 5)} · Jam Inti {(o.flex_core_start ?? '10:00').slice(0, 5)} - {(o.flex_core_end ?? '15:00').slice(0, 5)} · Target {((o.flex_target_minutes ?? 480) / 60).toFixed(1).replace('.0', '')} jam
+                  </span>
+                </span>
+                <span className="col-span-2 flex items-center gap-1.5 flex-wrap pt-0.5">
+                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                  <span className="text-slate-500">Alur Approval:</span>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                    o.overtime_multi_approval_enabled !== false
+                      ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-400 dark:border-indigo-800'
+                      : 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800'
+                  }`}>
+                    Lembur: {o.overtime_multi_approval_enabled !== false ? 'Bertingkat (SPV ➔ HRD)' : 'Langsung HRD'}
+                  </span>
+                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${
+                    o.leave_multi_approval_enabled !== false
+                      ? 'bg-indigo-50 text-indigo-700 border border-indigo-200 dark:bg-indigo-950/40 dark:text-indigo-400 dark:border-indigo-800'
+                      : 'bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800'
+                  }`}>
+                    Cuti/Izin: {o.leave_multi_approval_enabled !== false ? 'Bertingkat (SPV ➔ HRD)' : 'Langsung HRD'}
                   </span>
                 </span>
               </div>
@@ -1572,6 +1620,89 @@ const OfficesTab: React.FC<{
                     </p>
                   </div>
                 </div>
+
+                {/* Section 6: Alur Persetujuan Bertingkat (Multi-Level Approval) */}
+                <div className="p-4 rounded-xl border border-indigo-200/80 dark:border-indigo-800/60 bg-indigo-50/30 dark:bg-indigo-950/20 space-y-3">
+                  <div className="flex items-start gap-2.5">
+                    <div className="p-1.5 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 rounded-lg shrink-0 mt-0.5">
+                      <ShieldCheck className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-indigo-900 dark:text-indigo-200">
+                        Alur Persetujuan Bertingkat (Approval Workflow Cabang)
+                      </h4>
+                      <p className="text-[11px] text-indigo-700 dark:text-indigo-300/80 leading-relaxed mt-0.5">
+                        Tentukan apakah pengajuan lembur dan cuti/izin di kantor ini memerlukan verifikasi atasan langsung (Supervisor) sebelum disetujui HRD, atau langsung diproses dalam 1 tahap oleh HRD.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                    {/* Toggle Lembur Multi-Approval */}
+                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-indigo-100 dark:border-indigo-900/50 space-y-2">
+                      <label className="flex items-start justify-between gap-3 cursor-pointer">
+                        <div className="space-y-0.5">
+                          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-orange-500" /> Approval Lembur Bertingkat
+                          </span>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
+                            {form.overtime_multi_approval_enabled
+                              ? 'Aktif: Wajib diverifikasi Supervisor (Tahap 1), lalu disetujui HRD (Tahap 2).'
+                              : 'Nonaktif: Pengajuan langsung ke HRD untuk persetujuan 1 tahap (cocok untuk cabang ramping).'
+                            }
+                          </p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={!!form.overtime_multi_approval_enabled}
+                          onChange={(e) => setForm({ ...form, overtime_multi_approval_enabled: e.target.checked })}
+                          className="w-4 h-4 accent-indigo-600 mt-1 cursor-pointer"
+                        />
+                      </label>
+                      <div className="pt-1">
+                        <span className={`inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-full border ${
+                          form.overtime_multi_approval_enabled
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800'
+                            : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800'
+                        }`}>
+                          {form.overtime_multi_approval_enabled ? '✓ Alur 2 Tahap (SPV ➔ HRD)' : '⚡ Langsung HRD (1 Tahap)'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Toggle Izin & Cuti Multi-Approval */}
+                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-indigo-100 dark:border-indigo-900/50 space-y-2">
+                      <label className="flex items-start justify-between gap-3 cursor-pointer">
+                        <div className="space-y-0.5">
+                          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                            <CalendarDays className="w-3.5 h-3.5 text-teal-500" /> Approval Cuti & Izin Bertingkat
+                          </span>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
+                            {form.leave_multi_approval_enabled
+                              ? 'Aktif: Wajib diverifikasi Supervisor (Tahap 1), lalu diputuskan HRD (Tahap 2).'
+                              : 'Nonaktif: Pengajuan langsung ke HRD untuk persetujuan 1 tahap & potong kuota langsung.'
+                            }
+                          </p>
+                        </div>
+                        <input
+                          type="checkbox"
+                          checked={!!form.leave_multi_approval_enabled}
+                          onChange={(e) => setForm({ ...form, leave_multi_approval_enabled: e.target.checked })}
+                          className="w-4 h-4 accent-indigo-600 mt-1 cursor-pointer"
+                        />
+                      </label>
+                      <div className="pt-1">
+                        <span className={`inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-full border ${
+                          form.leave_multi_approval_enabled
+                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800'
+                            : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800'
+                        }`}>
+                          {form.leave_multi_approval_enabled ? '✓ Alur 2 Tahap (SPV ➔ HRD)' : '⚡ Langsung HRD (1 Tahap)'}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
             )}
 
@@ -2063,10 +2194,11 @@ const OfficesTab: React.FC<{
 };
 
 // ─── Tipe tab ────────────────────────────────────────────────
-type TabKey = 'offices' | 'roles' | 'rules';
+type TabKey = 'offices' | 'organization' | 'roles' | 'rules';
 
 const TABS: { key: TabKey; label: string; icon: React.ElementType }[] = [
   { key: 'offices', label: 'Kantor Presensi', icon: Building2 },
+  { key: 'organization', label: 'Divisi & Jabatan', icon: Briefcase },
   { key: 'roles', label: 'Manajemen Role & Hak Akses', icon: ShieldCheck },
   { key: 'rules', label: 'Aturan Klaim & Invoice', icon: Settings },
 ];
@@ -2087,10 +2219,19 @@ export const SettingsManagement: React.FC<Props> = ({
   const [tab, setTab] = useState<TabKey>('offices');
   const [offices, setOffices] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+
+  const reportSuccess = (msg: string) => {
+    setSuccessMessage(msg);
+    setError(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  };
 
   const reportApiError = (e: unknown, fallback: string) => {
     const msg = (e as any)?.message ?? fallback;
     setError(msg);
+    setSuccessMessage(null);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const loadOffices = useCallback(async () => {
@@ -2147,10 +2288,18 @@ export const SettingsManagement: React.FC<Props> = ({
         ))}
       </div>
 
+      {/* Success banner */}
+      {successMessage && (
+        <div className="flex items-start gap-2 bg-emerald-50 border border-emerald-200 text-emerald-700 rounded-lg px-4 py-3 text-xs">
+          <span className="font-semibold">Berhasil:</span> {successMessage}
+          <button onClick={() => setSuccessMessage(null)} className="ml-auto text-emerald-500 hover:text-emerald-700 font-bold">✕</button>
+        </div>
+      )}
+
       {/* Error banner */}
       {error && (
         <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-lg px-4 py-3 text-xs">
-          <span className="font-semibold">Error:</span> {error}
+          <span className="font-semibold">Peringatan:</span> {error}
           <button onClick={() => setError(null)} className="ml-auto text-rose-500 hover:text-rose-700 font-bold">✕</button>
         </div>
       )}
@@ -2160,6 +2309,15 @@ export const SettingsManagement: React.FC<Props> = ({
         <OfficesTab
           offices={offices}
           reload={loadOffices}
+          onAddAuditLog={onAddAuditLog}
+          onError={reportApiError}
+          onSuccess={reportSuccess}
+        />
+      )}
+
+      {/* ─── TAB: Divisi & Jabatan ─── */}
+      {tab === 'organization' && (
+        <OrganizationManagementTab
           onAddAuditLog={onAddAuditLog}
           onError={reportApiError}
         />

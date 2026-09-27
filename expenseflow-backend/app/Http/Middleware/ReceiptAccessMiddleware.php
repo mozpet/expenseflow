@@ -24,9 +24,15 @@ class ReceiptAccessMiddleware
             ], 401);
         }
 
-        if (! $user->is_active || ! $user->canAccessReceipts()) {
+        if (! $user->is_active) {
             return response()->json([
                 'message' => 'Anda tidak memiliki akses ke fitur ini.',
+            ], 403);
+        }
+
+        if (! $user->canAccessReceipts()) {
+            return response()->json([
+                'message' => 'Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.',
             ], 403);
         }
 

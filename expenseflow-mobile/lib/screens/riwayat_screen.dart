@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 import '../providers/expense_report_provider.dart';
 import '../providers/receipt_provider.dart';
 import '../utils.dart';
@@ -119,36 +120,54 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      floatingActionButton: FloatingActionButton.extended(
-        heroTag: 'riwayat_fab',
-        onPressed: () {
-          final rcpProv = Provider.of<ReceiptProvider>(context, listen: false);
-          final expProv = Provider.of<ExpenseReportProvider>(context, listen: false);
+      floatingActionButton: Consumer<AuthProvider>(
+        builder: (context, auth, _) {
+          final canClaim = auth.canClaimReceipt;
+          return FloatingActionButton.extended(
+            heroTag: 'riwayat_fab',
+            onPressed: () {
+              if (!canClaim) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+                    backgroundColor: Colors.red,
+                  ),
+                );
+                return;
+              }
+              final rcpProv = Provider.of<ReceiptProvider>(context, listen: false);
+              final expProv = Provider.of<ExpenseReportProvider>(context, listen: false);
 
-          if (_mainTab == 0) {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const SubmitStep1Screen()),
-            ).then((_) {
-              rcpProv.fetchMyReceipts();
-            });
-          } else {
-            Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const BuatLaporanDinasScreen()),
-            ).then((_) {
-              expProv.fetchReports();
-              rcpProv.fetchMyReceipts();
-            });
-          }
+              if (_mainTab == 0) {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const SubmitStep1Screen()),
+                ).then((_) {
+                  rcpProv.fetchMyReceipts();
+                });
+              } else {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const BuatLaporanDinasScreen()),
+                ).then((_) {
+                  expProv.fetchReports();
+                  rcpProv.fetchMyReceipts();
+                });
+              }
+            },
+            backgroundColor: canClaim ? const Color(0xFF0088FF) : Colors.grey.shade400,
+            foregroundColor: Colors.white,
+            icon: Icon(
+              !canClaim
+                  ? Icons.block_rounded
+                  : (_mainTab == 0 ? Icons.photo_camera : Icons.add_rounded),
+            ),
+            label: Text(
+              _mainTab == 0 ? 'Scan Struk' : 'Buat Laporan',
+              style: const TextStyle(fontWeight: FontWeight.bold),
+            ),
+          );
         },
-        backgroundColor: const Color(0xFF0088FF),
-        foregroundColor: Colors.white,
-        icon: Icon(_mainTab == 0 ? Icons.photo_camera : Icons.add_rounded),
-        label: Text(
-          _mainTab == 0 ? 'Scan Struk' : 'Buat Laporan',
-          style: const TextStyle(fontWeight: FontWeight.bold),
-        ),
       ),
       appBar: AppBar(
         title: const Text('Struk & Laporan'),
@@ -156,6 +175,38 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
       ),
       body: Column(
         children: [
+          // ─── Banner Disabled Claim jika dinonaktifkan ────────────────
+          Consumer<AuthProvider>(
+            builder: (context, auth, _) {
+              if (auth.canClaimReceipt) return const SizedBox.shrink();
+              return Container(
+                margin: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFFEF2F2),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: const Color(0xFFFCA5A5)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.block_rounded, color: Color(0xFFDC2626), size: 18),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF991B1B),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+
           // ─── Top Segmented Switcher (Struk Satuan vs Laporan Dinas) ────
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
@@ -349,6 +400,16 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
             padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
             child: InkWell(
               onTap: () {
+                final auth = Provider.of<AuthProvider>(context, listen: false);
+                if (!auth.canClaimReceipt) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+                      backgroundColor: Colors.red,
+                    ),
+                  );
+                  return;
+                }
                 final expProv = Provider.of<ExpenseReportProvider>(context, listen: false);
                 Navigator.push(
                   context,
@@ -668,6 +729,16 @@ class _RiwayatScreenState extends State<RiwayatScreen> {
                                 const SizedBox(height: 16),
                                 ElevatedButton.icon(
                                   onPressed: () {
+                                    final auth = Provider.of<AuthProvider>(context, listen: false);
+                                    if (!auth.canClaimReceipt) {
+                                      ScaffoldMessenger.of(context).showSnackBar(
+                                        const SnackBar(
+                                          content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+                                          backgroundColor: Colors.red,
+                                        ),
+                                      );
+                                      return;
+                                    }
                                     final rcpProv = Provider.of<ReceiptProvider>(context, listen: false);
                                     Navigator.push(
                                       context,

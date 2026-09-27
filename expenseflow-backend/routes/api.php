@@ -3,10 +3,12 @@
 use App\Http\Controllers\API\ActivityLogController;
 use App\Http\Controllers\API\AttendanceController;
 use App\Http\Controllers\API\AuthController;
-use App\Http\Controllers\API\ForgotPasswordController;
+use App\Http\Controllers\API\DivisionController;
 use App\Http\Controllers\API\ExpenseReportController;
+use App\Http\Controllers\API\ForgotPasswordController;
 use App\Http\Controllers\API\InvoiceController;
 use App\Http\Controllers\API\NotificationController;
+use App\Http\Controllers\API\PositionController;
 use App\Http\Controllers\API\PublicRecruitmentController;
 use App\Http\Controllers\API\ReceiptController;
 use App\Http\Controllers\API\RecruitmentController;
@@ -198,16 +200,16 @@ Route::prefix('v1')->group(function () {
                 Route::get('/receipts/{receipt}/image', [ReceiptController::class, 'image']);
                 Route::post('/receipts/{receipt}/submit', [ReceiptController::class, 'submit']);
                 Route::delete('/receipts/{receipt}', [ReceiptController::class, 'destroy']);
-            });
 
-            // Laporan Pengeluaran Dinas (Expense Reports / Bundling)
-            Route::get('/expense-reports', [ExpenseReportController::class, 'index']);
-            Route::post('/expense-reports', [ExpenseReportController::class, 'store']);
-            Route::get('/expense-reports/{expenseReport}', [ExpenseReportController::class, 'show']);
-            Route::post('/expense-reports/{expenseReport}/receipts', [ExpenseReportController::class, 'addReceipts']);
-            Route::delete('/expense-reports/{expenseReport}/receipts/{receipt}', [ExpenseReportController::class, 'removeReceipt']);
-            Route::post('/expense-reports/{expenseReport}/submit', [ExpenseReportController::class, 'submit']);
-            Route::delete('/expense-reports/{expenseReport}', [ExpenseReportController::class, 'destroy']);
+                // Laporan Pengeluaran Dinas (Expense Reports / Bundling)
+                Route::get('/expense-reports', [ExpenseReportController::class, 'index']);
+                Route::post('/expense-reports', [ExpenseReportController::class, 'store']);
+                Route::get('/expense-reports/{expenseReport}', [ExpenseReportController::class, 'show']);
+                Route::post('/expense-reports/{expenseReport}/receipts', [ExpenseReportController::class, 'addReceipts']);
+                Route::delete('/expense-reports/{expenseReport}/receipts/{receipt}', [ExpenseReportController::class, 'removeReceipt']);
+                Route::post('/expense-reports/{expenseReport}/submit', [ExpenseReportController::class, 'submit']);
+                Route::delete('/expense-reports/{expenseReport}', [ExpenseReportController::class, 'destroy']);
+            });
 
             // Jadwal shift karyawan
             Route::get('/my-schedule', [ShiftController::class, 'mySchedule']);
@@ -281,6 +283,14 @@ Route::prefix('v1')->group(function () {
             // Manajemen karyawan — HRD boleh lihat daftar, tapi ubah/buat/nonaktifkan
             // akun hanya admin & super_admin (cegah privilege escalation oleh HRD).
             Route::get('/users', [UserController::class, 'index']);
+            Route::get('/users/supervisors', [UserController::class, 'supervisors']);
+
+            // Master Divisi & Jabatan (Read-only untuk HRD, Admin, Super Admin)
+            Route::get('/divisions', [DivisionController::class, 'index']);
+            Route::get('/divisions/{division}', [DivisionController::class, 'show']);
+            Route::get('/positions', [PositionController::class, 'index']);
+            Route::get('/positions/{position}', [PositionController::class, 'show']);
+
             Route::middleware('role:admin,super_admin')->group(function () {
                 Route::post('/users', [UserController::class, 'store'])->middleware('throttle:actions');
                 Route::post('/users/bulk-import', [UserController::class, 'bulkImport'])->middleware('throttle:heavy');
@@ -288,6 +298,16 @@ Route::prefix('v1')->group(function () {
                 Route::patch('/users/{user}/deactivate', [UserController::class, 'deactivate'])->middleware('throttle:actions');
                 Route::patch('/users/{user}/activate', [UserController::class, 'activate'])->middleware('throttle:actions');
                 Route::delete('/users/{user}', [UserController::class, 'destroy']);
+
+                // Master Divisi (Mutasi)
+                Route::post('/divisions', [DivisionController::class, 'store'])->middleware('throttle:actions');
+                Route::put('/divisions/{division}', [DivisionController::class, 'update'])->middleware('throttle:actions');
+                Route::delete('/divisions/{division}', [DivisionController::class, 'destroy'])->middleware('throttle:actions');
+
+                // Master Jabatan (Mutasi)
+                Route::post('/positions', [PositionController::class, 'store'])->middleware('throttle:actions');
+                Route::put('/positions/{position}', [PositionController::class, 'update'])->middleware('throttle:actions');
+                Route::delete('/positions/{position}', [PositionController::class, 'destroy'])->middleware('throttle:actions');
 
                 // Manajemen Role & Hak Akses (Custom Role Engine)
                 Route::get('/roles/modules', [RoleController::class, 'modules']);
@@ -319,6 +339,12 @@ Route::prefix('v1')->group(function () {
             Route::post('/overtime-approvals/{id}/approve', [AttendanceController::class, 'approveOvertime']);
             Route::post('/overtime-approvals/{id}/reject', [AttendanceController::class, 'rejectOvertime']);
 
+            // Approval izin/cuti karyawan (Multi-level: Step 1 SPV, Step 2 HRD — otorisasi per step diperiksa di AttendanceController)
+            Route::get('/leaves', [AttendanceController::class, 'listLeaves']);
+            Route::get('/leaves/{leave}/document', [AttendanceController::class, 'leaveDocument']);
+            Route::post('/leaves/{id}/approve', [AttendanceController::class, 'approveLeave']);
+            Route::post('/leaves/{id}/reject', [AttendanceController::class, 'rejectLeave']);
+
             // Fitur manajemen presensi khusus HRD, Admin, Super Admin
             Route::middleware('role:hrd,admin,super_admin')->group(function () {
                 Route::get('/users', [AttendanceController::class, 'listUsers']);
@@ -329,10 +355,6 @@ Route::prefix('v1')->group(function () {
                 Route::post('/users/{id}/toggle-dinas-luar', [AttendanceController::class, 'toggleDinasLuar']);
                 Route::post('/users/{id}/toggle-flexitime', [AttendanceController::class, 'toggleFlexitime']);
                 Route::get('/attendances/{attendance}/photo', [AttendanceController::class, 'photo']);
-                Route::get('/leaves', [AttendanceController::class, 'listLeaves']);
-                Route::get('/leaves/{leave}/document', [AttendanceController::class, 'leaveDocument']);
-                Route::post('/leaves/{id}/approve', [AttendanceController::class, 'approveLeave']);
-                Route::post('/leaves/{id}/reject', [AttendanceController::class, 'rejectLeave']);
 
                 // Semua karyawan (tanpa pagination) untuk dropdown pengecualian libur
                 Route::get('/users/all', [AttendanceController::class, 'listAllUsers']);
@@ -453,6 +475,19 @@ Route::prefix('v1')->group(function () {
             Route::get('/collective-leaves', [AttendanceController::class, 'listCollectiveLeaves']);
             Route::post('/collective-leave/{holiday}/respond', [AttendanceController::class, 'respondCollectiveLeave']);
             Route::post('/dismiss-cancellation/{id}', [AttendanceController::class, 'dismissCancellation']);
+
+            // ── Persetujuan Lembur & Cuti Mobile Khusus SPV / Atasan Langsung ──
+            Route::prefix('spv')->group(function () {
+                Route::get('/overtime-approvals', [AttendanceController::class, 'spvListOvertimeApprovals']);
+                Route::get('/overtime-approvals/count', [AttendanceController::class, 'spvPendingOvertimeCount']);
+                Route::post('/overtime-approvals/{id}/approve', [AttendanceController::class, 'approveOvertime'])->middleware('throttle:actions');
+                Route::post('/overtime-approvals/{id}/reject', [AttendanceController::class, 'rejectOvertime'])->middleware('throttle:actions');
+
+                Route::get('/leave-approvals', [AttendanceController::class, 'spvListLeaveApprovals']);
+                Route::get('/leave-approvals/count', [AttendanceController::class, 'spvPendingLeaveCount']);
+                Route::post('/leave-approvals/{id}/approve', [AttendanceController::class, 'approveLeave'])->middleware('throttle:actions');
+                Route::post('/leave-approvals/{id}/reject', [AttendanceController::class, 'rejectLeave'])->middleware('throttle:actions');
+            });
         });
 
     // ── Rekrutmen — Public (tanpa autentikasi) ───────────────────────────────

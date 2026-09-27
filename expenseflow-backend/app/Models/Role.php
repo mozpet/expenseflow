@@ -26,7 +26,7 @@ class Role extends Model
     public const MODULE_ROLE_MANAGEMENT = 'role_management';
 
     public const AVAILABLE_MODULES = [
-        self::MODULE_RECEIPT         => ['id' => self::MODULE_RECEIPT, 'name' => 'Struk Reimbursement', 'desc' => 'Inbox & riwayat persetujuan klaim struk'],
+        self::MODULE_RECEIPT         => ['id' => self::MODULE_RECEIPT, 'name' => 'Struk Reimbursement', 'desc' => 'Inbox, persetujuan klaim struk bertingkat, serta pengaturan aturan & batas klaim limit'],
         self::MODULE_EXPENSE_REPORT  => ['id' => self::MODULE_EXPENSE_REPORT, 'name' => 'Laporan Dinas', 'desc' => 'Bundling pengeluaran laporan perjalanan dinas'],
         self::MODULE_INVOICE         => ['id' => self::MODULE_INVOICE, 'name' => 'Invoice Vendor', 'desc' => 'Tagihan vendor & alur persetujuan'],
         self::MODULE_VENDOR          => ['id' => self::MODULE_VENDOR, 'name' => 'Master Vendor', 'desc' => 'Kelola mitra vendor perusahaan'],
@@ -36,7 +36,7 @@ class Role extends Model
         self::MODULE_OVERTIME        => ['id' => self::MODULE_OVERTIME, 'name' => 'Persetujuan Lembur', 'desc' => 'Verifikasi dan persetujuan klaim lembur'],
         self::MODULE_SHIFT           => ['id' => self::MODULE_SHIFT, 'name' => 'Shift & Penjadwalan', 'desc' => 'Roster shift, pola rotasi & kalender libur'],
         self::MODULE_AUDIT_LOG       => ['id' => self::MODULE_AUDIT_LOG, 'name' => 'Audit Log', 'desc' => 'Log audit aktivitas sensitif & rekaman login'],
-        self::MODULE_SETTINGS        => ['id' => self::MODULE_SETTINGS, 'name' => 'Pengaturan Sistem', 'desc' => 'Aturan finance, konfigurasi kantor & cabang'],
+        self::MODULE_SETTINGS        => ['id' => self::MODULE_SETTINGS, 'name' => 'Pengaturan Aturan', 'desc' => 'Aturan presensi, cut-off, konfigurasi kantor cabang & finance'],
         self::MODULE_ROLE_MANAGEMENT => ['id' => self::MODULE_ROLE_MANAGEMENT, 'name' => 'Manajemen Role & Hak Akses', 'desc' => 'Kelola pembuatan custom role, izin modul & peran akun'],
     ];
 
@@ -125,11 +125,30 @@ class Role extends Model
         }
 
         if ($requiredLevel === 'read') {
-            return in_array($perm->access_level, ['read', 'manage'], true);
+            return in_array($perm->access_level, ['read', 'manage', 'spv', 'hrd', 'finance'], true);
         }
 
         if ($requiredLevel === 'manage') {
             return $perm->access_level === 'manage';
+        }
+
+        // Overtime, Leave, and Module SPV levels
+        if ($requiredLevel === 'spv') {
+            if ($module === self::MODULE_RECEIPT) {
+                return $perm->access_level === 'spv';
+            }
+            return in_array($perm->access_level, ['spv', 'manage'], true);
+        }
+
+        // HRD level
+        if ($requiredLevel === 'hrd') {
+            return in_array($perm->access_level, ['hrd', 'manage'], true);
+        }
+
+        // Receipt levels
+        if ($requiredLevel === 'finance') {
+            // 'finance', 'spv' (SPV Finance), dan 'manage' semuanya punya hak finance
+            return in_array($perm->access_level, ['finance', 'spv', 'manage'], true);
         }
 
         return false;

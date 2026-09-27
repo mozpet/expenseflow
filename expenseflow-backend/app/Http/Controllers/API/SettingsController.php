@@ -12,11 +12,15 @@ class SettingsController extends Controller
 {
     // Nilai default jika perusahaan belum pernah menyimpan pengaturan.
     private const DEFAULTS = [
-        'variance_limit'   => '10',
-        'max_claim_limit'  => '2000000',
-        'threshold_single' => '< Rp 10.000.000',
-        'threshold_two'    => 'Rp 10 jt — Rp 50 jt',
-        'threshold_three'  => '> Rp 50.000.000',
+        'variance_limit'           => '10',
+        'max_claim_limit'          => '2000000',
+        'threshold_single'         => '< Rp 10.000.000',
+        'threshold_two'            => 'Rp 10 jt — Rp 50 jt',
+        'threshold_three'          => '> Rp 50.000.000',
+        // Aturan approval bertingkat struk reimbursement
+        'receipt_tier1_threshold'  => '500000',
+        'receipt_tier2_threshold'  => '1000000',
+        'receipt_tier2_mode'       => 'two_finance',  // 'two_finance' | 'finance_and_spv'
     ];
 
     // ─── Helper: catat aktivitas ──────────────────────────────
@@ -74,6 +78,11 @@ class SettingsController extends Controller
                 'threshold_two'    => $settings['threshold_two'],
                 'threshold_three'  => $settings['threshold_three'],
             ],
+            'receipt_approval_rules' => [
+                'tier1_threshold' => (float) $settings['receipt_tier1_threshold'],
+                'tier2_threshold' => (float) $settings['receipt_tier2_threshold'],
+                'tier2_mode'      => $settings['receipt_tier2_mode'],
+            ],
             'branch_settings' => $branchSettings,
         ]);
     }
@@ -85,11 +94,15 @@ class SettingsController extends Controller
     public function update(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'variance_limit'   => 'required|integer|min:0|max:99',
-            'max_claim_limit'  => 'required|numeric|min:0',
-            'threshold_single' => 'required|string|max:255',
-            'threshold_two'    => 'required|string|max:255',
-            'threshold_three'  => 'required|string|max:255',
+            'variance_limit'          => 'required|integer|min:0|max:99',
+            'max_claim_limit'         => 'required|numeric|min:0',
+            'threshold_single'        => 'required|string|max:255',
+            'threshold_two'           => 'required|string|max:255',
+            'threshold_three'         => 'required|string|max:255',
+            // Aturan approval struk
+            'receipt_tier1_threshold' => 'sometimes|numeric|min:1',
+            'receipt_tier2_threshold' => 'sometimes|numeric|min:1',
+            'receipt_tier2_mode'      => ['sometimes', 'string', \Illuminate\Validation\Rule::in(['two_finance', 'finance_and_spv'])],
         ], [
             'variance_limit.integer' => 'Variance limit harus berupa angka bulat.',
             'variance_limit.min'     => 'Variance limit tidak boleh kurang dari 0%.',
@@ -97,6 +110,19 @@ class SettingsController extends Controller
         ]);
 
         $companyId = $request->user()->company_id;
+
+        // Validasi silang: batas Tier 1 harus lebih kecil dari Tier 2
+        if (
+            isset($validated['receipt_tier1_threshold'], $validated['receipt_tier2_threshold']) &&
+            (float) $validated['receipt_tier1_threshold'] >= (float) $validated['receipt_tier2_threshold']
+        ) {
+            return response()->json([
+                'message' => 'Batas Tier 1 harus lebih kecil dari batas Tier 2.',
+                'errors'  => [
+                    'receipt_tier1_threshold' => ['Batas Tier 1 harus lebih kecil dari batas Tier 2.'],
+                ],
+            ], 422);
+        }
 
         $oldSettings = $this->fetchSettings($companyId);
 

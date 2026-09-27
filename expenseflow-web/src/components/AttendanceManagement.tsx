@@ -583,6 +583,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [today, setToday] = useState<any | null>(null);
   const [leaves, setLeaves] = useState<any[]>([]);
   const [leaveStatus, setLeaveStatus] = useState<'pending' | 'approved' | 'rejected' | ''>('pending');
+  const [leaveStepFilter, setLeaveStepFilter] = useState<'all' | 'spv' | 'hrd'>('all');
   const [leaveTypeFilter, setLeaveTypeFilter] = useState<'wfh' | 'izin' | 'sakit' | 'cuti' | ''>('');
   const [leaveSourceFilter, setLeaveSourceFilter] = useState<'all' | 'mandiri' | 'collective'>('all');
   const [leaveOfficeFilter, setLeaveOfficeFilter] = useState(''); // '' = semua cabang
@@ -679,7 +680,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   useEffect(() => {
     setLeavePage(1);
-  }, [debouncedLeaveSearch, leaveStatus, leaveTypeFilter, leaveSourceFilter, leaveOfficeFilter, showUpcoming]);
+  }, [debouncedLeaveSearch, leaveStatus, leaveTypeFilter, leaveStepFilter, leaveSourceFilter, leaveOfficeFilter, showUpcoming]);
 
   useEffect(() => {
     setUserPage(1);
@@ -700,7 +701,6 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         setUserOfficeFilter(singleId);
         setBalanceOfficeFilter(singleId);
         setBalanceHistoryOfficeFilter(singleId);
-        setCalOfficeFilter(singleId);
         setReportFilterAndReset((prev: any) => ({ ...prev, office_id: singleId }));
       }
     }).catch(() => { });
@@ -946,13 +946,17 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   // ─── Aksi ─────────────────────────────────────────────────
   const handleApproveLeave = async (id: number, name: string) => {
     try {
-      await attendanceApi.approveLeave(id);
+      const res: any = await attendanceApi.approveLeave(id);
       invalidateCache('/dashboard/attendance/leaves');
       invalidateCache('/dashboard/attendance/today');
       invalidateCache('/dashboard/attendance/users');
       invalidateCache('/dashboard/notifications');
-      onAddAuditLog('Izin/Cuti Disetujui', `Pengajuan #${id} (${name}) disetujui`, 'bg-emerald-600');
-      onAddNotification('success', 'Pengajuan Disetujui', `Pengajuan ${name} telah disetujui.`);
+      const isSpvStep = res?.leave?.current_step === 'hrd' && res?.leave?.status === 'pending';
+      const msg = isSpvStep
+        ? `Pengajuan #${id} (${name}) disetujui Atasan (SPV) dan diteruskan ke HRD.`
+        : `Pengajuan #${id} (${name}) telah disetujui sepenuhnya oleh HRD.`;
+      onAddAuditLog('Izin/Cuti Disetujui', msg, 'bg-emerald-600');
+      onAddNotification('success', 'Pengajuan Disetujui', msg);
       await loadLeaves();
     } catch (e) {
       reportApiError(e, 'Gagal menyetujui pengajuan.');
@@ -1198,6 +1202,37 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     </div>
   );
 
+  // Kalkulasi ringkasan presensi hari ini dinamis berdasarkan cabang terpilih (todayOfficeFilter)
+  const todaySummaryCounts = useMemo(() => {
+    if (!today) {
+      return { total: 0, checkedIn: 0, notCheckedIn: 0, offToday: 0, onLeave: 0, alpha: 0 };
+    }
+
+    const matchOffice = (p: any) => {
+      if (!todayOfficeFilter) return true;
+      if (todayOfficeFilter === 'null') return !p.attendance_setting_id;
+      return String(p.attendance_setting_id) === todayOfficeFilter;
+    };
+
+    const checkedInList = (today.checked_in ?? []).filter(matchOffice);
+    const onLeaveList = (today.on_leave ?? []).filter(matchOffice);
+    const notCheckedInAll = (today.not_checked_in ?? []).filter(matchOffice);
+
+    const offTodayList = notCheckedInAll.filter((p: any) => Boolean(p.is_off));
+    const workNotCheckedIn = notCheckedInAll.filter((p: any) => !p.is_off);
+    const alphaList = workNotCheckedIn.filter((p: any) => Boolean(p.is_alpha || p.status === 'alpha'));
+
+    const totalEmployees = checkedInList.length + onLeaveList.length + notCheckedInAll.length;
+
+    return {
+      total: totalEmployees,
+      checkedIn: checkedInList.length,
+      notCheckedIn: workNotCheckedIn.length,
+      offToday: offTodayList.length,
+      onLeave: onLeaveList.length,
+      alpha: alphaList.length,
+    };
+  }, [today, todayOfficeFilter]);
 
   return (
     <div className="space-y-5 font-sans">
@@ -1324,11 +1359,43 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               </div>
             </div>
 
-            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-              <SummaryCard label="Total Karyawan" value={today.summary?.total_employees ?? 0} color="text-slate-800 dark:text-white" />
-              <SummaryCard label="Sudah Check-in" value={today.summary?.checked_in ?? 0} color="text-emerald-600" />
-              <SummaryCard label="Belum Check-in" value={today.summary?.not_checked_in ?? 0} color="text-rose-600" />
-              <SummaryCard label="Izin / Cuti" value={today.summary?.on_leave ?? 0} color="text-amber-600" />
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              <SummaryCard
+                label="Total Karyawan"
+                value={todaySummaryCounts.total}
+                color="text-slate-800 dark:text-white"
+                badge={<Users className="w-3.5 h-3.5 text-slate-400" />}
+              />
+              <SummaryCard
+                label="Sudah Check-in"
+                value={todaySummaryCounts.checkedIn}
+                color="text-emerald-600 dark:text-emerald-400"
+                badge={<CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
+              />
+              <SummaryCard
+                label="Belum Check-in"
+                value={todaySummaryCounts.notCheckedIn}
+                color="text-rose-600 dark:text-rose-400"
+                badge={<Clock className="w-3.5 h-3.5 text-rose-500" />}
+              />
+              <SummaryCard
+                label="Sedang Libur"
+                value={todaySummaryCounts.offToday}
+                color="text-indigo-600 dark:text-indigo-400"
+                badge={<CalendarDays className="w-3.5 h-3.5 text-indigo-500" />}
+              />
+              <SummaryCard
+                label="Izin / Cuti"
+                value={todaySummaryCounts.onLeave}
+                color="text-amber-600 dark:text-amber-400"
+                badge={<ClipboardList className="w-3.5 h-3.5 text-amber-500" />}
+              />
+              <SummaryCard
+                label="Alpha"
+                value={todaySummaryCounts.alpha}
+                color="text-rose-600 dark:text-rose-500"
+                badge={<AlertCircle className="w-3.5 h-3.5 text-rose-500" />}
+              />
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -1428,9 +1495,19 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                     {/* Belum check-in */}
                     <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 flex flex-col h-full">
-                      <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5">
-                        <Clock className="w-4 h-4" /> Belum Check-in ({notCheckedIn.length})
-                      </h4>
+                      <div className="flex items-center justify-between">
+                        <h4 className="text-xs font-bold text-rose-700 dark:text-rose-400 flex items-center gap-1.5">
+                          <Clock className="w-4 h-4" /> Belum Check-in ({notCheckedIn.length})
+                        </h4>
+                        {(() => {
+                          const alphaCount = notCheckedIn.filter((p: any) => p.is_alpha || p.status === 'alpha').length;
+                          return alphaCount > 0 ? (
+                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-400 border border-rose-200 dark:border-rose-900/40">
+                              {alphaCount} Alpha
+                            </span>
+                          ) : null;
+                        })()}
+                      </div>
                       <CardSearch value={searchNotCheckedIn} onChange={setSearchNotCheckedIn} />
                       <div className="space-y-2 flex-1 overflow-y-auto max-h-80 pr-1">
                         {notCheckedIn.length === 0 ? (
@@ -1595,6 +1672,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 result = result.filter((l: any) => l.status === leaveStatus);
               }
               if (leaveTypeFilter) result = result.filter((l: any) => l.leave_type === leaveTypeFilter);
+              if (leaveStepFilter !== 'all') {
+                result = result.filter((l: any) => (l.current_step || 'spv') === leaveStepFilter);
+              }
             }
             // Filter sumber cuti — berlaku di semua mode (normal maupun mendatang)
             if (leaveSourceFilter === 'mandiri') result = result.filter((l: any) => l.holiday_id == null);
@@ -1684,6 +1764,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     <option value="sakit" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Sakit</option>
                     <option value="cuti" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Cuti</option>
                     <option value="wfh" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">WFH</option>
+                  </select>
+
+                  {/* Dropdown tahap persetujuan */}
+                  <select
+                    value={showUpcoming ? 'all' : leaveStepFilter}
+                    disabled={showUpcoming}
+                    onChange={(e) => setLeaveStepFilter(e.target.value as any)}
+                    className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <option value="all" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Tahap</option>
+                    <option value="spv" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tahap 1 (SPV)</option>
+                    <option value="hrd" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tahap 2 (HRD Final)</option>
                   </select>
 
                   {/* Dropdown sumber cuti */}
@@ -1796,7 +1888,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           >
                             <td className="py-2.5 px-2">
                               <p className="font-semibold text-slate-800 dark:text-slate-200">{l.user_name}</p>
-                              <p className="text-[10px] text-slate-400">{l.department ?? '—'}</p>
+                              <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-slate-400">
+                                <span>{l.department ?? '—'}</span>
+                                {l.manager_name && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-indigo-600 dark:text-indigo-400 font-medium">Atasan: {l.manager_name}</span>
+                                  </>
+                                )}
+                              </div>
                               {/* Alert bentrok — hanya pada pending */}
                               {hasConflict && (
                                 <div className="mt-1.5 flex items-start gap-1 bg-amber-100 dark:bg-amber-900/30 border border-amber-200 dark:border-amber-700 rounded-md px-2 py-1">
@@ -1875,9 +1975,26 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400" title="Tidak ada aksi approval dari HRD hingga hari H — otomatis ditolak sistem">
                                   Ditolak (Hari H)
                                 </span>
+                              ) : l.status === 'pending' ? (
+                                <div className="inline-flex flex-col items-center gap-0.5">
+                                  {l.current_step === 'hrd' ? (
+                                    <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-200 dark:border-sky-800" title="Telah disetujui SPV, menunggu persetujuan HRD">
+                                      Tahap 2: HRD
+                                    </span>
+                                  ) : (
+                                    <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800" title="Menunggu persetujuan Atasan Langsung (SPV)">
+                                      Tahap 1: SPV
+                                    </span>
+                                  )}
+                                  {l.spv_name && (
+                                    <span className="text-[9px] text-slate-400 max-w-[110px] truncate" title={`Disetujui SPV: ${l.spv_name}${l.spv_notes ? ` (${l.spv_notes})` : ''}`}>
+                                      SPV: {l.spv_name}
+                                    </span>
+                                  )}
+                                </div>
                               ) : (
                                 <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${leaveBadge(l.status)}`}>
-                                  {l.status === 'approved' ? 'Disetujui' : l.status === 'rejected' ? 'Ditolak' : 'Menunggu'}
+                                  {l.status === 'approved' ? 'Disetujui' : 'Ditolak'}
                                 </span>
                               )}
                             </td>
@@ -1892,14 +2009,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   <button
                                     onClick={() => handleApproveLeave(l.id, l.user_name)}
                                     className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer"
-                                    title="Setujui"
+                                    title={l.current_step === 'hrd' ? 'Setujui Final (HRD)' : 'Setujui Tahap 1 (SPV)'}
                                   >
                                     <Check className="w-3.5 h-3.5" />
                                   </button>
                                   <button
                                     onClick={() => handleRejectLeave(l.id, l.user_name)}
                                     className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
-                                    title="Tolak"
+                                    title={l.current_step === 'hrd' ? 'Tolak (HRD)' : 'Tolak (SPV)'}
                                   >
                                     <X className="w-3.5 h-3.5" />
                                   </button>
@@ -3807,8 +3924,33 @@ const HolidaysTab: React.FC<{
     autoExcluded: any[];
     balanceRestored: any[];
   } | null>(null);
-  // Filter kantor untuk kalender — '' = semua kantor (tidak tampilkan libur mingguan)
-  const [calOfficeFilter, setCalOfficeFilter] = useState<string>('');
+  // Filter kantor untuk kalender — jika role terbatas ke kantor tertentu, default otomatis ke kantor tersebut
+  const [calOfficeFilter, setCalOfficeFilter] = useState<string>(() => {
+    if (offices.length === 1) return String(offices[0].id);
+    if (user?.attendance_setting_id && offices.some((o: any) => String(o.id) === String(user.attendance_setting_id))) {
+      return String(user.attendance_setting_id);
+    }
+    if (offices.length > 0 && !isSuperAdmin) return String(offices[0].id);
+    return '';
+  });
+  const [hasUserSelectedOffice, setHasUserSelectedOffice] = useState(false);
+
+  // Sinkronkan filter kantor saat offices selesai dimuat
+  useEffect(() => {
+    if (offices.length === 0) return;
+    // Jika user hanya punya akses ke 1 kantor (role branch_scope self/specific), selalu kunci ke kantor tsb
+    if (offices.length === 1) {
+      setCalOfficeFilter(String(offices[0].id));
+      return;
+    }
+    // Jika belum dipilih manual oleh user dan filter saat ini kosong, arahkan ke kantor user atau kantor pertama
+    if (!hasUserSelectedOffice && !calOfficeFilter) {
+      const defaultId = (user?.attendance_setting_id && offices.some((o: any) => String(o.id) === String(user.attendance_setting_id)))
+        ? String(user.attendance_setting_id)
+        : String(offices[0].id);
+      setCalOfficeFilter(defaultId);
+    }
+  }, [offices, user?.attendance_setting_id, hasUserSelectedOffice, calOfficeFilter]);
 
   // Cegah bulan dari tahun lain saat navigasi tahun di header
   useEffect(() => {
@@ -3906,11 +4048,31 @@ const HolidaysTab: React.FC<{
   // '' = Semua Kantor → tampilkan semua libur perusahaan + nasional.
   // kantor spesifik → tampilkan: nasional + company-wide (attendance_setting_id null)
   //   + libur/cuti bersama khusus cabang tsb saja. Libur cabang lain disembunyikan.
+  const DAY_NAMES = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+
+  // Kantor yang sedang aktif/dipilih di kalender
+  const selectedOffice = useMemo(() => {
+    if (!calOfficeFilter) {
+      if (offices.length === 1) return offices[0];
+      return null;
+    }
+    return offices.find((o: any) => String(o.id) === calOfficeFilter) ?? null;
+  }, [offices, calOfficeFilter]);
+
+  // Daftar nama hari libur rutin mingguan kantor terpilih
+  const selectedOfficeOffDays = useMemo(() => {
+    if (!selectedOffice) return [];
+    const workDays: number[] = Array.isArray(selectedOffice.work_days)
+      ? selectedOffice.work_days.map(Number)
+      : [1, 2, 3, 4, 5];
+    return [0, 1, 2, 3, 4, 5, 6].filter(d => !workDays.includes(d)).map(d => DAY_NAMES[d]);
+  }, [selectedOffice]);
+
   const visibleHolidays = useMemo(() => {
     if (!calOfficeFilter) return holidays;
     return holidays.filter((h) => {
-      // Libur nasional (company_id null) berlaku untuk semua kantor.
-      if (!h.company_id || h.scope === 'nasional') return true;
+      // Libur nasional (company_id null atau scope nasional atau is_national) berlaku untuk semua kantor.
+      if (!h.company_id || h.scope === 'nasional' || h.is_national) return true;
       // Jika libur/cuti bersama punya cabang spesifik: hanya tampil jika ID cabang cocok persis dengan filter!
       if (h.attendance_setting_id !== null && h.attendance_setting_id !== undefined) {
         return String(h.attendance_setting_id) === String(calOfficeFilter);
@@ -3934,15 +4096,14 @@ const HolidaysTab: React.FC<{
   // work_days adalah array integer 0=Minggu,1=Senin,...,6=Sabtu (JS getDay() convention).
   // weeklyOffDays = hari JS getDay() yang TIDAK ADA di work_days → hari libur mingguan.
   const weeklyOffDays = useMemo<Set<number>>(() => {
-    if (!calOfficeFilter) return new Set(); // '' = semua kantor, tidak sorot libur mingguan
-    const office = offices.find((o: any) => String(o.id) === calOfficeFilter);
-    if (!office) return new Set();
-    const workDays: number[] = Array.isArray(office.work_days)
-      ? office.work_days.map(Number)
+    const targetOffice = selectedOffice;
+    if (!targetOffice) return new Set(); // jika Semua Kantor dipilih tanpa kantor tunggal, tidak sorot libur mingguan
+    const workDays: number[] = Array.isArray(targetOffice.work_days)
+      ? targetOffice.work_days.map(Number)
       : [1, 2, 3, 4, 5]; // default Senin-Jumat jika tidak ada
     const allDays = [0, 1, 2, 3, 4, 5, 6];
     return new Set(allDays.filter(d => !workDays.includes(d)));
-  }, [calOfficeFilter, offices]);
+  }, [selectedOffice]);
 
   const firstDay = new Date(year, viewMonth, 1);
   const daysInMonth = new Date(year, viewMonth + 1, 0).getDate();
@@ -4190,7 +4351,15 @@ const HolidaysTab: React.FC<{
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Kalender {year}</h3>
+          <div className="flex items-center gap-2.5">
+            <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Kalender {year}</h3>
+            {selectedOffice && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 border border-indigo-200/70 dark:border-indigo-800/50 shadow-2xs">
+                <Building2 className="w-3 h-3 text-indigo-500 shrink-0" />
+                <span>{selectedOffice.office_name}</span>
+              </span>
+            )}
+          </div>
           <p className="text-[11px] text-slate-400 mt-0.5">
             Tanggal libur tidak dihitung sebagai hari kerja (cuti) dan kerja di hari ini dihitung lembur penuh.
           </p>
@@ -4207,25 +4376,31 @@ const HolidaysTab: React.FC<{
             <span>Tarik Libur Otomatis</span>
           </button>
 
-          {/* Filter kantor — hanya tampil jika ada lebih dari 1 kantor */}
-          {offices.length > 1 && (
+          {/* Indikator Kantor Tunggal atau Dropdown Pilihan Kantor */}
+          {offices.length === 1 ? (
+            <div className="flex items-center gap-1.5 py-1.5 px-3 text-[11px] font-semibold rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-200 border border-slate-200 dark:border-slate-700 shadow-xs">
+              <Building2 className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+              <span>Kantor: <strong className="font-bold text-slate-900 dark:text-slate-100">{offices[0].office_name}</strong></span>
+            </div>
+          ) : offices.length > 1 ? (
             <div className="flex items-center gap-1.5">
               <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
               <select
                 value={calOfficeFilter}
-                onChange={(e) => setCalOfficeFilter(e.target.value)}
-                className="py-1.5 px-3 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
-                title="Filter libur mingguan per kantor"
+                onChange={(e) => {
+                  setHasUserSelectedOffice(true);
+                  setCalOfficeFilter(e.target.value);
+                }}
+                className="py-1.5 px-3 text-[11px] font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 shadow-xs cursor-pointer"
+                title="Filter kalender & libur mingguan per kantor"
               >
-                {offices.length !== 1 && (
-                  <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor</option>
-                )}
+                <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Kantor (Semua Libur)</option>
                 {offices.map((o: any) => (
                   <option key={o.id} value={String(o.id)} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">{o.office_name}</option>
                 ))}
               </select>
             </div>
-          )}
+          ) : null}
         </div>
       </div>
 
@@ -4496,6 +4671,12 @@ const HolidaysTab: React.FC<{
               <p className="text-[10px] text-slate-400">
                 {summary.nasional} nasional · {summary.cutiBersama} cuti bersama · {summary.perusahaan} perusahaan
               </p>
+              {selectedOffice && (
+                <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-medium mt-0.5">
+                  Libur rutin mingguan ({selectedOffice.office_name}):{' '}
+                  <span className="font-bold">{selectedOfficeOffDays.length > 0 ? selectedOfficeOffDays.join(', ') : 'Tidak ada (7 hari kerja)'}</span>
+                </p>
+              )}
             </div>
             <button
               onClick={() => changeMonth(1)}
@@ -4543,15 +4724,13 @@ const HolidaysTab: React.FC<{
                     : hasCompany
                       ? 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-900/40'
                       : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800';
-              // Tooltip: libur mingguan kantor jika tidak ada event lain
-              const selectedOfficeName = offices.find((o: any) => String(o.id) === calOfficeFilter)?.office_name ?? '';
-              const tooltip = isPastOrToday
-                ? ''
-                : (dayHolidays.length
-                  ? dayHolidays.map(h => h.name).join(', ')
-                  : isWeeklyOff
-                    ? `Hari libur mingguan ${selectedOfficeName}`
-                    : 'Klik untuk menambah libur');
+              // Tooltip: nama libur atau libur mingguan kantor
+              const selectedOfficeName = selectedOffice?.office_name ?? '';
+              const tooltip = dayHolidays.length
+                ? dayHolidays.map(h => h.name).join(', ')
+                : isWeeklyOff
+                  ? `Hari libur mingguan ${selectedOfficeName}`
+                  : (isPastOrToday ? '' : 'Klik untuk menambah libur');
               return (
                 <button
                   key={dateStr}
@@ -4749,12 +4928,17 @@ const HolidaysTab: React.FC<{
                   <span className="w-4 h-4 rounded-md bg-rose-50 border border-rose-200 dark:bg-rose-950/30 dark:border-rose-900/40 shrink-0" />
                   <span><span className="font-semibold text-rose-700 dark:text-rose-400">Merah tua</span> — libur nasional (diberlakukan semua perusahaan)</span>
                 </li>
-                {calOfficeFilter && (
-                  <li className="flex items-center gap-2">
-                    <span className="w-4 h-4 rounded-md bg-red-50 border border-red-200 dark:bg-red-950/20 dark:border-red-900/30 shrink-0" />
-                    <span><span className="font-semibold text-red-500 dark:text-red-400">Merah muda</span> — libur mingguan kantor yang dipilih</span>
-                  </li>
-                )}
+                <li className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-md bg-red-50 border border-red-200 dark:bg-red-950/20 dark:border-red-900/30 shrink-0" />
+                  <span>
+                    <span className="font-semibold text-red-500 dark:text-red-400">Merah muda</span> — libur rutin mingguan kantor
+                    {selectedOffice ? (
+                      <span className="text-slate-500 dark:text-slate-400"> ({selectedOffice.office_name}: {selectedOfficeOffDays.length > 0 ? selectedOfficeOffDays.join(', ') : 'Tidak ada'})</span>
+                    ) : (
+                      <span className="text-slate-400"> (pilih kantor untuk melihat)</span>
+                    )}
+                  </span>
+                </li>
                 <li className="flex items-center gap-2">
                   <span className="w-4 h-4 rounded-md bg-amber-50 border border-amber-200 dark:bg-amber-950/30 dark:border-amber-900/40 shrink-0" />
                   <span><span className="font-semibold text-amber-700 dark:text-amber-400">Amber (kuning)</span> — cuti bersama (saldo terpotong jika karyawan ikut)</span>

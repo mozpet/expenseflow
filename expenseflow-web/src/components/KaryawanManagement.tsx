@@ -47,7 +47,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmationDialog } from './ConfirmationDialog';
-import { userApi, attendanceApi, userDocumentApi, UserDocument } from '../services/endpoints';
+import { userApi, attendanceApi, userDocumentApi, UserDocument, divisionApi, positionApi, DivisionItem, PositionItem } from '../services/endpoints';
 import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
@@ -72,10 +72,27 @@ interface Employee {
   nama: string;
   email: string;
   dept: string;
-  jabatan: string; // dipetakan dari role
+  jabatan: string; // dipetakan dari role / roleRelation / position
+  division_id?: number | null;
+  position_id?: number | null;
+  manager_id?: number | null;
+  division?: { id: number; name: string; code?: string | null } | null;
+  position?: { id: number; name: string; is_supervisor?: boolean } | null;
+  effective_monthly_claim_limit?: number | null;
+  manager?: { id: number; name: string } | null;
   role: string;
+  role_id?: number | null;
+  roleRelation?: {
+    id: number;
+    name: string;
+    slug: string;
+    platform?: string;
+    branch_scope?: string;
+  } | null;
   hp: string;
   limit: number | null; // in IDR. null = tanpa batas
+  allow_receipt_claim?: boolean; // false = klaim struk dinonaktifkan
+  can_login?: boolean; // false = karyawan non-sistem / deskless
   loginTerakhir: string;
   status: 'Aktif' | 'Nonaktif' | 'Belum login';
   initials: string;
@@ -191,22 +208,44 @@ function mapEmployee(u: any): Employee {
   const nama = u.name ?? '';
   const initials = nama.split(/\s+/).map((w: string) => w[0]).slice(0, 2).join('').toUpperCase();
   const palette = AVATAR_PALETTE[(u.id ?? 0) % AVATAR_PALETTE.length].split(' ');
+  const roleRel = u.role_relation ?? u.roleRelation ?? null;
+  const roleId = u.role_id ? Number(u.role_id) : (roleRel?.id ? Number(roleRel.id) : null);
+  const jabatanName = roleRel?.name ?? (
+    u.role === 'super_admin' ? 'Super Admin' :
+    u.role === 'admin' ? 'Administrator' :
+    u.role === 'hrd' ? 'Human Resource' :
+    u.role === 'finance' ? 'Finance' :
+    u.role === 'employee' ? 'Pegawai' :
+    (u.role ?? '—')
+  );
+
   return {
     id: u.employee_code ?? `EMP-${u.id}`,
     backendId: u.id,
     nama,
     email: u.email ?? '',
-    dept: u.department ?? '—',
-    jabatan: u.role ?? '—',
+    dept: u.division?.name ?? u.department ?? '—',
+    jabatan: u.position?.name ?? jabatanName,
+    division_id: u.division_id ? Number(u.division_id) : null,
+    position_id: u.position_id ? Number(u.position_id) : null,
+    manager_id: u.manager_id ? Number(u.manager_id) : null,
+    division: u.division ?? null,
+    position: u.position ?? null,
+    effective_monthly_claim_limit: u.effective_monthly_claim_limit !== null && u.effective_monthly_claim_limit !== undefined ? Number(u.effective_monthly_claim_limit) : null,
+    manager: u.manager ?? null,
     role: u.role ?? 'employee',
+    role_id: roleId,
+    roleRelation: roleRel,
     hp: u.phone ?? '—',
     limit: u.monthly_claim_limit !== null && u.monthly_claim_limit !== undefined ? Number(u.monthly_claim_limit) : null,
+    allow_receipt_claim: u.allow_receipt_claim !== false,
+    can_login: u.can_login !== false,
     loginTerakhir: '—',
     status: u.is_active === false ? 'Nonaktif' : 'Aktif',
     initials: initials || '?',
     avatarBg: palette.slice(0, 2).join(' '),
     avatarColor: palette.slice(2).join(' '),
-    atasan: undefined,
+    atasan: u.manager?.name ?? undefined,
     tanggalMasuk: u.joined_date ?? (u.created_at ? String(u.created_at).split('T')[0] : undefined),
     officeId: u.attendance_setting_id ?? null,
     officeName: u.office?.office_name ?? '—',
@@ -229,7 +268,7 @@ function mapEmployee(u: any): Employee {
     contractStartDate: u.contract_start_date ?? null,
     contractEndDate: u.contract_end_date ?? null,
     wfhEnabled: Boolean(u.allow_wfh ?? u.wfh_enabled),
-    radiusEnabled: Boolean(u.allow_radius ?? u.radius_enabled),
+    radiusEnabled: Boolean(u.allow_radius && u.radius_enabled),
     attendanceEnabled: Boolean(u.allow_attendance ?? u.attendance_enabled),
     flexitimeEnabled: Boolean(u.flexitime_enabled),
     deviceName: u.device_name ?? null,
@@ -350,6 +389,9 @@ export const KaryawanManagement: React.FC<{
 
   // Daftar kantor perusahaan (untuk dropdown penempatan karyawan).
   const [offices, setOffices] = useState<Office[]>([]);
+  const [divisions, setDivisions] = useState<DivisionItem[]>([]);
+  const [positions, setPositions] = useState<PositionItem[]>([]);
+
   const [showImportModal, setShowImportModal] = useState<boolean>(false);
 
   const loadOffices = async (forceRefresh = false) => {
@@ -361,10 +403,32 @@ export const KaryawanManagement: React.FC<{
           : Array.isArray(res) ? res : [];
       const mapped = list.map((o: any) => ({ id: o.id, office_name: o.office_name }));
       setOffices(mapped);
-      if (mapped.length === 1) {
-        setSelectedOffice(String(mapped[0].id));
-      }
     } catch { /* diam — kantor opsional, tidak kritis */ }
+  };
+
+  const loadOrganization = async (forceRefresh = false) => {
+    try {
+      const [divRes, posRes]: any = await Promise.all([
+        divisionApi.list(undefined, forceRefresh),
+        positionApi.list(undefined, forceRefresh),
+      ]);
+      const divList = Array.isArray(divRes?.data)
+        ? divRes.data
+        : Array.isArray(divRes?.divisions)
+        ? divRes.divisions
+        : Array.isArray(divRes)
+        ? divRes
+        : [];
+      const posList = Array.isArray(posRes?.data)
+        ? posRes.data
+        : Array.isArray(posRes?.positions)
+        ? posRes.positions
+        : Array.isArray(posRes)
+        ? posRes
+        : [];
+      setDivisions(divList);
+      setPositions(posList);
+    } catch { /* diam — tidak kritis */ }
   };
 
   const loadEmployees = async (forceRefresh = false) => {
@@ -383,8 +447,9 @@ export const KaryawanManagement: React.FC<{
   };
 
   useEffect(() => {
-    loadEmployees();
-    loadOffices();
+    loadEmployees(true);
+    loadOffices(true);
+    loadOrganization(true);
   }, []);
 
   // Aktivitas per karyawan belum tersedia dari API — kosongkan.
@@ -479,7 +544,7 @@ export const KaryawanManagement: React.FC<{
       hasJkm: emp.hasJkm ?? true,
       overtimeEligible: emp.overtimeEligible ?? (emp.role === 'employee'),
       wfhEnabled: emp.wfhEnabled ?? true,
-      radiusEnabled: emp.radiusEnabled ?? true,
+      radiusEnabled: emp.radiusEnabled ?? false,
       attendanceEnabled: emp.attendanceEnabled ?? true,
       deviceName: emp.deviceName || (seed % 2 === 0 ? 'Samsung Galaxy A54' : 'iPhone 13 Pro'),
       deviceId: emp.deviceId || `DEV-${seed}84F9B${seed}`,
@@ -535,10 +600,17 @@ export const KaryawanManagement: React.FC<{
     contractEndDate: '',
     dept: '',
     jabatan: '',
+    division_id: '' as number | '' | null,
+    position_id: '' as number | '' | null,
+
+    manager_id: '' as number | '' | null,
     role: 'employee',
+    role_id: '' as number | '' | null,
     atasan: '',
     officeId: '' as number | '', // '' = belum ditentukan
     limit: '' as number | '' | null,
+    allow_receipt_claim: true,
+    can_login: true,
 
     // Data Finansial & Perbankan (Payroll Roadmap)
     bankName: 'BCA',
@@ -564,7 +636,7 @@ export const KaryawanManagement: React.FC<{
     overtimeEligible: true,
     attendanceEnabled: true,
     wfhEnabled: true,
-    radiusEnabled: true,
+    radiusEnabled: false,
     flexitimeEnabled: false,
 
     // Prioritas 1 — Kontak Darurat
@@ -629,12 +701,18 @@ export const KaryawanManagement: React.FC<{
     contractEndDate: '',
     dept: '',
     jabatan: '',
+    division_id: '' as number | '' | null,
+    position_id: '' as number | '' | null,
+    manager_id: '' as number | '' | null,
     role: 'employee',
+    role_id: '' as number | '' | null,
     atasan: '',
     officeId: '' as number | '', // '' = belum ditentukan
     limit: '' as number | '' | null,
-    password: 'Maju2026!',
-    confirmPassword: 'Maju2026!',
+    allow_receipt_claim: true,
+    can_login: true,
+    password: '',
+    confirmPassword: '',
     showPassword: false,
 
     // Data Finansial & Perbankan (Payroll Roadmap)
@@ -661,7 +739,7 @@ export const KaryawanManagement: React.FC<{
     overtimeEligible: true,
     attendanceEnabled: true,
     wfhEnabled: true,
-    radiusEnabled: true,
+    radiusEnabled: false,
 
     // Prioritas 1 — Kontak Darurat
     emergencyContactName: '',
@@ -717,8 +795,13 @@ export const KaryawanManagement: React.FC<{
     return { total: employees.length, active: totalActive, inactive: totalInactive, pkwtt, pkwt, other };
   }, [employees]);
 
-  // Departemen lists for selector
-  const departments = ['Marketing', 'Sales', 'Operations', 'Finance', 'HR', 'IT'];
+  // Departemen / Divisi lists for selector
+  const departments = useMemo(() => {
+    if (divisions.length > 0) {
+      return divisions.map(d => d.name);
+    }
+    return ['Marketing', 'Sales', 'Operations', 'Finance', 'HR', 'IT'];
+  }, [divisions]);
 
   const debouncedSearch = useDebounce(searchQuery, 500);
 
@@ -733,7 +816,7 @@ export const KaryawanManagement: React.FC<{
         e.nama.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
         e.id.toLowerCase().includes(debouncedSearch.toLowerCase()) ||
         e.email.toLowerCase().includes(debouncedSearch.toLowerCase());
-      const matchDept = selectedDept === 'Semua dept' || e.dept === selectedDept;
+      const matchDept = selectedDept === 'Semua dept' || e.dept === selectedDept || (e.division && e.division.name === selectedDept);
       const matchOffice = selectedOffice === 'Semua kantor' ||
         (selectedOffice === 'tanpa_kantor' ? !e.officeId : e.officeId === Number(selectedOffice));
       const matchEmploymentType = !selectedEmploymentType || e.employmentType === selectedEmploymentType;
@@ -744,6 +827,15 @@ export const KaryawanManagement: React.FC<{
   // 3b. Client-side Pagination (Fast 60 FPS rendering untuk 1,000+ data)
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(25);
+
+  const hasActiveFilter = selectedOffice !== 'Semua kantor' || selectedDept !== 'Semua dept' || selectedEmploymentType !== '' || searchQuery.trim() !== '';
+
+  const handleResetFilters = () => {
+    setSelectedOffice('Semua kantor');
+    setSelectedDept('Semua dept');
+    setSelectedEmploymentType('');
+    setSearchQuery('');
+  };
 
   useEffect(() => {
     setCurrentPage(1);
@@ -802,14 +894,38 @@ export const KaryawanManagement: React.FC<{
 
   const handleAddNewEmployeeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!addForm.nama || !addForm.email || !addForm.role) {
-      alert('Harap isi nama, email, dan role (*)');
+    const isDeskless = addForm.can_login === false;
+
+    if (!addForm.nama) {
+      setFormTab('work');
+      alert('Harap isi Nama Lengkap Karyawan pada Tab Pekerjaan (*)');
       return;
     }
 
-    if (addForm.password !== addForm.confirmPassword) {
-      alert('Password konfirmasi tidak cocok!');
+    if (!isDeskless && !addForm.email) {
+      setFormTab('work');
+      alert('Harap isi Email Perusahaan untuk akun digital pada Tab Pekerjaan (*)');
       return;
+    }
+
+    if (!addForm.role) {
+      setFormTab('work');
+      alert('Harap pilih Role Sistem pada Tab Pekerjaan (*)');
+      return;
+    }
+
+    if (!isDeskless) {
+      if (!addForm.password || addForm.password.length < 8) {
+        setFormTab('access');
+        alert('Password login karyawan minimal 8 karakter pada Tab Akses (*)');
+        return;
+      }
+
+      if (addForm.password !== addForm.confirmPassword) {
+        setFormTab('access');
+        alert('Password konfirmasi tidak cocok pada Tab Akses!');
+        return;
+      }
     }
 
     if (
@@ -817,14 +933,17 @@ export const KaryawanManagement: React.FC<{
       addForm.contractStartDate && addForm.contractEndDate &&
       addForm.contractEndDate < addForm.contractStartDate
     ) {
+      setFormTab('work');
       alert('Tanggal berakhir kontrak tidak boleh lebih awal dari tanggal mulai kontrak!');
       return;
     }
 
     handleOpenConfirm({
       isOpen: true,
-      title: 'Konfirmasi Karyawan Baru',
-      message: `Apakah Anda yakin ingin menambahkan karyawan baru bernama ${addForm.nama}? Pastikan data NIK dan email sudah benar.`,
+      title: isDeskless ? 'Konfirmasi Karyawan Non-Sistem (Deskless)' : 'Konfirmasi Karyawan Baru',
+      message: isDeskless
+        ? `Apakah Anda yakin ingin menambahkan ${addForm.nama} sebagai karyawan non-sistem (tanpa akses login HP/web)? Data akan disimpan untuk keperluan payroll & BPJS.`
+        : `Apakah Anda yakin ingin menambahkan karyawan baru bernama ${addForm.nama}? Pastikan data NIK dan email sudah benar.`,
       type: 'info',
       confirmText: 'Ya, Tambahkan',
       onConfirm: async () => {
@@ -832,9 +951,15 @@ export const KaryawanManagement: React.FC<{
         try {
           const createdRes = await userApi.create({
             name: addForm.nama,
-            email: addForm.email,
-            password: addForm.password,
+            email: isDeskless ? (addForm.email || undefined) : addForm.email,
+            password: isDeskless ? (addForm.password || undefined) : addForm.password,
+            can_login: !isDeskless,
             role: addForm.role,
+            role_id: addForm.role_id ? Number(addForm.role_id) : undefined,
+            division_id: addForm.division_id ? Number(addForm.division_id) : undefined,
+            position_id: addForm.position_id ? Number(addForm.position_id) : undefined,
+
+            manager_id: addForm.manager_id ? Number(addForm.manager_id) : undefined,
             employee_code: addForm.nik || undefined,
             identity_number: addForm.nikKtp || undefined,
             gender: addForm.gender,
@@ -843,7 +968,8 @@ export const KaryawanManagement: React.FC<{
             is_pregnant: addForm.gender === 'Perempuan' ? addForm.isPregnant : false,
             department: addForm.dept || undefined,
             attendance_setting_id: addForm.officeId === '' ? null : addForm.officeId,
-            monthly_claim_limit: addForm.limit === '' || addForm.limit === null ? null : addForm.limit,
+            monthly_claim_limit: addForm.allow_receipt_claim === false ? null : (addForm.limit === '' || addForm.limit === null ? null : addForm.limit),
+            allow_receipt_claim: addForm.allow_receipt_claim !== false,
             overtime_enabled: addForm.overtimeEligible,
             allow_attendance: Boolean(addForm.attendanceEnabled),
             allow_wfh: addForm.attendanceEnabled ? Boolean(addForm.wfhEnabled) : false,
@@ -919,12 +1045,17 @@ export const KaryawanManagement: React.FC<{
             tanggalMasuk: new Date().toISOString().split('T')[0],
             dept: '',
             jabatan: '',
+            division_id: '',
+            position_id: '',
+
+            manager_id: '',
             role: 'employee',
+            role_id: '' as number | '' | null,
             atasan: '',
             officeId: '',
             limit: '' as number | '' | null,
-            password: 'Maju2026!',
-            confirmPassword: 'Maju2026!',
+            password: '',
+            confirmPassword: '',
             showPassword: false,
             joinedDate: new Date().toISOString().split('T')[0],
             contractStartDate: '',
@@ -1001,12 +1132,19 @@ export const KaryawanManagement: React.FC<{
       joinedDate: emp.joinedDate ?? '',
       contractStartDate: emp.contractStartDate ?? '',
       contractEndDate: emp.contractEndDate ?? '',
-      dept: emp.dept === '—' ? '' : emp.dept,
-      jabatan: emp.jabatan === '—' ? '' : emp.jabatan,
+      dept: emp.division?.name || (emp.dept === '—' ? '' : emp.dept),
+      jabatan: emp.position?.name || (emp.jabatan === '—' ? '' : emp.jabatan),
+      division_id: emp.division_id ?? emp.division?.id ?? '',
+      position_id: emp.position_id ?? emp.position?.id ?? '',
+
+      manager_id: emp.manager_id ?? emp.manager?.id ?? '',
       role: emp.role || 'employee',
-      atasan: '',
+      role_id: emp.role_id ?? null,
+      atasan: emp.atasan || '',
       officeId: emp.officeId ?? '',
       limit: emp.limit,
+      allow_receipt_claim: emp.allow_receipt_claim !== false,
+      can_login: emp.can_login !== false,
 
       // Data Payroll Default / Existing
       bankName: emp.bankName || 'BCA',
@@ -1096,9 +1234,16 @@ export const KaryawanManagement: React.FC<{
             is_pregnant: editForm.gender === 'Perempuan' ? editForm.isPregnant : false,
             phone: editForm.hp || null,
             role: editForm.role || undefined,
+            role_id: editForm.role_id ? Number(editForm.role_id) : undefined,
+            division_id: editForm.division_id ? Number(editForm.division_id) : null,
+            position_id: editForm.position_id ? Number(editForm.position_id) : null,
+
+            manager_id: editForm.manager_id ? Number(editForm.manager_id) : null,
             department: editForm.dept || null,
             attendance_setting_id: editForm.officeId === '' ? null : editForm.officeId,
-            monthly_claim_limit: editForm.limit === '' || editForm.limit === null ? null : editForm.limit,
+            monthly_claim_limit: editForm.allow_receipt_claim === false ? null : (editForm.limit === '' || editForm.limit === null ? null : editForm.limit),
+            allow_receipt_claim: editForm.allow_receipt_claim !== false,
+            can_login: editForm.can_login !== false,
             overtime_enabled: editForm.overtimeEligible,
             allow_attendance: Boolean(editForm.attendanceEnabled),
             allow_wfh: editForm.attendanceEnabled ? Boolean(editForm.wfhEnabled) : false,
@@ -1427,15 +1572,11 @@ export const KaryawanManagement: React.FC<{
                   onChange={(e) => setSelectedOffice(e.target.value)}
                   className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                 >
-                  {offices.length !== 1 && (
-                    <option value="Semua kantor">Semua kantor</option>
-                  )}
+                  <option value="Semua kantor">Semua kantor</option>
                   {offices.map(o => (
                     <option key={o.id} value={o.id}>{o.office_name}</option>
                   ))}
-                  {offices.length !== 1 && (
-                    <option value="tanpa_kantor">Tanpa Kantor</option>
-                  )}
+                  <option value="tanpa_kantor">Tanpa Kantor</option>
                 </select>
 
                 <select
@@ -1443,7 +1584,7 @@ export const KaryawanManagement: React.FC<{
                   onChange={(e) => setSelectedDept(e.target.value)}
                   className="p-2.5 rounded-xl border border-slate-200 dark:border-slate-800 text-[11px] font-semibold bg-slate-50/50 dark:bg-slate-800/20 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
                 >
-                  <option value="Semua dept">Semua dept</option>
+                  <option value="Semua dept">Semua Divisi</option>
                   {departments.map(d => (
                     <option key={d} value={d}>{d}</option>
                   ))}
@@ -1471,8 +1612,60 @@ export const KaryawanManagement: React.FC<{
                     className="w-full pl-9 pr-4 py-2 border border-slate-200 dark:border-slate-700 rounded-xl text-xs bg-slate-50 dark:bg-slate-800/50 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition"
                   />
                 </div>
+
+                {hasActiveFilter && (
+                  <button
+                    type="button"
+                    onClick={handleResetFilters}
+                    className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold text-rose-600 dark:text-rose-400 bg-rose-50 hover:bg-rose-100 dark:bg-rose-950/40 dark:hover:bg-rose-900/50 border border-rose-200/80 dark:border-rose-900/50 transition cursor-pointer shrink-0"
+                    title="Reset semua filter ke default"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Reset Filter</span>
+                  </button>
+                )}
               </div>
             </div>
+
+            {/* Active Filter Notice Bar */}
+            {hasActiveFilter && (
+              <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 bg-indigo-50/70 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-800/60 rounded-2xl text-xs text-indigo-700 dark:text-indigo-300">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-slate-600 dark:text-slate-300">Filter Aktif:</span>
+                  {selectedOffice !== 'Semua kantor' && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                      Kantor: {selectedOffice === 'tanpa_kantor' ? 'Tanpa Kantor' : (offices.find(o => String(o.id) === selectedOffice)?.office_name ?? selectedOffice)}
+                    </span>
+                  )}
+                  {selectedDept !== 'Semua dept' && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                      Divisi: {selectedDept}
+                    </span>
+                  )}
+                  {selectedEmploymentType !== '' && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                      Tipe: {selectedEmploymentType}
+                    </span>
+                  )}
+                  {searchQuery.trim() !== '' && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-white dark:bg-slate-900 border border-indigo-200 dark:border-indigo-800 text-[11px] font-bold text-indigo-600 dark:text-indigo-400">
+                      Cari: "{searchQuery}"
+                    </span>
+                  )}
+                  <span className="text-slate-500 dark:text-slate-400">
+                    — Menampilkan <strong>{filteredEmployees.length}</strong> dari <strong>{statusFilter === 'active' ? stats.active : stats.inactive}</strong> karyawan
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleResetFilters}
+                  className="font-bold text-rose-600 dark:text-rose-400 hover:underline cursor-pointer flex items-center gap-1 text-xs"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>Hapus Filter</span>
+                </button>
+              </div>
+            )}
 
             {/* Table Area */}
             <div className="overflow-x-auto border border-slate-200 dark:border-slate-800 rounded-2xl bg-white dark:bg-slate-900">
@@ -1481,7 +1674,7 @@ export const KaryawanManagement: React.FC<{
                   <tr className="bg-slate-50/70 dark:bg-slate-800/40 border-b border-slate-200 dark:border-slate-800">
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '180px' }}>Karyawan</th>
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '90px' }}>NIK</th>
-                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Departemen</th>
+                    <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '110px' }}>Divisi</th>
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '100px' }}>Jabatan</th>
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '130px' }}>Status & Kontrak</th>
                     <th className="py-3 px-4 text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-widest" style={{ width: '130px' }}>Tanggal Masuk</th>
@@ -1573,7 +1766,19 @@ export const KaryawanManagement: React.FC<{
                           </td>
 
                           <td className="py-3 px-4">
-                            <span className="text-[11px] text-slate-500 dark:text-slate-400">{emp.jabatan}</span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[11px] text-slate-700 dark:text-slate-300 font-medium">{emp.jabatan}</span>
+                              {emp.position?.is_supervisor && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-200 dark:border-amber-800/40 rounded-full" title="Level 1 Approval Lembur (SPV)">
+                                  SPV
+                                </span>
+                              )}
+                            </div>
+                            {emp.manager?.name && (
+                              <span className="text-[10px] text-slate-400 dark:text-slate-500 block mt-0.5">
+                                Atasan: {emp.manager.name}
+                              </span>
+                            )}
                           </td>
 
                           <td className="py-3 px-4 space-y-1">
@@ -1600,6 +1805,18 @@ export const KaryawanManagement: React.FC<{
                               {badgeInfo && (
                                 <span className={`inline-flex items-center px-1.5 py-0.5 text-[9px] font-bold rounded-full ${badgeInfo.cls}`}>
                                   {badgeInfo.label}
+                                </span>
+                              )}
+
+                              {emp.can_login === false ? (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-slate-600 dark:text-slate-300 bg-slate-100 dark:bg-slate-800 rounded-full border border-slate-200 dark:border-slate-700" title="Karyawan Non-Sistem (Deskless/OB/Satpam) - Tanpa Akses Login">
+                                  <UserX className="w-2.5 h-2.5 shrink-0" />
+                                  <span>Non-Sistem</span>
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[9px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 rounded-full" title="Akun Digital">
+                                  <Smartphone className="w-2.5 h-2.5 shrink-0" />
+                                  <span>Akun App</span>
                                 </span>
                               )}
                             </div>
@@ -1639,7 +1856,31 @@ export const KaryawanManagement: React.FC<{
                           </td>
 
                           <td className="py-3 px-4">
-                            <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono">{formatCurrency(emp.limit)}</span>
+                            {emp.allow_receipt_claim === false ? (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200/60 dark:border-rose-800/60">
+                                Nonaktif
+                              </span>
+                            ) : emp.limit !== null && emp.limit !== undefined && emp.limit > 0 ? (
+                              <div>
+                                <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300 font-mono block">
+                                  {formatCurrency(emp.limit)}
+                                </span>
+                                <span className="text-[9px] text-indigo-500 font-semibold">(Khusus)</span>
+                              </div>
+                            ) : emp.effective_monthly_claim_limit !== null && emp.effective_monthly_claim_limit !== undefined && emp.effective_monthly_claim_limit > 0 ? (
+                              <div>
+                                <span className="text-xs font-bold text-slate-800 dark:text-slate-200 font-mono block">
+                                  {formatCurrency(emp.effective_monthly_claim_limit)}
+                                </span>
+                                <span className="text-[9px] text-amber-600 dark:text-amber-400 font-semibold">
+                                  (Warisan)
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/60 dark:border-emerald-800/60">
+                                Unlimited
+                              </span>
+                            )}
                           </td>
 
                           <td className="py-3 px-4 whitespace-nowrap">
@@ -1712,74 +1953,85 @@ export const KaryawanManagement: React.FC<{
               </table>
             </div>
 
-            {/* Pagination Controls */}
-            {filteredEmployees.length >= 25 && (
+            {/* Pagination Controls & Record Counter */}
+            {filteredEmployees.length > 0 && (
               <div className="flex flex-col sm:flex-row items-center justify-between gap-3 pt-3 border-t border-slate-100 dark:border-slate-800 text-xs">
                 <div className="flex items-center gap-2 text-slate-500 dark:text-slate-400">
                   <span>
                     Menampilkan <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">
                       {Math.min((currentPage - 1) * pageSize + 1, filteredEmployees.length)} - {Math.min(currentPage * pageSize, filteredEmployees.length)}
                     </strong> dari <strong className="text-slate-800 dark:text-slate-200 font-bold font-mono">{filteredEmployees.length}</strong> karyawan
+                    {hasActiveFilter && (
+                      <span className="text-slate-400 ml-1">
+                        (difilter dari total {statusFilter === 'active' ? stats.active : stats.inactive})
+                      </span>
+                    )}
                   </span>
-                  <span className="hidden sm:inline">•</span>
-                  <div className="flex items-center gap-1.5">
-                    <span className="hidden sm:inline">Per halaman:</span>
-                    <select
-                      value={pageSize}
-                      onChange={(e) => {
-                        setPageSize(Number(e.target.value));
-                        setCurrentPage(1);
-                      }}
-                      className="py-1 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
-                    >
-                      <option value={25}>25</option>
-                      <option value={50}>50</option>
-                      <option value={100}>100</option>
-                    </select>
-                  </div>
+                  {filteredEmployees.length >= 25 && (
+                    <>
+                      <span className="hidden sm:inline">•</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className="hidden sm:inline">Per halaman:</span>
+                        <select
+                          value={pageSize}
+                          onChange={(e) => {
+                            setPageSize(Number(e.target.value));
+                            setCurrentPage(1);
+                          }}
+                          className="py-1 px-2 text-xs font-semibold border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800/40 text-slate-700 dark:text-slate-300 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                        >
+                          <option value={25}>25</option>
+                          <option value={50}>50</option>
+                          <option value={100}>100</option>
+                        </select>
+                      </div>
+                    </>
+                  )}
                 </div>
 
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setCurrentPage(1)}
-                    disabled={currentPage === 1}
-                    className="p-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                    title="Halaman Pertama"
-                  >
-                    «
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-                    disabled={currentPage === 1}
-                    className="p-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                    title="Halaman Sebelumnya"
-                  >
-                    ‹
-                  </button>
-                  <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
-                    Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{currentPage}</span> / <span className="font-mono">{totalPages}</span>
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-                    disabled={currentPage === totalPages}
-                    className="p-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                    title="Halaman Berikutnya"
-                  >
-                    ›
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setCurrentPage(totalPages)}
-                    disabled={currentPage === totalPages}
-                    className="p-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
-                    title="Halaman Terakhir"
-                  >
-                    »
-                  </button>
-                </div>
+                {totalPages > 1 && (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPage(1)}
+                      disabled={currentPage === 1}
+                      className="p-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Pertama"
+                    >
+                      «
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                      className="p-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Sebelumnya"
+                    >
+                      ‹
+                    </button>
+                    <span className="px-2 font-semibold text-slate-700 dark:text-slate-300">
+                      Hal <span className="font-mono font-bold text-indigo-600 dark:text-indigo-400">{currentPage}</span> / <span className="font-mono">{totalPages}</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                      disabled={currentPage === totalPages}
+                      className="p-1.5 px-2.5 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Berikutnya"
+                    >
+                      ›
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentPage(totalPages)}
+                      disabled={currentPage === totalPages}
+                      className="p-1.5 px-2 rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed transition font-medium cursor-pointer"
+                      title="Halaman Terakhir"
+                    >
+                      »
+                    </button>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1800,6 +2052,9 @@ export const KaryawanManagement: React.FC<{
           submitting={submitting}
           offices={offices}
           departments={departments}
+          divisions={divisions}
+          positions={positions}
+
         />
       ) : (
         <EmployeeMultiTabForm
@@ -1818,6 +2073,9 @@ export const KaryawanManagement: React.FC<{
           editEmployee={editEmployee}
           offices={offices}
           departments={departments}
+          divisions={divisions}
+          positions={positions}
+
         />
       )}
 
@@ -2315,10 +2573,30 @@ export const KaryawanManagement: React.FC<{
                           </div>
 
                           <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Departemen & Role Sistem</span>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Divisi & Jabatan</span>
                             <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
-                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{fullData.dept}</span>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 flex-wrap">
+                                {fullData.dept} • {fullData.jabatan}
+                                {fullData.position?.is_supervisor && (
+                                  <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400">
+                                    SPV
+                                  </span>
+                                )}
+                              </span>
                               <p className="text-[10px] text-slate-400 mt-0.5 capitalize">Otoritas role: {fullData.role}</p>
+                            </div>
+                          </div>
+
+                          <div className="space-y-1">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Atasan Langsung (SPV Lembur Lv1)</span>
+                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                                <UserCheck className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 shrink-0" />
+                                {fullData.manager?.name || fullData.atasan || 'Belum Ditentukan'}
+                              </span>
+                              <p className="text-[10px] text-slate-400 mt-0.5">
+                                {fullData.manager?.name ? 'Penyetujui Level 1 lembur karyawan' : 'Akan menggunakan fallback SPV dari Divisi yang sama'}
+                              </p>
                             </div>
                           </div>
                         </div>
@@ -2938,9 +3216,21 @@ export const KaryawanManagement: React.FC<{
                             <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Batas Klaim Struk Bulanan</span>
                             <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 rounded-xl border border-slate-100 dark:border-slate-700/60">
                               <span className="text-xs font-bold font-mono text-slate-800 dark:text-slate-100">
-                                {formatCurrency(fullData.limit)}
+                                {fullData.allow_receipt_claim === false ? (
+                                  <span className="text-rose-600 dark:text-rose-400 font-sans">Dinonaktifkan (Tidak Berhak Klaim)</span>
+                                ) : fullData.limit === null || fullData.limit === undefined || fullData.limit === 0 ? (
+                                  <span className="text-emerald-600 dark:text-emerald-400 font-sans">Unlimited (Tanpa Batas)</span>
+                                ) : (
+                                  formatCurrency(fullData.limit)
+                                )}
                               </span>
-                              <p className="text-[10px] text-slate-400 mt-0.5">Batas maksimal reimbursement bulanan</p>
+                              <p className="text-[10px] text-slate-400 mt-0.5">
+                                {fullData.allow_receipt_claim === false
+                                  ? 'Fitur klaim struk di aplikasi mobile karyawan dinonaktifkan'
+                                  : fullData.limit === null || fullData.limit === undefined || fullData.limit === 0
+                                  ? 'Karyawan bebas mengajukan klaim tanpa batasan plafon bulanan'
+                                  : 'Batas maksimal reimbursement bulanan'}
+                              </p>
                             </div>
                           </div>
                         </div>

@@ -6,8 +6,10 @@ use App\Models\Attendance;
 use App\Models\AttendanceSetting;
 use App\Models\Company;
 use App\Models\OvertimeApproval;
+use App\Models\Position;
 use App\Models\Receipt;
 use App\Models\Role;
+use App\Models\RolePermission;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Storage;
@@ -45,13 +47,14 @@ class MultiApprovalWorkflowTest extends TestCase
         ]);
     }
 
-    private function createUser(string $role, ?int $branchId = null, ?int $roleId = null): User
+    private function createUser(string $role, ?int $branchId = null, ?int $roleId = null, ?int $positionId = null): User
     {
         return User::factory()->create([
             'company_id'            => $this->company->id,
             'role'                  => $role,
             'attendance_setting_id' => $branchId,
             'role_id'               => $roleId,
+            'position_id'           => $positionId,
             'is_active'             => true,
         ]);
     }
@@ -210,10 +213,15 @@ class MultiApprovalWorkflowTest extends TestCase
         // Create Custom SPV Finance role
         $spvRole = Role::create([
             'company_id'   => $this->company->id,
-            'name'         => 'Kepala Keuangan', // Diubah menjadi nama Indonesia untuk menguji Fix #5
+            'name'         => 'Kepala Keuangan',
             'slug'         => 'kepala_keuangan',
             'branch_scope' => 'all',
             'platform'     => 'both',
+        ]);
+        RolePermission::create([
+            'role_id'      => $spvRole->id,
+            'module'       => Role::MODULE_RECEIPT,
+            'access_level' => 'spv',
         ]);
         $spvFinance = $this->createUser('finance', null, $spvRole->id);
 
@@ -259,6 +267,228 @@ class MultiApprovalWorkflowTest extends TestCase
             ->assertJsonPath('receipt.is_fully_approved', true);
 
         $this->assertEquals('approved', $receipt->fresh()->status);
+    }
+
+    public function test_receipt_tier_3_step2_authorized_by_supervisor_position_regardless_of_role_name(): void
+    {
+        $employee = $this->createUser('employee');
+        $staff1   = $this->createUser('finance');
+
+        // Role Staf Keuangan (sama sekali tidak mengandung kata spv/head/manager di nama atau slug)
+        $financeRole = Role::create([
+            'company_id'   => $this->company->id,
+            'name'         => 'Staf Keuangan Lapangan',
+            'slug'         => 'staf_keuangan_lapangan',
+            'branch_scope' => 'all',
+            'platform'     => 'both',
+        ]);
+        RolePermission::create([
+            'role_id'      => $financeRole->id,
+            'module'       => Role::MODULE_RECEIPT,
+            'access_level' => 'manage',
+        ]);
+
+        // Master Jabatan dengan is_supervisor = true
+        $spvPosition = Position::create([
+            'company_id'    => $this->company->id,
+            'name'          => 'Supervisor Akuntansi',
+            'is_supervisor' => true,
+            'is_active'     => true,
+        ]);
+
+        // User memegang role Staf Keuangan TETAPI memiliki Jabatan Supervisor
+        $spvByPosition = $this->createUser('finance', null, $financeRole->id, $spvPosition->id);
+
+        $receipt = Receipt::create([
+            'company_id'     => $this->company->id,
+            'user_id'        => $employee->id,
+            'receipt_number' => 'RCP-TEST-POS-01',
+            'sha256_hash'    => hash('sha256', 'pos-spv-ok'),
+            'image_path'     => 'receipts/test-pos-ok.jpg',
+            'currency'       => 'IDR',
+            'total_amount'   => 1500000,
+            'claimed_amount' => 1500000,
+            'status'         => 'draft',
+            'ocr_status'     => 'completed',
+            'category'       => 'Hardware',
+        ]);
+
+        $this->postJson("/api/v1/employee/receipts/{$receipt->id}/submit", [], $this->token($employee))->assertOk();
+
+        // Step 1: Staff 1 approves
+        $this->postJson("/api/v1/dashboard/receipts/{$receipt->id}/approve", [
+            'notes' => 'Diperiksa oleh staff finance',
+        ], $this->token($staff1))->assertOk();
+
+        // Step 2: User dengan Jabatan is_supervisor = true dapat menyetujui tahap 2
+        $this->postJson("/api/v1/dashboard/receipts/{$receipt->id}/approve", [
+            'notes' => 'Disetujui oleh Supervisor via Master Jabatan',
+        ], $this->token($spvByPosition))
+            ->assertOk()
+            ->assertJsonPath('receipt.status', 'approved')
+            ->assertJsonPath('receipt.is_fully_approved', true);
+
+        $this->assertEquals('approved', $receipt->fresh()->status);
+    }
+
+    public function test_receipt_tier_3_step2_rejected_for_user_with_non_supervisor_position(): void
+    {
+        $employee = $this->createUser('employee');
+        $staff1   = $this->createUser('finance');
+
+        $financeRole = Role::create([
+            'company_id'   => $this->company->id,
+            'name'         => 'Staf Keuangan Lapangan',
+            'slug'         => 'staf_keuangan_lapangan',
+            'branch_scope' => 'all',
+            'platform'     => 'both',
+        ]);
+        RolePermission::create([
+            'role_id'      => $financeRole->id,
+            'module'       => Role::MODULE_RECEIPT,
+            'access_level' => 'manage',
+        ]);
+
+        // Jabatan staf biasa (is_supervisor = false)
+        $staffPosition = Position::create([
+            'company_id'    => $this->company->id,
+            'name'          => 'Staf Kasir',
+            'is_supervisor' => false,
+            'is_active'     => true,
+        ]);
+
+        $regularStaff = $this->createUser('finance', null, $financeRole->id, $staffPosition->id);
+
+        $receipt = Receipt::create([
+            'company_id'     => $this->company->id,
+            'user_id'        => $employee->id,
+            'receipt_number' => 'RCP-TEST-POS-02',
+            'sha256_hash'    => hash('sha256', 'pos-spv-fail'),
+            'image_path'     => 'receipts/test-pos-fail.jpg',
+            'currency'       => 'IDR',
+            'total_amount'   => 1500000,
+            'claimed_amount' => 1500000,
+            'status'         => 'draft',
+            'ocr_status'     => 'completed',
+            'category'       => 'Hardware',
+        ]);
+
+        $this->postJson("/api/v1/employee/receipts/{$receipt->id}/submit", [], $this->token($employee))->assertOk();
+
+        // Step 1: Staff 1 approves
+        $this->postJson("/api/v1/dashboard/receipts/{$receipt->id}/approve", [
+            'notes' => 'Diperiksa oleh staff finance',
+        ], $this->token($staff1))->assertOk();
+
+        // Step 2: Regular staff tanpa jabatan supervisor DITOLAK 422
+        $this->postJson("/api/v1/dashboard/receipts/{$receipt->id}/approve", [
+            'notes' => 'Mencoba approve step 2',
+        ], $this->token($regularStaff))
+            ->assertStatus(422)
+            ->assertJsonPath('code', 'SPV_FINANCE_REQUIRED');
+    }
+
+    public function test_receipt_bulk_approve_enforces_branch_scope_anti_double_approval_and_staged_transition(): void
+    {
+        $employee = $this->createUser('employee');
+
+        // Role khusus Cabang A
+        $roleBranchA = Role::create([
+            'company_id'   => $this->company->id,
+            'name'         => 'Finance Cabang Jakarta',
+            'slug'         => 'finance_jkt',
+            'branch_scope' => 'specific',
+            'platform'     => 'both',
+        ]);
+        $roleBranchA->branches()->attach($this->branchA->id);
+        RolePermission::create([
+            'role_id'      => $roleBranchA->id,
+            'module'       => Role::MODULE_RECEIPT,
+            'access_level' => 'manage',
+        ]);
+
+        $financeA = $this->createUser('finance', $this->branchA->id, $roleBranchA->id);
+
+        // Struk 1: Cabang A, Tier 1 (Rp 300.000, req 1)
+        $rcp1 = Receipt::create([
+            'company_id'            => $this->company->id,
+            'user_id'               => $employee->id,
+            'attendance_setting_id' => $this->branchA->id,
+            'receipt_number'        => 'RCP-BULK-01',
+            'sha256_hash'           => hash('sha256', 'bulk-1'),
+            'image_path'            => 'receipts/b1.jpg',
+            'currency'              => 'IDR',
+            'total_amount'          => 300000,
+            'claimed_amount'        => 300000,
+            'status'                => 'submitted',
+            'ocr_status'            => 'completed',
+            'approval_tier'         => 'Tier 1 (< Rp 500.000)',
+            'required_approvals'    => 1,
+            'current_approvals'     => 0,
+        ]);
+
+        // Struk 2: Cabang B, Tier 1 (Rp 250.000, req 1) - TIDAK BOLEH DIAKSES financeA
+        $rcp2 = Receipt::create([
+            'company_id'            => $this->company->id,
+            'user_id'               => $employee->id,
+            'attendance_setting_id' => $this->branchB->id,
+            'receipt_number'        => 'RCP-BULK-02',
+            'sha256_hash'           => hash('sha256', 'bulk-2'),
+            'image_path'            => 'receipts/b2.jpg',
+            'currency'              => 'IDR',
+            'total_amount'          => 250000,
+            'claimed_amount'        => 250000,
+            'status'                => 'submitted',
+            'ocr_status'            => 'completed',
+            'approval_tier'         => 'Tier 1 (< Rp 500.000)',
+            'required_approvals'    => 1,
+            'current_approvals'     => 0,
+        ]);
+
+        // Struk 3: Cabang A, Tier 2 (Rp 750.000, req 2) - HARUS jadi partially_approved
+        $rcp3 = Receipt::create([
+            'company_id'            => $this->company->id,
+            'user_id'               => $employee->id,
+            'attendance_setting_id' => $this->branchA->id,
+            'receipt_number'        => 'RCP-BULK-03',
+            'sha256_hash'           => hash('sha256', 'bulk-3'),
+            'image_path'            => 'receipts/b3.jpg',
+            'currency'              => 'IDR',
+            'total_amount'          => 750000,
+            'claimed_amount'        => 750000,
+            'status'                => 'submitted',
+            'ocr_status'            => 'completed',
+            'approval_tier'         => 'Tier 2 (Rp 500.000 - Rp 1.000.000)',
+            'required_approvals'    => 2,
+            'current_approvals'     => 0,
+        ]);
+
+        // Jalankan bulk approve
+        $this->postJson('/api/v1/dashboard/receipts/bulk-approve', [
+            'receipt_ids' => [$rcp1->id, $rcp2->id, $rcp3->id],
+            'notes'       => 'Bulk approval batch',
+        ], $this->token($financeA))->assertOk();
+
+        // Struk 1 disetujui penuh (approved)
+        $this->assertEquals('approved', $rcp1->fresh()->status);
+        $this->assertEquals(1, $rcp1->fresh()->current_approvals);
+
+        // Struk 2 dilewati karena beda cabang (masih submitted)
+        $this->assertEquals('submitted', $rcp2->fresh()->status);
+        $this->assertEquals(0, $rcp2->fresh()->current_approvals);
+
+        // Struk 3 bertransisi ke partially_approved dengan current_approvals = 1 (bukan langsung approved!)
+        $this->assertEquals('partially_approved', $rcp3->fresh()->status);
+        $this->assertEquals(1, $rcp3->fresh()->current_approvals);
+
+        // Coba bulk approve lagi oleh user yang sama (Anti double-approval)
+        $this->postJson('/api/v1/dashboard/receipts/bulk-approve', [
+            'receipt_ids' => [$rcp3->id],
+        ], $this->token($financeA))->assertOk();
+
+        // Struk 3 tetap partially_approved karena user yang sama dilewati
+        $this->assertEquals('partially_approved', $rcp3->fresh()->status);
+        $this->assertEquals(1, $rcp3->fresh()->current_approvals);
     }
 
     public function test_receipt_rejection_at_partially_approved_status(): void
@@ -352,6 +582,11 @@ class MultiApprovalWorkflowTest extends TestCase
             'slug'         => 'spv_ops',
             'branch_scope' => 'all',
             'platform'     => 'both',
+        ]);
+        RolePermission::create([
+            'role_id'      => $spvRole->id,
+            'module'       => Role::MODULE_OVERTIME,
+            'access_level' => 'spv',
         ]);
         $spv = $this->createUser('employee', null, $spvRole->id);
 

@@ -32,6 +32,12 @@ Dokumen ini adalah referensi teknis lengkap untuk pengembangan fitur **Custom Ro
      - Tahap 1: Persetujuan SPV / Atasan langsung (`pending_spv`).
      - Tahap 2: Persetujuan HRD (`pending_hrd` ➔ `approved`).
      - Penolakan di tahap manapun langsung menggugurkan lembur (`rejected`).
+7. **Pemisahan Peran: Role (Hak Akses Sistem) vs Jabatan / Posisi (Struktur Organisasi):**
+   - **Role (`roles`)**: Mengatur wewenang teknis di dalam aplikasi (modul mana yang boleh di-read/manage, platform `both` vs `mobile_only`, dan cabang mana yang diizinkan).
+   - **Jabatan (`positions`)**: Mengatur nama jabatan kerja struktural dan status kepemimpinan via flag `is_supervisor` (apakah merupakan Supervisor / Atasan).
+   - **Divisi (`divisions`)**: Mengatur departemen atau unit kerja karyawan.
+   - **Atasan Langsung (`users.manager_id`)**: Menentukan relasi pelaporan langsung per individu.
+   - *Prinsip*: Perusahaan tidak perlu membuat custom role baru hanya untuk membedakan 'Staf' vs 'Supervisor' jika hak akses modulnya sama. Cukup gunakan Master Jabatan dengan flag `is_supervisor` aktif.
 
 ---
 
@@ -98,18 +104,27 @@ Menyimpan cabang yang diizinkan jika `branch_scope = 'specific'`.
 - Penambahan kolom: `role_id` (BIGINT UNSIGNED, Nullable, FK ke `roles.id` ON DELETE SET NULL).
 - Kolom string `role` tetap ada untuk sinkronisasi nilai `slug`.
 
-### 2.5. Pembaruan Tabel `receipts` (Fase 2)
-- `approval_tier`: VARCHAR(50) Nullable (menyimpan nama/ID aturan tier saat submit).
-- `required_approvals`: INT DEFAULT 1 (jumlah approval yang diperlukan).
-- `current_approvals`: INT DEFAULT 0 (jumlah approval yang sudah didapat).
+### 2.5. Pembaruan Tabel `receipts` & `receipt_approvals` (Fase 2)
+Kolom alur persetujuan bertingkat struk reimbursement:
+
+| Tabel | Kolom | Tipe Data | Keterangan |
+| :--- | :--- | :--- | :--- |
+| `receipts` | `approval_tier` | VARCHAR(50), Nullable | Nama/ID aturan tier saat submit (misal: "Tier 1 (< Rp 500.000)") |
+| `receipts` | `required_approvals` | INT UNSIGNED DEFAULT 1 | Jumlah persetujuan yang dibutuhkan untuk status approved |
+| `receipts` | `current_approvals` | INT UNSIGNED DEFAULT 0 | Jumlah persetujuan yang telah didapatkan saat ini |
+| `receipt_approvals` | `approval_level` | INT UNSIGNED DEFAULT 1 | Urutan tingkat persetujuan (Level 1, Level 2) |
 
 ### 2.6. Pembaruan Tabel `overtime_approvals` (Fase 2)
-- `current_level`: ENUM('spv', 'hrd') DEFAULT 'spv'.
-- `spv_id`: BIGINT UNSIGNED Nullable (FK ke `users.id`).
-- `spv_approved_at`: TIMESTAMP Nullable.
-- `spv_notes`: TEXT Nullable.
-- `reviewed_by`: BIGINT UNSIGNED Nullable (HRD/Admin).
-- `reviewed_at`: TIMESTAMP Nullable (Waktu persetujuan HRD).
+Kolom persetujuan lembur bertingkat 2 tahap (SPV ➔ HRD):
+
+| Kolom | Tipe Data | Keterangan |
+| :--- | :--- | :--- |
+| `current_step` | ENUM('spv', 'hrd') DEFAULT 'spv' | Tahapan persetujuan aktif (`spv` = Tahap 1 SPV, `hrd` = Tahap 2 HRD). *(Sesuai skema migrasi aktual `current_step`, bukan `current_level`)* |
+| `spv_id` | BIGINT UNSIGNED, Nullable | FK ke `users.id` (Approver Tahap 1: Supervisor / Atasan Langsung) |
+| `spv_approved_at` | TIMESTAMP, Nullable | Waktu persetujuan SPV Tahap 1 |
+| `spv_notes` | TEXT, Nullable | Catatan atau rekomendasi persetujuan dari SPV |
+| `reviewed_by` | BIGINT UNSIGNED, Nullable | FK ke `users.id` (Approver Tahap 2: HRD / Admin) |
+| `reviewed_at` | TIMESTAMP, Nullable | Waktu persetujuan final HRD |
 
 ---
 
@@ -211,59 +226,230 @@ Berdasarkan audit menyeluruh antara arsitektur dokumen ini dengan implementasi c
    - **Solusi:** Daftarkan reserved slugs (`admin`, `super_admin`, `hrd`, `finance`, `employee`) dan pastikan query keunikan slug mengecek built-in roles (`whereNull('company_id')->orWhere('company_id', $companyId)`).
    - **Status:** ✅ **SELESAI**. Konstanta `RESERVED_SLUGS` diterapkan di `RoleController.php`, slug otomatis diberi suffix `_custom`, dan diverifikasi dengan `RoleSlugCollisionTest`.
 
+4. **Celah Penegakan Akses Platform `web_only` pada Login Mobile:**
+   - **Lokasi:** `app/Http/Controllers/API/AuthController.php` (`login()`), `RoleFormModal.tsx`
+   - **Deskripsi:** Dokumen Bagian 1.2 mencatat bahwa `web_only` ditiadakan. Namun, skema database dan form UI `RoleFormModal.tsx` tetap menyediakan pilihan radio `web_only`. Di backend `AuthController.php`, tidak ada penolakan login mobile untuk role ber-platform `web_only`. Jika admin membuat role dengan opsi `web_only`, akun tersebut masih bisa login ke aplikasi mobile.
+   - **Solusi:** Tambahkan pengecekan blokir login mobile di `AuthController::login`: jika `$platform === 'mobile'` dan `$roleModel->platform === 'web_only'`, tolak dengan HTTP 403 `Role Anda hanya diizinkan mengakses Web Dashboard.` (atau alternatifnya hapus opsi `web_only` dari modal UI jika seluruh karyawan wajib absensi mobile).
+   - **Status:** ⏳ **PERLU DIPERBAIKI**.
+
 ### ⚙️ 5.2. Bug Logika Bisnis & Persetujuan Multi-Approval (Medium / High)
 
-4. **[SELESAI] Salah Panggil Atribut `code` vs `slug` pada Overtime Approval:**
+5. **[SELESAI] Salah Panggil Atribut `code` vs `slug` pada Overtime Approval:**
    - **Lokasi:** `app/Http/Controllers/API/AttendanceController.php` (`approveOvertime()`)
    - **Deskripsi:** Terdapat baris `$actor->roleRelation?->code` padahal tabel dan model `Role` hanya memiliki kolom `slug`.
    - **Solusi:** Ganti atribut `$actor->roleRelation?->code` menjadi `$actor->roleRelation?->slug`.
    - **Status:** ✅ **SELESAI**. Diganti menjadi `$actor->roleRelation?->slug` dan diverifikasi di `MultiApprovalWorkflowTest`.
 
-5. **[SELESAI] Deteksi Otorisator Tier 3 Struk Terlalu Kaku Berdasarkan Keyword Bahasa Inggris:**
+6. **[SELESAI] Deteksi Otorisator Tier 3 Struk Terlalu Kaku Berdasarkan Keyword Bahasa Inggris:**
    - **Lokasi:** `app/Http/Controllers/API/ReceiptController.php` (`approve()`)
    - **Deskripsi:** Pengecekan approver tahap 2 untuk struk di atas Rp 1.000.000 hanya mencocokkan substring (`spv`, `head`, `manager`, `supervisor`). Nama jabatan dalam bahasa Indonesia seperti *"Kepala Keuangan"*, *"Kabag Finance"*, *"Otorisator"*, atau *"Direktur"* ditolak dengan pesan error `SPV_FINANCE_REQUIRED` (422).
    - **Solusi:** Tambahkan kata kunci bahasa Indonesia (`kepala`, `kabag`, `ketua`, `lead`, `otorisator`, `direktur`, `vp`) dan utamakan evaluasi permission `MODULE_RECEIPT, manage`.
    - **Status:** ✅ **SELESAI**. Ditambahkan kata kunci bahasa Indonesia (`kepala`, `kabag`, `ketua`, `lead`, `otorisator`, `direktur`, `vp`, `koordinator`) secara simetris pada slug dan nama role di `ReceiptController.php` dan diverifikasi di `MultiApprovalWorkflowTest`.
 
-6. **[SELESAI] Tabrakan Heuristik String Path Matching di `RoleMiddleware`:**
+7. **[SELESAI] Tabrakan Heuristik String Path Matching di `RoleMiddleware`:**
    - **Lokasi:** `app/Http/Middleware/RoleMiddleware.php` (`checkCustomRolePermission()`)
    - **Deskripsi:** Route `/api/v1/dashboard/attendance/users` cocok dengan `str_contains($path, 'users')` sebelum `str_contains($path, 'attendance')`, sehingga menuntut hak akses `MODULE_USER` bukan `MODULE_ATTENDANCE`.
    - **Solusi:** Urutkan prioritas route yang lebih spesifik atau gunakan pemetaan route name/action yang presisi.
    - **Status:** ✅ **SELESAI**. Diterapkan pemetaan presisi berbasis Controller & Action Method (`evaluateControllerPermission`) serta urutan heuristik berjenjang spesifik-ke-umum (`evaluatePathPermission`), diverifikasi dengan `RoleMiddlewarePathCollisionTest` (6 test, 15 assertions lulus 100%).
 
+8. **[SELESAI] Inkonsistensi Otorisasi SPV pada Multi-Tier Receipt vs Master Jabatan/Supervisor:**
+   - **Lokasi:** `app/Http/Controllers/API/ReceiptController.php` (`approve()`, `bulkApprove()`)
+   - **Deskripsi:** Evaluasi approver tahap 2 untuk struk Tier 3 (> Rp 1.000.000) sebelumnya hanya memeriksa string slug dan nama role (`str_contains($userRoleCode, 'spv')`). Hal ini tidak terintegrasi dengan Master Jabatan (`positions.is_supervisor`) maupun helper `$user->isSupervisor()`. Jika sebuah perusahaan membuat Custom Role bernama `"Finance Team"` (slug `finance_team_custom`), lalu seorang karyawan ditugaskan dengan Jabatan `"Supervisor Keuangan"` (`position.is_supervisor = true`), sistem akan menolak persetujuan dengan error `SPV_FINANCE_REQUIRED` (422) hanya karena nama role-nya tidak mengandung kata 'spv'.
+   - **Solusi & Implementasi:**
+     1. Harmonisasi logika otorisasi agar menyertakan evaluasi jabatan struktural:
+        `$isSpvOrAbove = ($user->position && $user->position->is_supervisor) || $user->isSupervisor() || in_array($userRoleCode, ['super_admin', 'admin']) || ...;`
+     2. Menjaga pemisahan tegas peran: hak akses aplikasi atas modul struk (`MODULE_RECEIPT`) dikelola oleh Role, sedangkan status kepemimpinan / wewenang otorisasi struktural dikelola oleh Master Jabatan (`is_supervisor`) atau Atasan Langsung (`manager_id`).
+     3. Merapikan pengecekan level `spv` di `Role.php` dan `User.php` agar tidak menyebabkan *privilege creep* (staff finance biasa dengan wewenang `manage` tidak lagi otomatis disalahartikan sebagai level `spv`).
+   - **Status:** ✅ **SELESAI**. Diimplementasikan di `ReceiptController.php`, `Role.php`, dan `User.php`, serta diverifikasi dengan automated test suite `MultiApprovalWorkflowTest` (14 test, 108 assertions lulus 100%).
+
+9. **[SELESAI] Bypass Multi-Tier Approval, Otorisasi SPV, dan Branch Scope pada `ReceiptController::bulkApprove`:**
+   - **Lokasi:** `app/Http/Controllers/API/ReceiptController.php` (`bulkApprove()`)
+   - **Deskripsi:**
+     1. `bulkApprove()` sebelumnya langsung mengubah status seluruh struk terpilih menjadi `'approved'` secara masal tanpa memeriksa kolom `required_approvals` atau tier nominal struk. Akibatnya, struk bernilai puluhan juta rupiah (Tier 3) yang wajib disetujui 2 orang termasuk SPV Finance dapat disetujui secara sepihak dalam 1 klik oleh staf finance biasa.
+     2. Tidak ada validasi `allowsBranch()` terhadap struk yang dipilih, sehingga user yang dibatasi pada cabang tertentu dapat menyetujui struk dari cabang lain jika ID-nya dikirimkan dalam payload masal.
+     3. Terdapat bug PHP *Undefined Variable* `$limit` pada string respons respons error.
+   - **Solusi & Implementasi:**
+     1. Di dalam loop `bulkApprove()`, diterapkan filter ketat: lewati struk yang cabangnya tidak diizinkan (`!$user->allowsBranch`), lewati struk yang sudah disetujui oleh user bersangkutan (anti-double approval), dan lewati struk Tier 3 tahap 2 jika approver bukan SPV/Manager.
+     2. Transisi status bertahap yang konsisten: jika `required_approvals > 1` dan `current_approvals == 0`, status berubah menjadi `partially_approved` dengan `current_approvals = 1` (bukan langsung `approved`).
+     3. Perbaiki variabel `$limit` menjadi `$defaultCompanyLimit`.
+   - **Status:** ✅ **SELESAI**. Diimplementasikan di `ReceiptController.php` dan diverifikasi dengan automated test `test_receipt_bulk_approve_enforces_branch_scope_anti_double_approval_and_staged_transition` pada `MultiApprovalWorkflowTest`.
+
 ### 📦 5.3. Integritas Data & Tenant Isolation (Data Integrity)
 
-7. **[SELESAI] State Inkonstan `users.role` saat Custom Role Dihapus:**
-   - **Lokasi:** `app/Http/Controllers/API/RoleController.php` (`destroy()`), `app/Models/Role.php` (`booted`), dan `app/Models/User.php` (`booted`).
-   - **Deskripsi:** Saat role dihapus dari database, `users.role_id` menjadi `NULL`, namun `users.role` tetap menyimpan string slug lama, menyebabkan user masuk ke *zombie state* (semua request API ditolak 403).
-   - **Solusi:**
-     1. Terapkan proteksi ganda pada `RoleController::destroy()`: memvalidasi penolakan 422 jika masih terdapat user yang terasosiasi baik via `role_id` maupun string `users.role`.
-     2. Di dalam transaksi penghapusan `destroy()` dan hook event `Role::deleting`, lakukan sinkronisasi pembersihan otomatis: setiap user yang terasosiasi dialihkan secara aman ke role bawaan `employee` (`role_id = $employeeRoleId`, `role = 'employee'`).
-     3. Terapkan event hook `User::saving` untuk memastikan sinkronisasi dua arah antara `role_id` dan slug `role` secara deterministik serta fallback otomatis ke `employee` jika `role_id` bernilai `null`.
-   - **Status:** ✅ **SELESAI**. Telah diimplementasikan dan diverifikasi dengan automated test suite `RoleDeletionConsistencyTest` (6 test, 26 assertions lulus 100%) serta regression suite (59 test, 259 assertions lulus 100%).
+10. **[SELESAI] State Inkonstan `users.role` saat Custom Role Dihapus:**
+    - **Lokasi:** `app/Http/Controllers/API/RoleController.php` (`destroy()`), `app/Models/Role.php` (`booted`), dan `app/Models/User.php` (`booted`).
+    - **Deskripsi:** Saat role dihapus dari database, `users.role_id` menjadi `NULL`, namun `users.role` tetap menyimpan string slug lama, menyebabkan user masuk ke *zombie state* (semua request API ditolak 403).
+    - **Solusi:**
+      1. Terapkan proteksi ganda pada `RoleController::destroy()`: memvalidasi penolakan 422 jika masih terdapat user yang terasosiasi baik via `role_id` maupun string `users.role`.
+      2. Di dalam transaksi penghapusan `destroy()` dan hook event `Role::deleting`, lakukan sinkronisasi pembersihan otomatis: setiap user yang terasosiasi dialihkan secara aman ke role bawaan `employee` (`role_id = $employeeRoleId`, `role = 'employee'`).
+      3. Terapkan event hook `User::saving` untuk memastikan sinkronisasi dua arah antara `role_id` dan slug `role` secara deterministik serta fallback otomatis ke `employee` jika `role_id` bernilai `null`.
+    - **Status:** ✅ **SELESAI**. Telah diimplementasikan dan diverifikasi dengan automated test suite `RoleDeletionConsistencyTest` (6 test, 26 assertions lulus 100%) serta regression suite (59 test, 259 assertions lulus 100%).
 
-8. **Super Admin Tenant Isolation di `RoleController::index`:**
-   - **Lokasi:** `app/Http/Controllers/API/RoleController.php` (`index()`, `store()`, `show()`, `update()`, `destroy()`)
-   - **Deskripsi:** Super Admin (`company_id = NULL`) sebelumnya hanya menerima built-in roles karena filter `whereNull('company_id')` tanpa memperhatikan kebutuhan inspeksi atau manajemen custom roles antar tenant perusahaan.
-   - **Solusi & Implementasi:**
-     1. Pada `RoleController::index()`:
-        - Jika pemanggil adalah **Super Admin**:
-          - Dapat menyertakan parameter `?company_id=X` untuk memfilter built-in roles + custom roles milik perusahaan X, sekaligus menghitung `users_count` khusus perusahaan tersebut.
-          - Jika parameter `?company_id` tidak disertakan, mengembalikan 5 built-in roles + seluruh custom roles dari semua tenant perusahaan dengan relasi `company:id,name` di-eager load.
-        - Jika pemanggil adalah **Tenant Admin** biasa:
-          - Dikunci secara ketat ke `user->company_id`. Manipulasi query parameter `?company_id=Y` diabaikan sepenuhnya untuk menjaga isolasi data antar penyewa (*tenant isolation*).
-     2. Pada `RoleController::store()`: Super Admin dapat membuat Custom Role untuk perusahaan tertentu dengan menyertakan `company_id` pada payload (divalidasi terhadap tabel `companies`).
-     3. Pada `RoleController::show()`, `update()`, dan `destroy()`: Super Admin diizinkan melihat, memperbarui, dan menghapus custom role milik tenant manapun, dengan validasi cabang (`branch_ids`) yang otomatis mencocokkan kantor cabang milik perusahaan target.
-   - **Status:** ✅ **SELESAI**. Telah diimplementasikan dan diverifikasi dengan automated test suite `RoleSuperAdminTenantTest` (6 test, 38 assertions lulus 100%) serta regression suite (65 test, 297 assertions lulus 100%).
+11. **Super Admin Tenant Isolation di `RoleController::index`:**
+    - **Lokasi:** `app/Http/Controllers/API/RoleController.php` (`index()`, `store()`, `show()`, `update()`, `destroy()`)
+    - **Deskripsi:** Super Admin (`company_id = NULL`) sebelumnya hanya menerima built-in roles karena filter `whereNull('company_id')` tanpa memperhatikan kebutuhan inspeksi atau manajemen custom roles antar tenant perusahaan.
+    - **Solusi & Implementasi:**
+      1. Pada `RoleController::index()`:
+         - Jika pemanggil adalah **Super Admin**:
+           - Dapat menyertakan parameter `?company_id=X` untuk memfilter built-in roles + custom roles milik perusahaan X, sekaligus menghitung `users_count` khusus perusahaan tersebut.
+           - Jika parameter `?company_id` tidak disertakan, mengembalikan 5 built-in roles + seluruh custom roles dari semua tenant perusahaan dengan relasi `company:id,name` di-eager load.
+         - Jika pemanggil adalah **Tenant Admin** biasa:
+           - Dikunci secara ketat ke `user->company_id`. Manipulasi query parameter `?company_id=Y` diabaikan sepenuhnya untuk menjaga isolasi data antar penyewa (*tenant isolation*).
+      2. Pada `RoleController::store()`: Super Admin dapat membuat Custom Role untuk perusahaan tertentu dengan menyertakan `company_id` pada payload (divalidasi terhadap tabel `companies`).
+      3. Pada `RoleController::show()`, `update()`, dan `destroy()`: Super Admin diizinkan melihat, memperbarui, dan menghapus custom role milik tenant manapun, dengan validasi cabang (`branch_ids`) yang otomatis mencocokkan kantor cabang milik perusahaan target.
+    - **Status:** ✅ **SELESAI**. Telah diimplementasikan dan diverifikasi dengan automated test suite `RoleSuperAdminTenantTest` (6 test, 38 assertions lulus 100%) serta regression suite (65 test, 297 assertions lulus 100%).
 
 ### 💻 5.4. Integrasi Frontend & Kontrak API (Frontend Gaps)
 
-9. **Payload Auth `/me` dan `/login` Belum Mengirimkan Full Permissions Matrix:**
-   - **Lokasi:** `app/Http/Controllers/API/AuthController.php` (`userPayload()`)
-   - **Deskripsi:** Response payload user hanya menyertakan boolean `can_manage_roles` dan `can_read_roles`, belum menyertakan dictionary lengkap `permissions: { [module]: level }`.
-   - **Solusi:** Kembalikan matriks permissions lengkap dalam payload `/me` dan `/login` untuk konsumsi web dan mobile.
+12. **Payload Auth `/me` dan `/login` Belum Mengirimkan Full Permissions Matrix:**
+    - **Lokasi:** `app/Http/Controllers/API/AuthController.php` (`userPayload()`)
+    - **Deskripsi:** Response payload user hanya menyertakan boolean `can_manage_roles` dan `can_read_roles`, belum menyertakan dictionary lengkap `permissions: { [module]: level }`.
+    - **Solusi:** Kembalikan matriks permissions lengkap dalam payload `/me` dan `/login` untuk konsumsi web dan mobile.
 
-10. **Hardcoded Role Filter pada Sidebar Web Dashboard (`App.tsx`):**
+13. **Hardcoded Role Filter pada Sidebar Web Dashboard (`App.tsx`):**
     - **Lokasi:** `expenseflow-web/src/App.tsx`
     - **Deskripsi:** Visibilitas menu sidebar (misal grup Finance, Manajemen Karyawan) masih menggunakan boolean hardcoded seperti `!isHrd` atau `!isFinance`. User dengan Custom Role tidak dapat melihat menu yang diizinkan jika slug-nya tidak sama persis dengan role built-in.
     - **Solusi:** Integrasikan helper `hasPermission(module, level)` di frontend React untuk menentukan render menu sidebar dan tombol aksi secara dinamis.
+
+---
+
+### 🛡️ 5.5. Multi-Level Approval Pengajuan Izin/Cuti (SPV ➔ HRD)
+
+14. **Workflow Multi-Level Approval Izin & Cuti Sejajar dengan Lembur:**
+    - **Status:** ✅ **SELESAI (100%)**.
+    - **Komponen Database & Model:**
+      - Migration: `2026_09_27_000001_add_multi_approval_columns_to_leave_requests_table.php` (menambahkan `current_step`, `spv_id`, `spv_approved_at`, `spv_notes`, `notes`).
+      - Model [LeaveRequest.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Models/LeaveRequest.php): relasi `spv(): BelongsTo`.
+      - Model [Role.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Models/Role.php) & [User.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Models/User.php): integrasi permission modul `leave` level `'spv'` & `'hrd'`.
+    - **Engine Persetujuan 2 Tahap ([AttendanceController.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Http/Controllers/API/AttendanceController.php)):**
+      - **Submit:** Karyawan mengajukan izin/cuti ➔ `current_step = 'spv'`, `status = 'pending'`, push notifikasi FCM dikirim ke atasan langsung (`manager_id`).
+      - **Tahap 1 (SPV):** Disetujui oleh atasan langsung / SPV divisi tanpa memotong kuota cuti. Mengisi `spv_id`, `spv_approved_at`, `spv_notes`, dan memajukan `current_step = 'hrd'`, status tetap `'pending'`.
+      - **Tahap 2 (HRD):** HRD/Admin memeriksa dan mengunci saldo kuota secara atomik (`lockForUpdate`), memotong kuota cuti, menetapkan `status = 'approved'`, `approved_by`, `approved_at`, dan mengirimkan push notifikasi FCM kelulusan ke karyawan.
+      - **Penolakan:** Dapat dilakukan di Tahap 1 oleh SPV atau Tahap 2 oleh HRD dengan alasan penolakan wajib (`rejection_reason`).
+      - **Proteksi Guard:** Anti-self approval (atasan tidak bisa menyetujui izin dirinya sendiri) dan isolasi cabang (branch scoping). Cuti bersama otomatis (`holiday_id != null`) tetap diproteksi agar tidak bisa di-approve manual.
+    - **Web Dashboard ([AttendanceManagement.tsx](file:///e:/koding/coba/backend-gawe/expenseflow-web/src/components/AttendanceManagement.tsx)):**
+      - Filter dropdown tahap pengajuan (`Semua Tahap`, `Tahap 1: SPV`, `Tahap 2: HRD`).
+      - Tampilan nama atasan langsung di bawah nama karyawan (`Atasan: ...`).
+      - Badge status modern (`Tahap 1: SPV` oranye vs `Tahap 2: HRD` biru langit).
+      - Catatan persetujuan SPV transparan di tooltip/detail.
+    - **Aplikasi Mobile Flutter ([expenseflow-mobile](file:///e:/koding/coba/backend-gawe/expenseflow-mobile)):**
+      - Provider `SpvLeaveProvider` dan API Service endpoint `/attendance/spv/leave-approvals`.
+      - Layanan Mobile SPV: `SpvLeaveApprovalScreen` lengkap dengan tab Menunggu, Disetujui, Ditolak, serta modal bottom-sheet konfirmasi.
+      - Banner Beranda Terpadu di `home_screen.dart` menampilkan counter real-time untuk Lembur Tim dan Izin & Cuti Tim.
+      - Tampilan riwayat karyawan di `izin_cuti_screen.dart` menampilkan status transparan ("Menunggu SPV" vs "Menunggu HRD • Disetujui SPV").
+    - **Automated Tests:**
+      - Suite `LeaveMultiApprovalWorkflowTest`: 8 test cases komprehensif lulus 100% (31 assertions).
+      - Regression suite `DivisionPositionSupervisorOvertimeTest` & `MultiApprovalWorkflowTest`: 26 test lulus 100%.
+      - Production build web (`npm run build`) & Flutter analysis (`dart analyze lib/`): 0 error / No issues found.
+
+  - **5.6. Konfigurasi Fleksibilitas Multi-Level Approval per Cabang (Edit Kantor):**
+    - **Latar Belakang & Kebutuhan:** Perusahaan bertumbuh seringkali memiliki cabang pusat besar dengan struktur hierarki berjenjang (SPV ➔ HRD), namun memiliki kantor cabang kecil/satelit/outlet ramping yang tidak memiliki posisi Supervisor di lapangan. Untuk cabang ramping tersebut, pengajuan lembur maupun cuti/izin idealnya dapat langsung diproses oleh HRD dalam 1 tahap agar alur kerja tidak terhambat.
+    - **Arsitektur Database:**
+      - Kolom pada tabel `attendance_settings`:
+        - `overtime_multi_approval_enabled` (boolean, default: `true`)
+        - `leave_multi_approval_enabled` (boolean, default: `true`)
+      - Model [AttendanceSetting.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Models/AttendanceSetting.php) menambahkan kedua atribut ke `$fillable` dan `$casts` sebagai `boolean`.
+    - **Alur Kerja Dinamis di Controller ([AttendanceController.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Http/Controllers/API/AttendanceController.php)):**
+      - **Jika Multi-Approval Aktif (`true` - Default):**
+        - Lembur: Pengajuan masuk dengan `current_step = 'spv'`, notifikasi ke atasan langsung, disetujui SPV di Tahap 1, lalu disahkan HRD di Tahap 2.
+        - Cuti/Izin: Pengajuan masuk dengan `current_step = 'spv'`, notifikasi ke atasan langsung, disetujui SPV di Tahap 1, lalu diputuskan HRD di Tahap 2 sekaligus pemotongan kuota.
+      - **Jika Multi-Approval Dinonaktifkan (`false` - Mode Langsung HRD):**
+        - Lembur: Pengajuan langsung masuk dengan `current_step = 'hrd'`, notifikasi diarahkan langsung ke HRD/Admin, dan HRD dapat langsung menyetujui pengajuan dalam 1 langkah tanpa menunggu SPV.
+        - Cuti/Izin: Pengajuan langsung masuk dengan `current_step = 'hrd'`, notifikasi diarahkan langsung ke HRD/Admin, dan HRD dapat langsung memutuskan & memotong kuota dalam 1 langkah.
+    - **Dashboard Web Pengaturan Kantor ([SettingsManagement.tsx](file:///e:/koding/coba/backend-gawe/expenseflow-web/src/components/SettingsManagement.tsx)):**
+      - Pada tab "Edit Kantor" / "Tambah Kantor", terdapat **Section 6: Alur Persetujuan Bertingkat (Approval Workflow Cabang)** dengan dua switch kontrol modern:
+        1. *Approval Lembur Bertingkat* (Aktif: SPV ➔ HRD / Nonaktif: Langsung HRD).
+        2. *Approval Cuti & Izin Bertingkat* (Aktif: SPV ➔ HRD / Nonaktif: Langsung HRD).
+      - Pada daftar kartu kantor (Offices Grid), setiap cabang menampilkan pill badge ringkasan alur approval yang sedang aktif (`Lembur: Bertingkat / Langsung HRD` & `Cuti/Izin: Bertingkat / Langsung HRD`).
+    - **Automated Feature Tests ([BranchMultiApprovalToggleTest.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/tests/Feature/BranchMultiApprovalToggleTest.php)):**
+      - `test_branch_with_leave_multi_approval_enabled_starts_at_spv_step` (lulus).
+      - `test_branch_with_leave_multi_approval_disabled_starts_at_hrd_step_and_allows_instant_hrd_approval` (lulus).
+      - `test_branch_with_overtime_multi_approval_enabled_starts_at_spv_step` (lulus).
+      - `test_branch_with_overtime_multi_approval_disabled_starts_at_hrd_step_and_allows_instant_hrd_approval` (lulus).
+      - `test_update_office_settings_persists_multi_approval_toggles` (lulus).
+
+  - **5.7. Master Job Grade & Sistem Pewarisan Plafon Klaim Bulanan Otomatis:**
+    - **Latar Belakang & Kebutuhan Bisnis:**
+      Mengatur batas plafon klaim bulanan (`monthly_claim_limit`) secara manual satu per satu untuk puluhan hingga ratusan karyawan sangat memakan waktu HRD dan rawan kesalahan (*human error*). Sistem Job Grade / Level hierarki (contoh: Level 1: Staff, Level 2: Senior Staff, Level 3: Supervisor, Level 4: Manager, Level 5: Director) memungkinkan perusahaan menetapkan plafon standar bulanan per level, sehingga seluruh karyawan dengan jabatan bersangkutan otomatis mewarisi limit tersebut tanpa perlu konfigurasi individual manual.
+    - **Arsitektur Database & Migrasi:**
+      - Migration: [2026_09_27_100000_create_job_grades_table.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/database/migrations/2026_09_27_100000_create_job_grades_table.php)
+      - Tabel `job_grades`:
+        - `id` (bigint unsigned, primary key)
+        - `company_id` (foreign key `companies`, cascade on delete)
+        - `level` (unsignedInteger, unique per company)
+        - `name` (varchar 100, unique per company)
+        - `code` (varchar 50, nullable)
+        - `default_monthly_claim_limit` (decimal 15,2, default 0, `0` = unlimited / tanpa batas nominal)
+        - `description` (text, nullable)
+        - `is_active` (boolean, default true)
+        - `timestamps`
+      - Tabel `positions`: penambahan kolom foreign key `job_grade_id` (`nullable`, `onDelete('set null')`).
+      - Tabel `users`: penambahan kolom foreign key `job_grade_id` (`nullable`, `onDelete('set null')`).
+    - **Model & Cascading Priority Rule ([User.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Models/User.php)):**
+      - Atribut terkomputasi `getEffectiveMonthlyClaimLimitAttribute()` menerapkan 5 tingkat prioritas cascading:
+        1. **Manual Override Individu:** `user.monthly_claim_limit` jika bernilai `> 0`.
+        2. **Direct Employee Job Grade:** `user.job_grade_id` (jika karyawan diberikan penugasan grade khusus yang berbeda dari jabatan).
+        3. **Inherited Position Job Grade:** `user.position.job_grade_id` (diwarisi otomatis dari posisi jabatan yang diemban).
+        4. **Global Company Setting:** `company_settings.monthly_claim_limit` (fallback pengaturan perusahaan).
+        5. **Unlimited:** `0` (bebas klaim).
+      - Atribut terkomputasi `getEffectiveJobGradeAttribute()` mengembalikan instance objek `JobGrade` aktif (user grade || position grade).
+      - Eager loading `'position.jobGrade'` dan `'jobGrade'` pada `UserController::index` untuk menjamin efisiensi performa tanpa N+1 queries.
+    - **REST API Endpoints ([JobGradeController.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Http/Controllers/API/JobGradeController.php)):**
+      - `GET /api/v1/admin/job-grades`: List job grades dengan perhitungan `positions_count` & `users_count`.
+      - `POST /api/v1/admin/job-grades`: Buat job grade baru dengan validasi keunikan level & nama per perusahaan, serta integrasi `AuditLogger`.
+      - `GET /api/v1/admin/job-grades/{id}`: Detail satu job grade.
+      - `PUT /api/v1/admin/job-grades/{id}`: Pembaruan data job grade dengan pencatatan audit perubahan (*old values* vs *new values*).
+      - `DELETE /api/v1/admin/job-grades/{id}`: Proteksi integritas relasi — ditolak dengan HTTP 422 jika masih memiliki keterikatan aktif dengan posisi jabatan atau akun karyawan.
+      - Integrasi `job_grade_id` pada CRUD [PositionController.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Http/Controllers/API/PositionController.php) dan [UserController.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Http/Controllers/API/UserController.php).
+    - **Frontend Antarmuka Web:**
+      - [OrganizationManagementTab.tsx](file:///e:/koding/coba/backend-gawe/expenseflow-web/src/components/OrganizationManagementTab.tsx):
+        - Subtab ke-3: **Master Job Grade & Level** dengan tabel interaktif (Level, Nama, Kode, Plafon Bulanan Standar, Jabatan Terkait, Karyawan Langsung, Status Aktif, Aksi Edit/Hapus).
+        - Modal Tambah & Edit Job Grade lengkap dengan preset nominal cepat (1 Jt, 2 Jt, 3 Jt, 5 Jt, 10 Jt, Unlimited).
+        - Modal Tambah/Edit Jabatan dilengkapi dropdown pilihan Job Grade untuk pewarisan otomatis.
+        - Kolom "Job Grade (Plafon Standar)" pada tabel Jabatan & Posisi.
+      - [EmployeeMultiTabForm.tsx](file:///e:/koding/coba/backend-gawe/expenseflow-web/src/components/EmployeeMultiTabForm.tsx):
+        - Tab 1 (Pekerjaan & Organisasi): Dropdown "Job Grade & Level Plafon" dengan indikator visual apakah diwarisi dari jabatan atau override khusus.
+        - Bagian "Kebijakan Batas Klaim Struk Bulanan": Card ringkasan plafon standar Job Grade efektif, badge status ("Mewarisi Standar Grade" vs "Nominal Khusus Karyawan Aktif"), dan tombol preset cepat "Sesuai Grade (Rp X Jt)".
+      - [KaryawanManagement.tsx](file:///e:/koding/coba/backend-gawe/expenseflow-web/src/components/KaryawanManagement.tsx):
+        - Tabel karyawan menampilkan status plafon secara jelas: Nonaktif, Nominal Khusus (Khusus), atau Standar Job Grade (Grade Lv X), atau Unlimited.
+    - **Automated Feature Tests ([JobGradeManagementAndInheritanceTest.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/tests/Feature/JobGradeManagementAndInheritanceTest.php)):**
+      - `test_job_grade_crud_by_admin`: Pembuatan, pembacaan, pembaruan, dan penghapusan job grade lulus 100%.
+      - `test_job_grade_deletion_prevented_when_in_use_by_position_or_user`: Verifikasi proteksi penghapusan ketika grade masih dipakai oleh jabatan atau karyawan lulus 100%.
+      - `test_cascading_claim_limit_inheritance_precedence`: Verifikasi 4 skenario urutan prioritas klaim (override > user grade > position grade > default 0) lulus 100%.
+      - `test_user_api_returns_effective_claim_limit_and_grade`: Verifikasi serialisasi atribut `effective_monthly_claim_limit` dan `effective_job_grade` pada respons user API lulus 100%.
+
+  - **5.8. Penegasan Batas Antara Role vs Jabatan & Eliminasi Total Fuzzy String Matching:**
+    - **Latar Belakang & Masalah Arsitektur:**
+      Sebelumnya, sistem memiliki kecenderungan mencampuradukkan konsep **Role** (hak akses teknis aplikasi) dengan **Jabatan / Hierarki Kepemimpinan** (struktur organisasi). Terdapat banyak penggunaan heuristik pencocokan string (*fuzzy string matching*) seperti `str_contains($roleSlug, 'spv')`, `'manager'`, `'head'`, `'kepala'`, `'kabag'` pada controller approval struk, lembur, dan cuti. Hal ini menimbulkan kelemahan fatal:
+      1. Jika perusahaan membuat Custom Role dengan nama *"Supervisor"* tetapi akun tersebut tidak memiliki jabatan struktural maupun bawahan, sistem keliru memberinya hak menyetujui pengajuan karyawan.
+      2. Sebaliknya, karyawan dengan Jabatan struktural Supervisor (`positions.is_supervisor = true`) atau Atasan Langsung (`manager_id`) yang menggunakan Custom Role bernama non-SPV (misal: *"Finance Team"* atau *"Operasional"*) dapat terblokir dari wewenang approval bawahan langsungnya.
+      3. *Privilege Creep*: Wewenang modul `receipt: manage` disalahartikan sebagai level `spv` untuk menyetujui struk Tier 3 tahap 2.
+    - **Prinsip & Pemisahan Tanggung Jawab:**
+      1. **Role (`roles` & `role_permissions`):**
+         - Menentukan platform akses (`both`, `mobile_only`).
+         - Menentukan cakupan kantor cabang (`all`, `specific`, `self`).
+         - Menentukan hak akses modul (`receipt`, `invoice`, `attendance`, `leave`, `overtime`, dll) pada level `none`, `read`, `manage`, atau wewenang khusus (`spv`, `hrd`).
+         - Menyediakan bypass administratif bawaan untuk `super_admin`, `admin`, dan `hrd`.
+      2. **Jabatan / Posisi (`positions.is_supervisor`) & Atasan Langsung (`users.manager_id`):**
+         - Menentukan kepemimpinan struktural, garis komando pelaporan per individu, dan wewenang approval Step 1 (SPV) untuk lembur serta cuti/izin.
+         - Karyawan berhak menyetujui pengajuan Step 1 bawahan jika:
+           - Merupakan atasan langsung individu bersangkutan (`$user->id === $subordinate->manager_id`), ATAU
+           - Memiliki jabatan supervisor dalam divisi yang sama (`$user->position?->is_supervisor && $user->division_id === $subordinate->division_id`), ATAU
+           - Memiliki hak akses modul lembur/cuti berlevel `'spv'` / `'hrd'`, atau bypass administratif (`super_admin`, `admin`, `hrd`).
+      3. **Eliminasi Total Fuzzy String Matching (Zero Fuzzy Matching):**
+         - Seluruh pemeriksaan substring pada slug atau nama role dihapus 100% dari codebase.
+         - Helper `User::isSupervisor()` dievaluasi murni berbasis:
+           1. `$this->position && $this->position->is_supervisor`
+           2. `$this->subordinates()->exists()`
+           3. `$this->hasPermission(Role::MODULE_OVERTIME, 'spv') || $this->hasPermission(Role::MODULE_LEAVE, 'spv')`
+           4. Bypass: `in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)`
+         - Pada [ReceiptController.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/app/Http/Controllers/API/ReceiptController.php) (`approve` dan `bulkApprove`): evaluasi approver Tier 3 tahap 2 mengecek posisi supervisor struktural dan hak peran `receipt: spv` secara eksplisit, tanpa heuristik nama role.
+         - Pada `Role::hasPermission()`: pencegahan privilege creep memastikan level `'spv'` untuk `MODULE_RECEIPT` strictly membutuhkan `access_level === 'spv'` (tidak otomatis dipenuhi oleh `manage`).
+    - **Suite Pengujian Khusus ([RoleVsPositionSeparationTest.php](file:///e:/koding/coba/backend-gawe/expenseflow-backend/tests/Feature/RoleVsPositionSeparationTest.php)):**
+      - `test_custom_role_with_spv_name_cannot_approve_subordinate_without_supervisor_position_or_subordinates`: Memastikan role kustom dengan nama/slug SPV tanpa posisi supervisor ditolak 403 `SPV_REQUIRED`.
+      - `test_plain_employee_with_is_supervisor_position_can_approve_subordinate_step1`: Memastikan karyawan biasa dengan jabatan `is_supervisor = true` berhasil menyetujui lembur bawahan divisinya.
+      - `test_plain_employee_assigned_as_direct_manager_can_approve_subordinate_step1`: Memastikan karyawan biasa yang ditugaskan sebagai direct `manager_id` berhasil menyetujui lembur bawahan langsungnya.
+      - `test_finance_staff_with_manage_permission_cannot_approve_tier3_receipt_without_spv_position`: Memastikan staf finance dengan wewenang `manage` tetapi non-supervisor ditolak 422 `SPV_FINANCE_REQUIRED` saat menyetujui Tier 3 tahap 2.
+      - `test_supervisor_from_other_division_cannot_approve_employee_with_assigned_manager`: Memastikan supervisor dari divisi lain ditolak 403 `DIRECT_SUPERVISOR_REQUIRED` jika karyawan memiliki atasan langsungnya sendiri.
+
+

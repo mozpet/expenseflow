@@ -95,6 +95,12 @@ class ExpenseReportController extends Controller
 
         $user = $request->user();
 
+        if (! $user->canAccessReceipts()) {
+            return response()->json([
+                'message' => 'Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.',
+            ], 403);
+        }
+
         $report = DB::transaction(function () use ($request, $user) {
             $report = ExpenseReport::create([
                 'company_id'            => $user->company_id,
@@ -259,6 +265,12 @@ class ExpenseReportController extends Controller
     {
         $user = $request->user();
 
+        if (! $user->canAccessReceipts()) {
+            return response()->json([
+                'message' => 'Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.',
+            ], 403);
+        }
+
         if ($expenseReport->user_id !== $user->id) {
             return response()->json(['message' => 'Anda bukan pemilik laporan ini.'], 403);
         }
@@ -336,14 +348,8 @@ class ExpenseReportController extends Controller
             $bundleTotalClaim += $claimVal;
         }
 
-        // Cek monthly_claim_limit akumulasi bulanan user
-        $monthlyLimit = (float) ($user->monthly_claim_limit ?? 0);
-        if ($monthlyLimit <= 0) {
-            $monthlyLimit = (float) (DB::table('company_settings')
-                ->where('company_id', $companyId)
-                ->where('key', 'monthly_claim_limit')
-                ->value('value') ?? 0);
-        }
+        // Cek monthly_claim_limit akumulasi bulanan user (cascading: User Override → User Grade → Position Grade → Company Setting)
+        $monthlyLimit = $user->effective_monthly_claim_limit;
 
         if ($monthlyLimit > 0) {
             $currentMonthSpend = (float) Receipt::where('user_id', $user->id)

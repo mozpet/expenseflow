@@ -1580,42 +1580,7 @@ function ShiftPatternFormModal({ shifts, patterns = [], offices, editing, onClos
     );
   };
 
-  // Aksi Cepat 2: Salin jam, warna, dan toleransi dari template shift
-  const copyFromTemplate = (templateId: number) => {
-    const sh = shifts.find((s) => s.id === templateId);
-    if (!sh) return;
-    if (sh.color) {
-      setColor(sh.color);
-    }
-    if (sh.late_tolerance_minutes != null) {
-      setCustomToleranceEnabled(true);
-      setLateToleranceMinutes(sh.late_tolerance_minutes);
-    }
-    const workSc = sh.schedules?.find((sc) => !sc.is_off);
-    const startTime = workSc?.work_start_time?.slice(0, 5) ?? '07:00';
-    const endTime = workSc?.work_end_time?.slice(0, 5) ?? '15:00';
-    const breakMins = workSc?.break_minutes ?? 60;
-    const isWfh = Boolean(workSc?.is_wfh);
-    const isField = isWfh ? Boolean(workSc?.is_field) : false;
-    const isCross = endTime <= startTime;
 
-    setDays((prev) =>
-      prev.map((d) => {
-        if (d.is_off) return d;
-        return {
-          ...d,
-          shift_id: sh.id,
-          name: d.name || sh.name,
-          work_start_time: startTime,
-          work_end_time: endTime,
-          break_minutes: breakMins,
-          is_cross_day: isCross,
-          is_wfh: isWfh,
-          is_field: isField,
-        };
-      })
-    );
-  };
 
   const validate = (): string | null => {
     if (!name.trim()) return 'Nama pola rotasi wajib diisi.';
@@ -2148,26 +2113,6 @@ function ShiftPatternFormModal({ shifts, patterns = [], offices, editing, onClos
                 >
                   <span>⚡ Terapkan Jam H1 ke Semua Hari Kerja</span>
                 </button>
-
-                <div className="relative inline-flex items-center">
-                  <select
-                    onChange={(e) => {
-                      if (e.target.value) {
-                        copyFromTemplate(Number(e.target.value));
-                        e.target.value = '';
-                      }
-                    }}
-                    defaultValue=""
-                    className="text-[11px] py-1 pl-2 pr-6 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:ring-1 focus:ring-indigo-400 focus:outline-none cursor-pointer"
-                  >
-                    <option value="" disabled>📋 Salin dari Template Shift...</option>
-                    {availableShifts.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.name}{!s.attendance_setting_id ? ' (Semua Cabang)' : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
               </div>
             </div>
 
@@ -3959,6 +3904,46 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   const [departments, setDepartments] = useState<string[]>([]);
   const [loadingRoster, setLoadingRoster] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [selectedUsersMap, setSelectedUsersMap] = useState<
+    Map<number, { user_id: number; name: string; attendance_setting_id: number | null }>
+  >(new Map());
+
+  const clearSelection = useCallback(() => {
+    setSelected(new Set());
+    setSelectedUsersMap(new Map());
+    setRosterPage(1);
+  }, []);
+
+  // Reset seleksi saat berganti tanggal roster atau tab (karena penugasan jadwal spesifik per tanggal)
+  useEffect(() => {
+    clearSelection();
+  }, [rosterDate, tab, clearSelection]);
+
+  // ID cabang dari karyawan yang sedang dipilih (untuk auto-filter roster).
+  const selectedBranchIds = useMemo(() => {
+    const ids = new Set<number>();
+    selectedUsersMap.forEach((u) => {
+      if (u.attendance_setting_id != null) {
+        ids.add(u.attendance_setting_id);
+      }
+    });
+    return ids;
+  }, [selectedUsersMap]);
+
+  // Cabang otomatis: jika user mencentang karyawan dari kantor tertentu
+  // dan filter cabang manual masih "Semua cabang", sistem otomatis menyaring ke kantor tersebut
+  // di level server query agar menampilkan seluruh data karyawan cabang tersebut (25 data/halaman).
+  const autoBranchId = useMemo(() => {
+    if (rosterBranch) return undefined;
+    if (selectedBranchIds.size === 1) {
+      return Array.from(selectedBranchIds)[0];
+    }
+    return undefined;
+  }, [rosterBranch, selectedBranchIds]);
+
+  const effectiveBranchId = rosterBranch
+    ? Number(rosterBranch)
+    : autoBranchId;
 
   // Paginasi Roster Server-Side untuk rendering ringan pada 1.000+ karyawan
   const [rosterPage, setRosterPage] = useState<number>(1);
@@ -3975,7 +3960,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
 
   useEffect(() => {
     setRosterPage(1);
-  }, [rosterSearch, rosterBranch, rosterDepartment, rosterStatusFilter, rosterShiftName, rosterDate]);
+  }, [rosterSearch, rosterBranch, rosterDepartment, rosterStatusFilter, rosterShiftName, rosterDate, autoBranchId]);
 
   // ── Template state ──
   const [loadingShifts, setLoadingShifts] = useState(false);
@@ -4085,7 +4070,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
         page: rosterPage,
         per_page: rosterPageSize,
       };
-      if (rosterBranch) filters.attendance_setting_id = Number(rosterBranch);
+      if (effectiveBranchId) filters.attendance_setting_id = effectiveBranchId;
       if (rosterDepartment) filters.department = rosterDepartment;
       if (debouncedRosterSearch.trim()) filters.search = debouncedRosterSearch.trim();
       if (rosterStatusFilter !== 'ALL') filters.status = rosterStatusFilter;
@@ -4115,13 +4100,13 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       if (Array.isArray(res?.departments) && res.departments.length > 0) {
         setDepartments(res.departments);
       }
-      setSelected(new Set());
+      // CATATAN: Jangan panggil setSelected(new Set()) di sini agar seleksi karyawan lintas pencarian tetap tersimpan
     } catch (e: unknown) {
       setError(e instanceof ApiError ? e.message : 'Gagal memuat roster.');
     } finally {
       setLoadingRoster(false);
     }
-  }, [rosterDate, rosterBranch, rosterDepartment, debouncedRosterSearch, rosterStatusFilter, rosterShiftName, rosterPage, rosterPageSize]);
+  }, [rosterDate, effectiveBranchId, rosterDepartment, debouncedRosterSearch, rosterStatusFilter, rosterShiftName, rosterPage, rosterPageSize]);
 
   const loadCalendar = useCallback(async (forceRefresh = false) => {
     setLoadingCal(true);
@@ -4319,29 +4304,36 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
   };
 
   // ─── Seleksi roster ────────────────────────────────────────
-  const toggleSelect = (id: number) =>
+  const toggleSelect = (r: RosterRow) => {
+    const id = r.user_id;
     setSelected((prev) => {
       const next = new Set(prev);
       next.has(id) ? next.delete(id) : next.add(id);
       return next;
     });
-
-  // ID cabang dari karyawan yang sedang dipilih (untuk auto-filter roster).
-  const selectedBranchIds = useMemo(() => {
-    const ids = new Set<number>();
-    roster.forEach((r) => {
-      if (selected.has(r.user_id) && r.attendance_setting_id != null) {
-        ids.add(r.attendance_setting_id);
+    setSelectedUsersMap((prev) => {
+      const next = new Map(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.set(id, {
+          user_id: r.user_id,
+          name: r.name,
+          attendance_setting_id: r.attendance_setting_id ?? null,
+        });
       }
+      return next;
     });
-    return ids;
-  }, [roster, selected]);
+  };
+
+  // selectedBranchIds & autoBranchId didefinisikan di atas loadRoster agar roster disaring di tingkat query server.
 
   const filteredRoster = useMemo(() => {
     return roster.filter((r) => {
-      // Auto-filter: jika ada karyawan yang dicentang, hanya tampilkan karyawan
-      // dengan kantor cabang yang sama (memudahkan bulk assign per tim cabang).
-      if (selectedBranchIds.size > 0) {
+      // Auto-filter: jika ada karyawan yang dicentang dan user tidak sedang mencari manual,
+      // bantu saring ke kantor cabang yang sama (memudahkan bulk assign per tim cabang).
+      // Jika user sedang mencari nama (debouncedRosterSearch), jangan batasi agar hasil pencarian tetap tampil.
+      if (!debouncedRosterSearch && selectedBranchIds.size > 0) {
         if (r.attendance_setting_id == null) return false;
         if (!selectedBranchIds.has(r.attendance_setting_id)) return false;
       }
@@ -4353,16 +4345,44 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
       if (rosterShiftName === 'DEFAULT') return r.source === 'office';
       return r.shift_name === rosterShiftName;
     });
-  }, [roster, rosterShiftName, rosterStatusFilter, selectedBranchIds]);
+  }, [roster, rosterShiftName, rosterStatusFilter, selectedBranchIds, debouncedRosterSearch]);
 
-  const toggleSelectAll = () =>
-    setSelected((prev) =>
-      prev.size === filteredRoster.length && filteredRoster.length > 0
-        ? new Set()
-        : new Set(filteredRoster.map((r) => r.user_id)),
-    );
+  const toggleSelectAll = () => {
+    const allFilteredSelected = filteredRoster.length > 0 && filteredRoster.every((r) => selected.has(r.user_id));
+    if (allFilteredSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        filteredRoster.forEach((r) => next.delete(r.user_id));
+        return next;
+      });
+      setSelectedUsersMap((prev) => {
+        const next = new Map(prev);
+        filteredRoster.forEach((r) => next.delete(r.user_id));
+        return next;
+      });
+    } else {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        filteredRoster.forEach((r) => next.add(r.user_id));
+        return next;
+      });
+      setSelectedUsersMap((prev) => {
+        const next = new Map(prev);
+        filteredRoster.forEach((r) => {
+          next.set(r.user_id, {
+            user_id: r.user_id,
+            name: r.name,
+            attendance_setting_id: r.attendance_setting_id ?? null,
+          });
+        });
+        return next;
+      });
+    }
+  };
 
-  const selectedNames = roster.filter((r) => selected.has(r.user_id)).map((r) => r.name);
+  const selectedNames = useMemo(() => {
+    return Array.from(selectedUsersMap.values()).map((u: any) => u.name as string);
+  }, [selectedUsersMap]);
 
   // Nama cabang dari karyawan yang sedang dipilih — untuk keterangan auto-filter.
   const selectedBranchNames = useMemo(() => {
@@ -4431,7 +4451,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           {/* Filter bar */}
           <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-100 dark:border-slate-800 p-4 shadow-sm">
             {/* Auto-filter info: centang karyawan → daftar menyaring ke cabang yang sama */}
-            {selectedBranchIds.size > 0 && (
+            {!rosterBranch && selectedBranchIds.size > 0 && (
               <div className="flex items-center gap-2 bg-indigo-50 dark:bg-indigo-950/40 border border-indigo-200 dark:border-indigo-800 rounded-lg px-3 py-2 mb-3 text-[11px] text-indigo-700 dark:text-indigo-300 animate-in fade-in duration-200">
                 <Users className="w-3.5 h-3.5 shrink-0" />
                 <span>
@@ -4563,7 +4583,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
               </p>
               <div className="flex items-center gap-2">
                 <button
-                  onClick={() => setSelected(new Set())}
+                  onClick={clearSelection}
                   className="text-xs font-semibold text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 transition cursor-pointer"
                 >
                   Batal pilih
@@ -4602,7 +4622,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                     <th className="py-2.5 px-3 w-8">
                       <input
                         type="checkbox"
-                        checked={filteredRoster.length > 0 && selected.size === filteredRoster.length}
+                        checked={filteredRoster.length > 0 && filteredRoster.every((r) => selected.has(r.user_id))}
                         onChange={toggleSelectAll}
                         className="w-3.5 h-3.5 rounded accent-indigo-600 align-middle"
                       />
@@ -4658,7 +4678,7 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
                             <input
                               type="checkbox"
                               checked={isSel}
-                              onChange={() => toggleSelect(r.user_id)}
+                              onChange={() => toggleSelect(r)}
                               className="w-3.5 h-3.5 rounded accent-indigo-600 align-middle"
                             />
                           </td>
@@ -5707,7 +5727,10 @@ export function ShiftManagement({ onAddAuditLog }: Props) {
           patterns={patterns}
           selectedBranchIds={selectedBranchIds}
           onClose={() => { setShowBulk(false); }}
-          onSaved={() => { loadRoster(); }}
+          onSaved={() => {
+            clearSelection();
+            loadRoster();
+          }}
         />
       )}
 

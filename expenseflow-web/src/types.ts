@@ -282,4 +282,37 @@ export interface AppSettings {
   thresholdTwo: string;
   thresholdThree: string;
   branchSettings?: BranchSetting[];
+  // Aturan approval bertingkat struk reimbursement
+  receiptTier1Threshold: number; // Batas atas Tier 1 (nominal < ini = 1 approval Finance)
+  receiptTier2Threshold: number; // Batas atas Tier 2 / bawah Tier 3 (nominal ≥ ini = wajib SPV)
+  receiptTier2Mode: 'two_finance' | 'finance_and_spv'; // Mode Tier 2
 }
+
+export interface Division {
+  id: number;
+  company_id: number;
+  name: string;
+  code: string | null;
+  description: string | null;
+  is_active: boolean;
+  users_count?: number;
+  positions_count?: number;
+  positions?: Position[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Position {
+  id: number;
+  company_id: number;
+  division_id: number | null;
+  name: string;
+  is_supervisor: boolean;
+  description: string | null;
+  is_active: boolean;
+  division?: Division | { id: number; name: string; code: string | null };
+  users_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+

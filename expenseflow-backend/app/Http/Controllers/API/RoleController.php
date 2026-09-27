@@ -37,9 +37,12 @@ class RoleController extends Controller
         return response()->json([
             'modules'       => array_values(Role::AVAILABLE_MODULES),
             'access_levels' => [
-                ['id' => 'none',   'name' => 'Tidak Ada Akses', 'desc' => 'Menu disembunyikan & akses API diblokir'],
-                ['id' => 'read',   'name' => 'Hanya Lihat',     'desc' => 'Hanya bisa melihat daftar & detail data'],
-                ['id' => 'manage', 'name' => 'Kelola Penuh',    'desc' => 'Bisa melihat, menambah, mengubah, dan menghapus'],
+                ['id' => 'none',    'name' => 'Tidak Ada Akses',    'desc' => 'Menu disembunyikan & akses API diblokir'],
+                ['id' => 'read',    'name' => 'Hanya Lihat',        'desc' => 'Hanya bisa melihat daftar & detail data'],
+                ['id' => 'manage',  'name' => 'Kelola Penuh',       'desc' => 'Bisa melihat, menambah, mengubah, menghapus, serta mengelola pengaturan & klaim limit'],
+                ['id' => 'spv',     'name' => 'Level 1: SPV',       'desc' => 'Khusus persetujuan lembur tahap 1 (SPV/Atasan)'],
+                ['id' => 'hrd',     'name' => 'Level 2: HRD',       'desc' => 'Khusus persetujuan lembur tahap 2 (HRD Final)'],
+                ['id' => 'finance', 'name' => 'Lv 1: Finance',      'desc' => 'Approval struk Tier 1 & Tier 2, + tahap pertama Tier 3'],
             ],
             'platforms' => [
                 ['id' => 'both',        'name' => 'Mobile & Web Dashboard', 'desc' => 'Presensi online di mobile dan akses dashboard web'],
@@ -147,7 +150,7 @@ class RoleController extends Controller
                 }),
             ],
             'permissions'   => 'nullable|array',
-            'permissions.*' => [Rule::in(['none', 'read', 'manage'])],
+            'permissions.*' => [Rule::in(['none', 'read', 'manage', 'spv', 'hrd', 'finance'])],
         ];
 
         if ($isSuperAdmin && empty($user->company_id)) {
@@ -159,6 +162,21 @@ class RoleController extends Controller
         $validated = $request->validate($rules);
         if ($isSuperAdmin && isset($validated['company_id'])) {
             $companyId = (int) $validated['company_id'];
+        }
+
+        // Validasi dependensi: role_management hanya boleh aktif jika settings = 'manage'
+        $inputPermissions = $validated['permissions'] ?? [];
+        $settingsLevel = $inputPermissions[Role::MODULE_SETTINGS] ?? 'none';
+        $roleMgmtLevel = $inputPermissions[Role::MODULE_ROLE_MANAGEMENT] ?? 'none';
+        if (in_array($roleMgmtLevel, ['read', 'manage'], true) && $settingsLevel !== 'manage') {
+            return response()->json([
+                'message' => 'Hak akses Manajemen Role & Hak Akses hanya dapat diaktifkan jika Pengaturan Aturan diatur ke Kelola Penuh (Manage).',
+                'errors'  => [
+                    'permissions.role_management' => [
+                        'Hak akses Manajemen Role memerlukan izin Kelola Penuh (Manage) pada Pengaturan Aturan.',
+                    ],
+                ],
+            ], 422);
         }
 
         // Generate slug unik per company — WAJIB hindari slug built-in
@@ -309,9 +327,26 @@ class RoleController extends Controller
                 }),
             ],
             'permissions'   => 'nullable|array',
-            'permissions.*' => [Rule::in(['none', 'read', 'manage'])],
+            'permissions.*' => [Rule::in(['none', 'read', 'manage', 'spv', 'hrd', 'finance'])],
             'is_active'     => 'sometimes|boolean',
         ]);
+
+        // Validasi dependensi: role_management hanya boleh aktif jika settings = 'manage'
+        if (isset($validated['permissions'])) {
+            $inputPermissions = $validated['permissions'];
+            $settingsLevel = $inputPermissions[Role::MODULE_SETTINGS] ?? 'none';
+            $roleMgmtLevel = $inputPermissions[Role::MODULE_ROLE_MANAGEMENT] ?? 'none';
+            if (in_array($roleMgmtLevel, ['read', 'manage'], true) && $settingsLevel !== 'manage') {
+                return response()->json([
+                    'message' => 'Hak akses Manajemen Role & Hak Akses hanya dapat diaktifkan jika Pengaturan Aturan diatur ke Kelola Penuh (Manage).',
+                    'errors'  => [
+                        'permissions.role_management' => [
+                            'Hak akses Manajemen Role memerlukan izin Kelola Penuh (Manage) pada Pengaturan Aturan.',
+                        ],
+                    ],
+                ], 422);
+            }
+        }
 
         $oldValues = $role->load(['permissions', 'branches'])->toArray();
 

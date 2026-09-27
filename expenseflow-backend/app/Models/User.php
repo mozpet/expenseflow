@@ -13,7 +13,7 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['company_id', 'role_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'is_active', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
+#[Fillable(['company_id', 'role_id', 'division_id', 'position_id', 'manager_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim', 'is_active', 'can_login', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
@@ -23,7 +23,22 @@ class User extends Authenticatable
     {
         static::saving(function (User $user) {
             try {
-                // 1. Jika role_id secara eksplisit di-set NULL:
+                // 1. Sinkronisasi nama divisi ke string department untuk backward compatibility
+                if ($user->isDirty('division_id')) {
+                    if ($user->division_id) {
+                        $div = Division::find($user->division_id);
+                        if ($div) {
+                            $user->department = $div->name;
+                        }
+                    } else {
+                        // Jika division_id eksplisit dikosongkan tapi department tidak diubah
+                        if (! $user->isDirty('department')) {
+                            $user->department = null;
+                        }
+                    }
+                }
+
+                // 2. Jika role_id secara eksplisit di-set NULL:
                 if ($user->isDirty('role_id') && is_null($user->role_id)) {
                     if (! $user->isDirty('role') || ! in_array($user->role, ['super_admin', 'admin', 'hrd', 'finance', 'employee'])) {
                         $user->role = 'employee';
@@ -35,7 +50,7 @@ class User extends Authenticatable
                     return;
                 }
 
-                // 2. Jika role_id terisi dan dirty, dan role string TIDAK diubah secara eksplisit:
+                // 3. Jika role_id terisi dan dirty, dan role string TIDAK diubah secara eksplisit:
                 if ($user->isDirty('role_id') && $user->role_id && ! $user->isDirty('role')) {
                     $roleModel = Role::find($user->role_id);
                     if ($roleModel) {
@@ -44,7 +59,7 @@ class User extends Authenticatable
                     return;
                 }
 
-                // 3. Jika users.role terisi tapi role_id kosong/belum terisi:
+                // 4. Jika users.role terisi tapi role_id kosong/belum terisi:
                 if (empty($user->role_id) && ! empty($user->role)) {
                     $roleModel = Role::where(function ($q) use ($user) {
                         $q->whereNull('company_id');
@@ -61,7 +76,7 @@ class User extends Authenticatable
                     return;
                 }
 
-                // 4. Jika users.role berubah:
+                // 5. Jika users.role berubah:
                 if ($user->isDirty('role') && ! $user->isDirty('role_id')) {
                     $roleModel = Role::where(function ($q) use ($user) {
                         $q->whereNull('company_id');
@@ -85,7 +100,7 @@ class User extends Authenticatable
      *
      * @var array<int, string>
      */
-    protected $appends = ['age', 'shift_locks'];
+    protected $appends = ['age', 'shift_locks', 'effective_monthly_claim_limit'];
 
     /**
      * Get the attributes that should be cast.
@@ -98,6 +113,7 @@ class User extends Authenticatable
             'email_verified_at'    => 'datetime',
             'password'             => 'hashed',
             'is_active'            => 'boolean',
+            'can_login'            => 'boolean',
             'attendance_enabled'   => 'boolean',
             'overtime_enabled'     => 'boolean',
             'wfh_enabled'          => 'boolean',
@@ -108,6 +124,7 @@ class User extends Authenticatable
             'allow_wfh'            => 'boolean',
             'allow_radius'         => 'boolean',
             'monthly_claim_limit'  => 'decimal:2',
+            'allow_receipt_claim'  => 'boolean',
             'device_bound_at'      => 'datetime',
             'birth_date'               => 'date:Y-m-d',
             'is_pregnant'              => 'boolean',
@@ -131,7 +148,11 @@ class User extends Authenticatable
 
     public function canAccessReceipts(): bool
     {
-        return (bool) $this->is_active; // semua role aktif bisa scan & submit struk via mobile
+        if (! $this->is_active) {
+            return false;
+        }
+
+        return (bool) ($this->allow_receipt_claim ?? true);
     }
 
     public function hasApprovedWfhToday(?string $date = null): bool
@@ -356,7 +377,8 @@ class User extends Authenticatable
         return match ($this->role) {
             'admin' => true,
             'finance' => match ($module) {
-                Role::MODULE_RECEIPT, Role::MODULE_EXPENSE_REPORT, Role::MODULE_INVOICE, Role::MODULE_VENDOR, Role::MODULE_SETTINGS => true,
+                Role::MODULE_RECEIPT => in_array($requiredLevel, ['read', 'manage', 'finance'], true),
+                Role::MODULE_EXPENSE_REPORT, Role::MODULE_INVOICE, Role::MODULE_VENDOR, Role::MODULE_SETTINGS => in_array($requiredLevel, ['read', 'manage'], true),
                 Role::MODULE_AUDIT_LOG => $requiredLevel === 'read',
                 default => false,
             },
@@ -438,6 +460,108 @@ class User extends Authenticatable
     public function documents()
     {
         return $this->hasMany(UserDocument::class);
+    }
+
+    /** Divisi karyawan. */
+    public function division()
+    {
+        return $this->belongsTo(Division::class, 'division_id');
+    }
+
+    /** Jabatan / Posisi kerja karyawan. */
+    public function position()
+    {
+        return $this->belongsTo(Position::class, 'position_id');
+    }
+
+    /** Atasan langsung karyawan. */
+    public function manager()
+    {
+        return $this->belongsTo(User::class, 'manager_id');
+    }
+
+    /** Daftar staf bawahan langsung. */
+    public function subordinates()
+    {
+        return $this->hasMany(User::class, 'manager_id');
+    }
+
+    /**
+     * Cek apakah user ini adalah leluhur (atasan berjenjang) dari bawahan tertentu.
+     * Mencegah circular manager assignment (A -> B -> A).
+     */
+    public function isAncestorOf(int $subordinateId): bool
+    {
+        $visited = [];
+        $currentId = $subordinateId;
+
+        while ($currentId) {
+            if ($currentId === $this->id) {
+                return true;
+            }
+            if (in_array($currentId, $visited, true)) {
+                break;
+            }
+            $visited[] = $currentId;
+            $currentId = static::where('id', $currentId)->value('manager_id');
+        }
+
+        return false;
+    }
+
+    /**
+     * Cek apakah user memiliki peran struktural atau izin sebagai Supervisor / Atasan Langsung.
+     * Batasan ketat Role vs Jabatan:
+     * 1. Jabatan (Master Posisi): flag is_supervisor = true.
+     * 2. Hierarki Organisasi: user memiliki bawahan langsung (subordinates()->exists()).
+     * 3. Role/Permission granular: izin eksplisit 'spv' pada modul lembur atau cuti.
+     * 4. Role administratif bawaan: Super Admin, Admin, HRD.
+     * Tidak lagi menggunakan fuzzy string matching pada nama role (misal: 'spv', 'manager', 'kepala').
+     */
+    public function isSupervisor(): bool
+    {
+        if ($this->position && $this->position->is_supervisor) {
+            return true;
+        }
+
+        if ($this->subordinates()->exists()) {
+            return true;
+        }
+
+        if ($this->hasPermission(Role::MODULE_OVERTIME, 'spv') || $this->hasPermission(Role::MODULE_LEAVE, 'spv')) {
+            return true;
+        }
+
+        $userRoleCode = strtolower($this->roleRelation?->slug ?? $this->role ?? '');
+
+        return in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true);
+    }
+
+    /**
+     * Hitung Effective Monthly Claim Limit:
+     *   1. user.monthly_claim_limit (jika > 0)  → Custom Override individual
+     *   2. company_settings.monthly_claim_limit → Default perusahaan
+     *   3. 0 (unlimited)
+     */
+    public function getEffectiveMonthlyClaimLimitAttribute(): float
+    {
+        // 1. Custom override individu
+        $personal = (float) ($this->monthly_claim_limit ?? 0);
+        if ($personal > 0) {
+            return $personal;
+        }
+
+        // 2. Fallback company_settings
+        try {
+            $companyLimit = (float) (\DB::table('company_settings')
+                ->where('company_id', $this->company_id)
+                ->where('key', 'monthly_claim_limit')
+                ->value('value') ?? 0);
+
+            return $companyLimit;
+        } catch (\Throwable) {
+            return 0.0;
+        }
     }
 }
 

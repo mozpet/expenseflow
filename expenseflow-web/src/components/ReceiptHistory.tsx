@@ -254,8 +254,12 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
   // Reset pagination when filter changes
   useEffect(() => {
     setCurrentPage(1);
-    setSelectedIds([]);
   }, [debouncedSearch, statusFilter, startDate, endDate, perPage, selectedBranch]);
+
+  // Reset selected IDs saat filter status, rentang tanggal, atau cabang berubah (tetap pertahankan seleksi saat search)
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [statusFilter, startDate, endDate, selectedBranch]);
 
   const totalPages = Math.max(1, Math.ceil(filteredApprovals.length / perPage));
   const paginatedApprovals = filteredApprovals.slice((currentPage - 1) * perPage, currentPage * perPage);
@@ -263,10 +267,11 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
   const approvedOnlyInPage = paginatedApprovals.filter(a => a.keputusan === 'Disetujui');
 
   const handleToggleSelectAllApproved = () => {
-    if (selectedIds.length === approvedOnlyInPage.length && approvedOnlyInPage.length > 0) {
-      setSelectedIds([]);
+    const allApprovedInPageSelected = approvedOnlyInPage.length > 0 && approvedOnlyInPage.every(a => selectedIds.includes(a.id));
+    if (allApprovedInPageSelected) {
+      setSelectedIds(prev => prev.filter(id => !approvedOnlyInPage.some(a => a.id === id)));
     } else {
-      setSelectedIds(approvedOnlyInPage.map(a => a.id));
+      setSelectedIds(prev => Array.from(new Set([...prev, ...approvedOnlyInPage.map(a => a.id)])));
     }
   };
 
@@ -431,7 +436,7 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
                   <th className="py-3 px-3 w-10 text-center">
                     <input
                       type="checkbox"
-                      checked={selectedIds.length === approvedOnlyInPage.length && approvedOnlyInPage.length > 0}
+                      checked={approvedOnlyInPage.length > 0 && approvedOnlyInPage.every(a => selectedIds.includes(a.id))}
                       onChange={handleToggleSelectAllApproved}
                       className="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
                     />

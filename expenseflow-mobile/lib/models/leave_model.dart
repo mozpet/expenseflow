@@ -7,6 +7,10 @@ class LeaveRequestRecord {
   final String reason;
   final String status; // pending | approved | rejected
   final String? rejectionReason;
+  final String currentStep; // spv | hrd
+  final String? spvName;
+  final String? spvApprovedAt;
+  final String? spvNotes;
 
   LeaveRequestRecord({
     required this.id,
@@ -17,6 +21,10 @@ class LeaveRequestRecord {
     required this.reason,
     required this.status,
     this.rejectionReason,
+    this.currentStep = 'spv',
+    this.spvName,
+    this.spvApprovedAt,
+    this.spvNotes,
   });
 }
 

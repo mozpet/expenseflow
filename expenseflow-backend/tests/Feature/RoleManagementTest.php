@@ -336,5 +336,64 @@ class RoleManagementTest extends TestCase
             'access_level' => 'read',
         ]);
     }
+
+    public function test_cannot_assign_role_management_if_settings_is_not_manage(): void
+    {
+        // 1. Gagal jika settings = 'none' tapi role_management = 'read'
+        $resNone = $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/v1/admin/roles', [
+                'name'         => 'Test Invalid Role 1',
+                'platform'     => 'both',
+                'branch_scope' => 'all',
+                'permissions'  => [
+                    Role::MODULE_SETTINGS        => 'none',
+                    Role::MODULE_ROLE_MANAGEMENT => 'read',
+                ],
+            ]);
+        $resNone->assertStatus(422)
+            ->assertJsonValidationErrors(['permissions.role_management']);
+
+        // 2. Gagal jika settings = 'read' tapi role_management = 'manage'
+        $resRead = $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/v1/admin/roles', [
+                'name'         => 'Test Invalid Role 2',
+                'platform'     => 'both',
+                'branch_scope' => 'all',
+                'permissions'  => [
+                    Role::MODULE_SETTINGS        => 'read',
+                    Role::MODULE_ROLE_MANAGEMENT => 'manage',
+                ],
+            ]);
+        $resRead->assertStatus(422)
+            ->assertJsonValidationErrors(['permissions.role_management']);
+    }
+
+    public function test_can_assign_role_management_when_settings_is_manage(): void
+    {
+        $res = $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/v1/admin/roles', [
+                'name'         => 'Super HR & Setting Lead',
+                'platform'     => 'both',
+                'branch_scope' => 'all',
+                'permissions'  => [
+                    Role::MODULE_SETTINGS        => 'manage',
+                    Role::MODULE_ROLE_MANAGEMENT => 'manage',
+                ],
+            ]);
+
+        $res->assertCreated();
+        $roleId = $res->json('data.id');
+
+        $this->assertDatabaseHas('role_permissions', [
+            'role_id'      => $roleId,
+            'module'       => Role::MODULE_SETTINGS,
+            'access_level' => 'manage',
+        ]);
+        $this->assertDatabaseHas('role_permissions', [
+            'role_id'      => $roleId,
+            'module'       => Role::MODULE_ROLE_MANAGEMENT,
+            'access_level' => 'manage',
+        ]);
+    }
 }
 

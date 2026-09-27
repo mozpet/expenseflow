@@ -138,7 +138,7 @@ class _LeaveCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusStyle = _statusStyle(leave.status);
+    final statusStyle = _statusStyle(leave);
     final typeLabel = _typeLabel(leave.leaveType);
     final typeStyle = _typeStyle(leave.leaveType);
 
@@ -251,6 +251,48 @@ class _LeaveCard extends StatelessWidget {
                 height: 1.3,
               ),
             ),
+            if (leave.status == 'pending' && leave.currentStep == 'hrd') ...[
+              const SizedBox(height: 8),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0FDF4),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFDCFCE7)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.check_circle_rounded, size: 14, color: Color(0xFF16A34A)),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        'Disetujui SPV${leave.spvName != null ? ' (${leave.spvName})' : ''}. Sedang ditinjau HRD.',
+                        style: const TextStyle(
+                          color: Color(0xFF15803D),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              if (leave.spvNotes != null && leave.spvNotes!.isNotEmpty) ...[
+                const SizedBox(height: 4),
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Text(
+                    'Catatan SPV: ${leave.spvNotes}',
+                    style: const TextStyle(
+                      color: Color(0xFF64748B),
+                      fontSize: 10.5,
+                      fontStyle: FontStyle.italic,
+                    ),
+                  ),
+                ),
+              ],
+            ],
             if (leave.status == 'rejected' &&
                 leave.rejectionReason != null) ...[
               const SizedBox(height: 10),
@@ -293,9 +335,9 @@ class _LeaveCard extends StatelessWidget {
   }
 
   ({String label, Color bg, Color border, Color text}) _statusStyle(
-    String status,
+    LeaveRequestRecord leave,
   ) {
-    switch (status) {
+    switch (leave.status) {
       case 'approved':
         return (
           label: 'Disetujui',
@@ -311,11 +353,19 @@ class _LeaveCard extends StatelessWidget {
           text: const Color(0xFFC62828),
         );
       default:
+        if (leave.currentStep == 'hrd') {
+          return (
+            label: 'Tahap 2: HRD',
+            bg: const Color(0xFFF0F9FF),
+            border: const Color(0xFFBAE6FD),
+            text: const Color(0xFF0284C7),
+          );
+        }
         return (
-          label: 'Menunggu',
-          bg: const Color(0xFFFFF3E0),
-          border: const Color(0xFFFFE0B2),
-          text: const Color(0xFFE65100),
+          label: 'Tahap 1: SPV',
+          bg: const Color(0xFFFFFBEB),
+          border: const Color(0xFFFDE68A),
+          text: const Color(0xFFD97706),
         );
     }
   }

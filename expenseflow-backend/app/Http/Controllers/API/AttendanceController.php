@@ -11,6 +11,7 @@ use App\Models\Holiday;
 use App\Models\LeaveBalance;
 use App\Models\LeaveRequest;
 use App\Models\OvertimeApproval;
+use App\Models\Role;
 use App\Models\ShiftSchedule;
 use App\Models\User;
 use App\Models\UserShift;
@@ -723,11 +724,6 @@ class AttendanceController extends Controller
         // Jika mode WFH dimatikan, radius lapangan juga otomatis dimatikan
         if (! $newWfhState) {
             $target->radius_enabled = false;
-        } else {
-            // Jika mode WFH dinyalakan dan radius diizinkan, aktifkan radius
-            if ($target->allow_radius) {
-                $target->radius_enabled = true;
-            }
         }
 
         // CATATAN: attendance_enabled TETAP AKTIF! Jangan pernah mematikan attendance_enabled saat WFH dimatikan.
@@ -1118,9 +1114,15 @@ class AttendanceController extends Controller
     }
 
     // 3. approveLeave() — setujui permintaan cuti/izin
+    // 3. approveLeave() — setujui permintaan cuti/izin (Multi-level: Step 1 SPV -> Step 2 HRD)
     public function approveLeave(Request $request, int $id): JsonResponse
     {
         $actor = $request->user();
+
+        $validated = $request->validate([
+            'notes'     => 'nullable|string|max:1000',
+            'spv_notes' => 'nullable|string|max:1000',
+        ]);
 
         // Jalankan autoRejectExpiredLeaves terlebih dahulu agar status ter-update jika sudah hari H
         if ($actor->company_id) {
@@ -1129,176 +1131,7 @@ class AttendanceController extends Controller
             LeaveRequest::autoRejectExpiredLeaves();
         }
 
-        $preCheck = LeaveRequest::when(
-            $actor->role !== 'super_admin',
-            fn ($q) => $q->where('company_id', $actor->company_id)
-        )->find($id);
-
-        if ($preCheck) {
-            $today = now('Asia/Jakarta')->toDateString();
-            $startDateStr = Carbon::parse($preCheck->start_date)->toDateString();
-            if ($startDateStr <= $today) {
-                return response()->json([
-                    'message' => 'Pengajuan izin tidak dapat disetujui karena sudah memasuki Hari H (otomatis ditolak oleh sistem).'
-                ], 422);
-            }
-        }
-
-        // FIX BUG #6 (race condition): seluruh cek-saldo + update status + potong saldo
-        // dibungkus DB::transaction + lockForUpdate agar dua approval hampir bersamaan
-        // (HRD ganda) tidak bisa sama-sama lolos cek saldo lalu membuat saldo minus.
-        // Baris leave_request & leave_balance dikunci; transaksi lain yang mengunci
-        // baris yang sama akan menunggu sampai transaksi ini commit.
-        $leave = DB::transaction(function () use ($id, $actor) {
-            $leave = LeaveRequest::when(
-                $actor->role !== 'super_admin',
-                fn ($q) => $q->where('company_id', $actor->company_id)
-            )->lockForUpdate()->find($id);
-
-            if (! $leave) {
-                abort(404, 'Permintaan tidak ditemukan.');
-            }
-
-            if ($leave->status !== 'pending') {
-                abort(403, 'Permintaan sudah diproses sebelumnya.');
-            }
-
-            // Guard: cuti bersama (holiday_id != null) tidak bisa di-approve oleh HRD secara manual.
-            // Karyawan yang memutuskan sendiri via aplikasi mobile (accept/decline).
-            if ($leave->holiday_id !== null) {
-                abort(403, 'Cuti bersama tidak bisa disetujui secara manual. Karyawan memilih sendiri via aplikasi mobile.');
-            }
-
-            // Guard: Jika sudah memasuki hari H (start_date <= today), tidak dapat di-approve
-            $today = now('Asia/Jakarta')->toDateString();
-            $startDateStr = Carbon::parse($leave->start_date)->toDateString();
-            if ($startDateStr <= $today) {
-                abort(422, 'Pengajuan izin tidak dapat disetujui karena sudah memasuki Hari H (otomatis ditolak oleh sistem).');
-            }
-
-            $balance = null;
-            $year    = Carbon::parse($leave->start_date)->year;
-
-            if ($leave->leave_type === 'cuti') {
-                // KEBIJAKAN 2026-08-25: saldo cuti karyawan NON-AKTIF secara default —
-                // baris dibuat dengan quota 0 dan hanya HRD yang mengisi kuota manual
-                // via tab Saldo Cuti (setLeaveBalance). Kuota kantor TIDAK lagi otomatis
-                // dipakai di sini (defaultLeaveQuota hanya jadi referensi tampilan HRD).
-                $balance = LeaveBalance::firstOrCreate(
-                    ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'cuti'],
-                    ['company_id' => $leave->company_id, 'quota' => 0, 'used' => 0]
-                );
-                // Kunci baris saldo SEBELUM baca used agar cek & increment atomik
-                $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
-                // Belum pernah diaktifkan HRD (kuota masih 0 & belum ada pemakaian)
-                if ((int) $balance->quota <= 0 && (int) $balance->used === 0) {
-                    abort(422, 'Saldo cuti karyawan ini belum diaktifkan oleh HRD. Aktifkan lewat menu Saldo Cuti dengan mengisi kuota cuti.');
-                }
-                $remaining = $balance->quota - $balance->used;
-
-                // KEBIJAKAN ANNIVERSARY SPLIT (2026-08-25): validasi dua alokasi bila
-                // rentang cuti melintasi tanggal reset kantor — hari sebelum reset vs
-                // sisa saldo berjalan; hari pada/setelah reset vs kuota baru.
-                $targetUser = User::find($leave->user_id);
-                if (! $targetUser) {
-                    abort(404, 'Karyawan tidak ditemukan.');
-                }
-                $split      = $this->splitLeaveAroundReset($targetUser, Carbon::parse($leave->start_date), Carbon::parse($leave->end_date), $leave->company_id);
-                $hasPivot   = $split['anniversary'] !== null;
-                $daysBefore = $hasPivot ? $split['days_before'] : (int) $leave->total_days;
-                $daysAfter  = $hasPivot ? $split['days_after'] : 0;
-
-                if ($daysBefore > $remaining) {
-                    abort(422, $hasPivot
-                        ? "Saldo cuti tidak cukup untuk hari sebelum tanggal reset ({$split['anniversary']}). Sisa {$remaining} hari, dibutuhkan {$daysBefore} hari."
-                        : "Saldo cuti tidak cukup. Sisa {$remaining} hari, diminta {$leave->total_days} hari.");
-                }
-                if ($daysAfter > $split['fresh_quota']) {
-                    abort(422, "Kuota cuti baru setelah tanggal reset ({$split['anniversary']}) tidak cukup. Tersedia {$split['fresh_quota']} hari, dibutuhkan {$daysAfter} hari.");
-                }
-                // CATATAN deduksi: potongan tetap penuh (total_days) ke saldo berjalan.
-                // Bila approval terjadi SEBELUM anniversary dan rentang melintasinya,
-                // sisa saldo bisa tampil minus sesaat — anniversary me-reset used=0
-                // sehingga kondisi akhir konsisten (hari setelah reset memang pakai alokasi baru).
-            } elseif (in_array($leave->leave_type, ['izin', 'sakit'])) {
-                // Izin & sakit: tidak ada batas kuota, hanya dihitung di kolom 'izin'
-                $balance = LeaveBalance::firstOrCreate(
-                    ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'izin'],
-                    ['company_id' => $leave->company_id, 'quota' => 0, 'used' => 0]
-                );
-                $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
-            }
-
-            $leave->update([
-                'status'      => 'approved',
-                'approved_by' => $actor->id,
-                'approved_at' => now(),
-            ]);
-
-            if ($balance) {
-                $balance->increment('used', $leave->total_days);
-            }
-
-            return $leave;
-        });
-
-        $this->logActivity(
-            $actor->id,
-            $leave->company_id,
-            'leave_approved',
-            "Approve {$leave->leave_type} #{$leave->id}",
-            'leave_request',
-            $leave->id
-        );
-
-        // Hapus notifikasi permohonan cuti/izin untuk para approver
-        DB::table('notifications')
-            ->where('entity_type', 'leave_request')
-            ->where('entity_id', $leave->id)
-            ->where('type', 'leave_requested')
-            ->delete();
-
-        $this->notifyUser($leave->user_id, 'leave_approved', [
-            'message'         => "Permintaan {$leave->leave_type} Anda telah disetujui.",
-            'leave_id'        => $leave->id,
-            'leave_type'      => $leave->leave_type,
-            'status'          => 'approved',
-        ], 'leave_request', $leave->id);
-
-        // Kirim push notification FCM ke karyawan (konsisten dengan overtime approval)
-        $employee = User::find($leave->user_id);
-        if ($employee && $employee->fcm_token) {
-            $leaveLabel = match ($leave->leave_type) {
-                'cuti'  => 'Cuti',
-                'izin'  => 'Izin',
-                'sakit' => 'Sakit',
-                'wfh'   => 'WFH',
-                default => ucfirst($leave->leave_type),
-            };
-            $this->sendFcmPush(
-                $employee->fcm_token,
-                "✅ {$leaveLabel} Disetujui",
-                "Permintaan {$leave->leave_type} Anda (#{$leave->id}) telah disetujui oleh HRD.",
-                ['type' => 'leave_approved', 'leave_id' => (string) $leave->id]
-            );
-        }
-
-        return response()->json([
-            'message' => 'Permintaan berhasil disetujui.',
-            'leave'   => $leave->only(['id', 'leave_type', 'status', 'approved_by', 'approved_at']),
-        ]);
-    }
-
-    // 4. rejectLeave() — tolak permintaan (wajib rejection_reason)
-    public function rejectLeave(Request $request, int $id): JsonResponse
-    {
-        $request->validate([
-            'rejection_reason' => 'required|string|max:1000',
-        ]);
-
-        $actor = $request->user();
-
-        $leave = LeaveRequest::when(
+        $leave = LeaveRequest::with(['user.manager', 'user.division'])->when(
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
         )->find($id);
@@ -1307,29 +1140,447 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Permintaan tidak ditemukan.'], 404);
         }
 
+        // Cek cabang
+        $branchId = $leave->user?->attendance_setting_id;
+        if (! $actor->allowsBranch($branchId)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
+        }
+
+        // Guard: Jika sudah memasuki hari H (start_date <= today), tidak dapat di-approve
+        $today = now('Asia/Jakarta')->toDateString();
+        $startDateStr = Carbon::parse($leave->start_date)->toDateString();
+        if ($startDateStr <= $today) {
+            return response()->json([
+                'message' => 'Pengajuan izin tidak dapat disetujui karena sudah memasuki Hari H (otomatis ditolak oleh sistem).',
+            ], 422);
+        }
+
+        if ($leave->status === 'approved') {
+            return response()->json([
+                'message' => 'Permintaan sudah disetujui sebelumnya.',
+                'leave'   => $leave->only(['id', 'leave_type', 'status', 'current_step', 'approved_by', 'approved_at', 'notes']),
+            ]);
+        }
+
         if ($leave->status !== 'pending') {
             return response()->json(['message' => 'Permintaan sudah diproses sebelumnya.'], 403);
         }
 
-        // Guard: cuti bersama tidak bisa ditolak oleh HRD secara manual.
+        // Karyawan tidak boleh menyetujui pengajuannya sendiri
+        if ($actor->id === $leave->user_id && $actor->role !== 'super_admin') {
+            return response()->json(['message' => 'Anda tidak dapat menyetujui pengajuan cuti/izin Anda sendiri.'], 403);
+        }
+
+        // Guard: cuti bersama (holiday_id != null) tidak bisa di-approve manual
+        if ($leave->holiday_id !== null) {
+            return response()->json([
+                'message' => 'Cuti bersama tidak bisa disetujui secara manual. Karyawan memilih sendiri via aplikasi mobile.',
+            ], 403);
+        }
+
+        $step = $leave->current_step ?: 'spv';
+
+        // ── STEP 1: SPV APPROVAL ──
+        if ($step === 'spv') {
+            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+            $userRoleName = strtolower($actor->roleRelation?->name ?? '');
+
+            $hasSpvPermission = $actor->hasPermission(Role::MODULE_LEAVE, 'spv');
+
+            // Otorisasi Atasan Langsung & Divisi
+            $targetUser = $leave->user;
+            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
+
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+
+            $isSpvOrAbove = $isDirectManager
+                || $hasSpvPermission
+                || ($actor->position && $actor->position->is_supervisor)
+                || $actor->isSupervisor()
+                || $isAdminOrHrdBypass;
+
+            if (! $isSpvOrAbove) {
+                return response()->json([
+                    'message' => 'Persetujuan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
+                    'code'    => 'SPV_REQUIRED',
+                ], 403);
+            }
+
+            // Jika karyawan belum memiliki manager_id yang ditunjuk:
+            // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
+            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV perusahaan
+            $isSameDivisionSpv = false;
+            if (! $targetUser?->manager_id) {
+                if ($targetUser?->division_id) {
+                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
+                } else {
+                    $isSameDivisionSpv = true;
+                }
+            }
+
+            // Bypass darurat: Super Admin, Admin, dan HRD selalu berhak override jika Atasan Langsung berhalangan/cuti
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+
+            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+                if ($targetUser?->manager_id) {
+                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
+                    return response()->json([
+                        'message' => "Persetujuan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
+                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
+                    ], 403);
+                }
+
+                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
+                return response()->json([
+                    'message' => "Persetujuan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
+                    'code'    => 'SPV_DIVISION_REQUIRED',
+                ], 403);
+            }
+
+            $spvNotes = $validated['notes'] ?? $validated['spv_notes'] ?? null;
+
+            $leave->update([
+                'spv_id'          => $actor->id,
+                'spv_approved_at' => now(),
+                'spv_notes'       => $spvNotes,
+                'current_step'    => 'hrd',
+            ]);
+
+            $this->logActivity(
+                $actor->id,
+                $leave->company_id,
+                'leave_spv_approved',
+                "SPV {$actor->name} menyetujui tahap 1 {$leave->leave_type} #{$leave->id} ({$leave->total_days} hari) karyawan #{$leave->user_id}. Diteruskan ke HRD.",
+                'leave_request',
+                $leave->id
+            );
+
+            // Notifikasi ke HRD
+            $hrds = DB::table('users')
+                ->where('company_id', $leave->company_id)
+                ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+                ->where('is_active', true)
+                ->pluck('id');
+
+            $employee = $leave->user ?: User::find($leave->user_id);
+            $startDate = Carbon::parse($leave->start_date)->format('d/m/Y');
+            $endDate = Carbon::parse($leave->end_date)->format('d/m/Y');
+            $period = $startDate === $endDate ? $startDate : "{$startDate} - {$endDate}";
+
+            foreach ($hrds as $hrdId) {
+                $this->notifyUser($hrdId, 'leave_pending_hrd', [
+                    'message'    => "Pengajuan {$leave->leave_type} {$employee?->name} ({$leave->total_days} hari, {$period}) telah disetujui SPV ({$actor->name}) dan menunggu persetujuan HRD.",
+                    'leave_id'   => $leave->id,
+                    'user_id'    => $leave->user_id,
+                    'user_name'  => $employee?->name,
+                    'leave_type' => $leave->leave_type,
+                    'total_days' => $leave->total_days,
+                    'spv_name'   => $actor->name,
+                ], 'leave_request', $leave->id);
+            }
+
+            // Notifikasi & push ke karyawan bahwa SPV sudah approve
+            $this->notifyUser($leave->user_id, 'leave_spv_approved', [
+                'message'    => "Pengajuan {$leave->leave_type} Anda telah disetujui oleh Atasan ({$actor->name}) dan sedang menunggu persetujuan akhir HRD.",
+                'leave_id'   => $leave->id,
+                'leave_type' => $leave->leave_type,
+                'spv_name'   => $actor->name,
+            ], 'leave_request', $leave->id);
+
+            if ($employee && $employee->fcm_token) {
+                $this->sendFcmPush(
+                    $employee->fcm_token,
+                    '⏳ Tahap 1 Disetujui (SPV)',
+                    "Pengajuan {$leave->leave_type} Anda telah disetujui oleh {$actor->name} dan diteruskan ke HRD.",
+                    ['type' => 'leave_spv_approved', 'leave_id' => (string) $leave->id]
+                );
+            }
+
+            return response()->json([
+                'message' => 'Persetujuan tahap 1 (SPV) berhasil. Pengajuan cuti/izin diteruskan ke HRD.',
+                'leave'   => $leave->only([
+                    'id', 'leave_type', 'status', 'current_step', 'spv_id', 'spv_approved_at', 'spv_notes',
+                ]),
+            ]);
+        }
+
+        // ── STEP 2: HRD FINAL APPROVAL ──
+        if ($step === 'hrd') {
+            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+            $userRoleName = strtolower($actor->roleRelation?->name ?? '');
+
+            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+
+            if (! $isHrdOrAdmin) {
+                return response()->json([
+                    'message' => 'Persetujuan tahap akhir cuti/izin hanya dapat dilakukan oleh HRD atau Admin (memerlukan wewenang Level 2: HRD).',
+                    'code'    => 'HRD_REQUIRED',
+                ], 403);
+            }
+
+            // DB Transaction untuk kunci leave_request dan potong saldo atomik
+            $leave = DB::transaction(function () use ($id, $actor, $validated) {
+                $leave = LeaveRequest::lockForUpdate()->find($id);
+
+                if (! $leave) {
+                    abort(404, 'Permintaan tidak ditemukan.');
+                }
+
+                if ($leave->status !== 'pending') {
+                    abort(403, 'Permintaan sudah diproses sebelumnya.');
+                }
+
+                $balance = null;
+                $year    = Carbon::parse($leave->start_date)->year;
+
+                if ($leave->leave_type === 'cuti') {
+                    $balance = LeaveBalance::firstOrCreate(
+                        ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'cuti'],
+                        ['company_id' => $leave->company_id, 'quota' => 0, 'used' => 0]
+                    );
+                    $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
+                    if ((int) $balance->quota <= 0 && (int) $balance->used === 0) {
+                        abort(422, 'Saldo cuti karyawan ini belum diaktifkan oleh HRD. Aktifkan lewat menu Saldo Cuti dengan mengisi kuota cuti.');
+                    }
+                    $remaining = $balance->quota - $balance->used;
+
+                    $targetUser = User::find($leave->user_id);
+                    if (! $targetUser) {
+                        abort(404, 'Karyawan tidak ditemukan.');
+                    }
+                    $split      = $this->splitLeaveAroundReset($targetUser, Carbon::parse($leave->start_date), Carbon::parse($leave->end_date), $leave->company_id);
+                    $hasPivot   = $split['anniversary'] !== null;
+                    $daysBefore = $hasPivot ? $split['days_before'] : (int) $leave->total_days;
+                    $daysAfter  = $hasPivot ? $split['days_after'] : 0;
+
+                    if ($daysBefore > $remaining) {
+                        abort(422, $hasPivot
+                            ? "Saldo cuti tidak cukup untuk hari sebelum tanggal reset ({$split['anniversary']}). Sisa {$remaining} hari, dibutuhkan {$daysBefore} hari."
+                            : "Saldo cuti tidak cukup. Sisa {$remaining} hari, diminta {$leave->total_days} hari.");
+                    }
+                    if ($daysAfter > $split['fresh_quota']) {
+                        abort(422, "Kuota cuti baru setelah tanggal reset ({$split['anniversary']}) tidak cukup. Tersedia {$split['fresh_quota']} hari, dibutuhkan {$daysAfter} hari.");
+                    }
+                } elseif (in_array($leave->leave_type, ['izin', 'sakit'])) {
+                    $balance = LeaveBalance::firstOrCreate(
+                        ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => 'izin'],
+                        ['company_id' => $leave->company_id, 'quota' => 0, 'used' => 0]
+                    );
+                    $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
+                }
+
+                $notes = $validated['notes'] ?? null;
+                $leave->update([
+                    'status'      => 'approved',
+                    'approved_by' => $actor->id,
+                    'approved_at' => now(),
+                    'notes'       => $notes,
+                ]);
+
+                if ($balance) {
+                    $balance->increment('used', $leave->total_days);
+                }
+
+                return $leave;
+            });
+
+            $this->logActivity(
+                $actor->id,
+                $leave->company_id,
+                'leave_approved',
+                "HRD {$actor->name} menyetujui final {$leave->leave_type} #{$leave->id} karyawan #{$leave->user_id}",
+                'leave_request',
+                $leave->id
+            );
+
+            // Hapus notifikasi permohonan cuti/izin untuk para approver
+            DB::table('notifications')
+                ->where('entity_type', 'leave_request')
+                ->where('entity_id', $leave->id)
+                ->whereIn('type', ['leave_requested', 'leave_requested_spv', 'leave_pending_hrd'])
+                ->delete();
+
+            $this->notifyUser($leave->user_id, 'leave_approved', [
+                'message'    => "Permintaan {$leave->leave_type} Anda telah disetujui sepenuhnya oleh HRD.",
+                'leave_id'   => $leave->id,
+                'leave_type' => $leave->leave_type,
+                'status'     => 'approved',
+            ], 'leave_request', $leave->id);
+
+            // Kirim push notification FCM ke karyawan
+            $employee = User::find($leave->user_id);
+            if ($employee && $employee->fcm_token) {
+                $leaveLabel = match ($leave->leave_type) {
+                    'cuti'  => 'Cuti',
+                    'izin'  => 'Izin',
+                    'sakit' => 'Sakit',
+                    'wfh'   => 'WFH',
+                    default => ucfirst($leave->leave_type),
+                };
+                $this->sendFcmPush(
+                    $employee->fcm_token,
+                    "✅ {$leaveLabel} Disetujui",
+                    "Permintaan {$leave->leave_type} Anda (#{$leave->id}) telah disetujui oleh HRD.",
+                    ['type' => 'leave_approved', 'leave_id' => (string) $leave->id]
+                );
+            }
+
+            return response()->json([
+                'message' => 'Permintaan berhasil disetujui.',
+                'leave'   => $leave->only(['id', 'leave_type', 'status', 'current_step', 'approved_by', 'approved_at', 'notes']),
+            ]);
+        }
+
+        return response()->json(['message' => 'Tahapan pengajuan tidak valid.'], 400);
+    }
+
+    // 4. rejectLeave() — tolak permintaan (SPV pada tahap 1 atau HRD pada tahap 2)
+    public function rejectLeave(Request $request, int $id): JsonResponse
+    {
+        $request->validate([
+            'rejection_reason' => 'nullable|string|max:1000',
+            'notes'            => 'nullable|string|max:1000',
+        ]);
+
+        $reason = $request->rejection_reason ?: $request->notes;
+        if (empty($reason)) {
+            return response()->json(['message' => 'Alasan penolakan wajib diisi.'], 422);
+        }
+
+        $actor = $request->user();
+
+        $leave = LeaveRequest::with(['user.manager', 'user.division'])->when(
+            $actor->role !== 'super_admin',
+            fn ($q) => $q->where('company_id', $actor->company_id)
+        )->find($id);
+
+        if (! $leave) {
+            return response()->json(['message' => 'Permintaan tidak ditemukan.'], 404);
+        }
+
+        $branchId = $leave->user?->attendance_setting_id;
+        if (! $actor->allowsBranch($branchId)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
+        }
+
+        if ($leave->status === 'rejected') {
+            return response()->json([
+                'message' => 'Permintaan sudah ditolak sebelumnya.',
+                'leave'   => $leave->only(['id', 'leave_type', 'status', 'rejection_reason']),
+            ]);
+        }
+
+        if ($leave->status !== 'pending') {
+            return response()->json(['message' => 'Permintaan sudah diproses sebelumnya.'], 403);
+        }
+
+        // Guard: cuti bersama tidak bisa ditolak secara manual
         if ($leave->holiday_id !== null) {
             return response()->json([
                 'message' => 'Cuti bersama tidak bisa ditolak secara manual. Karyawan memilih sendiri via aplikasi mobile.',
             ], 403);
         }
 
-        $leave->update([
-            'status'           => 'rejected',
-            'approved_by'      => $actor->id,
-            'approved_at'      => now(),
-            'rejection_reason' => $request->rejection_reason,
-        ]);
+        $step = $leave->current_step ?: 'spv';
+        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+        $userRoleName = strtolower($actor->roleRelation?->name ?? '');
+
+        if ($step === 'spv') {
+            $hasSpvPermission = $actor->hasPermission(Role::MODULE_LEAVE, 'spv');
+            $targetUser = $leave->user;
+            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
+
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+
+            $isSpvOrAbove = $isDirectManager
+                || $hasSpvPermission
+                || ($actor->position && $actor->position->is_supervisor)
+                || $actor->isSupervisor()
+                || $isAdminOrHrdBypass;
+
+            if (! $isSpvOrAbove) {
+                return response()->json([
+                    'message' => 'Penolakan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
+                    'code'    => 'SPV_REQUIRED',
+                ], 403);
+            }
+
+            $isSameDivisionSpv = false;
+            if (! $targetUser?->manager_id) {
+                if ($targetUser?->division_id) {
+                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
+                } else {
+                    $isSameDivisionSpv = true;
+                }
+            }
+
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+
+            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+                if ($targetUser?->manager_id) {
+                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
+                    return response()->json([
+                        'message' => "Penolakan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
+                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
+                    ], 403);
+                }
+
+                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
+                return response()->json([
+                    'message' => "Penolakan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
+                    'code'    => 'SPV_DIVISION_REQUIRED',
+                ], 403);
+            }
+
+            $leave->update([
+                'status'           => 'rejected',
+                'spv_id'           => $actor->id,
+                'spv_approved_at'  => now(),
+                'spv_notes'        => $reason,
+                'approved_by'      => $actor->id,
+                'approved_at'      => now(),
+                'rejection_reason' => $reason,
+                'notes'            => $reason,
+            ]);
+        } else {
+            $hasHrdPermission = $actor->hasPermission(Role::MODULE_LEAVE, 'hrd');
+            $isHrdOrAdmin = $hasHrdPermission
+                || in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
+                || str_contains($userRoleCode, 'hr') || str_contains($userRoleName, 'hr')
+                || str_contains($userRoleName, 'personalia') || str_contains($userRoleName, 'kepegawaian')
+                || str_contains($userRoleCode, 'personalia') || str_contains($userRoleCode, 'kepegawaian');
+
+            if (! $isHrdOrAdmin) {
+                return response()->json([
+                    'message' => 'Penolakan tahap akhir cuti/izin hanya dapat dilakukan oleh HRD atau Admin (memerlukan wewenang Level 2: HRD).',
+                    'code'    => 'HRD_REQUIRED',
+                ], 403);
+            }
+
+            $leave->update([
+                'status'           => 'rejected',
+                'approved_by'      => $actor->id,
+                'approved_at'      => now(),
+                'rejection_reason' => $reason,
+                'notes'            => $reason,
+            ]);
+        }
 
         $this->logActivity(
             $actor->id,
             $leave->company_id,
             'leave_rejected',
-            "Reject {$leave->leave_type} #{$leave->id}: {$request->rejection_reason}",
+            "Reject {$leave->leave_type} #{$leave->id} oleh {$actor->name}: {$reason}",
             'leave_request',
             $leave->id
         );
@@ -1338,7 +1589,7 @@ class AttendanceController extends Controller
         DB::table('notifications')
             ->where('entity_type', 'leave_request')
             ->where('entity_id', $leave->id)
-            ->where('type', 'leave_requested')
+            ->whereIn('type', ['leave_requested', 'leave_requested_spv', 'leave_pending_hrd'])
             ->delete();
 
         $leaveTypeLabel = match ($leave->leave_type) {
@@ -1350,32 +1601,26 @@ class AttendanceController extends Controller
         };
         $dateFormatted = Carbon::parse($leave->start_date)->translatedFormat('d M Y');
 
+        $byLabel = $step === 'spv' ? "Atasan ({$actor->name})" : "HRD";
+
         $this->notifyUser($leave->user_id, 'personal_leave_cancelled', [
             'title'            => "Pengajuan {$leaveTypeLabel} Ditolak",
             'name'             => $leaveTypeLabel,
             'date'             => (string) $leave->start_date,
             'date_label'       => $dateFormatted,
-            'message'          => "Pengajuan {$leaveTypeLabel} Anda pada {$dateFormatted} telah ditolak oleh HRD. Alasan: {$request->rejection_reason}" . ($leave->leave_type === 'cuti' ? '. Saldo cuti tidak terpotong.' : ''),
+            'message'          => "Pengajuan {$leaveTypeLabel} Anda pada {$dateFormatted} telah ditolak oleh {$byLabel}. Alasan: {$reason}" . ($leave->leave_type === 'cuti' ? '. Saldo cuti tidak terpotong.' : ''),
             'leave_id'         => $leave->id,
             'leave_type'       => $leave->leave_type,
             'status'           => 'rejected',
-            'rejection_reason' => $request->rejection_reason,
+            'rejection_reason' => $reason,
         ], 'leave_request', $leave->id);
 
-        // Kirim push notification FCM ke karyawan (konsisten dengan overtime rejection)
-        $employee = User::find($leave->user_id);
+        $employee = $leave->user ?: User::find($leave->user_id);
         if ($employee && $employee->fcm_token) {
-            $leaveLabel = match ($leave->leave_type) {
-                'cuti'  => 'Cuti',
-                'izin'  => 'Izin',
-                'sakit' => 'Sakit',
-                'wfh'   => 'WFH',
-                default => ucfirst($leave->leave_type),
-            };
             $this->sendFcmPush(
                 $employee->fcm_token,
-                "❌ {$leaveLabel} Ditolak",
-                "Permintaan {$leave->leave_type} Anda ditolak. Alasan: {$request->rejection_reason}",
+                "❌ {$leaveTypeLabel} Ditolak",
+                "Permintaan {$leave->leave_type} Anda ditolak oleh {$byLabel}. Alasan: {$reason}",
                 ['type' => 'leave_rejected', 'leave_id' => (string) $leave->id]
             );
         }
@@ -1386,16 +1631,18 @@ class AttendanceController extends Controller
         ]);
     }
 
-    // 4b. listLeaves() — daftar pengajuan izin/cuti untuk HRD (filter status/tipe/user)
+    // 4b. listLeaves() — daftar pengajuan izin/cuti untuk HRD & SPV (filter status/tipe/step/user)
     public function listLeaves(Request $request): JsonResponse
     {
         $actor = $request->user();
 
         $validated = $request->validate([
-            'status'     => 'nullable|in:pending,approved,rejected',
-            'leave_type' => 'nullable|in:wfh,izin,sakit,cuti',
-            'user_id'    => 'nullable|integer',
-            'per_page'   => 'nullable|integer|min:1|max:2000',
+            'status'      => 'nullable|in:pending,approved,rejected',
+            'leave_type'  => 'nullable|in:wfh,izin,sakit,cuti',
+            'step'        => 'nullable|in:spv,hrd',
+            'user_id'     => 'nullable|integer',
+            'division_id' => 'nullable|integer',
+            'per_page'    => 'nullable|integer|min:1|max:2000',
         ]);
 
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
@@ -1406,29 +1653,60 @@ class AttendanceController extends Controller
             LeaveRequest::autoRejectExpiredLeaves();
         }
 
-        $leaves = LeaveRequest::query()
+        $leavesQuery = LeaveRequest::query()
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
+            ->leftJoin('users as spv_user', 'leave_requests.spv_id', '=', 'spv_user.id')
+            ->leftJoin('users as mgr_user', 'users.manager_id', '=', 'mgr_user.id')
+            ->leftJoin('divisions', 'users.division_id', '=', 'divisions.id')
+            ->leftJoin('positions', 'users.position_id', '=', 'positions.id')
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('leave_requests.company_id', $actor->company_id)
             )
             ->when($validated['status'] ?? null, fn ($q, $s) => $q->where('leave_requests.status', $s))
             ->when($validated['leave_type'] ?? null, fn ($q, $t) => $q->where('leave_requests.leave_type', $t))
-            ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('leave_requests.user_id', $u));
+            ->when($validated['step'] ?? null, fn ($q, $st) => $q->where('leave_requests.current_step', $st))
+            ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('leave_requests.user_id', $u))
+            ->when($validated['division_id'] ?? null, fn ($q, $div) => $q->where('users.division_id', $div));
 
         // Branch scoping: filter cuti berdasarkan cabang yang diizinkan role
         $allowedBranches = $actor->allowedBranchIds();
         if ($allowedBranches !== null) {
-            $leaves->whereIn('users.attendance_setting_id', $allowedBranches);
+            $leavesQuery->whereIn('users.attendance_setting_id', $allowedBranches);
         }
 
-        $leaves = $leaves->select([
+        // Scoping SPV: Jika bukan Super Admin / Admin / HRD, batasi hanya melihat bawahan langsung atau divisi yang dipimpin
+        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+        $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
+            || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
+            || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+
+        if (! $isHrdOrAdmin) {
+            $leavesQuery->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id');
+                    });
+                }
+            });
+        }
+
+        $leaves = $leavesQuery->select([
                 'leave_requests.id', 'leave_requests.user_id', 'users.name as user_name',
                 'users.department', 'users.attendance_setting_id',
+                'users.manager_id', 'mgr_user.name as manager_name',
+                'users.division_id', 'divisions.name as division_name',
+                'positions.name as position_name',
                 'leave_requests.leave_type', 'leave_requests.start_date',
                 'leave_requests.end_date', 'leave_requests.total_days', 'leave_requests.reason',
                 'leave_requests.document_path',
-                'leave_requests.status', 'leave_requests.rejection_reason',
+                'leave_requests.status', 'leave_requests.current_step',
+                'leave_requests.spv_id', 'spv_user.name as spv_name',
+                'leave_requests.spv_approved_at', 'leave_requests.spv_notes',
+                'leave_requests.notes',
+                'leave_requests.rejection_reason',
                 'leave_requests.approved_by', 'leave_requests.approved_at', 'leave_requests.created_at',
                 // Kolom pembeda sumber cuti: NULL = cuti mandiri (karyawan via mobile), NOT NULL = cuti bersama (HR via kalender)
                 'leave_requests.holiday_id',
@@ -1437,6 +1715,54 @@ class AttendanceController extends Controller
             ->orderByDesc('leave_requests.created_at')
             ->paginate($limit);
 
+        // Hitung rekap statistik persetujuan berjenjang
+        $summaryQuery = LeaveRequest::query()
+            ->join('users', 'leave_requests.user_id', '=', 'users.id')
+            ->when(
+                $actor->role !== 'super_admin',
+                fn ($q) => $q->where('leave_requests.company_id', $actor->company_id)
+            );
+
+        if ($allowedBranches !== null) {
+            $summaryQuery->whereIn('users.attendance_setting_id', $allowedBranches);
+        }
+
+        if (! $isHrdOrAdmin) {
+            $summaryQuery->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id');
+                    });
+                }
+            });
+        }
+
+        $summaryRaw = $summaryQuery
+            ->selectRaw('leave_requests.status, leave_requests.current_step, COUNT(*) as total')
+            ->groupBy('leave_requests.status', 'leave_requests.current_step')
+            ->get();
+
+        $pendingSpv = 0;
+        $pendingHrd = 0;
+        $approved   = 0;
+        $rejected   = 0;
+
+        foreach ($summaryRaw as $row) {
+            if ($row->status === 'pending') {
+                if ($row->current_step === 'hrd') {
+                    $pendingHrd += (int) $row->total;
+                } else {
+                    $pendingSpv += (int) $row->total;
+                }
+            } elseif ($row->status === 'approved') {
+                $approved += (int) $row->total;
+            } elseif ($row->status === 'rejected') {
+                $rejected += (int) $row->total;
+            }
+        }
+
         // Sertakan flag has_document agar web tahu kapan menampilkan tombol surat dokter
         $leaves->getCollection()->transform(function ($l) {
             $l->has_document = ! empty($l->document_path);
@@ -1444,7 +1770,16 @@ class AttendanceController extends Controller
             return $l;
         });
 
-        return response()->json($leaves);
+        $result = $leaves->toArray();
+        $result['summary'] = [
+            'pending'     => $pendingSpv + $pendingHrd,
+            'pending_spv' => $pendingSpv,
+            'pending_hrd' => $pendingHrd,
+            'approved'    => $approved,
+            'rejected'    => $rejected,
+        ];
+
+        return response()->json($result);
     }
 
     // 4b-2. leaveDocument() — sajikan surat dokter (privat).
@@ -3031,6 +3366,9 @@ class AttendanceController extends Controller
             'flex_core_start'                  => 'sometimes|nullable|date_format:H:i:s,H:i',
             'flex_core_end'                    => 'sometimes|nullable|date_format:H:i:s,H:i',
             'flex_target_minutes'              => 'sometimes|nullable|integer|min:60|max:1440',
+            // Konfigurasi Alur Persetujuan Bertingkat Cabang (Multi-Approval Workflow)
+            'overtime_multi_approval_enabled'  => 'sometimes|boolean',
+            'leave_multi_approval_enabled'     => 'sometimes|boolean',
         ];
     }
 
@@ -3085,7 +3423,7 @@ class AttendanceController extends Controller
             $query->whereIn('id', $allowedBranches);
         }
 
-        $settings = $query->orderBy('office_name')->get();
+        $settings = $query->withCount('users')->orderBy('office_name')->get();
 
         return response()->json(['settings' => $settings]);
     }
@@ -3401,6 +3739,17 @@ class AttendanceController extends Controller
     // 14. destroySettings() — hapus kantor
     public function destroySettings(Request $request, AttendanceSetting $attendanceSetting): JsonResponse
     {
+        $assignedEmployeesCount = $attendanceSetting->users()->count();
+        if ($assignedEmployeesCount > 0) {
+            return response()->json([
+                'message'                  => "Tidak dapat menghapus kantor cabang \"{$attendanceSetting->office_name}\" karena masih terdapat {$assignedEmployeesCount} karyawan yang terikat penempatannya pada kantor ini. Silakan pindahkan penempatan karyawan terlebih dahulu.",
+                'code'                     => 'BRANCH_HAS_ASSIGNED_EMPLOYEES',
+                'assigned_employees_count' => $assignedEmployeesCount,
+                'office_id'                => $attendanceSetting->id,
+                'office_name'              => $attendanceSetting->office_name,
+            ], 422);
+        }
+
         $companyId = $attendanceSetting->company_id;
         $name      = $attendanceSetting->office_name;
         $id        = $attendanceSetting->id;
@@ -5665,9 +6014,14 @@ class AttendanceController extends Controller
         }
 
         if ($needRadiusCheck) {
-            if (! $acuanOffice || $acuanOffice->office_latitude === null || $acuanOffice->office_longitude === null) {
+            $offices = AttendanceSetting::where('company_id', $user->company_id)
+                ->whereNotNull('office_latitude')
+                ->whereNotNull('office_longitude')
+                ->get();
+
+            if ($offices->isEmpty()) {
                 return response()->json([
-                    'message' => 'Validasi radius tidak bisa dilakukan: belum ada pengaturan lokasi kantor untuk cabang Anda. Hubungi HRD.',
+                    'message' => 'Validasi radius tidak bisa dilakukan: belum ada pengaturan lokasi kantor. Hubungi HRD.',
                 ], 422);
             }
 
@@ -5675,19 +6029,26 @@ class AttendanceController extends Controller
             $lat             = (float) $validated['latitude'];
             $lng             = (float) $validated['longitude'];
 
-            $dist = $locationService->calculateDistance(
-                $lat, $lng,
-                (float) $acuanOffice->office_latitude,
-                (float) $acuanOffice->office_longitude
-            );
-            $distanceMeters = (int) round($dist);
+            // Multi-geofence roaming: cari kantor cabang terdekat dari posisi karyawan
+            $nearest  = null;
+            $minDist  = PHP_FLOAT_MAX;
+            foreach ($offices as $office) {
+                $dist = $locationService->calculateDistance($lat, $lng, (float) $office->office_latitude, (float) $office->office_longitude);
+                if ($dist < $minDist) {
+                    $minDist = $dist;
+                    $nearest = $office;
+                }
+            }
 
-            if ($dist > $acuanOffice->radius_meters) {
+            $distanceMeters = (int) round($minDist);
+            $acuanOffice    = $nearest;
+
+            if ($minDist > $nearest->radius_meters) {
                 return response()->json([
-                    'message'          => "Anda berada di luar area kerja. Jarak Anda {$distanceMeters} meter, batas radius {$acuanOffice->radius_meters} meter dari {$acuanOffice->office_name}.",
+                    'message'          => "Anda berada di luar area kerja. Jarak Anda {$distanceMeters} meter, batas radius {$nearest->radius_meters} meter dari {$nearest->office_name}.",
                     'distance_meters'  => $distanceMeters,
-                    'radius_meters'    => $acuanOffice->radius_meters,
-                    'office_name'      => $acuanOffice->office_name,
+                    'radius_meters'    => $nearest->radius_meters,
+                    'office_name'      => $nearest->office_name,
                 ], 403);
             }
 
@@ -6217,21 +6578,41 @@ class AttendanceController extends Controller
 
         $overtimeReason = $this->resolveOvertimeReason($attendance, $isAutoCheckout);
 
+        // Cari info user karyawan & pengaturan kantor cabang
+        $employee = User::find($attendance->user_id);
+        $office = ($employee && $employee->attendance_setting_id)
+            ? AttendanceSetting::find($employee->attendance_setting_id)
+            : null;
+        $multiApprovalEnabled = $office ? ($office->overtime_multi_approval_enabled ?? true) : true;
+        $initialStep = $multiApprovalEnabled ? 'spv' : 'hrd';
+
         $approval = OvertimeApproval::create([
             'attendance_id'   => $attendance->id,
             'user_id'         => $attendance->user_id,
             'company_id'      => $attendance->company_id,
             'overtime_minutes'=> $attendance->overtime_minutes,
             'status'          => 'pending',
-            'current_step'    => 'spv',
+            'current_step'    => $initialStep,
             'is_auto_checkout'=> $isAutoCheckout,
             'overtime_reason' => $overtimeReason,
         ]);
 
-        // Cari info user karyawan
-        $employee = User::find($attendance->user_id);
         $overtimeFormatted = $this->formatMinutes($attendance->overtime_minutes);
         $tanggal = Carbon::parse($attendance->date)->format('d/m/Y');
+
+        if ($multiApprovalEnabled && $employee?->manager_id) {
+            $this->notifyUser($employee->manager_id, 'overtime_pending_spv', [
+                'message'          => "{$employee->name} mengajukan lembur {$overtimeFormatted} ({$tanggal}) dan memerlukan persetujuan Anda sebagai Atasan Langsung.",
+                'overtime_id'      => $approval->id,
+                'attendance_id'    => $attendance->id,
+                'user_id'          => $attendance->user_id,
+                'user_name'        => $employee->name,
+                'overtime_minutes' => $attendance->overtime_minutes,
+                'is_auto_checkout' => $isAutoCheckout,
+                'overtime_reason'  => $overtimeReason,
+                'date'             => $tanggal,
+            ], 'overtime_approval', $approval->id);
+        }
 
         // Notifikasi ke semua HRD/admin/super_admin perusahaan
         $approvers = DB::table('users')
@@ -6241,8 +6622,9 @@ class AttendanceController extends Controller
             ->pluck('id');
 
         foreach ($approvers as $approverId) {
+            $stepSuffix = $multiApprovalEnabled ? ' (Menunggu persetujuan SPV).' : ' (Menunggu persetujuan HRD).';
             $this->notifyUser($approverId, 'overtime_pending', [
-                'message'          => ($employee ? $employee->name : 'Karyawan') . " mengajukan lembur {$overtimeFormatted} ({$tanggal})." . ($isAutoCheckout ? ' [Auto-Checkout]' : ''),
+                'message'          => ($employee ? $employee->name : 'Karyawan') . " mengajukan lembur {$overtimeFormatted} ({$tanggal})." . ($isAutoCheckout ? ' [Auto-Checkout]' : '') . $stepSuffix,
                 'overtime_id'      => $approval->id,
                 'attendance_id'    => $attendance->id,
                 'user_id'          => $attendance->user_id,
@@ -6251,6 +6633,7 @@ class AttendanceController extends Controller
                 'is_auto_checkout' => $isAutoCheckout,
                 'overtime_reason'  => $overtimeReason,
                 'date'             => $tanggal,
+                'current_step'     => $initialStep,
             ], 'overtime_approval', $approval->id);
         }
     }
@@ -6361,8 +6744,26 @@ class AttendanceController extends Controller
             'require_selfie' => (bool) $primaryOffice->require_selfie,
         ] : null;
 
-        // Kantor yang ditampilkan dan diizinkan untuk presensi karyawan adalah kantor cabang penempatannya sendiri
-        $userOffices = $officeData ? [$officeData] : [];
+        // Multi-geofence roaming: ambil seluruh cabang aktif milik perusahaan
+        $allCompanyOffices = AttendanceSetting::where('company_id', $user->company_id)
+            ->whereNotNull('office_latitude')
+            ->whereNotNull('office_longitude')
+            ->get();
+
+        $userOffices = $allCompanyOffices->map(function ($off) {
+            return [
+                'id'             => $off->id,
+                'name'           => $off->office_name,
+                'latitude'       => (float) $off->office_latitude,
+                'longitude'      => (float) $off->office_longitude,
+                'radius_meters'  => (int) $off->radius_meters,
+                'require_selfie' => (bool) $off->require_selfie,
+            ];
+        })->values()->all();
+
+        if (empty($userOffices) && $officeData) {
+            $userOffices = [$officeData];
+        }
 
         $isWfhApproved = $user->hasApprovedWfhToday($today);
 
@@ -6546,18 +6947,19 @@ class AttendanceController extends Controller
     // BAGIAN C — HRD: manajemen approval lembur
     // ═══════════════════════════════════════════════════════════
 
-    // listOvertimeApprovals() — daftar pengajuan lembur untuk SPV & HRD (filter status/user/tanggal/step)
+// listOvertimeApprovals() — daftar pengajuan lembur untuk SPV & HRD (filter status/user/tanggal/step)
     public function listOvertimeApprovals(Request $request): JsonResponse
     {
         $actor = $request->user();
 
         $validated = $request->validate([
-            'status'     => 'nullable|in:pending,approved,rejected',
-            'step'       => 'nullable|in:spv,hrd',
-            'user_id'    => 'nullable|integer',
-            'start_date' => 'nullable|date',
-            'end_date'   => 'nullable|date|after_or_equal:start_date',
-            'per_page'   => 'nullable|integer|min:1|max:2000',
+            'status'      => 'nullable|in:pending,approved,rejected',
+            'step'        => 'nullable|in:spv,hrd',
+            'user_id'     => 'nullable|integer',
+            'division_id' => 'nullable|integer',
+            'start_date'  => 'nullable|date',
+            'end_date'    => 'nullable|date|after_or_equal:start_date',
+            'per_page'    => 'nullable|integer|min:1|max:2000',
         ]);
 
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
@@ -6566,6 +6968,9 @@ class AttendanceController extends Controller
             ->join('users', 'overtime_approvals.user_id', '=', 'users.id')
             ->join('attendances', 'overtime_approvals.attendance_id', '=', 'attendances.id')
             ->leftJoin('users as spv_user', 'overtime_approvals.spv_id', '=', 'spv_user.id')
+            ->leftJoin('divisions', 'users.division_id', '=', 'divisions.id')
+            ->leftJoin('positions', 'users.position_id', '=', 'positions.id')
+            ->leftJoin('users as mgr_user', 'users.manager_id', '=', 'mgr_user.id')
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('overtime_approvals.company_id', $actor->company_id)
@@ -6573,6 +6978,7 @@ class AttendanceController extends Controller
             ->when($validated['status'] ?? null, fn ($q, $s) => $q->where('overtime_approvals.status', $s))
             ->when($validated['step'] ?? null, fn ($q, $step) => $q->where('overtime_approvals.current_step', $step))
             ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('overtime_approvals.user_id', $u))
+            ->when($validated['division_id'] ?? null, fn ($q, $div) => $q->where('users.division_id', $div))
             ->when($validated['start_date'] ?? null, fn ($q, $d) => $q->where('attendances.date', '>=', $d))
             ->when($validated['end_date']   ?? null, fn ($q, $d) => $q->where('attendances.date', '<=', $d));
 
@@ -6584,12 +6990,35 @@ class AttendanceController extends Controller
             }
         }
 
+        // Scoping SPV: Jika bukan Super Admin / Admin / HRD, batasi hanya melihat bawahan langsung atau divisi yang dipimpin
+        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+        $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+            || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
+            || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+
+        if (! $isHrdOrAdmin) {
+            $approvalsQuery->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id');
+                    });
+                }
+            });
+        }
+
         $approvals = $approvalsQuery->select([
             'overtime_approvals.id',
             'overtime_approvals.attendance_id',
             'overtime_approvals.user_id',
             'users.name as user_name',
             'users.department',
+            'users.division_id',
+            'divisions.name as division_name',
+            'positions.name as position_name',
+            'users.manager_id',
+            'mgr_user.name as manager_name',
             'attendances.date as attendance_date',
             'attendances.check_in_time',
             'attendances.check_out_time',
@@ -6624,13 +7053,36 @@ class AttendanceController extends Controller
             return $a;
         });
 
-        $summaryRaw = OvertimeApproval::when(
-            $actor->role !== 'super_admin',
-            fn ($q) => $q->where('company_id', $actor->company_id)
-        )
-        ->selectRaw('status, current_step, COUNT(*) as total')
-        ->groupBy('status', 'current_step')
-        ->get();
+        $summaryQuery = OvertimeApproval::query()
+            ->join('users', 'overtime_approvals.user_id', '=', 'users.id')
+            ->when(
+                $actor->role !== 'super_admin',
+                fn ($q) => $q->where('overtime_approvals.company_id', $actor->company_id)
+            );
+
+        if ($actor->role !== 'super_admin') {
+            $allowedBranches = $actor->allowedBranchIds();
+            if ($allowedBranches !== null) {
+                $summaryQuery->whereIn('users.attendance_setting_id', $allowedBranches);
+            }
+        }
+
+        if (! $isHrdOrAdmin) {
+            $summaryQuery->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id');
+                    });
+                }
+            });
+        }
+
+        $summaryRaw = $summaryQuery
+            ->selectRaw('overtime_approvals.status, overtime_approvals.current_step, COUNT(*) as total')
+            ->groupBy('overtime_approvals.status', 'overtime_approvals.current_step')
+            ->get();
 
         $pendingSpv = 0;
         $pendingHrd = 0;
@@ -6672,7 +7124,7 @@ class AttendanceController extends Controller
             'notes' => 'nullable|string|max:1000',
         ]);
 
-        $approval = OvertimeApproval::with(['attendance', 'user'])->when(
+        $approval = OvertimeApproval::with(['attendance', 'user.manager', 'user.division'])->when(
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
         )->find($id);
@@ -6704,29 +7156,59 @@ class AttendanceController extends Controller
         }
 
         $step = $approval->current_step ?: 'spv';
+        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
 
         // ── STEP 1: SPV APPROVAL ──
         if ($step === 'spv') {
-            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
-            $userRoleName = strtolower($actor->roleRelation?->name ?? '');
+            $hasSpvPermission = $actor->hasPermission(Role::MODULE_OVERTIME, 'spv');
+            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
 
-            $isSpvOrAbove = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
-                // Keyword Inggris
-                || str_contains($userRoleCode, 'spv') || str_contains($userRoleCode, 'supervisor')
-                || str_contains($userRoleCode, 'manager') || str_contains($userRoleCode, 'head') || str_contains($userRoleCode, 'lead')
-                || str_contains($userRoleName, 'spv') || str_contains($userRoleName, 'supervisor')
-                || str_contains($userRoleName, 'manager') || str_contains($userRoleName, 'head') || str_contains($userRoleName, 'lead')
-                // Keyword Indonesia
-                || str_contains($userRoleCode, 'kepala') || str_contains($userRoleCode, 'kabag')
-                || str_contains($userRoleCode, 'ketua') || str_contains($userRoleCode, 'direktur')
-                || str_contains($userRoleName, 'kepala') || str_contains($userRoleName, 'kabag')
-                || str_contains($userRoleName, 'ketua') || str_contains($userRoleName, 'direktur')
-                || str_contains($userRoleName, 'koordinator') || str_contains($userRoleName, 'otorisator');
+            $targetUser = $approval->user;
+            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
+
+            $isSpvOrAbove = $isDirectManager
+                || $hasSupervisorPosition
+                || $hasSpvPermission
+                || $actor->isSupervisor()
+                || $isAdminOrHrdBypass;
 
             if (! $isSpvOrAbove) {
                 return response()->json([
-                    'message' => 'Persetujuan tahap pertama lembur harus dilakukan oleh SPV/Atasan.',
+                    'message' => 'Persetujuan tahap pertama lembur harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
                     'code'    => 'SPV_REQUIRED',
+                ], 403);
+            }
+
+            // Otorisasi Atasan Langsung & Divisi
+            // Jika karyawan belum memiliki manager_id yang ditunjuk:
+            // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
+            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV perusahaan (fallback umum)
+            $isSameDivisionSpv = false;
+            if (! $targetUser?->manager_id) {
+                if ($targetUser?->division_id) {
+                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
+                } else {
+                    $isSameDivisionSpv = true;
+                }
+            }
+
+            // Bypass darurat: Super Admin, Admin, dan HRD selalu berhak override jika Atasan Langsung berhalangan/cuti
+            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+                if ($targetUser?->manager_id) {
+                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
+                    return response()->json([
+                        'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
+                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
+                    ], 403);
+                }
+
+                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
+                return response()->json([
+                    'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
+                    'code'    => 'SPV_DIVISION_REQUIRED',
                 ], 403);
             }
 
@@ -6780,14 +7262,9 @@ class AttendanceController extends Controller
 
         // ── STEP 2: HRD FINAL APPROVAL ──
         if ($step === 'hrd') {
-            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
-            $userRoleName = strtolower($actor->roleRelation?->name ?? '');
-
-            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'])
-                || str_contains($userRoleCode, 'hr') || str_contains($userRoleName, 'hr')
-                // Keyword Indonesia
-                || str_contains($userRoleName, 'personalia') || str_contains($userRoleName, 'kepegawaian')
-                || str_contains($userRoleCode, 'personalia') || str_contains($userRoleCode, 'kepegawaian');
+            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
 
             if (! $isHrdOrAdmin) {
                 return response()->json([
@@ -6857,7 +7334,7 @@ class AttendanceController extends Controller
 
         $actor = $request->user();
 
-        $approval = OvertimeApproval::with(['attendance', 'user'])->when(
+        $approval = OvertimeApproval::with(['attendance', 'user.manager', 'user.division'])->when(
             $actor->role !== 'super_admin',
             fn ($q) => $q->where('company_id', $actor->company_id)
         )->find($id);
@@ -6885,8 +7362,66 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Pengajuan lembur sudah diproses sebelumnya.'], 403);
         }
 
+        // Karyawan tidak boleh menolak lemburnya sendiri via endpoint ini (gunakan declineOvertime)
+        if ($actor->id === $approval->user_id && ! in_array($actor->role, ['super_admin'])) {
+            return response()->json(['message' => 'Anda tidak dapat menolak pengajuan lembur Anda sendiri.'], 403);
+        }
+
         $step = $approval->current_step ?: 'spv';
+        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+
+        // ── STEP 1: SPV REJECTION ──
         if ($step === 'spv') {
+            $hasSpvPermission = $actor->hasPermission(Role::MODULE_OVERTIME, 'spv');
+            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+
+            $targetUser = $approval->user;
+            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
+
+            $isSpvOrAbove = $isDirectManager
+                || $hasSupervisorPosition
+                || $hasSpvPermission
+                || $actor->isSupervisor()
+                || $isAdminOrHrdBypass;
+
+            if (! $isSpvOrAbove) {
+                return response()->json([
+                    'message' => 'Persetujuan tahap pertama lembur harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
+                    'code'    => 'SPV_REQUIRED',
+                ], 403);
+            }
+
+            // Jika karyawan belum memiliki manager_id yang ditunjuk:
+            // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
+            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV perusahaan (fallback umum)
+            $isSameDivisionSpv = false;
+            if (! $targetUser?->manager_id) {
+                if ($targetUser?->division_id) {
+                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
+                } else {
+                    $isSameDivisionSpv = true;
+                }
+            }
+
+            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+                if ($targetUser?->manager_id) {
+                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
+                    return response()->json([
+                        'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
+                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
+                    ], 403);
+                }
+
+                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
+                return response()->json([
+                    'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
+                    'code'    => 'SPV_DIVISION_REQUIRED',
+                ], 403);
+            }
+
             $approval->update([
                 'status'          => 'rejected',
                 'spv_id'          => $actor->id,
@@ -6896,13 +7431,26 @@ class AttendanceController extends Controller
                 'reviewed_at'     => now(),
                 'notes'           => $request->notes,
             ]);
-        } else {
+        } elseif ($step === 'hrd') {
+            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
+                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+
+            if (! $isHrdOrAdmin) {
+                return response()->json([
+                    'message' => 'Persetujuan tahap akhir lembur hanya dapat dilakukan oleh HRD atau Admin.',
+                    'code'    => 'HRD_REQUIRED',
+                ], 403);
+            }
+
             $approval->update([
                 'status'      => 'rejected',
                 'reviewed_by' => $actor->id,
                 'reviewed_at' => now(),
                 'notes'       => $request->notes,
             ]);
+        } else {
+            return response()->json(['message' => 'Tahap persetujuan tidak valid.'], 422);
         }
 
         // Jika ditolak → reset overtime_minutes ke 0 di tabel attendances
@@ -6976,6 +7524,14 @@ class AttendanceController extends Controller
             ->orderByRaw("FIELD(status, 'pending', 'approved', 'rejected')")
             ->orderByDesc('created_at');
 
+        // Branch scoping: filter device change berdasarkan cabang yang diizinkan
+        if ($actor->role !== 'super_admin') {
+            $allowedBranches = $actor->allowedBranchIds();
+            if ($allowedBranches !== null) {
+                $query->whereHas('user', fn ($u) => $u->whereIn('attendance_setting_id', $allowedBranches));
+            }
+        }
+
         $paginated = $query->paginate($limit);
 
         $summary = DeviceChangeRequest::when(
@@ -7018,8 +7574,13 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Permintaan sudah diproses sebelumnya.'], 403);
         }
 
-        // Ganti binding: device baru menggantikan device lama (1 akun = 1 device).
+        // Cek cabang
         $employee = User::find($req->user_id);
+        if ($employee && ! $actor->allowsBranch($employee->attendance_setting_id)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
+        }
+
+        // Ganti binding: device baru menggantikan device lama (1 akun = 1 device).
         if ($employee) {
             $employee->forceFill([
                 'device_id'       => $req->new_device_id,
@@ -7088,6 +7649,12 @@ class AttendanceController extends Controller
 
         if ($req->status !== 'pending') {
             return response()->json(['message' => 'Permintaan sudah diproses sebelumnya.'], 403);
+        }
+
+        // Cek cabang
+        $employee = User::find($req->user_id);
+        if ($employee && ! $actor->allowsBranch($employee->attendance_setting_id)) {
+            return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
         }
 
         $req->update([
@@ -7259,6 +7826,352 @@ class AttendanceController extends Controller
         return response()->json($approvals);
     }
 
+/**
+     * spvListOvertimeApprovals() — Daftar pengajuan lembur bawahan khusus untuk SPV di mobile app.
+     * GET /api/v1/attendance/spv/overtime-approvals
+     */
+    public function spvListOvertimeApprovals(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+
+        if (! $actor->isSupervisor()) {
+            return response()->json([
+                'success'       => false,
+                'message'       => 'Akun Anda tidak memiliki peran atau posisi sebagai Supervisor.',
+                'approvals'     => [],
+                'data'          => [],
+                'pending_count' => 0,
+            ], 403);
+        }
+
+        $status = $request->query('status'); // 'pending', 'approved', 'rejected', or null for all
+
+        $query = OvertimeApproval::query()
+            ->join('users', 'overtime_approvals.user_id', '=', 'users.id')
+            ->join('attendances', 'overtime_approvals.attendance_id', '=', 'attendances.id')
+            ->leftJoin('divisions', 'users.division_id', '=', 'divisions.id')
+            ->leftJoin('positions', 'users.position_id', '=', 'positions.id')
+            ->where('overtime_approvals.company_id', $actor->company_id);
+
+        // Hanya bawahan langsung atau staf satu divisi tanpa manager (bukan dirinya sendiri)
+        $query->where(function ($q) use ($actor) {
+            $q->where('users.manager_id', $actor->id);
+            if ($actor->division_id) {
+                $q->orWhere(function ($sub) use ($actor) {
+                    $sub->where('users.division_id', $actor->division_id)
+                        ->whereNull('users.manager_id')
+                        ->where('users.id', '!=', $actor->id);
+                });
+            }
+        });
+
+        // Branch scoping: SPV hanya melihat karyawan cabangnya
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $query->whereIn('users.attendance_setting_id', $allowedBranches);
+        }
+
+        if ($status && in_array($status, ['pending', 'approved', 'rejected'])) {
+            $query->where('overtime_approvals.status', $status);
+        }
+
+        $approvals = $query->select([
+            'overtime_approvals.id',
+            'overtime_approvals.attendance_id',
+            'overtime_approvals.user_id',
+            'users.name as user_name',
+            'users.employee_code',
+            'users.department',
+            'divisions.name as division_name',
+            'positions.name as position_name',
+            'attendances.date as attendance_date',
+            'attendances.check_in_time',
+            'attendances.check_out_time',
+            'overtime_approvals.overtime_minutes',
+            'overtime_approvals.overtime_reason',
+            'overtime_approvals.status',
+            'overtime_approvals.current_step',
+            'overtime_approvals.spv_id',
+            'overtime_approvals.spv_approved_at',
+            'overtime_approvals.spv_notes',
+            'overtime_approvals.notes',
+            'overtime_approvals.created_at',
+        ])
+        ->orderByDesc('attendances.date')
+        ->orderByDesc('overtime_approvals.id')
+        ->get();
+
+        $formatted = $approvals->map(function ($a) {
+            return [
+                'id'                 => $a->id,
+                'attendance_id'      => $a->attendance_id,
+                'user_id'            => $a->user_id,
+                'user_name'          => $a->user_name,
+                'employee_code'      => $a->employee_code,
+                'department'         => $a->division_name ?? $a->department,
+                'division_name'      => $a->division_name ?? $a->department,
+                'position_name'      => $a->position_name ?? 'Karyawan',
+                'date'               => $a->attendance_date,
+                'check_in_time'      => $a->check_in_time ? Carbon::parse($a->check_in_time)->format('H:i') : null,
+                'check_out_time'     => $a->check_out_time ? Carbon::parse($a->check_out_time)->format('H:i') : null,
+                'overtime_minutes'   => (int) $a->overtime_minutes,
+                'formatted_overtime' => $this->formatMinutes((int) $a->overtime_minutes),
+                'reason'             => $a->overtime_reason ?: '-',
+                'status'             => $a->status,
+                'current_step'       => $a->current_step ?: 'spv',
+                'spv_approved_at'    => $a->spv_approved_at,
+                'spv_notes'          => $a->spv_notes,
+                'notes'              => $a->notes,
+                'created_at'         => $a->created_at?->toIso8601String(),
+            ];
+        });
+
+        // Hitung total pending untuk badge SPV
+        $pendingCountQuery = OvertimeApproval::query()
+            ->join('users', 'overtime_approvals.user_id', '=', 'users.id')
+            ->where('overtime_approvals.company_id', $actor->company_id)
+            ->where('overtime_approvals.status', 'pending')
+            ->where('overtime_approvals.current_step', 'spv')
+            ->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id')
+                            ->where('users.id', '!=', $actor->id);
+                    });
+                }
+            });
+
+        // Branch scoping pendingCount
+        if ($allowedBranches !== null) {
+            $pendingCountQuery->whereIn('users.attendance_setting_id', $allowedBranches);
+        }
+
+        $pendingCount = $pendingCountQuery->count();
+
+        return response()->json([
+            'success'       => true,
+            'approvals'     => $formatted,
+            'data'          => $formatted,
+            'pending_count' => $pendingCount,
+        ]);
+    }
+
+    /**
+     * spvPendingOvertimeCount() — Jumlah pengajuan lembur pending untuk badge counter di beranda mobile.
+     * GET /api/v1/attendance/spv/overtime-approvals/count
+     */
+    public function spvPendingOvertimeCount(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+
+        if (! $actor->isSupervisor()) {
+            return response()->json([
+                'success'       => true,
+                'pending_count' => 0,
+            ]);
+        }
+
+        $pendingCount = OvertimeApproval::query()
+            ->join('users', 'overtime_approvals.user_id', '=', 'users.id')
+            ->where('overtime_approvals.company_id', $actor->company_id)
+            ->where('overtime_approvals.status', 'pending')
+            ->where('overtime_approvals.current_step', 'spv')
+            ->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id')
+                            ->where('users.id', '!=', $actor->id);
+                    });
+                }
+            })
+            ->count();
+
+        return response()->json([
+            'success'       => true,
+            'pending_count' => $pendingCount,
+        ]);
+    }
+
+    /**
+     * spvListLeaveApprovals() — Daftar pengajuan izin/cuti bawahan khusus untuk SPV di mobile app.
+     * GET /api/v1/attendance/spv/leave-approvals
+     */
+    public function spvListLeaveApprovals(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+
+        if (! $actor->isSupervisor()) {
+            return response()->json([
+                'success'       => false,
+                'message'       => 'Akun Anda tidak memiliki peran atau posisi sebagai Supervisor.',
+                'approvals'     => [],
+                'data'          => [],
+                'pending_count' => 0,
+            ], 403);
+        }
+
+        $status = $request->query('status'); // 'pending', 'approved', 'rejected', or null for all
+
+        $query = LeaveRequest::query()
+            ->join('users', 'leave_requests.user_id', '=', 'users.id')
+            ->leftJoin('divisions', 'users.division_id', '=', 'divisions.id')
+            ->leftJoin('positions', 'users.position_id', '=', 'positions.id')
+            ->where('leave_requests.company_id', $actor->company_id);
+
+        // Hanya bawahan langsung atau staf satu divisi tanpa manager (bukan dirinya sendiri)
+        $query->where(function ($q) use ($actor) {
+            $q->where('users.manager_id', $actor->id);
+            if ($actor->division_id) {
+                $q->orWhere(function ($sub) use ($actor) {
+                    $sub->where('users.division_id', $actor->division_id)
+                        ->whereNull('users.manager_id')
+                        ->where('users.id', '!=', $actor->id);
+                });
+            }
+        });
+
+        // Branch scoping: SPV hanya melihat karyawan cabangnya
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $query->whereIn('users.attendance_setting_id', $allowedBranches);
+        }
+
+        if ($status && in_array($status, ['pending', 'approved', 'rejected'])) {
+            $query->where('leave_requests.status', $status);
+        }
+
+        $leaves = $query->select([
+            'leave_requests.id',
+            'leave_requests.user_id',
+            'users.name as user_name',
+            'users.employee_code',
+            'users.department',
+            'divisions.name as division_name',
+            'positions.name as position_name',
+            'leave_requests.leave_type',
+            'leave_requests.start_date',
+            'leave_requests.end_date',
+            'leave_requests.total_days',
+            'leave_requests.reason',
+            'leave_requests.document_path',
+            'leave_requests.status',
+            'leave_requests.current_step',
+            'leave_requests.spv_id',
+            'leave_requests.spv_approved_at',
+            'leave_requests.spv_notes',
+            'leave_requests.notes',
+            'leave_requests.rejection_reason',
+            'leave_requests.created_at',
+        ])
+        ->orderByDesc('leave_requests.created_at')
+        ->get();
+
+        $formatted = $leaves->map(function ($l) {
+            return [
+                'id'               => $l->id,
+                'user_id'          => $l->user_id,
+                'user_name'        => $l->user_name,
+                'employee_code'    => $l->employee_code,
+                'department'       => $l->division_name ?? $l->department,
+                'division_name'    => $l->division_name ?? $l->department,
+                'position_name'    => $l->position_name ?? 'Karyawan',
+                'leave_type'       => $l->leave_type,
+                'start_date'       => $l->start_date ? Carbon::parse($l->start_date)->toDateString() : null,
+                'end_date'         => $l->end_date ? Carbon::parse($l->end_date)->toDateString() : null,
+                'total_days'       => (int) $l->total_days,
+                'reason'           => $l->reason ?: '-',
+                'has_document'     => ! empty($l->document_path),
+                'status'           => $l->status,
+                'current_step'     => $l->current_step ?: 'spv',
+                'spv_approved_at'  => $l->spv_approved_at,
+                'spv_notes'        => $l->spv_notes,
+                'notes'            => $l->notes,
+                'rejection_reason' => $l->rejection_reason,
+                'created_at'       => $l->created_at?->toIso8601String(),
+            ];
+        });
+
+        // Hitung total pending tahap SPV
+        $pendingCountQuery = LeaveRequest::query()
+            ->join('users', 'leave_requests.user_id', '=', 'users.id')
+            ->where('leave_requests.company_id', $actor->company_id)
+            ->where('leave_requests.status', 'pending')
+            ->where('leave_requests.current_step', 'spv')
+            ->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id')
+                            ->where('users.id', '!=', $actor->id);
+                    });
+                }
+            });
+
+        // Branch scoping pendingCount
+        if ($allowedBranches !== null) {
+            $pendingCountQuery->whereIn('users.attendance_setting_id', $allowedBranches);
+        }
+
+        $pendingCount = $pendingCountQuery->count();
+
+        return response()->json([
+            'success'       => true,
+            'approvals'     => $formatted,
+            'data'          => $formatted,
+            'pending_count' => $pendingCount,
+        ]);
+    }
+
+    /**
+     * spvPendingLeaveCount() — Jumlah pengajuan cuti/izin pending tahap SPV untuk badge counter mobile.
+     * GET /api/v1/attendance/spv/leave-approvals/count
+     */
+    public function spvPendingLeaveCount(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+
+        if (! $actor->isSupervisor()) {
+            return response()->json([
+                'success'       => true,
+                'pending_count' => 0,
+            ]);
+        }
+
+        $pendingCountQuery2 = LeaveRequest::query()
+            ->join('users', 'leave_requests.user_id', '=', 'users.id')
+            ->where('leave_requests.company_id', $actor->company_id)
+            ->where('leave_requests.status', 'pending')
+            ->where('leave_requests.current_step', 'spv')
+            ->where(function ($q) use ($actor) {
+                $q->where('users.manager_id', $actor->id);
+                if ($actor->division_id) {
+                    $q->orWhere(function ($sub) use ($actor) {
+                        $sub->where('users.division_id', $actor->division_id)
+                            ->whereNull('users.manager_id')
+                            ->where('users.id', '!=', $actor->id);
+                    });
+                }
+            });
+
+        // Branch scoping
+        $allowedBranches = $actor->allowedBranchIds();
+        if ($allowedBranches !== null) {
+            $pendingCountQuery2->whereIn('users.attendance_setting_id', $allowedBranches);
+        }
+
+        $pendingCount = $pendingCountQuery2->count();
+
+        return response()->json([
+            'success'       => true,
+            'pending_count' => $pendingCount,
+        ]);
+    }
+
     // ─── claimOvertime() — Karyawan mengajukan lembur dengan deskripsi ───────
     public function claimOvertime(Request $request, int $id): JsonResponse
     {
@@ -7287,11 +8200,15 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Lembur ini sudah disetujui sebelumnya.'], 422);
         }
 
+        $office = $user->attendance_setting_id ? AttendanceSetting::find($user->attendance_setting_id) : null;
+        $multiApprovalEnabled = $office ? ($office->overtime_multi_approval_enabled ?? true) : true;
+        $initialStep = $multiApprovalEnabled ? 'spv' : 'hrd';
+
         if ($approval) {
             $approval->update([
                 'overtime_minutes' => $attendance->overtime_minutes,
                 'status'           => 'pending',
-                'current_step'     => 'spv',
+                'current_step'     => $initialStep,
                 'spv_id'           => null,
                 'spv_approved_at'  => null,
                 'spv_notes'        => null,
@@ -7307,7 +8224,7 @@ class AttendanceController extends Controller
                 'company_id'       => $attendance->company_id,
                 'overtime_minutes' => $attendance->overtime_minutes,
                 'status'           => 'pending',
-                'current_step'     => 'spv',
+                'current_step'     => $initialStep,
                 'is_auto_checkout' => (bool) $attendance->is_auto_checkout,
                 'overtime_reason'  => $validated['reason'],
             ]);
@@ -7322,19 +8239,28 @@ class AttendanceController extends Controller
             $approval->id
         );
 
-        // Notifikasi ke semua HRD/admin/SPV
+        // Notifikasi ke Atasan Langsung (SPV) dan HRD/Admin
         $overtimeFormatted = $this->formatMinutes($attendance->overtime_minutes);
         $tanggal = Carbon::parse($attendance->date)->format('d/m/Y');
 
-        $approvers = DB::table('users')
+        $notifiedIds = [];
+        if ($multiApprovalEnabled && $user->manager_id) {
+            $notifiedIds[] = $user->manager_id;
+        }
+
+        // Sertakan HRD & Admin untuk visibilitas monitoring
+        $hrdAdminIds = DB::table('users')
             ->where('company_id', $attendance->company_id)
             ->whereIn('role', ['hrd', 'admin', 'super_admin'])
             ->where('is_active', true)
-            ->pluck('id');
+            ->pluck('id')->toArray();
 
+        $approvers = array_unique(array_merge($notifiedIds, $hrdAdminIds));
+
+        $stepSuffix = $multiApprovalEnabled ? ' Menunggu persetujuan SPV.' : ' Menunggu persetujuan HRD.';
         foreach ($approvers as $approverId) {
             $this->notifyUser($approverId, 'overtime_pending', [
-                'message'          => "{$user->name} mengajukan lembur {$overtimeFormatted} ({$tanggal}). Menunggu persetujuan SPV.",
+                'message'          => "{$user->name} mengajukan lembur {$overtimeFormatted} ({$tanggal})." . $stepSuffix,
                 'overtime_id'      => $approval->id,
                 'attendance_id'    => $attendance->id,
                 'user_id'          => $attendance->user_id,
@@ -7343,11 +8269,14 @@ class AttendanceController extends Controller
                 'is_auto_checkout' => (bool) $attendance->is_auto_checkout,
                 'overtime_reason'  => $validated['reason'],
                 'date'             => $tanggal,
+                'current_step'     => $initialStep,
             ], 'overtime_approval', $approval->id);
         }
 
         return response()->json([
-            'message'  => 'Pengajuan lembur berhasil dikirim (Menunggu persetujuan SPV).',
+            'message'  => $multiApprovalEnabled
+                ? 'Pengajuan lembur berhasil dikirim (Menunggu persetujuan SPV).'
+                : 'Pengajuan lembur berhasil dikirim (Menunggu persetujuan HRD).',
             'approval' => [
                 'id'               => $approval->id,
                 'status'           => $approval->status,
@@ -7751,6 +8680,10 @@ class AttendanceController extends Controller
             $documentPath = $request->file('document')->store('leave_documents');
         }
 
+        $office = $user->attendance_setting_id ? AttendanceSetting::find($user->attendance_setting_id) : null;
+        $multiApprovalEnabled = $office ? ($office->leave_multi_approval_enabled ?? true) : true;
+        $initialStep = $multiApprovalEnabled ? 'spv' : 'hrd';
+
         $leave = LeaveRequest::create([
             'user_id'       => $user->id,
             'company_id'    => $user->company_id,
@@ -7761,24 +8694,77 @@ class AttendanceController extends Controller
             'reason'        => $validated['reason'],
             'document_path' => $documentPath,
             'status'        => 'pending',
+            'current_step'  => $initialStep,
         ]);
 
         $this->logActivity($user->id, $user->company_id, 'leave_requested', "Ajukan {$leave->leave_type} ({$totalDays} hari)", 'leave_request', $leave->id);
 
-        // Notifikasi ke HRD / admin perusahaan yang sama
-        $approvers = DB::table('users')
-            ->where('company_id', $user->company_id)
-            ->whereIn('role', ['hrd', 'admin', 'super_admin'])
-            ->where('is_active', true)
-            ->pluck('id');
+        if ($multiApprovalEnabled) {
+            // Notifikasi ke Atasan Langsung (SPV) terlebih dahulu jika ada
+            if ($user->manager_id) {
+                $this->notifyUser($user->manager_id, 'leave_requested_spv', [
+                    'message'    => "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) dan memerlukan persetujuan Anda sebagai Atasan Langsung.",
+                    'leave_id'   => $leave->id,
+                    'leave_type' => $leave->leave_type,
+                    'user_name'  => $user->name,
+                    'total_days' => $totalDays,
+                ], 'leave_request', $leave->id);
 
-        foreach ($approvers as $approverId) {
-            $this->notifyUser($approverId, 'leave_requested', [
-                'message'    => "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari).",
-                'leave_id'   => $leave->id,
-                'leave_type' => $leave->leave_type,
-                'user_name'  => $user->name,
-            ], 'leave_request', $leave->id);
+                $manager = User::find($user->manager_id);
+                if ($manager && $manager->fcm_token) {
+                    $this->sendFcmPush(
+                        $manager->fcm_token,
+                        '📋 Pengajuan Izin/Cuti Baru',
+                        "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) dan memerlukan persetujuan Anda.",
+                        ['type' => 'leave_requested', 'leave_id' => (string) $leave->id]
+                    );
+                }
+            }
+
+            // Notifikasi ke HRD / admin perusahaan yang sama
+            $approvers = DB::table('users')
+                ->where('company_id', $user->company_id)
+                ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+                ->where('is_active', true)
+                ->when($user->manager_id, fn ($q) => $q->where('id', '!=', $user->manager_id))
+                ->pluck('id');
+
+            foreach ($approvers as $approverId) {
+                $this->notifyUser($approverId, 'leave_requested', [
+                    'message'      => "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) (Menunggu persetujuan SPV).",
+                    'leave_id'     => $leave->id,
+                    'leave_type'   => $leave->leave_type,
+                    'user_name'    => $user->name,
+                    'current_step' => 'spv',
+                ], 'leave_request', $leave->id);
+            }
+        } else {
+            // Multi-approval nonaktif: langsung notifikasi ke HRD / Admin
+            $approvers = DB::table('users')
+                ->where('company_id', $user->company_id)
+                ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+                ->where('is_active', true)
+                ->pluck('id');
+
+            foreach ($approvers as $approverId) {
+                $this->notifyUser($approverId, 'leave_requested', [
+                    'message'      => "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) dan memerlukan persetujuan HRD.",
+                    'leave_id'     => $leave->id,
+                    'leave_type'   => $leave->leave_type,
+                    'user_name'    => $user->name,
+                    'current_step' => 'hrd',
+                ], 'leave_request', $leave->id);
+
+                $hrdUser = User::find($approverId);
+                if ($hrdUser && $hrdUser->fcm_token) {
+                    $this->sendFcmPush(
+                        $hrdUser->fcm_token,
+                        '📋 Pengajuan Izin/Cuti Baru',
+                        "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) dan memerlukan persetujuan HRD.",
+                        ['type' => 'leave_requested', 'leave_id' => (string) $leave->id]
+                    );
+                }
+            }
         }
 
         // Transparansi mobile: laporkan tanggal yang di-skip dari total_days
@@ -7786,7 +8772,7 @@ class AttendanceController extends Controller
         return response()->json([
             'message' => 'Permintaan berhasil diajukan.',
             'leave'   => $leave->only([
-                'id', 'leave_type', 'start_date', 'end_date', 'total_days', 'status',
+                'id', 'leave_type', 'start_date', 'end_date', 'total_days', 'status', 'current_step',
             ]),
             'skipped_dates' => $calc['skipped'],
         ], 201);

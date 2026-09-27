@@ -60,8 +60,7 @@ Periksa foto struk secara teliti:
     "subtotal": null,
     "discount": null,
     "tax": null,
-    "amount": null,
-    "raw_text": null
+    "amount": null
   }
 
 LANGKAH 2 — EKSTRAKSI DATA (Hanya jika "is_clear" bernilai true):
@@ -83,9 +82,8 @@ Jika dan hanya jika foto tajam, jelas, dan seluruh teks serta angka terbaca tanp
 7. "discount": Nilai diskon / potongan harga / promo sebagai angka positif murni (contoh: 10000). Jika tidak ada diskon, null.
 8. "tax": Nilai pajak / PPN / PB1 / Service Charge sebagai angka murni (contoh: 10000). Jika tidak ada pajak, null.
 9. "amount": Total nominal pembayaran akhir / Grand Total yang dibayarkan pelanggan dalam bentuk angka murni tanpa simbol (contoh: 110000).
-10. "raw_text": Seluruh teks yang terbaca pada struk dari atas ke bawah.
 
-Kembalikan HANYA format JSON valid tanpa tanda markdown tambahan:
+Kembalikan HANYA format JSON valid tanpa tanda markdown (```json):
 {
   "is_clear": true,
   "rejection_reason": null,
@@ -102,17 +100,15 @@ Kembalikan HANYA format JSON valid tanpa tanda markdown tambahan:
   "subtotal": 100000,
   "discount": null,
   "tax": 10000,
-  "amount": 110000,
-  "raw_text": "Teks lengkap struk..."
+  "amount": 110000
 }
 PROMPT;
 
-        $primaryModel = config('services.gemini.model') ?? env('GEMINI_MODEL', 'gemini-3.1-flash-lite');
+        $primaryModel = config('services.gemini.model') ?? env('GEMINI_MODEL', 'gemini-3.6-flash');
         $candidateModels = array_values(array_unique(array_filter([
             $primaryModel,
+            'gemini-3.6-flash',
             'gemini-3.1-flash-lite',
-            'gemini-3.5-flash-lite',
-            'gemini-flash-lite-latest',
         ])));
 
         $payload = [
@@ -142,7 +138,7 @@ PROMPT;
             $url = "https://generativelanguage.googleapis.com/v1beta/models/{$model}:generateContent?key={$apiKey}";
 
             try {
-                $response = Http::timeout(20)
+                $response = Http::timeout(10)
                     ->withHeaders(['Content-Type' => 'application/json'])
                     ->post($url, $payload);
 
@@ -153,15 +149,23 @@ PROMPT;
                 $status = $response->status();
                 $body   = $response->body();
 
+                // Jika rate limit 429 atau kuota habis, throw langsung agar tidak buang waktu pada fallback loop
+                if ($status === 429 || str_contains($body, 'RESOURCE_EXHAUSTED')) {
+                    Log::warning("Gemini Vision OCR: Quota limit 429 reached on model {$model}");
+                    throw new \RuntimeException('Layanan OCR sedang mencapai batas kuota Google Gemini Free Tier (429 Too Many Requests). Silakan tunggu sekitar 30 detik lalu scan kembali struk Anda.');
+                }
+
                 if (isset($candidateModels[$index + 1])) {
                     Log::warning("Gemini Vision OCR: Model {$model} error ({$status}), mencoba fallback ke model {$candidateModels[$index + 1]}", [
                         'status' => $status,
-                        'body'   => $body,
+                        'body'   => substr($body, 0, 200),
                     ]);
                     continue;
                 }
 
                 break;
+            } catch (\RuntimeException $re) {
+                throw $re;
             } catch (\Exception $e) {
                 $lastException = $e;
                 Log::warning("Gemini Vision OCR connection error with model {$model}", ['error' => $e->getMessage()]);
@@ -186,7 +190,11 @@ PROMPT;
             ]);
 
             if ($status === 429 || str_contains($body, 'RESOURCE_EXHAUSTED') || str_contains(strtolower($body), 'quota')) {
-                throw new \RuntimeException('Layanan OCR sedang sibuk (kuota batas 15 RPM menit ini penuh / 429 Too Many Requests). Silakan tunggu 1 menit lalu coba scan kembali.');
+                throw new \RuntimeException('Layanan OCR sedang mencapai batas kuota Google Gemini Free Tier (429 Too Many Requests). Silakan tunggu sekitar 30 detik lalu scan kembali struk Anda.');
+            }
+
+            if ($status === 503) {
+                throw new \RuntimeException('Server Google Gemini sedang mengalami lonjakan trafik tinggi (503 Service Unavailable). Silakan coba beberapa saat lagi.');
             }
 
             throw new \RuntimeException('Gemini Vision API error (' . $status . '): ' . $body);
@@ -239,8 +247,6 @@ PROMPT;
             throw new \RuntimeException((string) $parsed['rejection_reason']);
         }
 
-        $rawText = $parsed['raw_text'] ?? $textOutput;
-
         $items = [];
         if (isset($parsed['items']) && is_array($parsed['items'])) {
             foreach ($parsed['items'] as $item) {
@@ -257,11 +263,15 @@ PROMPT;
 
         $finalAmount = isset($parsed['amount']) && is_numeric($parsed['amount'])
             ? (float) $parsed['amount']
-            : $this->extractAmount($rawText);
+            : $this->extractAmount($textOutput);
 
         if ($finalAmount === null) {
             throw new \RuntimeException('Foto struk buram atau angka total tidak terdeteksi dengan pasti. Harap ambil foto ulang.');
         }
+
+        $rawText = ! empty($parsed['raw_text'])
+            ? (string) $parsed['raw_text']
+            : trim(($parsed['merchant'] ?? '') . ' | ' . ($parsed['date'] ?? '') . ' | Total: ' . $finalAmount);
 
         return [
             'amount'   => $finalAmount,
@@ -277,7 +287,7 @@ PROMPT;
 
     /**
      * Optimasi gambar struk sebelum dikirim ke Gemini:
-     * Resize ke resolusi ideal OCR (maks 1200px) & kompresi JPEG untuk mempercepat upload
+     * Resize ke resolusi ideal OCR (maks 1000px) & kompresi JPEG untuk mempercepat upload
      * dan inferensi AI tanpa mengurangi keterbacaan teks/angka.
      */
     private function prepareBase64Image(string $fullPath, string &$mimeType): string
@@ -292,10 +302,10 @@ PROMPT;
         }
 
         [$width, $height, $type] = $imageInfo;
-        $maxDim = 1200;
+        $maxDim = 1000;
 
-        // Jika ukuran file sudah ringan (< 300 KB) dan dimensinya tidak terlalu besar, kirim langsung
-        if (filesize($fullPath) < 300 * 1024 && $width <= $maxDim && $height <= $maxDim) {
+        // Jika ukuran file sudah ringan (< 150 KB) dan dimensinya tidak terlalu besar, kirim langsung
+        if (filesize($fullPath) < 150 * 1024 && $width <= $maxDim && $height <= $maxDim) {
             return base64_encode(file_get_contents($fullPath));
         }
 
@@ -330,7 +340,7 @@ PROMPT;
         imagecopyresampled($dst, $src, 0, 0, 0, 0, $newWidth, $newHeight, $width, $height);
 
         ob_start();
-        imagejpeg($dst, null, 82);
+        imagejpeg($dst, null, 80);
         $compressedData = ob_get_clean();
 
         imagedestroy($src);

@@ -181,8 +181,27 @@ class ShiftManagementCategoryCTest extends TestCase
         $offUserIds = collect($offEntry['users'])->pluck('user_id')->all();
         $this->assertContains($this->employee1->id, $offUserIds);
 
+        // Karyawan 2 (tidak memiliki shift / jam kantor biasa) TIDAK boleh masuk ke kalender shift
+        $this->assertNotContains($this->employee2->id, $offUserIds, 'Karyawan tanpa shift tidak boleh masuk ke kalender shift');
+
         $emp1Detail = collect($offEntry['users'])->firstWhere('user_id', $this->employee1->id);
         $this->assertStringContainsString('Libur Siklus', $emp1Detail['reason']);
+    }
+
+    /**
+     * Uji Poin 11b: Karyawan tanpa shift (default kantor) tidak muncul di kalender sama sekali
+     */
+    public function test_calendar_omits_employees_without_shifts(): void
+    {
+        // Kondisi: Tidak ada karyawan yang di-assign shift
+        $response = $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/v1/dashboard/attendance/shifts/calendar?month=9&year=2026');
+
+        $response->assertOk();
+        $days = $response->json('days');
+
+        // Hari-hari akhir pekan tidak boleh memunculkan Libur (OFF) untuk karyawan kantor biasa
+        $this->assertEmpty($days, 'Kalender shift harus kosong jika tidak ada karyawan yang mendapatkan shift');
     }
 
     /**

@@ -508,9 +508,11 @@ export function mapAuditLog(l: any): AuditLog {
 }
 
 // ─── Settings ───────────────────────────────────────────────
-export function mapSettings(s: any, branchSettingsRaw?: any[]): AppSettings {
+export function mapSettings(s: any, branchSettingsRaw?: any[], receiptRulesRaw?: any): AppSettings {
   const settingsObj = s?.settings ?? s;
   const rawBranches = branchSettingsRaw ?? s?.branch_settings ?? [];
+  // receipt_approval_rules bisa datang sebagai arg terpisah (dari API response top-level) atau nested di settingsObj
+  const receiptRules = receiptRulesRaw ?? s?.receipt_approval_rules ?? {};
 
   return {
     varianceLimit: num(settingsObj?.variance_limit),
@@ -526,6 +528,10 @@ export function mapSettings(s: any, branchSettingsRaw?: any[]): AppSettings {
           maxClaimLimit: b.max_claim_limit !== null && b.max_claim_limit !== undefined ? num(b.max_claim_limit) : null,
         }))
       : undefined,
+    // Aturan approval bertingkat struk reimbursement
+    receiptTier1Threshold: num(receiptRules?.tier1_threshold ?? 500000),
+    receiptTier2Threshold: num(receiptRules?.tier2_threshold ?? 1000000),
+    receiptTier2Mode: (receiptRules?.tier2_mode === 'finance_and_spv' ? 'finance_and_spv' : 'two_finance') as 'two_finance' | 'finance_and_spv',
   };
 }
 
@@ -536,6 +542,9 @@ export function settingsToPayload(s: AppSettings) {
     threshold_single: s.thresholdSingle,
     threshold_two: s.thresholdTwo,
     threshold_three: s.thresholdThree,
+    receipt_tier1_threshold: s.receiptTier1Threshold,
+    receipt_tier2_threshold: s.receiptTier2Threshold,
+    receipt_tier2_mode: s.receiptTier2Mode,
   };
 }
 

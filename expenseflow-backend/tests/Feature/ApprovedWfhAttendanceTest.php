@@ -233,15 +233,23 @@ class ApprovedWfhAttendanceTest extends TestCase
     {
         Sanctum::actingAs($this->hrd);
 
+        $this->employee->update([
+            'attendance_enabled' => true,
+            'allow_attendance'   => true,
+            'allow_wfh'          => true,
+            'allow_radius'       => true,
+        ]);
+
         // Karyawan saat ini WFH OFF: mencoba aktifkan radius lapangan langsung harus ditolak (422)
         $this->assertFalse($this->employee->wfh_enabled);
         $resToggleRadius = $this->postJson("/api/v1/dashboard/attendance/users/{$this->employee->id}/toggle-radius");
         $resToggleRadius->assertStatus(422);
 
-        // Aktifkan WFH terlebih dahulu
+        // Aktifkan WFH terlebih dahulu (Opsi A: default WFH murni bebas radius, radius_enabled tetap false)
         $this->postJson("/api/v1/dashboard/attendance/users/{$this->employee->id}/toggle-wfh")->assertStatus(200);
         $this->employee->refresh();
         $this->assertTrue($this->employee->wfh_enabled);
+        $this->assertFalse($this->employee->radius_enabled);
 
         // Sekarang aktifkan radius lapangan (mode lapangan)
         $this->postJson("/api/v1/dashboard/attendance/users/{$this->employee->id}/toggle-radius")->assertStatus(200);

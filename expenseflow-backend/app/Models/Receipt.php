@@ -60,35 +60,63 @@ class Receipt extends Model
 
     /**
      * Hitung syarat approval (tiering) berdasarkan nominal klaim.
-     * Aturan:
-     * - Tier 1: Nominal < Rp 500.000 (1 Finance)
-     * - Tier 2: Nominal Rp 500.000 s/d Rp 1.000.000 (2 Finance)
-     * - Tier 3: Nominal > Rp 1.000.000 (1 Finance Staff + 1 SPV Finance / Finance Manager)
      *
-     * @return array{tier: string, required_approvals: int, description: string}
+     * Aturan (nilai threshold bisa dikonfigurasi via company_settings):
+     * - Tier 1: Nominal < tier1_threshold  → 1 approval Finance
+     * - Tier 2: tier1_threshold ≤ Nominal < tier2_threshold
+     *     • mode 'two_finance'      → 2 orang Finance berbeda (opsional campuran)
+     *     • mode 'finance_and_spv'  → 1 Finance + 1 SPV Finance (opsional campuran)
+     * - Tier 3: Nominal ≥ tier2_threshold → 1 Finance + 1 SPV Finance WAJIB
+     *
+     * @param  float  $amount   Nominal klaim
+     * @param  array{
+     *     tier1_threshold?: float,
+     *     tier2_threshold?: float,
+     *     tier2_mode?: string
+     * }  $config  Konfigurasi dari company_settings (opsional, pakai default jika kosong)
+     *
+     * @return array{tier: string, tier_key: string, required_approvals: int, mode: string, description: string}
      */
-    public static function resolveApprovalTier(float $amount): array
+    public static function resolveApprovalTier(float $amount, array $config = []): array
     {
-        if ($amount < 500000) {
+        $tier1Limit = (float) ($config['tier1_threshold'] ?? 500000);
+        $tier2Limit = (float) ($config['tier2_threshold'] ?? 1000000);
+        $tier2Mode  = (string) ($config['tier2_mode'] ?? 'two_finance');
+
+        $fmtTier1 = 'Rp ' . number_format($tier1Limit, 0, ',', '.');
+        $fmtTier2 = 'Rp ' . number_format($tier2Limit, 0, ',', '.');
+
+        if ($amount < $tier1Limit) {
             return [
-                'tier'               => 'Tier 1 (< Rp 500.000)',
+                'tier'               => "Tier 1 (< {$fmtTier1})",
+                'tier_key'           => 'tier1',
                 'required_approvals' => 1,
-                'description'        => 'Persetujuan tunggal oleh Tim Finance atau Admin',
+                'mode'               => 'any_finance',
+                'description'        => "Persetujuan tunggal oleh Tim Finance (nominal di bawah {$fmtTier1})",
             ];
         }
 
-        if ($amount <= 1000000) {
+        if ($amount < $tier2Limit) {
+            if ($tier2Mode === 'finance_and_spv') {
+                $modeDesc = '1 orang Finance + 1 orang SPV Finance (opsional campuran)';
+            } else {
+                $modeDesc = '2 orang Finance berbeda (opsional campuran)';
+            }
             return [
-                'tier'               => 'Tier 2 (Rp 500.000 - Rp 1.000.000)',
+                'tier'               => "Tier 2 ({$fmtTier1} - {$fmtTier2})",
+                'tier_key'           => 'tier2',
                 'required_approvals' => 2,
-                'description'        => 'Membutuhkan persetujuan dari 2 orang Finance/Admin yang berbeda',
+                'mode'               => $tier2Mode,
+                'description'        => "Membutuhkan 2 persetujuan: {$modeDesc}",
             ];
         }
 
         return [
-            'tier'               => 'Tier 3 (> Rp 1.000.000)',
+            'tier'               => "Tier 3 (> {$fmtTier2})",
+            'tier_key'           => 'tier3',
             'required_approvals' => 2,
-            'description'        => 'Membutuhkan persetujuan berjenjang: Tim Finance dan SPV Finance / Finance Head',
+            'mode'               => 'finance_and_spv_required',
+            'description'        => "Wajib: 1 Lv 1 Finance + 1 Lv 2 SPV Finance (nominal di atas {$fmtTier2})",
         ];
     }
 

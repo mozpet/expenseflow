@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 import '../providers/expense_report_provider.dart';
 import '../providers/receipt_provider.dart';
 import '../utils.dart';
@@ -37,6 +38,16 @@ class _BuatLaporanDinasScreenState extends State<BuatLaporanDinasScreen> {
   Timer? _ocrPollingTimer;
 
   Future<void> _handleCaptureFromCamera() async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    if (!auth.canClaimReceipt) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     final file = await _picker.pickImage(
       source: ImageSource.camera,
       maxWidth: 1280,
@@ -48,6 +59,16 @@ class _BuatLaporanDinasScreenState extends State<BuatLaporanDinasScreen> {
   }
 
   Future<void> _handlePickFromGallery() async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    if (!auth.canClaimReceipt) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     final files = await _picker.pickMultiImage(
       maxWidth: 1280,
       maxHeight: 1280,
@@ -369,6 +390,19 @@ class _BuatLaporanDinasScreenState extends State<BuatLaporanDinasScreen> {
     if (widget.initialSelectedReceiptIds != null) {
       _selectedReceiptIds.addAll(widget.initialSelectedReceiptIds!);
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final auth = Provider.of<AuthProvider>(context, listen: false);
+      if (!auth.canClaimReceipt) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        Navigator.pop(context);
+      }
+    });
   }
 
   @override
@@ -399,6 +433,16 @@ class _BuatLaporanDinasScreenState extends State<BuatLaporanDinasScreen> {
   }
 
   Future<void> _saveReport({required bool andSubmit}) async {
+    final auth = Provider.of<AuthProvider>(context, listen: false);
+    if (!auth.canClaimReceipt) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
     if (!_formKey.currentState!.validate()) return;
 
     if (andSubmit && _selectedReceiptIds.isEmpty) {

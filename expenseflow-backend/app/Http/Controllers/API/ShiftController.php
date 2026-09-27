@@ -2295,16 +2295,6 @@ class ShiftController extends Controller
             }
         }
 
-        // Pre-load setting kantor untuk jam kerja & hari libur default kantor
-        $companyIds = $users->pluck('company_id')->filter()->unique();
-        $allOffices = AttendanceSetting::where(function ($q) use ($actor, $companyIds) {
-            if ($actor->role !== 'super_admin') {
-                $q->where('company_id', $actor->company_id);
-            } elseif ($companyIds->isNotEmpty()) {
-                $q->whereIn('company_id', $companyIds);
-            }
-        })->get()->keyBy('id');
-        $fallbackOffice = $allOffices->first();
 
         // Kelompokkan per user agar lookup O(1) per iterasi
         $byUser = $assignments->groupBy('user_id');
@@ -2437,13 +2427,9 @@ class ShiftController extends Controller
                         ];
                     }
                 } else {
-                    // Default kantor: cek hari kerja kantor (work_days)
-                    $off = $allOffices->get($user->attendance_setting_id) ?? $fallbackOffice;
-                    $wDays = (array) ($off?->work_days ?? [1, 2, 3, 4, 5]);
-                    if (! in_array($dayOfWeek, array_map('intval', $wDays), true)) {
-                        $isUserOff = true;
-                        $offReason = 'Libur Kantor (Akhir Pekan)';
-                    }
+                    // Karyawan tidak memiliki penugasan shift aktif pada tanggal ini (jadwal kantor default/non-shift).
+                    // Kalender shift HANYA menampilkan karyawan yang mendapatkan penugasan shift.
+                    continue;
                 }
 
                 if ($isUserOff) {

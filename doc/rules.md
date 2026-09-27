@@ -43,6 +43,12 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
   - Multi-Level Approval Struk & Lembur (Fase 2 - Backend & Workflows): SELESAI (Struk: Tier 1 [<500k 1 Finance], Tier 2 [500k-1jt 2 Finance anti-double], Tier 3 [>1jt Step 1 Finance -> Step 2 SPV/Head], status partially_approved, log aktivitas per level; Lembur: Step 1 SPV -> Step 2 HRD finalisasi menit payroll, penolakan di tiap tahap me-reset overtime_minutes=0, filter per step & counter summary, 11 Feature tests lulus 100%) — 2026-09-22
   - Audit & Penguatan Custom Role & Multi-Approval (Temuan 1 s/d 8): SELESAI (Bypass login web mobile_only, hardware device binding semua role mobile, proteksi reserved slug collision, perbaikan atribut slug lembur, otorisator struk Tier 3 kata kunci Indonesia, pemetaan presisi controller & hierarki path RoleMiddleware bebas tabrakan, proteksi penghapusan role dan pencegahan zombie state User::saving & Role::deleting, Super Admin multi-tenant isolation dan company filtering RoleController) — 2026-09-22
+  - Kalender Shift Khusus Karyawan Bershift: SELESAI (Kalender shift bulanan GET /shifts/calendar hanya menampilkan karyawan yang memiliki penugasan shift aktif/pola rotasi; karyawan tanpa shift/jadwal kantor biasa tidak ditampilkan dan tidak lagi memunculkan badge 'Libur (OFF)' pada akhir pekan) — 2026-09-22
+  - Proteksi & Validasi Penghapusan Kantor Cabang: SELESAI (Kantor cabang tidak dapat dihapus jika masih ada karyawan yang terikat penempatannya; validasi & pesan peringatan sepenuhnya berbasis response payload API tanpa pop-up browser; backend mengembalikan HTTP 422 jika users_count > 0 beserta rincian jumlah karyawan terikat; endpoint GET /settings menyertakan users_count via withCount('users'); web menampilkan pesan edukatif/berhasil langsung dari payload ke banner UI) — 2026-09-22
+  - Integrasi Akses Pengaturan & Klaim Limit pada Modul Struk Reimbursement: SELESAI (Role dengan wewenang 'receipt: manage' / Wewenang Penuh secara otomatis memiliki hak akses membaca dan mengubah aturan approval bertingkat struk, batas toleransi variansi OCR, dan batas klaim limit per cabang maupun global di SettingsController & ReceiptInbox tanpa memerlukan wewenang penuh modul settings sistem; penyesuaian UI matriks perizinan modal Buat Custom Role di SettingsManagement / RoleFormModal) — 2026-09-23
+  - Opsi Batas Klaim Struk & Sistem Penonaktifan Klaim Mobile (Nominal, Unlimited, Nonaktif): SELESAI (Konfigurasi batas klaim pada form profil karyawan di web menyediakan 3 opsi: Nominal Tertentu dengan input angka IDR, Unlimited/Tanpa Batas, dan Dinonaktifkan/Tidak Diberikan Hak Klaim; karyawan dengan opsi Dinonaktifkan (allow_receipt_claim=false) terkunci aksesnya di mobile persis seperti sistem disable presensi — tombol Foto Struk di Beranda dan FAB di Riwayat menampilkan SnackBar merah peringatan penonaktifan, serta backend ReceiptAccessMiddleware mencegat percobaan submit dengan HTTP 403 Forbidden) — 2026-09-26
+  - Pembersihan, Penggabungan Divisi Duplikat & Proteksi Unik Kode Divisi: SELESAI (Pembersihan 4 entitas divisi duplikat di database, penggabungan nama formal dan deskripsi ke divisi utama tanpa kehilangan data relasi staf maupun jabatan, penegakan constraint unik `(company_id, code)` pada tabel `divisions` dan validasi `DivisionController` store/update/destroy, perbaikan seeder `DivisionPositionDummySeeder`, penambahan 4 kartu ringkasan statistik divisi & proteksi dialog hapus di web `OrganizationManagementTab`) — 2026-09-27
+  - Penegasan Batas Antara Role vs Jabatan & Eliminasi Total Fuzzy String Matching: SELESAI (Pemisahan tegas: Role mengatur hak akses teknis aplikasi/modul/platform; Jabatan (`positions.is_supervisor`) & Atasan Langsung (`users.manager_id`) mengatur kepemimpinan struktural dan wewenang approval Step 1 (Lembur, Cuti, Izin). Penghapusan total semua heuristik pencocokan string rentan (`str_contains('spv')`, `'manager'`, `'head'`, `'kepala'`, dll) di seluruh workflow backend. Suite pengujian `RoleVsPositionSeparationTest` lulus 100%) — 2026-09-27
   - Fitur yang Di-Keep / Ditunda Sementara (Arahan User 2026-09-02):
     - Approval Matrix Bertingkat (keep dulu)
     - Invoice PRD (masih tahap PRD)
@@ -115,7 +121,7 @@ bootstrap/
 | # | Tabel | Keterangan |
 |---|-------|-----------|
 | 1 | `companies` | Perusahaan (name, email, phone, address, logo, is_active) |
-| 2 | `users` | Karyawan (company_id, employee_code, name, email, password, role, department, monthly_claim_limit, is_active, attendance_enabled, wfh_enabled, radius_enabled, **dinas_luar_enabled**, **flexitime_enabled**) |
+| 2 | `users` | Karyawan (company_id, employee_code, name, email, password, role, department, monthly_claim_limit, **allow_receipt_claim**, is_active, attendance_enabled, wfh_enabled, radius_enabled, **dinas_luar_enabled**, **flexitime_enabled**) |
 | 3 | `personal_access_tokens` | Sanctum token (otomatis) |
 | 4 | `password_reset_tokens` | Reset password |
 | 5 | `login_attempts` | Log percobaan login (user_id nullable, ip_address, user_agent, status, attempted_at) |
@@ -239,6 +245,35 @@ Sistem role ExpenseFlow menggunakan **dua lapis**:
 
 ---
 
+### Penegasan Batas Antara Role vs Jabatan & Hierarki Pelaporan (2026-09-27)
+
+Untuk menjaga arsitektur yang bersih, scalable, dan bebas dari ambiguitas atau privilege escalation, ExpenseFlow memisahkan secara mutlak tanggung jawab antara **Role** dan **Jabatan/Hierarki**:
+
+1. **Role (`roles` & `role_permissions`)**:
+   - **Tanggung Jawab:** Hak akses teknis sistem & otorisasi platform.
+   - Mengatur platform akses (`both`, `mobile_only`).
+   - Mengatur cakupan cabang (`all`, `specific`, `self`).
+   - Mengatur matriks perizinan modul (`receipt`, `invoice`, `attendance`, `leave`, `overtime`, `user`, dll.) dengan level `none`, `read`, `manage`, atau level khusus (`spv`, `hrd`).
+   - Menyediakan bypass administratif tingkat tinggi untuk built-in role (`super_admin`, `admin`, `hrd`).
+
+2. **Jabatan / Posisi (`positions.is_supervisor`) & Atasan Langsung (`users.manager_id`)**:
+   - **Tanggung Jawab:** Struktur organisasi kerja, garis komando pelaporan, dan wewenang operasional kepemimpinan.
+   - Status kepemimpinan ditentukan oleh flag `positions.is_supervisor = true` atau kepemilikan bawahan langsung (`subordinates()->exists()`).
+   - **Wewenang Approval Step 1 (SPV)**:
+     - Karyawan yang mengajukan lembur atau cuti/izin diproses oleh atasan langsungnya (`manager_id`), atau oleh supervisor divisinya (`position.is_supervisor = true`).
+     - Tanpa posisi supervisor atau penugasan bawahan langsung, role kustom dengan nama apapun (misal ber-slug atau bernama "Supervisor") **TIDAK** otomatis berhak menyetujui pengajuan bawahan.
+
+3. **Eliminasi Total Heuristik Pencocokan String Rentan (Zero Fuzzy String Matching)**:
+   - Dilarang keras menggunakan pencocokan substring (`str_contains`) pada nama role atau slug role (seperti `'spv'`, `'manager'`, `'head'`, `'kepala'`, `'kabag'`, `'ketua'`, `'direktur'`, `'koordinator'`, `'otorisator'`) untuk menentukan hak persetujuan approval.
+   - Seluruh logika approval di backend (`AttendanceController`, `ReceiptController`, dan helper `User::isSupervisor()`) dievaluasi secara eksplisit melalui:
+     1. Status struktural: `$user->position?->is_supervisor` atau `$user->subordinates()->exists()`.
+     2. Relasi atasan langsung: `$user->id === $subordinate->manager_id`.
+     3. Izin peran eksplisit: `$user->hasPermission(Role::MODULE_*, 'spv')`.
+     4. Bypass administratif bawaan: `$user->isSuperAdmin() || $user->isAdmin() || $user->isHrd()`.
+   - Pencegahan Privilege Creep: Izin level `'manage'` pada modul struk (`MODULE_RECEIPT`) tidak otomatis memenuhi wewenang level `'spv'` untuk persetujuan Tier 3 tahap 2 tanpa adanya posisi supervisor struktural.
+
+---
+
 ### Custom Role — Fitur Manajemen Role (Roadmap)
 
 > **Status:** SELESAI DIIMPLEMENTASIKAN (Fase 1 Foundation, Fase 2 Multi-Approval, Fase 3 Web UI, dan Audit Findings #1-#8). Dokumen spesifikasi teknis lengkap mengacu ke `doc/14-CUSTOM-ROLE-DAN-MULTI-APPROVAL.md`.
@@ -253,9 +288,10 @@ Setiap permission merepresentasikan satu aksi spesifik yang bisa di-toggle ON/OF
 | **Receipt** | `receipt.view_own` | Lihat struk milik sendiri |
 | | `receipt.upload` | Upload & scan struk |
 | | `receipt.submit` | Submit struk ke finance |
-| | `receipt.approve` | Approve struk karyawan |
+| | `receipt.approve` | Approve struk karyawan (Tier 1-3) |
 | | `receipt.reject` | Reject struk karyawan |
 | | `receipt.view_all` | Lihat semua struk perusahaan |
+| | `receipt.manage_settings` | Kelola aturan approval & batas klaim limit cabang/perusahaan (Level Penuh) |
 | **Invoice** | `invoice.create` | Buat invoice baru |
 | | `invoice.approve_l1` | Approve invoice Level 1 |
 | | `invoice.approve_l2` | Approve invoice Level 2 |
@@ -342,8 +378,43 @@ Header `X-Platform: mobile` atau `web`
 - semua user akses presensi tanpa attendance_enabled → **403** via AttendanceAccessMiddleware
 
 ### Aturan Fitur di Mobile
-- **semua role** → bisa akses: struk (receipt/scan), presensi (jika attendance_enabled)
+- **semua role** → bisa akses: struk (receipt/scan jika allow_receipt_claim=true), presensi (jika attendance_enabled=true)
 - Non-employee TIDAK bisa akses receipt di mobile
+
+### Kebijakan Hak Akses & Batas Klaim Struk Mobile (3 Opsi: Nominal, Unlimited, Nonaktif)
+
+Pengaturan batas klaim struk bulanan dikonfigurasi melalui form **Profil Karyawan (Web HRD/Admin → Tab 2: Pekerjaan & Kontrak)** dengan 3 opsi kartu pilihan:
+
+1. **Opsi 1: Batas Nominal Tertentu (Input Angka IDR)**
+   - Karyawan diberikan hak klaim dengan pagu anggaran bulanan tertentu (misal Rp 2.000.000).
+   - Di Web: Muncul input angka nominal IDR (`Rp ...`).
+   - Database: `allow_receipt_claim = true`, `monthly_claim_limit = <nominal>`.
+   - Backend Enforcement: Saat `store()` / `submit()` struk atau expense report, sistem memvalidasi total klaim bulan berjalan (`submitted`, `approved`, `paid`) + klaim baru tidak boleh melebihi plafon ini. Jika lewat, tolak dengan HTTP 422 (`MONTHLY_LIMIT_EXCEEDED`).
+   - Mobile: Fitur klaim struk aktif normal.
+
+2. **Opsi 2: Unlimited (Tanpa Batas Klaim)**
+   - Karyawan bebas mengajukan klaim struk reimbursement tanpa batasan plafon bulanan.
+   - Di Web: Input angka nominal disembunyikan/di-clear.
+   - Database: `allow_receipt_claim = true`, `monthly_claim_limit = null`.
+   - Backend Enforcement: Pengecekan limit bulanan di-bypass, tidak pernah memicu error 422 batas anggaran.
+   - Mobile: Fitur klaim struk aktif normal tanpa batasan limit.
+
+3. **Opsi 3: Tidak Diberikan Hak Klaim Struk (Nonaktif / Disabled)**
+   - Karyawan sama sekali tidak berhak mengajukan klaim struk reimbursement di aplikasi mobile.
+   - Di Web: Opsi "Dinonaktifkan" dipilih, input angka nominal dinonaktifkan/dibersihkan.
+   - Database: `allow_receipt_claim = false`, `monthly_claim_limit = null` (atau 0).
+   - **Mekanisme Disable di Mobile (Persis seperti Sistem Disable Presensi)**:
+     - **Quick Action Beranda (Home)**: Tombol "Foto Struk" jika diklik memunculkan notifikasi peringatan SnackBar merah:
+       *"Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD."*
+     - **Tab Riwayat Struk (RiwayatScreen)**:
+       - Floating Action Button (FAB) "Scan Struk" / "Buat Laporan" jika ditekan menampilkan SnackBar merah peringatan penonaktifan yang sama dan memblokir navigasi ke `SubmitStep1Screen` / `BuatLaporanDinasScreen`.
+       - Menampilkan banner edukatif atau badge status di bagian atas daftar bahwa hak klaim struk akun dinonaktifkan.
+     - **Layar Detail Struk (DetailPengajuanScreen)**: Tombol "Klaim Struk Lagi" dicegat dengan pesan peringatan serupa.
+     - **Backend Security & Middleware (`ReceiptAccessMiddleware`)**:
+       - `User::canAccessReceipts()` mengembalikan `false` jika `allow_receipt_claim == false`.
+       - Semua endpoint pengajuan/pengunggahan/pembuatan struk (`POST /api/v1/employee/receipts`, `POST /api/v1/employee/receipts/{id}/submit`, `POST /api/v1/employee/expense-reports`, dll.) dicegat langsung dengan **HTTP 403 Forbidden**:
+         `{"message": "Akses klaim struk dinonaktifkan untuk akun Anda. Silakan hubungi admin/HRD."}`
+     - **Sinkronisasi State**: Endpoint autentikasi `GET /api/v1/me` dan `POST /api/v1/login` menyertakan kolom `allow_receipt_claim` ke payload respon pengguna, sehingga state mobile (`AuthProvider.user.allowReceiptClaim`) selalu ter-update secara presisi.
 
 ### Kebijakan Akses Presensi Mobile App (Edit Profil Karyawan vs Tab Karyawan & WFH)
 
@@ -385,9 +456,11 @@ Sistem presensi menggunakan **arsitektur 2 lapis (Master Permission vs Saklar Op
 
 ### WFH (Work From Home) & Mode Presensi
 - Karyawan request WFH → HRD approve → bisa absen dari rumah
-- HRD toggle `wfh_enabled` per user (via tab Karyawan & WFH, selama `allow_wfh = true`)
-- Saat `wfh_enabled = true`, `attendance_enabled` tetap true
-- Check-in WFH murni tidak memvalidasi lokasi GPS (bebas radius kantor)
+- HRD toggle `wfh_enabled` per user (via tab Karyawan & WFH, selama `allow_wfh = true`).
+- **Opsi A (Default WFH Murni)**: Saat switch Mode WFH dinyalakan, `radius_enabled` default tetap `false` (WFH murni bebas radius, presensi tanpa validasi GPS kantor). Radius Lapangan TIDAK otomatis aktif. HRD dapat mengaktifkan saklar Radius Lapangan secara terpisah jika karyawan ditugaskan kerja lapangan.
+- Saat `wfh_enabled = false` dimatikan, `radius_enabled` juga otomatis ikut nonaktif (`false`).
+- Saat `wfh_enabled = true`, `attendance_enabled` tetap true.
+- Check-in WFH murni tidak memvalidasi lokasi GPS (bebas radius kantor).
 - Check-in Onsite / Radius Lapangan wajib berada dalam radius geofence kantor terdekat
 - Status present/late tetap dihitung dari jam kerja perusahaan / shift aktif
 - Di layar Riwayat Presensi mobile, banner status "Mode WFH aktif" ditiadakan agar antarmuka bersih dan langsung menampilkan kartu ringkasan presensi & filter tanggal.
@@ -563,7 +636,7 @@ GET  /api/v1/dashboard/attendance/settings       → listSettings
 POST /api/v1/dashboard/attendance/settings       → storeSettings
 GET  /api/v1/dashboard/attendance/settings/{id}  → showSettings
 PUT/PATCH /api/v1/dashboard/attendance/settings/{id} → updateSettings
-DELETE /api/v1/dashboard/attendance/settings/{id} → destroySettings
+DELETE /api/v1/dashboard/attendance/settings/{id} → destroySettings (wajib 0 karyawan terikat; ditolak HTTP 422 bila masih ada karyawan yang terikat pada cabang)
 
 # Kalender libur nasional / cuti bersama
 GET    /api/v1/dashboard/attendance/holidays        → listHolidays (filter ?year=)

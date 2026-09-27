@@ -151,6 +151,21 @@ export const RoleManagementTab: React.FC<RoleManagementTabProps> = ({
         </div>
       )}
 
+      {/* Architecture Concept Callout: Role vs Jabatan & Divisi */}
+      <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 rounded-2xl p-4 flex items-start gap-3.5">
+        <div className="w-8 h-8 rounded-xl bg-indigo-100 dark:bg-indigo-950/80 text-indigo-600 dark:text-indigo-400 flex items-center justify-center shrink-0 mt-0.5">
+          <Info className="w-4 h-4" />
+        </div>
+        <div className="space-y-1 text-xs">
+          <div className="font-bold text-slate-800 dark:text-slate-100">
+            Prinsip Pemisahan: Role Aplikasi vs Jabatan & Divisi Organisasi
+          </div>
+          <p className="text-slate-500 dark:text-slate-400 leading-relaxed">
+            <span className="font-semibold text-slate-700 dark:text-slate-300">Role Sistem</span> mengatur wewenang akses aplikasi (hak kelola modul, platform dual akses mobile/web, dan pembatasan cabang kantor). Sedangkan <span className="font-semibold text-slate-700 dark:text-slate-300">Struktur Jabatan & Level SPV/Atasan</span> dikelola melalui menu <span className="underline font-medium text-indigo-600 dark:text-indigo-400">Master Divisi & Jabatan</span> (dengan flag Supervisor) serta relasi Atasan Langsung pada data karyawan. Perusahaan tidak perlu membuat custom role baru hanya untuk membedakan Staf vs Supervisor jika hak modulnya sama.
+          </p>
+        </div>
+      </div>
+
       {/* Top Banner / Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         {/* Total Roles */}
@@ -344,7 +359,9 @@ export const RoleManagementTab: React.FC<RoleManagementTabProps> = ({
             const perms = role.permissions || [];
             const manageCount = perms.filter((p) => p.access_level === 'manage').length;
             const readCount = perms.filter((p) => p.access_level === 'read').length;
-            const noneCount = perms.filter((p) => p.access_level === 'none').length;
+            const noneCount = perms.filter((p) => p.access_level === 'none' || p.access_level === 'spv' || p.access_level === 'hrd').length - perms.filter((p) => p.access_level === 'spv' || p.access_level === 'hrd').length;
+            const overtimePerm = perms.find((p) => p.module === 'overtime')?.access_level ?? 'none';
+            const receiptPerm = perms.find((p) => p.module === 'receipt')?.access_level ?? 'none';
 
             return (
               <div
@@ -439,9 +456,41 @@ export const RoleManagementTab: React.FC<RoleManagementTabProps> = ({
 
                   {/* Permissions Summary Pills */}
                   <div className="p-3 bg-slate-50/70 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800/80 mb-4 space-y-1.5">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Wewenang Modul
-                    </span>
+                    <div className="flex items-center justify-between">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                        Wewenang Modul
+                      </span>
+                      {overtimePerm === 'spv' && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 border border-amber-200/60 dark:border-amber-900/60">
+                          ⚡ Lembur: Lv 1 (SPV)
+                        </span>
+                      )}
+                      {overtimePerm === 'hrd' && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-sky-50 dark:bg-sky-950/60 text-sky-700 dark:text-sky-300 border border-sky-200/60 dark:border-sky-900/60">
+                          ⭐ Lembur: Lv 2 (HRD)
+                        </span>
+                      )}
+                      {overtimePerm === 'manage' && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-900/60">
+                          🛡️ Lembur: Penuh
+                        </span>
+                      )}
+                      {receiptPerm === 'finance' && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200/60 dark:border-emerald-900/60">
+                          💰 Struk: Lv 1 (Finance)
+                        </span>
+                      )}
+                      {receiptPerm === 'spv' && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-violet-50 dark:bg-violet-950/60 text-violet-700 dark:text-violet-300 border border-violet-200/60 dark:border-violet-900/60">
+                          🏷️ Struk: Lv 2 (SPV Finance)
+                        </span>
+                      )}
+                      {receiptPerm === 'manage' && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200/60 dark:border-slate-700/60">
+                          🛡️ Struk: Penuh
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
                       <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-400">
                         <Edit3 className="w-3 h-3" />

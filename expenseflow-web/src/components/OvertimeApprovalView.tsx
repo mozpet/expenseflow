@@ -17,6 +17,9 @@ interface OvertimeRecord {
   user_id: number;
   user_name: string;
   department: string;
+  division_name?: string | null;
+  position_name?: string | null;
+  manager_name?: string | null;
   attendance_date: string;
   check_in_time: string | null;
   check_out_time: string | null;
@@ -151,7 +154,11 @@ function ActionModal({ mode, record, onConfirm, onClose }: ActionModalProps) {
                   ? 'Setujui Lembur (Tahap 1 — SPV)' 
                   : 'Setujui Final Lembur (Tahap 2 — HRD)'}
             </p>
-            <p className="text-xs text-slate-500 dark:text-slate-400">{record.user_name} • {record.department || 'Staff'}</p>
+            <p className="text-xs text-slate-500 dark:text-slate-400">
+              {record.user_name} • {record.division_name || record.department || 'Staff'}
+              {record.position_name ? ` (${record.position_name})` : ''}
+              {record.manager_name ? ` • Atasan: ${record.manager_name}` : ''}
+            </p>
           </div>
         </div>
 
@@ -753,8 +760,14 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
                         </div>
                         <div>
                           <p className="font-semibold text-slate-800 dark:text-slate-100">{r.user_name}</p>
-                          {r.department && (
-                            <p className="text-[10px] text-slate-400 dark:text-slate-500">{r.department}</p>
+                          <p className="text-[10px] text-slate-400 dark:text-slate-500">
+                            {r.division_name || r.department || '—'}
+                            {r.position_name ? ` • ${r.position_name}` : ''}
+                          </p>
+                          {r.manager_name && (
+                            <p className="text-[9px] text-indigo-500 dark:text-indigo-400 font-medium">
+                              Atasan: {r.manager_name}
+                            </p>
                           )}
                         </div>
                       </div>

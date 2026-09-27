@@ -13,6 +13,10 @@ export interface AuthUser {
   branch_scope?: 'all' | 'specific' | 'self';
   can_manage_roles?: boolean;
   can_read_roles?: boolean;
+  can_manage_settings?: boolean;
+  can_read_settings?: boolean;
+  can_manage_receipt?: boolean;
+  can_read_receipt?: boolean;
   [key: string]: unknown;
 }
 

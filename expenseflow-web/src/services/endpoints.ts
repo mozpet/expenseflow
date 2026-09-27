@@ -228,6 +228,25 @@ export interface BulkImportResponse {
 export const userApi = {
   list: (params?: { include_inactive?: boolean }, forceRefresh = false) =>
     apiGet('/admin/users', params, { forceRefresh }),
+  supervisors: (params?: { division_id?: number | string; exclude_user_id?: number | string; attendance_setting_id?: number | string }, forceRefresh = false) =>
+    apiGet<{
+      success: boolean;
+      supervisors: Array<{
+        id: number;
+        name: string;
+        email?: string;
+        employee_code?: string;
+        division_id: number | null;
+        division_name?: string;
+        position_id: number | null;
+        position_name?: string;
+        is_supervisor?: boolean;
+        attendance_setting_id?: number | null;
+        office_name?: string;
+        division?: { id: number; name: string };
+        position?: { id: number; name: string; is_supervisor: boolean };
+      }>;
+    }>('/admin/users/supervisors', params as Record<string, string | number>, { forceRefresh }),
   create: (payload: Record<string, unknown>) => apiPost('/admin/users', payload),
   update: (id: number | string, payload: Record<string, unknown>) =>
     apiPut(`/admin/users/${id}`, payload),
@@ -242,6 +261,61 @@ export const userApi = {
   destroy: (id: number | string) => apiDelete<{ message: string }>(`/admin/users/${id}`),
   bulkImport: (payload: BulkImportPayload) =>
     apiPost<BulkImportResponse>('/admin/users/bulk-import', payload),
+};
+
+// ─── Divisions, Positions & Job Grades (Struktur Organisasi) ─────────────
+export interface DivisionItem {
+  id: number;
+  company_id: number;
+  name: string;
+  code: string | null;
+  description: string | null;
+  is_active: boolean;
+  users_count?: number;
+  positions_count?: number;
+  positions?: PositionItem[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PositionItem {
+  id: number;
+  company_id: number;
+  division_id: number | null;
+  name: string;
+  is_supervisor: boolean;
+  description: string | null;
+  is_active: boolean;
+  division?: { id: number; name: string; code: string | null } | null;
+  users_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export const divisionApi = {
+  list: (params?: { search?: string; is_active?: boolean }, forceRefresh = false) =>
+    apiGet<{ success: boolean; data: DivisionItem[]; divisions?: DivisionItem[] }>('/admin/divisions', params as Record<string, string | number | boolean>, { forceRefresh }),
+  get: (id: number | string) =>
+    apiGet<{ success: boolean; data: DivisionItem }>(`/admin/divisions/${id}`),
+  create: (payload: { name: string; code?: string; description?: string; is_active?: boolean }) =>
+    apiPost<{ success: boolean; message: string; data: DivisionItem }>('/admin/divisions', payload),
+  update: (id: number | string, payload: { name?: string; code?: string; description?: string; is_active?: boolean }) =>
+    apiPut<{ success: boolean; message: string; data: DivisionItem }>(`/admin/divisions/${id}`, payload),
+  destroy: (id: number | string) =>
+    apiDelete<{ success: boolean; message: string }>(`/admin/divisions/${id}`),
+};
+
+export const positionApi = {
+  list: (params?: { division_id?: number | string; is_supervisor?: boolean; is_active?: boolean; search?: string }, forceRefresh = false) =>
+    apiGet<{ success: boolean; data: PositionItem[]; positions?: PositionItem[] }>('/admin/positions', params as Record<string, string | number | boolean>, { forceRefresh }),
+  get: (id: number | string) =>
+    apiGet<{ success: boolean; data: PositionItem }>(`/admin/positions/${id}`),
+  create: (payload: { name: string; division_id?: number | null; is_supervisor?: boolean; description?: string; is_active?: boolean }) =>
+    apiPost<{ success: boolean; message: string; data: PositionItem }>('/admin/positions', payload),
+  update: (id: number | string, payload: { name?: string; division_id?: number | null; is_supervisor?: boolean; description?: string; is_active?: boolean }) =>
+    apiPut<{ success: boolean; message: string; data: PositionItem }>(`/admin/positions/${id}`, payload),
+  destroy: (id: number | string) =>
+    apiDelete<{ success: boolean; message: string }>(`/admin/positions/${id}`),
 };
 
 // ─── Notifications ──────────────────────────────────────────
@@ -780,17 +854,11 @@ export const deviceChangeApi = {
 // ─── Settings ───────────────────────────────────────────────
 export const settingsApi = {
   get: (forceRefresh = false) =>
-    apiGet<{ settings: any; branch_settings?: any[] }>('/dashboard/settings', undefined, { forceRefresh }),
+    apiGet<{ settings: any; branch_settings?: any[]; receipt_approval_rules?: any }>('/dashboard/settings', undefined, { forceRefresh }),
   clearCache: () => {
     invalidateCache('/dashboard/settings');
   },
-  update: (payload: {
-    variance_limit: number;
-    max_claim_limit: number;
-    threshold_single: string;
-    threshold_two: string;
-    threshold_three: string;
-  }) => apiPut<{ settings: any; branch_settings?: any[] }>('/dashboard/settings', payload),
+  update: (payload: Record<string, any>) => apiPut<{ settings: any; branch_settings?: any[]; receipt_approval_rules?: any }>('/dashboard/settings', payload),
   updateBranch: (branchId: number | string, payload: {
     variance_limit: number | null;
     max_claim_limit: number | null;

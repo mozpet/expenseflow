@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class AttendanceSetting extends Model
 {
@@ -24,6 +25,7 @@ class AttendanceSetting extends Model
         'allow_wfh',
         'wfh_checkin_window_minutes',
         'overtime_enabled',
+        'overtime_multi_approval_enabled',
         'min_overtime_minutes',
         'early_leave_tolerance_minutes',
         'min_checkout_interval_minutes',
@@ -36,6 +38,7 @@ class AttendanceSetting extends Model
         'shift_notice_days',
         // kebijakan saldo cuti per kantor (kuota default & tanggal reset tahunan)
         'default_leave_quota',
+        'leave_multi_approval_enabled',
         'leave_reset_date',
         'last_leave_reset_on',
         // limit klaim & toleransi variansi struk khusus cabang (null = fallback ke company_settings)
@@ -62,6 +65,7 @@ class AttendanceSetting extends Model
             'allow_wfh'                     => 'boolean',
             'wfh_checkin_window_minutes'    => 'integer',
             'overtime_enabled'              => 'boolean',
+            'overtime_multi_approval_enabled'=> 'boolean',
             'min_overtime_minutes'          => 'integer',
             'early_leave_tolerance_minutes' => 'integer',
             'min_checkout_interval_minutes' => 'integer',
@@ -74,6 +78,7 @@ class AttendanceSetting extends Model
             'max_weekly_hours'              => 'integer',
             'shift_notice_days'             => 'integer',
             'default_leave_quota'           => 'integer',
+            'leave_multi_approval_enabled'  => 'boolean',
             // leave_reset_date string 'MM-DD' (anniversary tanpa tahun) — tidak di-cast date
             'last_leave_reset_on'           => 'date:Y-m-d',
             'variance_limit'                => 'integer',
@@ -84,5 +89,10 @@ class AttendanceSetting extends Model
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
+    }
+
+    public function users(): HasMany
+    {
+        return $this->hasMany(User::class, 'attendance_setting_id');
     }
 }

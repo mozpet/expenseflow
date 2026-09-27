@@ -35,12 +35,83 @@ import {
   ChevronLeft,
   ChevronRight,
   Image as ImageIcon,
+  Receipt as ReceiptIcon,
+  ShieldCheck,
+  Users,
+  AlertCircle,
 } from 'lucide-react';
 import { useDebounce } from '../hooks/useDebounce';
 import { ConfirmationDialog } from './ConfirmationDialog';
 import { receiptApi, attendanceApi, settingsApi, expenseReportApi } from '../services/endpoints';
 import { ReceiptHistory } from './ReceiptHistory';
 import { mapExpenseReport, parseReceiptItems, formatTanggal } from '../services/mappers';
+
+// ─── Helpers: Format & Parse Rupiah untuk input form ────────
+function fmtRp(val: number): string {
+  return new Intl.NumberFormat('id-ID').format(val);
+}
+
+function parseRp(raw: string): number {
+  return parseFloat(raw.replace(/\./g, '').replace(',', '.')) || 0;
+}
+
+// ─── Sub-komponen Preview Visual Aturan Approval ─────────────
+const TierPreview: React.FC<{
+  tier1: number;
+  tier2: number;
+  mode: 'two_finance' | 'finance_and_spv';
+}> = ({ tier1, tier2, mode }) => {
+  const tier2ModeLabel =
+    mode === 'finance_and_spv'
+      ? '1× Finance + 1× SPV Finance (opsional)'
+      : '2× Lv 1 Finance berbeda (opsional)';
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+        Preview Aturan Aktif
+      </p>
+      {/* Tier 1 */}
+      <div className="flex items-start gap-3 p-3 bg-emerald-50/60 dark:bg-emerald-950/20 rounded-xl border border-emerald-100 dark:border-emerald-900/40">
+        <span className="mt-0.5 w-5 h-5 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-600 dark:text-emerald-400 flex items-center justify-center shrink-0 text-[10px] font-bold">1</span>
+        <div>
+          <p className="text-[11px] font-bold text-emerald-700 dark:text-emerald-300">
+            Tier 1 — di bawah {fmtRp(tier1)} IDR
+          </p>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+            💰 1× persetujuan Finance (siapa saja yang punya hak Finance)
+          </p>
+        </div>
+      </div>
+
+      {/* Tier 2 */}
+      <div className="flex items-start gap-3 p-3 bg-amber-50/60 dark:bg-amber-950/20 rounded-xl border border-amber-100 dark:border-amber-900/40">
+        <span className="mt-0.5 w-5 h-5 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-600 dark:text-amber-400 flex items-center justify-center shrink-0 text-[10px] font-bold">2</span>
+        <div>
+          <p className="text-[11px] font-bold text-amber-700 dark:text-amber-300">
+            Tier 2 — {fmtRp(tier1)} s/d {fmtRp(tier2)} IDR
+          </p>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+            ⚡ 2× persetujuan: {tier2ModeLabel}
+          </p>
+        </div>
+      </div>
+
+      {/* Tier 3 */}
+      <div className="flex items-start gap-3 p-3 bg-violet-50/60 dark:bg-violet-950/20 rounded-xl border border-violet-100 dark:border-violet-900/40">
+        <span className="mt-0.5 w-5 h-5 rounded-full bg-violet-100 dark:bg-violet-900/60 text-violet-600 dark:text-violet-400 flex items-center justify-center shrink-0 text-[10px] font-bold">3</span>
+        <div>
+          <p className="text-[11px] font-bold text-violet-700 dark:text-violet-300">
+            Tier 3 — di atas {fmtRp(tier2)} IDR
+          </p>
+          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5">
+            🛡️ <span className="font-semibold text-violet-600 dark:text-violet-400">WAJIB</span>: 1× Lv 1 Finance + 1× Lv 2 SPV Finance (keduanya diwajibkan)
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 interface ReceiptInboxProps {
   receipts: Receipt[];
@@ -124,6 +195,56 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   const [claimInput, setClaimInput] = useState(String(currentSettings?.maxClaimLimit ?? 2000000));
   const [activeTab, setActiveTab] = useState<'inbox' | 'reports' | 'history' | 'settings'>(initialTab);
 
+  // Receipt approval rule states (Tiering & multi-level)
+  const [tier1Input, setTier1Input] = useState<string>(fmtRp(currentSettings?.receiptTier1Threshold ?? 500000));
+  const [tier2Input, setTier2Input] = useState<string>(fmtRp(currentSettings?.receiptTier2Threshold ?? 1000000));
+  const [tier2Mode, setTier2Mode] = useState<'two_finance' | 'finance_and_spv'>(currentSettings?.receiptTier2Mode ?? 'two_finance');
+  const [tier1Error, setTier1Error] = useState('');
+  const [savingApprovalRules, setSavingApprovalRules] = useState(false);
+
+  const tier1Num = parseRp(tier1Input);
+  const tier2Num = parseRp(tier2Input);
+
+  const handleTier1Change = (raw: string) => {
+    const digits = raw.replace(/[^\d]/g, '');
+    setTier1Input(digits ? fmtRp(parseInt(digits, 10)) : '');
+    setTier1Error('');
+  };
+
+  const handleTier2Change = (raw: string) => {
+    const digits = raw.replace(/[^\d]/g, '');
+    setTier2Input(digits ? fmtRp(parseInt(digits, 10)) : '');
+  };
+
+  const handleSaveApprovalRules = () => {
+    if (tier1Num <= 0 || tier2Num <= 0) {
+      alert('Batas Tier 1 dan Tier 2 harus berupa nominal positif.');
+      return;
+    }
+    if (tier1Num >= tier2Num) {
+      setTier1Error('Batas Tier 1 harus lebih kecil dari batas Tier 2.');
+      alert('Batas Tier 1 harus lebih kecil dari batas Tier 2.');
+      return;
+    }
+
+    setSavingApprovalRules(true);
+    const updated: AppSettings = {
+      ...localSettings,
+      varianceLimit: Number(varianceInput) || 10,
+      maxClaimLimit: Number(claimInput) || 2000000,
+      receiptTier1Threshold: tier1Num,
+      receiptTier2Threshold: tier2Num,
+      receiptTier2Mode: tier2Mode,
+    };
+    setLocalSettings(updated);
+    onSaveSettings(updated);
+    setTimeout(() => {
+      setSavingApprovalRules(false);
+      setSettingSuccessMessage('Aturan approval multi-level struk reimbursement berhasil diperbarui!');
+      setTimeout(() => setSettingSuccessMessage(null), 4000);
+    }, 500);
+  };
+
   // State Laporan Pengeluaran Dinas (Bundling)
   const [expenseReports, setExpenseReports] = useState<ExpenseReport[]>([]);
   const [loadingReports, setLoadingReports] = useState<boolean>(false);
@@ -164,6 +285,15 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
     setLocalSettings(currentSettings);
     setVarianceInput(String(currentSettings?.varianceLimit ?? 10));
     setClaimInput(String(currentSettings?.maxClaimLimit ?? 2000000));
+    if (currentSettings?.receiptTier1Threshold !== undefined) {
+      setTier1Input(fmtRp(currentSettings.receiptTier1Threshold));
+    }
+    if (currentSettings?.receiptTier2Threshold !== undefined) {
+      setTier2Input(fmtRp(currentSettings.receiptTier2Threshold));
+    }
+    if (currentSettings?.receiptTier2Mode !== undefined) {
+      setTier2Mode(currentSettings.receiptTier2Mode);
+    }
   }, [currentSettings]);
 
   // Sync input form saat beralih lingkup cabang
@@ -201,6 +331,9 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
       ...localSettings,
       varianceLimit: numVariance,
       maxClaimLimit: Number(claimInput) || 0,
+      receiptTier1Threshold: tier1Num,
+      receiptTier2Threshold: tier2Num,
+      receiptTier2Mode: tier2Mode,
     };
     setLocalSettings(updated);
     onSaveSettings(updated);
@@ -313,8 +446,12 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
 
   useEffect(() => {
     setCurrentPage(1);
-    setSelectedIds([]);
   }, [debouncedSearch, filter, selectedBranch]);
+
+  // Reset selected IDs saat berganti kategori filter atau cabang (tetap pertahankan seleksi saat mengetik search)
+  useEffect(() => {
+    setSelectedIds([]);
+  }, [filter, selectedBranch]);
 
   const varianceLimit = currentSettings?.varianceLimit ?? 10;
 
@@ -437,10 +574,11 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
   const paginatedReceipts = filteredReceipts.slice((currentPage - 1) * pageSize, currentPage * pageSize);
 
   const handleToggleSelectAll = () => {
-    if (selectedIds.length === paginatedReceipts.length && paginatedReceipts.length > 0) {
-      setSelectedIds([]);
+    const allInPageSelected = paginatedReceipts.length > 0 && paginatedReceipts.every((r) => selectedIds.includes(r.id));
+    if (allInPageSelected) {
+      setSelectedIds((prev) => prev.filter((id) => !paginatedReceipts.some((r) => r.id === id)));
     } else {
-      setSelectedIds(paginatedReceipts.map((r) => r.id));
+      setSelectedIds((prev) => Array.from(new Set([...prev, ...paginatedReceipts.map((r) => r.id)])));
     }
   };
 
@@ -1132,9 +1270,9 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                     type="button"
                     onClick={handleToggleSelectAll}
                     className="text-slate-400 hover:text-indigo-600 transition"
-                    title={selectedIds.length === paginatedReceipts.length ? 'Batalkan semua' : 'Pilih semua'}
+                    title={paginatedReceipts.length > 0 && paginatedReceipts.every((r) => selectedIds.includes(r.id)) ? 'Batalkan semua' : 'Pilih semua'}
                   >
-                    {selectedIds.length > 0 && selectedIds.length === paginatedReceipts.length ? (
+                    {paginatedReceipts.length > 0 && paginatedReceipts.every((r) => selectedIds.includes(r.id)) ? (
                       <CheckSquare className="w-4 h-4 text-indigo-600" />
                     ) : (
                       <Square className="w-4 h-4 text-slate-400" />
@@ -1633,14 +1771,14 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
               </div>
             )}
 
-            {/* Scope Selection Bar */}
+            {/* Scope Selection Bar (Paling Atas) */}
             <div className="bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-800 rounded-xl p-4 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block">
-                  Pilih Lingkup Pengaturan Limit
+                  Pilih Lingkup Pengaturan & Limit Cabang
                 </label>
                 <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
-                  Atur limit default global perusahaan atau tentukan batas khusus untuk cabang tertentu.
+                  Atur aturan approval & limit default global perusahaan atau tentukan batas khusus untuk cabang tertentu.
                 </p>
               </div>
 
@@ -1667,6 +1805,196 @@ export const ReceiptInbox: React.FC<ReceiptInboxProps> = ({
                     })}
                   </optgroup>
                 </select>
+              </div>
+            </div>
+
+            {/* Aturan Approval Struk Reimbursement */}
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 sm:p-6 shadow-xs space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800 gap-3">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-violet-50 dark:bg-violet-950/50 text-violet-600 dark:text-violet-400 flex items-center justify-center shrink-0 border border-violet-100 dark:border-violet-900/50">
+                    <ReceiptIcon className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                        Aturan Approval Struk Reimbursement
+                      </h3>
+                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-violet-50 dark:bg-violet-950/50 text-violet-700 dark:text-violet-300 font-bold border border-violet-200 dark:border-violet-800/40">
+                        {selectedSettingScope === 'global' ? 'Multi-Level Tiering (Global)' : `Multi-Level Tiering (Standar Perusahaan)`}
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                      Tentukan ambang batas nominal pengajuan klaim dan syarat level approver (Finance vs SPV Finance).
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSaveApprovalRules}
+                  disabled={savingApprovalRules}
+                  className="flex items-center justify-center gap-1.5 px-4 py-2 bg-violet-600 hover:bg-violet-700 text-white rounded-xl text-xs font-bold transition shadow-sm shadow-violet-500/20 disabled:opacity-50 cursor-pointer shrink-0"
+                >
+                  {savingApprovalRules ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Save className="w-3.5 h-3.5" />
+                  )}
+                  <span>Simpan Aturan Approval</span>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                {/* Inputs Column */}
+                <div className="lg:col-span-7 space-y-4">
+                  {/* Tier 1 Threshold */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <span className="w-4 h-4 rounded-full bg-emerald-100 dark:bg-emerald-900/60 text-emerald-600 dark:text-emerald-400 text-[9px] font-bold flex items-center justify-center">1</span>
+                      Batas Tier 1 — Cukup 1 Approval Finance
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">Rp</span>
+                      <input
+                        type="text"
+                        value={tier1Input}
+                        onChange={(e) => handleTier1Change(e.target.value)}
+                        className={`w-full text-xs pl-9 pr-3 py-2.5 border rounded-xl bg-slate-50/50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono font-bold focus:outline-none focus:ring-2 ${
+                          tier1Error
+                            ? 'border-red-300 dark:border-red-700 focus:ring-red-300'
+                            : 'border-slate-200 dark:border-slate-700 focus:ring-violet-400'
+                        }`}
+                        placeholder="500.000"
+                      />
+                    </div>
+                    {tier1Error && (
+                      <div className="flex items-center gap-1 text-[11px] text-red-500">
+                        <AlertCircle className="w-3.5 h-3.5" />
+                        {tier1Error}
+                      </div>
+                    )}
+                    <p className="text-[11px] text-slate-400">
+                      Struk di bawah nominal ini cukup 1 orang Finance untuk approve.
+                    </p>
+                  </div>
+
+                  {/* Tier 2 Threshold */}
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <span className="w-4 h-4 rounded-full bg-amber-100 dark:bg-amber-900/60 text-amber-600 dark:text-amber-400 text-[9px] font-bold flex items-center justify-center">2</span>
+                      Batas Tier 2 — Wajib 2 Approval (atur mode di bawah)
+                    </label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">Rp</span>
+                      <input
+                        type="text"
+                        value={tier2Input}
+                        onChange={(e) => handleTier2Change(e.target.value)}
+                        className="w-full text-xs pl-9 pr-3 py-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono font-bold focus:outline-none focus:ring-2 focus:ring-violet-400"
+                        placeholder="1.000.000"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      Struk antara Tier 1 dan Tier 2 butuh 2 approval. Di atas Tier 2 = Tier 3 (SPV Finance wajib).
+                    </p>
+                  </div>
+
+                  {/* Tier 2 Mode Selection */}
+                  <div className="space-y-2 pt-1">
+                    <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                      <Users className="w-3.5 h-3.5 text-slate-400" />
+                      Mode Persetujuan Tier 2 (Opsional)
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      {/* Option A: two_finance */}
+                      <button
+                        type="button"
+                        onClick={() => setTier2Mode('two_finance')}
+                        className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          tier2Mode === 'two_finance'
+                            ? 'border-amber-400 dark:border-amber-600 bg-amber-50/80 dark:bg-amber-950/30 ring-1 ring-amber-400'
+                            : 'border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/10 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                          tier2Mode === 'two_finance'
+                            ? 'border-amber-500 bg-amber-500'
+                            : 'border-slate-300 dark:border-slate-600'
+                        }`}>
+                          {tier2Mode === 'two_finance' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-800 dark:text-slate-100 text-xs">
+                            2× Lv 1 Finance
+                          </p>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                            Dua orang staf Finance mana saja (tidak perlu level SPV).
+                          </p>
+                        </div>
+                      </button>
+
+                      {/* Option B: finance_and_spv */}
+                      <button
+                        type="button"
+                        onClick={() => setTier2Mode('finance_and_spv')}
+                        className={`flex items-start gap-3 p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                          tier2Mode === 'finance_and_spv'
+                            ? 'border-violet-400 dark:border-violet-600 bg-violet-50/80 dark:bg-violet-950/30 ring-1 ring-violet-400'
+                            : 'border-slate-200 dark:border-slate-700 bg-slate-50/40 dark:bg-slate-800/10 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center shrink-0 ${
+                          tier2Mode === 'finance_and_spv'
+                            ? 'border-violet-500 bg-violet-500'
+                            : 'border-slate-300 dark:border-slate-600'
+                        }`}>
+                          {tier2Mode === 'finance_and_spv' && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-800 dark:text-slate-100 text-xs">
+                            1× Finance + 1× SPV
+                          </p>
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                            Satu staf Finance + satu SPV/Manager (urutan bebas).
+                          </p>
+                        </div>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Tier 3 Fixed Info */}
+                  <div className="flex items-start gap-2.5 p-3 bg-violet-50/40 dark:bg-violet-950/20 rounded-xl border border-violet-100 dark:border-violet-900/30">
+                    <ShieldCheck className="w-4 h-4 text-violet-500 shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                        Tier 3 — Ketentuan Keras (Otomatis & Terkunci)
+                      </p>
+                      <p className="text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-relaxed">
+                        Struk di atas Tier 2 selalu membutuhkan 1 Finance <em>dan</em> 1 SPV Finance (Lv 2). Keduanya <strong>diwajibkan</strong> — tidak dapat diganti dengan 2 Finance biasa.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Live Preview Column */}
+                <div className="lg:col-span-5 bg-slate-50/60 dark:bg-slate-800/30 rounded-2xl p-4 border border-slate-100 dark:border-slate-800/80 flex flex-col justify-between">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-3 flex items-center gap-1.5">
+                      <span>Ringkasan Alur Persetujuan</span>
+                    </h4>
+                    {tier1Num > 0 && tier2Num > tier1Num ? (
+                      <TierPreview tier1={tier1Num} tier2={tier2Num} mode={tier2Mode} />
+                    ) : (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">
+                        Masukkan nominal batas Tier 1 & Tier 2 yang valid untuk melihat preview alur.
+                      </p>
+                    )}
+                  </div>
+                  <p className="text-[10px] text-slate-400 dark:text-slate-500 pt-3 mt-3 border-t border-slate-200/60 dark:border-slate-700/60">
+                    Aturan ini secara dinamis mengunci tombol approval di Inbox Struk berdasarkan jabatan approver saat ini.
+                  </p>
+                </div>
               </div>
             </div>
 
