@@ -20,6 +20,7 @@ import 'spv_overtime_approval_screen.dart';
 import 'spv_leave_approval_screen.dart';
 import '../utils.dart';
 import '../widgets/skeleton.dart';
+import '../widgets/flexitime_progress_widget.dart';
 
 class HomeScreen extends StatefulWidget {
   final String userName;
@@ -905,6 +906,10 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ],
             ),
           ),
+          if (presensiProv.flexitimeEnabled && (hasCheckedIn || hasCheckedOut)) ...[
+            const SizedBox(height: 10),
+            const FlexitimeProgressWidget(compact: true),
+          ],
           const SizedBox(height: 14),
           // Tombol Tindakan
           if (presensiProv.canCheckIn)

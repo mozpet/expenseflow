@@ -81,6 +81,12 @@ class ResetLeaveBalancesCommand extends Command
                 ->where('is_active', true)
                 ->pluck('id');
 
+            // Pengaturan jenis cuti tambahan yang aktif di kantor ini
+            $enabledTypeSettings = \App\Models\LeaveTypeSetting::where('attendance_setting_id', $office->id)
+                ->where('is_enabled', true)
+                ->get()
+                ->keyBy('leave_type');
+
             $resetCount = 0;
             foreach ($userIds as $userId) {
                 // KEBIJAKAN 2026-08-25: hanya baris saldo AKTIF (quota > 0) yang di-reset.
@@ -100,10 +106,28 @@ class ResetLeaveBalancesCommand extends Command
                     ->where('leave_type', 'izin')
                     ->first();
 
+                $otherBalances = LeaveBalance::where('user_id', $userId)
+                    ->where('year', $today->year)
+                    ->whereNotIn('leave_type', ['cuti', 'izin', 'wfh'])
+                    ->get()
+                    ->keyBy('leave_type');
+
                 $cutiQuota     = (int) $existingCuti->quota;
                 $cutiUsed      = (int) $existingCuti->used;
                 $cutiRemaining = max(0, $cutiQuota - $cutiUsed);
                 $izinUsed      = (int) ($existingIzin?->used ?? 0);
+
+                // Snapshot jenis cuti tambahan
+                $typesSnapshot = [];
+                foreach ($otherBalances as $typeKey => $bal) {
+                    $q = (int) $bal->quota;
+                    $u = (int) $bal->used;
+                    $typesSnapshot[$typeKey] = [
+                        'quota'     => $q,
+                        'used'      => $u,
+                        'remaining' => max(0, $q - $u),
+                    ];
+                }
 
                 // 1. Simpan Snapshot / Arsip ke tabel leave_balance_histories
                 \App\Models\LeaveBalanceHistory::create([
@@ -118,6 +142,7 @@ class ResetLeaveBalancesCommand extends Command
                     'cuti_used'             => $cutiUsed,
                     'cuti_remaining'        => $cutiRemaining,
                     'izin_sakit_used'       => $izinUsed,
+                    'leave_types_snapshot'  => !empty($typesSnapshot) ? $typesSnapshot : null,
                     'notes'                 => "Reset tahunan jadwal kantor {$office->office_name}",
                 ]);
 
@@ -132,6 +157,17 @@ class ResetLeaveBalancesCommand extends Command
                     $existingIzin->update([
                         'used' => 0,
                     ]);
+                }
+
+                // 4. Reset saldo jenis cuti tambahan yang aktif di kantor ini
+                foreach ($otherBalances as $typeKey => $bal) {
+                    $setting = $enabledTypeSettings->get($typeKey);
+                    if ($setting) {
+                        $bal->update([
+                            'quota' => $setting->quota_days,
+                            'used'  => 0,
+                        ]);
+                    }
                 }
 
                 $resetCount++;

@@ -90,9 +90,15 @@ class ShiftCalendarDay {
   /// Alasan / keterangan pengajuan jika ada.
   final String? leaveReason;
 
+  /// Sesi cuti setengah hari: 'morning' (Cuti Pagi) | 'afternoon' (Cuti Siang).
+  final String? halfDaySession;
+
   bool get isIzin => leaveType == 'izin';
   bool get isSakit => leaveType == 'sakit';
-  bool get isCuti => leaveType == 'cuti' || (personalLeave && (leaveType == null || leaveType == 'cuti'));
+  bool get isHalfDay => leaveType == 'cuti_setengah_hari';
+  bool get isMorningLeave => isHalfDay && (halfDaySession == 'morning');
+  bool get isAfternoonLeave => isHalfDay && (halfDaySession == 'afternoon');
+  bool get isCuti => (leaveType != null && leaveType != 'izin' && leaveType != 'sakit') || (personalLeave && (leaveType == null || leaveType == 'cuti'));
 
   ShiftCalendarDay({
     required this.date,
@@ -111,6 +117,7 @@ class ShiftCalendarDay {
     this.holiday,
     this.personalLeave = false,
     this.leaveType,
+    this.halfDaySession,
     this.leaveReason,
   });
 
@@ -133,6 +140,7 @@ class ShiftCalendarDay {
       holiday: holidayJson != null ? HolidayInfo.fromJson(holidayJson as Map<String, dynamic>) : null,
       personalLeave: json['personal_leave'] == true,
       leaveType: json['leave_type'] as String?,
+      halfDaySession: json['half_day_session'] as String?,
       leaveReason: json['leave_reason'] as String?,
     );
   }

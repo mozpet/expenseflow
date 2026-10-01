@@ -16,8 +16,11 @@ class AjukanIzinScreen extends StatefulWidget {
 
 class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   String _selectedType = 'izin';
+  String _halfDaySession = 'morning'; // 'morning' | 'afternoon'
   late DateTime _startDate;
   late DateTime _endDate;
+  bool _isRandomDates = false; // Mode tanggal acak / tidak berurutan
+  List<DateTime> _randomDates = [];
   final _reasonController = TextEditingController();
   bool _isLoading = false;
 
@@ -32,9 +35,16 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   @override
   void initState() {
     super.initState();
-    final tomorrow = DateTime.now().add(const Duration(days: 1));
-    _startDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
-    _endDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
+    final prov = Provider.of<PresensiProvider>(context, listen: false);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = today.add(const Duration(days: 1));
+
+    // Hari H diperbolehkan jika belum check-in hari ini. Jika sudah check-in, minimal besok.
+    final initialDate = (prov.todayMasuk != null) ? tomorrow : today;
+    _startDate = initialDate;
+    _endDate = initialDate;
+    _randomDates = [_startDate];
     // Muat preview awal (rentang default 1 hari)
     WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPreview());
   }
@@ -48,8 +58,9 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
       setState(() => _previewLoading = true);
       final prov = Provider.of<PresensiProvider>(context, listen: false);
       final res = await prov.fetchLeavePreview(
-        startDate: _toStr(_startDate),
-        endDate: _toStr(_endDate),
+        startDate: _isRandomDates ? null : _toStr(_startDate),
+        endDate: _isRandomDates ? null : _toStr(_endDate),
+        dates: _isRandomDates ? _randomDates.map(_toStr).toList() : null,
         leaveType: _selectedType,
       );
       if (!mounted) return;
@@ -60,6 +71,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
           _skippedDates = ((res['skipped_dates'] as List?) ?? [])
               .whereType<Map<String, dynamic>>()
               .toList();
+          _showSkippedInfo = _skippedDates.isNotEmpty;
         } else {
           _effectiveDays = null;
           _skippedDates = [];
@@ -78,19 +90,71 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
     super.dispose();
   }
 
-  // Lampiran surat dokter (wajib untuk jenis 'sakit')
+  // Lampiran dokumen pendukung (wajib untuk sakit/cuti_hamil/keguguran/haji_umrah)
   Uint8List? _docBytes;
   String? _docFileName;
   bool _docIsPdf = false;
 
-  static const _types = [
-    ('izin', 'Izin', Icons.event_busy_outlined, Colors.purple),
-    ('sakit', 'Sakit', Icons.local_hospital_outlined, Colors.orange),
-    ('cuti', 'Cuti', Icons.beach_access_outlined, Colors.teal),
-    ('wfh', 'Work From Home', Icons.home_work_outlined, Color(0xFF1E88E5)),
-  ];
+  (Color, IconData) _styleForType(String type) {
+    switch (type) {
+      case 'cuti':
+        return (const Color(0xFF00695C), Icons.beach_access_outlined);
+      case 'izin':
+        return (const Color(0xFF7B1FA2), Icons.event_busy_outlined);
+      case 'sakit':
+        return (const Color(0xFFE65100), Icons.local_hospital_outlined);
+      case 'wfh':
+        return (const Color(0xFF1E88E5), Icons.home_work_outlined);
+      case 'cuti_hamil':
+        return (const Color(0xFFC2185B), Icons.pregnant_woman_outlined);
+      case 'cuti_keguguran':
+        return (const Color(0xFFAD1457), Icons.healing_outlined);
+      case 'cuti_ayah':
+        return (const Color(0xFF1565C0), Icons.family_restroom_outlined);
+      case 'cuti_haid':
+        return (const Color(0xFFD81B60), Icons.water_drop_outlined);
+      case 'cuti_menikah':
+        return (const Color(0xFF6A1B9A), Icons.favorite_outline);
+      case 'cuti_menikahkan_anak':
+        return (const Color(0xFF4A148C), Icons.celebration_outlined);
+      case 'cuti_khitan_baptis_anak':
+        return (const Color(0xFF00838F), Icons.child_care_outlined);
+      case 'cuti_duka_keluarga_inti':
+      case 'cuti_duka_serumah':
+        return (const Color(0xFF37474F), Icons.sentiment_very_dissatisfied_outlined);
+      case 'cuti_ibadah_haji_umrah':
+        return (const Color(0xFF2E7D32), Icons.flight_takeoff_outlined);
+      case 'cuti_setengah_hari':
+        return (const Color(0xFF0277BD), Icons.timelapse_outlined);
+      default:
+        return (const Color(0xFF455A64), Icons.assignment_outlined);
+    }
+  }
 
-  int get _totalDays => _endDate.difference(_startDate).inDays + 1;
+  bool _isDocumentRequired(String type) {
+    return type == 'sakit' ||
+        type == 'cuti_hamil' ||
+        type == 'cuti_keguguran' ||
+        type == 'cuti_ibadah_haji_umrah';
+  }
+
+  String _documentPrompt(String type) {
+    switch (type) {
+      case 'sakit':
+        return 'Surat Keterangan Dokter';
+      case 'cuti_hamil':
+        return 'Surat Dokter Kandungan / Bidan';
+      case 'cuti_keguguran':
+        return 'Surat Keterangan Medis Keguguran';
+      case 'cuti_ibadah_haji_umrah':
+        return 'Bukti Pendaftaran / Keberangkatan';
+      default:
+        return 'Dokumen / Surat Pendukung';
+    }
+  }
+
+  int get _totalDays =>
+      _isRandomDates ? _randomDates.length : (_endDate.difference(_startDate).inDays + 1);
 
   // Ringkasan alasan skip utk banner, contoh:
   // "karena tanggal 6 Sep adalah Hari Libur: X" /
@@ -108,8 +172,14 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   }
 
   Future<void> _pickDate({required bool isStart}) async {
-    final tomorrow = DateTime.now().add(const Duration(days: 1));
-    final minDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
+    final prov = Provider.of<PresensiProvider>(context, listen: false);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = today.add(const Duration(days: 1));
+
+    // Hari H diperbolehkan HANYA jika belum check-in hari ini.
+    // Jika sudah check-in hari ini, tanggal minimal adalah besok.
+    final minDate = (prov.todayMasuk != null) ? tomorrow : today;
     final first = isStart ? minDate : _startDate;
     final initial = isStart ? _startDate : _endDate;
 
@@ -118,23 +188,48 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
       initialDate: initial.isBefore(first) ? first : initial,
       firstDate: first,
       lastDate: DateTime.now().add(const Duration(days: 365)),
+      leaveType: _selectedType,
     );
     if (picked == null) return;
     setState(() {
       if (isStart) {
         _startDate = picked;
-        if (_endDate.isBefore(_startDate)) _endDate = _startDate;
+        if (_selectedType == 'cuti_setengah_hari' || _endDate.isBefore(_startDate)) {
+          _endDate = _startDate;
+        }
       } else {
-        _endDate = picked;
+        _endDate = _selectedType == 'cuti_setengah_hari' ? _startDate : picked;
       }
     });
     // Tanggal berubah → muat ulang hitungan efektif dari backend
     _fetchPreview();
   }
 
+  Future<void> _pickRandomDates() async {
+    final prov = Provider.of<PresensiProvider>(context, listen: false);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final tomorrow = today.add(const Duration(days: 1));
+    final minDate = (prov.todayMasuk != null) ? tomorrow : today;
+
+    final picked = await showCustomMultiDatePicker(
+      context: context,
+      initialDates: _randomDates.isNotEmpty ? _randomDates : [_startDate],
+      firstDate: minDate,
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+      leaveType: _selectedType,
+    );
+
+    if (picked == null || picked.isEmpty) return;
+    setState(() {
+      _randomDates = picked;
+    });
+    _fetchPreview();
+  }
+
   String _formatDate(DateTime dt) => formatDateIndonesian(dt);
 
-  // Pilih surat dokter dari penyimpanan (gambar/PDF).
+  // Pilih surat dokter / dokumen lampiran dari penyimpanan (gambar/PDF).
   Future<void> _pickDocument() async {
     try {
       final result = await FilePicker.platform.pickFiles(
@@ -159,16 +254,63 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
   }
 
   void _submit() async {
-    final tomorrow = DateTime.now().add(const Duration(days: 1));
-    final minDate = DateTime(tomorrow.year, tomorrow.month, tomorrow.day);
-    if (_startDate.isBefore(minDate)) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Pengajuan hanya diperbolehkan untuk besok atau tanggal setelahnya.'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      return;
+    final prov = Provider.of<PresensiProvider>(context, listen: false);
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+
+    if (_isRandomDates) {
+      if (_randomDates.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Pilih minimal satu tanggal pengajuan.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      final hasPast = _randomDates.any((d) => d.isBefore(today));
+      if (hasPast) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Pengajuan tidak dapat dilakukan untuk tanggal yang sudah lewat.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      final hasToday = _randomDates.any(
+          (d) => d.year == today.year && d.month == today.month && d.day == today.day);
+      if (hasToday && prov.todayMasuk != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Anda sudah melakukan check-in hari ini, sehingga tidak dapat mengajukan izin atau cuti untuk hari ini.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+    } else {
+      if (_startDate.isBefore(today)) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Pengajuan tidak dapat dilakukan untuk tanggal yang sudah lewat.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
+
+      if (_startDate.isAtSameMomentAs(today) && prov.todayMasuk != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Anda sudah melakukan check-in hari ini, sehingga tidak dapat mengajukan izin atau cuti untuk hari ini.'),
+            backgroundColor: Colors.red,
+          ),
+        );
+        return;
+      }
     }
 
     if (_reasonController.text.trim().isEmpty) {
@@ -181,11 +323,49 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
       return;
     }
 
-    // Surat dokter wajib untuk jenis 'sakit'
-    if (_selectedType == 'sakit' && _docBytes == null) {
+    if (_effectiveDays != null && _effectiveDays! <= 0) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Surat dokter wajib dilampirkan untuk pengajuan sakit.'),
+        SnackBar(
+          content: Text(_isRandomDates
+              ? 'Tanggal-tanggal yang dipilih tidak memiliki hari kerja efektif (semua adalah libur/off-day atau sudah WFH/diajukan).'
+              : 'Rentang tanggal tidak memiliki hari kerja efektif (semua hari adalah libur/off-day atau sudah WFH/diajukan).'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    final selectedBal = prov.leaveBalances
+        .where((b) => b.leaveType == _selectedType)
+        .firstOrNull;
+
+    // Cegah submit jenis cuti yang dinonaktifkan di kantor
+    if (selectedBal != null && selectedBal.isDisabled) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Jenis cuti "${selectedBal.leaveTypeLabel}" sedang dinonaktifkan oleh kantor Anda.'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Cegah submit kuota 0 untuk tipe berkuota
+    if (selectedBal != null && !selectedBal.isUnlimited && selectedBal.remaining <= 0) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Sisa kuota "${selectedBal.leaveTypeLabel}" Anda tidak mencukupi (0 hari).'),
+          backgroundColor: Colors.red,
+        ),
+      );
+      return;
+    }
+
+    // Validasi dokumen jika jenis cuti mewajibkan
+    if (_isDocumentRequired(_selectedType) && _docBytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('${_documentPrompt(_selectedType)} wajib dilampirkan untuk jenis pengajuan ini.'),
           backgroundColor: Colors.red,
         ),
       );
@@ -194,22 +374,32 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
 
     setState(() => _isLoading = true);
 
-    final prov = Provider.of<PresensiProvider>(context, listen: false);
     final startStr =
         '${_startDate.year}-${_startDate.month.toString().padLeft(2, '0')}-${_startDate.day.toString().padLeft(2, '0')}';
     final endStr =
         '${_endDate.year}-${_endDate.month.toString().padLeft(2, '0')}-${_endDate.day.toString().padLeft(2, '0')}';
 
+    final String sessionName = _halfDaySession == 'morning' ? 'Sesi 1' : 'Sesi 2';
+    final String formattedReason = _selectedType == 'cuti_setengah_hari'
+        ? '[$sessionName] ${_reasonController.text.trim()}'
+        : _reasonController.text.trim();
+
     try {
       await prov.submitLeave(
         leaveType: _selectedType,
-        startDate: startStr,
-        endDate: endStr,
-        totalDays: _totalDays,
-        reason: _reasonController.text.trim(),
-        documentBytes: _selectedType == 'sakit' ? _docBytes : null,
-        documentFileName: _selectedType == 'sakit' ? _docFileName : null,
+        startDate: _isRandomDates ? null : startStr,
+        endDate: _isRandomDates ? null : endStr,
+        dates: _isRandomDates ? _randomDates.map(_toStr).toList() : null,
+        totalDays: _selectedType == 'cuti_setengah_hari' ? 1 : (_effectiveDays ?? _totalDays),
+        reason: formattedReason,
+        documentBytes: _docBytes,
+        documentFileName: _docFileName,
+        halfDaySession: _selectedType == 'cuti_setengah_hari' ? _halfDaySession : null,
       );
+
+      // Refresh saldo cuti & daftar pengajuan agar sinkron seketika
+      prov.fetchLeaveBalance(forceRefresh: true);
+      prov.fetchLeaveRequests(forceRefresh: true);
 
       if (!mounted) return;
       setState(() => _isLoading = false);
@@ -217,7 +407,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content:
-              Text('Pengajuan berhasil dikirim. Menunggu persetujuan HRD.'),
+              Text('Pengajuan berhasil dikirim. Menunggu persetujuan.'),
           backgroundColor: Colors.green,
           duration: Duration(seconds: 3),
         ),
@@ -237,6 +427,80 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final prov = Provider.of<PresensiProvider>(context);
+    final balances = prov.leaveBalances;
+
+    // Bangun daftar tipe cuti secara dinamis berdasarkan data saldo / kantor
+    final List<_LeaveTypeItem> typeItems = [];
+    if (balances.isNotEmpty) {
+      for (final b in balances) {
+        final style = _styleForType(b.leaveType);
+        typeItems.add(_LeaveTypeItem(
+          key: b.leaveType,
+          label: b.leaveTypeLabel,
+          icon: style.$2,
+          color: style.$1,
+          isDisabled: b.isDisabled,
+          isUnlimited: b.isUnlimited,
+          remaining: b.remaining,
+          quota: b.quota,
+          used: b.used,
+        ));
+      }
+      // Tambahkan WFH bila belum ada
+      if (!typeItems.any((t) => t.key == 'wfh')) {
+        typeItems.add(const _LeaveTypeItem(
+          key: 'wfh',
+          label: 'Work From Home',
+          icon: Icons.home_work_outlined,
+          color: Color(0xFF1E88E5),
+          isUnlimited: true,
+        ));
+      }
+    } else {
+      typeItems.addAll(const [
+        _LeaveTypeItem(
+          key: 'izin',
+          label: 'Izin',
+          icon: Icons.event_busy_outlined,
+          color: Color(0xFF7B1FA2),
+          isUnlimited: true,
+        ),
+        _LeaveTypeItem(
+          key: 'cuti',
+          label: 'Cuti Tahunan',
+          icon: Icons.beach_access_outlined,
+          color: Color(0xFF00695C),
+          remaining: 12,
+          quota: 12,
+        ),
+        _LeaveTypeItem(
+          key: 'sakit',
+          label: 'Cuti Sakit',
+          icon: Icons.local_hospital_outlined,
+          color: Color(0xFFE65100),
+          remaining: 14,
+          quota: 14,
+        ),
+        _LeaveTypeItem(
+          key: 'wfh',
+          label: 'Work From Home',
+          icon: Icons.home_work_outlined,
+          color: Color(0xFF1E88E5),
+          isUnlimited: true,
+        ),
+      ]);
+    }
+
+    final availableItem = typeItems.where((t) => t.key == _selectedType && !t.isDisabled).firstOrNull
+        ?? typeItems.where((t) => !t.isDisabled).firstOrNull
+        ?? typeItems.firstOrNull;
+    if (availableItem != null && _selectedType != availableItem.key) {
+      _selectedType = availableItem.key;
+    }
+
+    final selectedItem = availableItem;
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Ajukan Izin / Cuti'),
@@ -247,82 +511,445 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
           child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Tipe izin
+            // Jenis Pengajuan (Dropdown)
             const Text('Jenis Pengajuan',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            const SizedBox(height: 12),
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: _types.map((t) {
-                final isSelected = _selectedType == t.$1;
-                return GestureDetector(
-                  onTap: () {
-                    setState(() => _selectedType = t.$1);
-                    _fetchPreview();
-                  },
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: isSelected
-                          ? t.$4.withValues(alpha: 0.12)
-                          : Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: isSelected ? t.$4 : Colors.grey.shade200,
-                        width: isSelected ? 1.5 : 1,
+            const SizedBox(height: 8),
+            Container(
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.grey.shade300),
+              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<String>(
+                  value: availableItem?.key,
+                  isExpanded: true,
+                  icon: const Icon(Icons.keyboard_arrow_down_rounded,
+                      color: Colors.blueGrey, size: 24),
+                  items: typeItems.map((t) {
+                final isSelected = _selectedType == t.key;
+                final isDisabled = t.isDisabled;
+                return DropdownMenuItem<String>(
+                  value: t.key,
+                  enabled: !isDisabled,
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(6),
+                        decoration: BoxDecoration(
+                          color: isDisabled
+                              ? Colors.grey.shade100
+                              : t.color.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: Icon(
+                          isDisabled ? Icons.lock_outline : t.icon,
+                          size: 16,
+                          color: isDisabled ? Colors.grey.shade400 : t.color,
+                        ),
                       ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(t.$3,
-                            size: 18,
-                            color: isSelected ? t.$4 : Colors.grey),
-                        const SizedBox(width: 6),
-                        Text(
-                          t.$2,
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          t.label,
                           style: TextStyle(
-                            fontSize: 13,
-                            fontWeight: isSelected
-                                ? FontWeight.bold
-                                : FontWeight.normal,
-                            color: isSelected ? t.$4 : Colors.black54,
+                            fontSize: 13.5,
+                            fontWeight:
+                                isSelected ? FontWeight.bold : FontWeight.w500,
+                            color: isDisabled
+                                ? Colors.grey.shade400
+                                : Colors.black87,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      if (isDisabled) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: Colors.grey.shade200,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'Nonaktif',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Colors.grey,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ] else if (t.isUnlimited) ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFFF3E5F5),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: const Text(
+                            'Unlimited',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF7B1FA2),
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ] else ...[
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 2),
+                          decoration: BoxDecoration(
+                            color: t.remaining > 0
+                                ? const Color(0xFFE0F2F1)
+                                : const Color(0xFFFFEBEE),
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            'Sisa ${t.remaining} hari',
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: t.remaining > 0
+                                  ? const Color(0xFF00695C)
+                                  : const Color(0xFFC62828),
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
                         ),
                       ],
-                    ),
+                    ],
                   ),
                 );
               }).toList(),
+              onChanged: (newVal) {
+                if (newVal == null || newVal == _selectedType) return;
+                setState(() {
+                  _selectedType = newVal;
+                  if (_selectedType == 'cuti_setengah_hari') {
+                    _isRandomDates = false;
+                    _endDate = _startDate;
+                  }
+                });
+                _fetchPreview();
+              },
             ),
+          ),
+        ),
+
+            // Card status kuota jenis yang sedang dipilih
+            if (selectedItem != null) ...[
+              const SizedBox(height: 12),
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: selectedItem.isDisabled
+                      ? const Color(0xFFFAFAFA)
+                      : (selectedItem.isUnlimited
+                          ? const Color(0xFFF3E5F5)
+                          : (selectedItem.remaining > 0
+                              ? const Color(0xFFE0F2F1)
+                              : const Color(0xFFFFEBEE))),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(
+                    color: selectedItem.isDisabled
+                        ? const Color(0xFFCFD8DC)
+                        : (selectedItem.isUnlimited
+                            ? const Color(0xFFCE93D8)
+                            : (selectedItem.remaining > 0
+                                ? const Color(0xFF80CBC4)
+                                : const Color(0xFFFFCDD2))),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      selectedItem.isDisabled
+                          ? Icons.lock_outline
+                          : (selectedItem.isUnlimited
+                              ? Icons.all_inclusive
+                              : (selectedItem.remaining > 0
+                                  ? Icons.check_circle_outline
+                                  : Icons.warning_amber_rounded)),
+                      size: 18,
+                      color: selectedItem.isDisabled
+                          ? const Color(0xFF78909C)
+                          : (selectedItem.isUnlimited
+                              ? const Color(0xFF7B1FA2)
+                              : (selectedItem.remaining > 0
+                                  ? const Color(0xFF00695C)
+                                  : const Color(0xFFC62828))),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        selectedItem.isDisabled
+                            ? 'Jenis cuti ini sedang dinonaktifkan di kantor Anda dan tidak dapat diajukan.'
+                            : (selectedItem.isUnlimited
+                                ? (selectedItem.key == 'wfh'
+                                    ? 'Work From Home fleksibel (tanpa batas kuota).'
+                                    : 'Izin tanpa batas kuota (selalu aktif & fleksibel).')
+                                : (selectedItem.remaining > 0
+                                    ? 'Sisa kuota ${selectedItem.label}: ${selectedItem.remaining} hari (Terpakai: ${selectedItem.used}/${selectedItem.quota} hari)'
+                                    : 'Sisa kuota ${selectedItem.label} Anda adalah 0 hari (Belum aktif / kuota habis).')),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: selectedItem.isDisabled
+                              ? const Color(0xFF546E7A)
+                              : (selectedItem.isUnlimited
+                                  ? const Color(0xFF4A148C)
+                                  : (selectedItem.remaining > 0
+                                      ? const Color(0xFF004D40)
+                                      : const Color(0xFFB71C1C))),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            // Pilihan Sesi Cuti Setengah Hari (Sesi 1 / Sesi 2)
+            if (_selectedType == 'cuti_setengah_hari') ...[
+              const SizedBox(height: 20),
+              const Text(
+                'Pilihan Sesi Cuti',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  Expanded(
+                    child: _SessionCard(
+                      title: 'Sesi 1',
+                      subtitle: 'Cuti paruh pertama',
+                      icon: Icons.wb_twilight_rounded,
+                      isSelected: _halfDaySession == 'morning',
+                      onTap: () => setState(() => _halfDaySession = 'morning'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _SessionCard(
+                      title: 'Sesi 2',
+                      subtitle: 'Cuti paruh kedua',
+                      icon: Icons.wb_sunny_rounded,
+                      isSelected: _halfDaySession == 'afternoon',
+                      onTap: () => setState(() => _halfDaySession = 'afternoon'),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFF0FDF4),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: const Color(0xFFBBF7D0)),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info_outline_rounded, size: 16, color: Colors.green.shade800),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _halfDaySession == 'morning'
+                            ? '☀️ Sesi 1: Anda libur di paruh pertama jam kerja. Anda masuk di pertengahan jam kerja dan bekerja hingga jam pulang normal.'
+                            : '🌤️ Sesi 2: Anda masuk normal di awal jam kerja. Anda diperbolehkan pulang di pertengahan jam kerja tanpa sanksi pulang cepat.',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          color: Colors.green.shade900,
+                          height: 1.4,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+
             const SizedBox(height: 24),
 
-            // Tanggal
-            const Text('Periode',
-                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-            const SizedBox(height: 12),
+            // Periode & Switch Tanggal Acak
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                Expanded(
-                  child: _DateButton(
-                    label: 'Mulai',
-                    value: _formatDate(_startDate),
-                    onTap: () => _pickDate(isStart: true),
-                  ),
+                const Text(
+                  'Periode',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: _DateButton(
-                    label: 'Selesai',
-                    value: _formatDate(_endDate),
-                    onTap: () => _pickDate(isStart: false),
+                if (_selectedType != 'cuti_setengah_hari')
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'Pilih Tanggal Acak',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight:
+                              _isRandomDates ? FontWeight.bold : FontWeight.w500,
+                          color: _isRandomDates
+                              ? const Color(0xFF0088FF)
+                              : Colors.grey.shade700,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      Switch(
+                        value: _isRandomDates,
+                        activeThumbColor: const Color(0xFF0088FF),
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        onChanged: (val) {
+                          setState(() {
+                            _isRandomDates = val;
+                            if (_isRandomDates && _randomDates.isEmpty) {
+                              _randomDates = [_startDate];
+                            }
+                          });
+                          _fetchPreview();
+                        },
+                      ),
+                    ],
                   ),
-                ),
               ],
             ),
+            const SizedBox(height: 12),
+            if (_selectedType == 'cuti_setengah_hari') ...[
+              _DateButton(
+                label: 'Tanggal Cuti Setengah Hari',
+                value: _formatDate(_startDate),
+                onTap: () => _pickDate(isStart: true),
+              ),
+            ] else if (_isRandomDates) ...[
+              // Button launcher untuk Multi-Date Picker
+              InkWell(
+                onTap: _pickRandomDates,
+                borderRadius: BorderRadius.circular(10),
+                child: Container(
+                  width: double.infinity,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFF0F7FF),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: const Color(0xFFBAE6FD)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF0088FF).withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(
+                          Icons.edit_calendar_outlined,
+                          color: Color(0xFF0088FF),
+                          size: 20,
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              _randomDates.isEmpty
+                                  ? 'Pilih Tanggal Acak'
+                                  : '${_randomDates.length} Tanggal Dipilih',
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                fontSize: 13.5,
+                                color: Color(0xFF0F172A),
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _randomDates.isEmpty
+                                  ? 'Ketuk untuk memilih tanggal di kalender'
+                                  : 'Ketuk untuk menambah atau mengubah tanggal',
+                              style: TextStyle(
+                                fontSize: 11,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(
+                        Icons.chevron_right_rounded,
+                        color: Colors.blueGrey,
+                        size: 22,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (_randomDates.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: _randomDates.map((date) {
+                    return InputChip(
+                      label: Text(
+                        _formatDate(date),
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.w600,
+                          color: Color(0xFF1E40AF),
+                        ),
+                      ),
+                      backgroundColor: const Color(0xFFDBEAFE),
+                      deleteIcon: const Icon(
+                        Icons.cancel,
+                        size: 16,
+                        color: Color(0xFF3B82F6),
+                      ),
+                      onDeleted: _randomDates.length > 1
+                          ? () {
+                              setState(() {
+                                _randomDates.remove(date);
+                              });
+                              _fetchPreview();
+                            }
+                          : null,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(8),
+                        side: BorderSide(color: Colors.blue.shade200),
+                      ),
+                    );
+                  }).toList(),
+                ),
+              ],
+            ] else ...[
+              Row(
+                children: [
+                  Expanded(
+                    child: _DateButton(
+                      label: 'Mulai',
+                      value: _formatDate(_startDate),
+                      onTap: () => _pickDate(isStart: true),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: _DateButton(
+                      label: 'Selesai',
+                      value: _formatDate(_endDate),
+                      onTap: () => _pickDate(isStart: false),
+                    ),
+                  ),
+                ],
+              ),
+            ],
             const SizedBox(height: 8),
 
             // Badge "Total N hari" — memakai hitungan EFEKTIF dari backend
@@ -356,7 +983,9 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
                                 const SizedBox(width: 8),
                               ],
                               Text(
-                                'Total ${_effectiveDays ?? _totalDays} hari',
+                                _selectedType == 'cuti_setengah_hari'
+                                    ? 'Total 0.5 hari (${_halfDaySession == 'morning' ? 'Sesi 1' : 'Sesi 2'})'
+                                    : 'Total ${_effectiveDays ?? _totalDays} hari',
                                 style: const TextStyle(
                                     color: Color(0xFF1565C0),
                                     fontWeight: FontWeight.bold,
@@ -481,134 +1110,165 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
             ),
             const SizedBox(height: 12),
 
-            // Surat dokter — hanya muncul saat jenis = sakit (wajib)
-            if (_selectedType == 'sakit') ...[
-              const SizedBox(height: 12),
-              Row(
+            // Surat dokter / Dokumen Pendukung — Dinamis sesuai jenis cuti
+            Builder(builder: (context) {
+              final isReq = _isDocumentRequired(_selectedType);
+              final prompt = _documentPrompt(_selectedType);
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  const Text('Surat Dokter',
-                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-                  const SizedBox(width: 4),
-                  Text('*wajib',
-                      style: TextStyle(
-                          color: Colors.red.shade400,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12)),
-                ],
-              ),
-              const SizedBox(height: 8),
-              GestureDetector(
-                onTap: _pickDocument,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(14),
-                  decoration: BoxDecoration(
-                    color: _docBytes != null
-                        ? const Color(0xFFE8F5E9)
-                        : const Color(0xFFFFF3E0),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: _docBytes != null
-                          ? const Color(0xFFA5D6A7)
-                          : Colors.orange.shade200,
-                    ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      Text(prompt,
+                          style: const TextStyle(
+                              fontWeight: FontWeight.bold, fontSize: 14)),
+                      const SizedBox(width: 6),
+                      if (isReq)
+                        Text('*wajib',
+                            style: TextStyle(
+                                color: Colors.red.shade600,
+                                fontWeight: FontWeight.bold,
+                                fontSize: 12))
+                      else
+                        Text('(opsional)',
+                            style: TextStyle(
+                                color: Colors.grey.shade600,
+                                fontSize: 12)),
+                    ],
                   ),
-                  child: _docBytes == null
-                      // Belum ada file
-                      ? Row(
-                          children: [
-                            Icon(Icons.upload_file_outlined,
-                                color: Colors.orange.shade700, size: 28),
-                            const SizedBox(width: 12),
-                            const Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text('Lampirkan surat dokter',
-                                      style: TextStyle(
-                                          fontWeight: FontWeight.bold,
-                                          fontSize: 13)),
-                                  SizedBox(height: 2),
-                                  Text('Foto/gambar atau PDF · maks 10 MB',
-                                      style: TextStyle(
-                                          fontSize: 11, color: Colors.grey)),
-                                ],
-                              ),
-                            ),
-                          ],
-                        )
-                      // File sudah dipilih
-                      : Row(
-                          children: [
-                            // Preview kecil
-                            ClipRRect(
-                              borderRadius: BorderRadius.circular(8),
-                              child: _docIsPdf
-                                  ? Container(
-                                      width: 44,
-                                      height: 44,
-                                      color: Colors.red.shade50,
-                                      child: Icon(Icons.picture_as_pdf_outlined,
-                                          color: Colors.red.shade600, size: 26),
-                                    )
-                                  : Image.memory(
-                                      _docBytes!,
-                                      width: 44,
-                                      height: 44,
-                                      fit: BoxFit.cover,
-                                      cacheWidth: 100,
-                                      cacheHeight: 100,
-                                    ),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _docFileName ?? 'surat_dokter',
-                                    style: const TextStyle(
-                                        fontWeight: FontWeight.bold,
-                                        fontSize: 13),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
-                                  const SizedBox(height: 2),
-                                  Row(
+                  const SizedBox(height: 8),
+                  GestureDetector(
+                    onTap: _pickDocument,
+                    child: Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: _docBytes != null
+                            ? const Color(0xFFE8F5E9)
+                            : (isReq
+                                ? const Color(0xFFFFF3E0)
+                                : const Color(0xFFF5F5F5)),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: _docBytes != null
+                              ? const Color(0xFFA5D6A7)
+                              : (isReq
+                                  ? Colors.orange.shade200
+                                  : Colors.grey.shade300),
+                        ),
+                      ),
+                      child: _docBytes == null
+                          // Belum ada file
+                          ? Row(
+                              children: [
+                                Icon(
+                                  Icons.upload_file_outlined,
+                                  color: isReq
+                                      ? Colors.orange.shade700
+                                      : const Color(0xFF455A64),
+                                  size: 28,
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
                                     children: [
-                                      Icon(Icons.check_circle,
-                                          color: Colors.green.shade600,
-                                          size: 13),
-                                      const SizedBox(width: 4),
-                                      const Text('Siap diunggah',
-                                          style: TextStyle(
-                                              fontSize: 11,
-                                              color: Colors.green)),
+                                      Text(
+                                        'Unggah $prompt',
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13),
+                                      ),
+                                      const SizedBox(height: 2),
+                                      const Text(
+                                        'Foto/gambar (JPG, PNG, WEBP) atau PDF · maks 10 MB',
+                                        style: TextStyle(
+                                            fontSize: 11, color: Colors.grey),
+                                      ),
                                     ],
                                   ),
-                                ],
-                              ),
+                                ),
+                              ],
+                            )
+                          // File sudah dipilih
+                          : Row(
+                              children: [
+                                // Preview kecil
+                                ClipRRect(
+                                  borderRadius: BorderRadius.circular(8),
+                                  child: _docIsPdf
+                                      ? Container(
+                                          width: 44,
+                                          height: 44,
+                                          color: Colors.red.shade50,
+                                          child: Icon(
+                                              Icons.picture_as_pdf_outlined,
+                                              color: Colors.red.shade600,
+                                              size: 26),
+                                        )
+                                      : Image.memory(
+                                          _docBytes!,
+                                          width: 44,
+                                          height: 44,
+                                          fit: BoxFit.cover,
+                                          cacheWidth: 100,
+                                          cacheHeight: 100,
+                                        ),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        _docFileName ?? 'dokumen_pendukung',
+                                        style: const TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 13),
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                      const SizedBox(height: 2),
+                                      Row(
+                                        children: [
+                                          Icon(Icons.check_circle,
+                                              color: Colors.green.shade600,
+                                              size: 13),
+                                          const SizedBox(width: 4),
+                                          const Text('Siap diunggah',
+                                              style: TextStyle(
+                                                  fontSize: 11,
+                                                  color: Colors.green)),
+                                        ],
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                // Tombol ganti / hapus
+                                TextButton(
+                                  onPressed: _pickDocument,
+                                  child: const Text('Ganti'),
+                                ),
+                                IconButton(
+                                  icon: Icon(Icons.close,
+                                      size: 18, color: Colors.grey.shade600),
+                                  onPressed: () => setState(() {
+                                    _docBytes = null;
+                                    _docFileName = null;
+                                    _docIsPdf = false;
+                                  }),
+                                ),
+                              ],
                             ),
-                            // Tombol ganti / hapus
-                            TextButton(
-                              onPressed: _pickDocument,
-                              child: const Text('Ganti'),
-                            ),
-                            IconButton(
-                              icon: Icon(Icons.close,
-                                  size: 18, color: Colors.grey.shade600),
-                              onPressed: () => setState(() {
-                                _docBytes = null;
-                                _docFileName = null;
-                                _docIsPdf = false;
-                              }),
-                            ),
-                          ],
-                        ),
-                ),
-              ),
-              const SizedBox(height: 12),
-            ],
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              );
+            }),
 
             // Info
             Container(
@@ -714,3 +1374,122 @@ class _DateButton extends StatelessWidget {
     );
   }
 }
+
+class _LeaveTypeItem {
+  final String key;
+  final String label;
+  final IconData icon;
+  final Color color;
+  final bool isDisabled;
+  final bool isUnlimited;
+  final int remaining;
+  final int quota;
+  final int used;
+
+  const _LeaveTypeItem({
+    required this.key,
+    required this.label,
+    required this.icon,
+    required this.color,
+    this.isDisabled = false,
+    this.isUnlimited = false,
+    this.remaining = 0,
+    this.quota = 0,
+    this.used = 0,
+  });
+}
+
+class _SessionCard extends StatelessWidget {
+  final String title;
+  final String subtitle;
+  final IconData icon;
+  final bool isSelected;
+  final VoidCallback onTap;
+
+  const _SessionCard({
+    required this.title,
+    required this.subtitle,
+    required this.icon,
+    required this.isSelected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+        decoration: BoxDecoration(
+          color: isSelected ? const Color(0xFFE8F5E9) : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: isSelected ? const Color(0xFF2E7D32) : Colors.grey.shade300,
+            width: isSelected ? 1.8 : 1,
+          ),
+          boxShadow: isSelected
+              ? [
+                  BoxShadow(
+                    color: const Color(0xFF2E7D32).withValues(alpha: 0.12),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? const Color(0xFF2E7D32)
+                        : Colors.grey.shade100,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    icon,
+                    size: 16,
+                    color: isSelected ? Colors.white : Colors.grey.shade700,
+                  ),
+                ),
+                Icon(
+                  isSelected
+                      ? Icons.radio_button_checked
+                      : Icons.radio_button_off,
+                  size: 18,
+                  color: isSelected
+                      ? const Color(0xFF2E7D32)
+                      : Colors.grey.shade400,
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              title,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: isSelected ? const Color(0xFF1B5E20) : Colors.black87,
+              ),
+            ),
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: TextStyle(
+                fontSize: 11,
+                color: isSelected ? const Color(0xFF2E7D32) : Colors.grey.shade600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

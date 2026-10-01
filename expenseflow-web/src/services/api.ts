@@ -351,14 +351,37 @@ export async function apiDownload(
     throw new ApiError('Sesi Anda telah berakhir. Silakan login kembali.', 401);
   }
   if (!res.ok) {
-    throw new ApiError(`Gagal mengunduh file (${res.status}).`, res.status);
+    let errMsg = `Gagal mengunduh file (${res.status}).`;
+    let errData: any = null;
+    try {
+      const text = await res.text();
+      if (text) {
+        try {
+          errData = JSON.parse(text);
+          if (errData?.message) errMsg = errData.message;
+        } catch {
+          errMsg = text;
+        }
+      }
+    } catch { /* ignore */ }
+    throw new ApiError(errMsg, res.status, errData);
+  }
+
+  // Ambil nama berkas dari header Content-Disposition bila disediakan backend
+  const disposition = res.headers.get('Content-Disposition');
+  let finalFilename = filename;
+  if (disposition) {
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    if (match?.[1]) {
+      finalFilename = match[1].trim();
+    }
   }
 
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = filename;
+  a.download = finalFilename;
   document.body.appendChild(a);
   a.click();
   a.remove();

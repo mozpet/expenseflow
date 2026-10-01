@@ -208,6 +208,8 @@ class AuthController extends Controller
             'can_read_settings'     => $user->hasPermission(\App\Models\Role::MODULE_SETTINGS, 'read'),
             'can_manage_receipt'    => $user->hasPermission(\App\Models\Role::MODULE_RECEIPT, 'manage'),
             'can_read_receipt'      => $user->hasPermission(\App\Models\Role::MODULE_RECEIPT, 'read'),
+            'can_manage_payroll'    => $user->hasPermission(\App\Models\Role::MODULE_PAYROLL, 'manage'),
+            'can_read_payroll'      => $user->hasPermission(\App\Models\Role::MODULE_PAYROLL, 'read'),
             'allowed_branch_ids'    => $user->allowedBranchIds(),
             'branch_scope'          => $user->roleRelation?->branch_scope ?? 'all',
             'division_id'           => $user->division_id,

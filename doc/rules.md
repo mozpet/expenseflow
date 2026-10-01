@@ -40,7 +40,7 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Jam Kerja Fleksibel (Flexitime & Core Hours): SELESAI (Hak akses per karyawan `flexitime_enabled`; konfigurasi kantor cabang `flex_arrival_start`/`end`, `flex_core_start`/`end`, `flex_target_minutes`; check-in di jendela fleksibel tetap 'present'; titik jam masuk dinamis; deteksi 'early_leave' sebelum jam inti atau durasi belum cukup; lembur otomatis di atas target durasi; UI toggle web & modal/banner mobile Flutter) — 2026-09-16
   - Proteksi & Penguncian Izin Profil Karyawan Terikat Shift (Akses Mobile, WFH, Radius Lapangan): SELESAI (Karyawan terikat shift aktif/mendatang dengan jadwal WFH atau Lapangan tidak dapat di-uncheck izinnya di Edit Profil ataupun di-toggle off di Attendance Dashboard; checkbox di-disable otomatis dengan ikon larangan `Ban`, label `Terkunci Shift`, tooltip mouse hover yang menjelaskan shift terkait, serta validasi HTTP 422 di backend `UserController::update` dan `AttendanceController`) — 2026-09-20
   - Approval Matrix Bertingkat: DI-KEEP DULU (multi-level expense approval ditunda atas arahan user — 2026-09-02)
-  - Payroll (gaji)         : BELUM (task tercatat di bawah — "Roadmap Fitur Payroll")
+  - Payroll (gaji)         : SELESAI FASE 1-3 & FASE 4 BACKEND (Backend Fase 1-4 selesai & teruji; Frontend Web Fase 1-3 selesai di PayrollManagement.tsx — master komponen, gaji pokok, BPJS, rekening bank maker-checker, penyesuaian retroaktif, approval bertingkat, step-up PIN, jejak audit hash-chain SHA-256, dan kasbon; dokumen referensi [doc/07-PAYROLL-ROADMAP.md](file:///e:/koding/coba/backend-gawe/doc/07-PAYROLL-ROADMAP.md)) — 2026-09-29
   - Multi-Level Approval Struk & Lembur (Fase 2 - Backend & Workflows): SELESAI (Struk: Tier 1 [<500k 1 Finance], Tier 2 [500k-1jt 2 Finance anti-double], Tier 3 [>1jt Step 1 Finance -> Step 2 SPV/Head], status partially_approved, log aktivitas per level; Lembur: Step 1 SPV -> Step 2 HRD finalisasi menit payroll, penolakan di tiap tahap me-reset overtime_minutes=0, filter per step & counter summary, 11 Feature tests lulus 100%) — 2026-09-22
   - Audit & Penguatan Custom Role & Multi-Approval (Temuan 1 s/d 8): SELESAI (Bypass login web mobile_only, hardware device binding semua role mobile, proteksi reserved slug collision, perbaikan atribut slug lembur, otorisator struk Tier 3 kata kunci Indonesia, pemetaan presisi controller & hierarki path RoleMiddleware bebas tabrakan, proteksi penghapusan role dan pencegahan zombie state User::saving & Role::deleting, Super Admin multi-tenant isolation dan company filtering RoleController) — 2026-09-22
   - Kalender Shift Khusus Karyawan Bershift: SELESAI (Kalender shift bulanan GET /shifts/calendar hanya menampilkan karyawan yang memiliki penugasan shift aktif/pola rotasi; karyawan tanpa shift/jadwal kantor biasa tidak ditampilkan dan tidak lagi memunculkan badge 'Libur (OFF)' pada akhir pekan) — 2026-09-22
@@ -155,8 +155,10 @@ bootstrap/
 |---|-------|-----------|
 | 17 | `attendances` | Presensi harian (user_id, company_id, date, check_in_time, check_in_lat, check_in_lng, check_in_distance_meters, check_in_type [onsite/wfh/field], check_in_photo, check_out_time, check_out_lat, check_out_lng, check_out_type, status [present/late/absent], **work_minutes**, **overtime_minutes**, **is_holiday**, **auto_checkout_at**, **is_auto_checkout**, notes) |
 | 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable, **variance_limit** integer nullable 0-99%, **max_claim_limit** decimal(15,2) nullable, **flex_arrival_start** default '07:00:00', **flex_arrival_end** default '10:00:00', **flex_core_start** default '10:00:00', **flex_core_end** default '15:00:00', **flex_target_minutes** default 480) |
-| 19 | `leave_requests` | Pengajuan cuti/izin (user_id, company_id, leave_type [wfh/izin/sakit/cuti], start_date, end_date, total_days, reason, status [pending/approved/rejected], approved_by, approved_at, rejection_reason) |
-| 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type, quota, used) |
+| 19 | `leave_requests` | Pengajuan cuti/izin (user_id, company_id, leave_type [VARCHAR(40), mendukung 4 tipe standar + 11 tipe katalog dinamis], start_date, end_date, total_days, reason, status [pending/approved/rejected], approved_by, approved_at, rejection_reason, document_path) |
+| 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type [VARCHAR(40)], quota, used). Unique(user_id, year, leave_type). |
+| 20a | `leave_type_settings` | Konfigurasi toggle on/off & kuota jenis cuti tambahan per kantor (attendance_setting_id, leave_type, is_enabled, quota_days, requires_document, notes, timestamps). Unique(attendance_setting_id, leave_type). Ditambah 2026-10-01. |
+| 20a2 | `leave_balance_histories` | Riwayat & arsip saldo cuti saat reset tahunan (user_id, company_id, attendance_setting_id, period_label, period_start, period_end, reset_date, cuti_quota, cuti_used, cuti_remaining, izin_sakit_used, leave_types_snapshot JSON nullable, notes). Kolom leave_types_snapshot ditambah 2026-10-01. |
 | 20b | `holidays` | Kalender libur (company_id **nullable** → NULL = libur nasional semua company, date, name, is_national). Unique (company_id, date). Dipakai untuk hitung hari kerja cuti & lembur hari libur. |
 | 20c | `overtime_approvals` | Approval lembur (attendance_id, user_id, company_id, overtime_minutes, status [pending/approved/rejected], reviewed_by, reviewed_at, notes, is_auto_checkout, overtime_reason). Dibuat saat karyawan mengajukan lembur via mobile (claimOvertime). |
 | 20d | `shifts` | Template shift (company_id, **attendance_setting_id** nullable=milik cabang/null=company-wide, name, description, is_active). Ditambah 2026-07-04. |
@@ -632,6 +634,8 @@ GET  /api/v1/dashboard/attendance/report         → reportAttendance
 GET  /api/v1/dashboard/attendance/report/export  → exportReport (CSV)
 GET  /api/v1/dashboard/attendance/leave-balances → listLeaveBalances
 POST /api/v1/dashboard/attendance/leave-balances → setLeaveBalance
+GET  /api/v1/dashboard/attendance/leave-types    → listLeaveTypeSettings (katalog master + konfigurasi on/off & kuota per kantor)
+PUT  /api/v1/dashboard/attendance/leave-types    → updateLeaveTypeSettings (bulk update toggle on/off, kuota & kewajiban dokumen per kantor)
 GET  /api/v1/dashboard/attendance/settings       → listSettings
 POST /api/v1/dashboard/attendance/settings       → storeSettings
 GET  /api/v1/dashboard/attendance/settings/{id}  → showSettings
@@ -952,15 +956,61 @@ Tambah/Edit Kantor (Pengaturan → Kantor Presensi):
 - HRD menghapus jadwal reset (null) → `last_leave_reset_on` ikut di-null agar jadwal baru
   nantinya bisa langsung diproses.
 
+### Perluasan Jenis Cuti Mandiri Sesuai UU & Kebijakan Kantor (UPDATE 2026-10-01)
+Tipe cuti pada sistem diperluas dari 4 jenis dasar (`wfh`, `izin`, `sakit`, `cuti`) dengan menambahkan **11 jenis cuti baru** yang mengacu pada regulasi pemerintah Indonesia (UU Ketenagakerjaan No. 13/2003, UU Cipta Kerja No. 6/2023, UU Kesejahteraan Ibu dan Anak No. 4/2024 / UU KIA, dan Peraturan Pemerintah) serta kebijakan kantor mandiri:
+
+| Key `leave_type` | Label | Default Kuota | Batasan Gender | Dasar Hukum / Regulasi | Lampiran Dokumen | Default Status |
+|---|---|---|---|---|---|---|
+| `cuti_hamil` | Cuti Hamil & Melahirkan | 90 hari | Perempuan | UU 13/2003 Psl 82(1) jo. UU KIA 4/2024 | Wajib (Surat Dokter/Bidan) | Aktif (`is_enabled: true`) |
+| `cuti_keguguran` | Cuti Keguguran | 45 hari | Perempuan | UU 13/2003 Psl 82(2) | Wajib (Surat Dokter/RS) | Aktif (`is_enabled: true`) |
+| `cuti_ayah` | Cuti Ayah (Istri Melahirkan / Keguguran) | 2 hari | Laki-laki | UU Cipta Kerja / Psl 93(4)(e) | Opsional | Aktif (`is_enabled: true`) |
+| `cuti_haid` | Cuti Haid | 2 hari | Perempuan | UU 13/2003 Psl 81 | Opsional | Aktif (`is_enabled: true`) |
+| `cuti_menikah` | Cuti Menikah | 3 hari | - | UU 13/2003 Psl 93(4)(a) | Opsional | Aktif (`is_enabled: true`) |
+| `cuti_menikahkan_anak` | Cuti Menikahkan Anak | 2 hari | - | UU 13/2003 Psl 93(4)(b) | Opsional | Aktif (`is_enabled: true`) |
+| `cuti_khitan_baptis_anak` | Cuti Mengkhitankan / Membaptiskan Anak | 2 hari | - | UU 13/2003 Psl 93(4)(c) | Opsional | Aktif (`is_enabled: true`) |
+| `cuti_duka_keluarga_inti` | Cuti Duka Keluarga Inti (Suami/Istri, Orang Tua/Mertua, Anak/Menantu) | 2 hari | - | UU 13/2003 Psl 93(4)(d) | Opsional | Aktif (`is_enabled: true`) |
+| `cuti_duka_serumah` | Cuti Duka Anggota Keluarga Serumah | 1 hari | - | UU 13/2003 Psl 93(4)(f) | Opsional | Aktif (`is_enabled: true`) |
+| `cuti_ibadah_haji_umrah` | Cuti Ibadah Keagamaan (Haji / Umrah) | 40 hari | - | UU 13/2003 Psl 80 | Wajib (Bukti Keberangkatan) | Aktif (`is_enabled: true`) |
+| `cuti_setengah_hari` | Cuti Setengah Hari | 10 hari / kali | - | Kebijakan Internal Kantor | Opsional | Non-Aktif (`is_enabled: false`, opt-in) |
+
+#### Prinsip & Aturan Implementasi Backend (2026-10-01)
+1. **Cuti Setengah Hari Berdiri Sendiri (Standalone Quota):**
+   - Sesuai arahan spesifik, `cuti_setengah_hari` memiliki jatah kuota tahunan mandiri (default 10 hari/kali per tahun).
+   - **TIDAK memotong saldo jenis cuti tahunan (`cuti`) atau jenis cuti lainnya.**
+   - Deduksi saldo berjalan pada kuota `cuti_setengah_hari` sendiri secara atomik saat disetujui HRD/atasan.
+2. **Kendali Toggle On/Off & Penyesuaian Kuota per Kantor (`leave_type_settings`):**
+   - Menghindari *column sprawl* pada tabel `attendance_settings` (belajar dari preseden kolom tunggal `collective_leave_policy` yang sebelumnya di-drop), konfigurasi disimpan di tabel terpisah `leave_type_settings` dengan relasi `attendance_setting_id`.
+   - Tiap kantor/cabang memiliki saklar mandiri (`is_enabled`), penyesuaian kuota default (`quota_days`), dan flag kewajiban dokumen (`requires_document`).
+   - Jenis cuti yang dinonaktifkan di suatu kantor akan otomatis ditolak dengan pesan error yang jelas (HTTP 422 *"Jenis cuti '...' tidak valid atau belum diaktifkan untuk kantor Anda."*).
+3. **Kebijakan Auto-Provisioning Kuota vs Zero-Quota:**
+   - **Cuti Tahunan (`cuti`)**: Tetap mempertahankan aturan non-aktif default 2026-08-25 (`quota = 0`). Karyawan baru tidak bisa langsung cuti tahunan sampai diaktifkan manual oleh HRD.
+   - **Cuti Wajib UU & Jenis Cuti Kantor Lainnya**: Karena merupakan hak regulasi atau kebijakan yang telah di-enable per kantor, sistem melakukan **auto-provisioning** saldo awal (`quota = leave_type_settings.quota_days`, `used = 0`) saat karyawan mengajukan permohonan atau mengecek saldo via API `myLeaveBalance`, tanpa perlu aktivasi manual satu per satu dari HRD. Namun demikian, HRD tetap berhak meng-override kuota individu via `setLeaveBalance`.
+4. **Penegakan Validasi Gender:**
+   - Divalidasi terhadap kolom `users.gender` (`'Perempuan'` vs `'Laki-laki'`).
+   - Karyawan laki-laki dilarang mengajukan `cuti_hamil`, `cuti_keguguran`, atau `cuti_haid` (HTTP 422 *"Pengajuan Cuti ... hanya diperuntukkan bagi karyawan perempuan sesuai regulasi ketenagakerjaan."*).
+   - Karyawan perempuan dilarang mengajukan `cuti_ayah` (HTTP 422 *"Pengajuan Cuti Ayah hanya diperuntukkan bagi karyawan laki-laki..."*).
+   - Endpoint mobile `GET /api/v1/attendance/leave-balance` (`myLeaveBalance`) otomatis menyaring dan hanya menampilkan jenis-jenis cuti yang sesuai dengan gender karyawan tersebut.
+5. **Kewajiban Dokumen Lampiran Dinamis:**
+   - Jika jenis cuti mensyaratkan dokumen (`requires_document: true` di katalog atau di-override kantor), endpoint `requestLeave()` mewajibkan upload file pada field `document` (format JPG, PNG, WEBP, atau PDF maks 10 MB).
+6. **Arsip & Reset Tahunan (`ResetLeaveBalancesCommand`):**
+   - Saat anniversary reset kantor tiba (`leave_reset_date`), seluruh saldo jenis cuti tambahan karyawan yang aktif di kantor tersebut di-reset kembali ke kuota kantor dengan `used = 0`.
+   - Snapshot saldo tahun lalu untuk seluruh jenis cuti tambahan (`quota`, `used`, `remaining`) disimpan dalam format JSON pada kolom baru `leave_balance_histories.leave_types_snapshot`. Kolom legacy (`cuti_quota`, `cuti_used`, `izin_sakit_used`) tetap terisi utuh demi kompatibilitas riwayat lama.
+7. **Sinkronisasi Presensi & Jadwal Shift:**
+   - Pengecekan karyawan yang sedang cuti pada `ShiftController` (jadwal roster & kalender presensi), `AttendanceController::today()` (daftar presensi harian dashboard), dan reminder presensi `SendAttendanceRemindersCommand` diperluas dari pengecekan kaku `whereIn('leave_type', ['cuti', 'izin', 'sakit'])` menjadi `whereNotIn('leave_type', ['wfh'])` sehingga semua jenis cuti baru otomatis diakui sebagai status cuti resmi.
+
 ---
 
 ## Leave (Cuti/Izin) Pipeline
 ```
 Karyawan requestLeave (via mobile, tanpa gerbang attendance_access)
-  → leave_type: wfh / izin / sakit / cuti
-  → Hitung total_days
-  → Status: pending
-  → Notifikasi ke semua HRD/admin perusahaan
+  → leave_type: wfh / izin / sakit / cuti + 11 tipe katalog dinamis
+  → Validasi is_enabled per kantor user (leave_type_settings)
+  → Validasi batasan gender (Perempuan / Laki-laki)
+  → Validasi lampiran dokumen wajib (bila requires_document: true)
+  → Hitung total_days efektif (skip weekend/libur/off-day)
+  → Cek kecukupan kuota (auto-provisioning jika baris saldo baru)
+  → Status: pending (tahap SPV / HRD sesuai multi-approval kantor)
+  → Notifikasi ke atasan / HRD
 ```
 
 > **KEBIJAKAN EFEKTIF-HARI (2026-08-26):** `requestLeave()` TIDAK lagi menolak pengajuan bila ada tanggal libur/off-day di tengah rentang (hard-reject off-day shift & overlap rentang penuh DIHAPUS). Pengajuan tetap terkirim ke dashboard HRD dengan `start_date`/`end_date` ASLI; `total_days` hanya menghitung tanggal efektif setelah skip:
@@ -974,8 +1024,8 @@ Karyawan requestLeave (via mobile, tanpa gerbang attendance_access)
 
 ```
 HRD approveLeave (via web)
-  → Cek saldo leave_balances (untuk cuti/sakit, default 12 hari/tahun)
-  → Potong saldo jika cukup
+  → Cek saldo leave_balances (untuk cuti tahunan, cuti setengah hari, cuti hamil, dan seluruh tipe katalog)
+  → Potong saldo jika cukup secara atomik (DB transaction + lockForUpdate)
   → Status: approved
   → Notifikasi ke karyawan
 
@@ -2420,7 +2470,7 @@ Agar form pendaftaran dan pengubahan data karyawan tidak panjang dan membingungk
    - Nomor BPJS Ketenagakerjaan (KPJ) & checklist program aktif (JHT, JP, JKK, JKM).
    - Nomor BPJS Kesehatan & data keluarga tertanggung (Pasangan & Anak).
 5. **Tab 5: Dokumen & Hak Akses (`Documents & Access Control`)**
-   - Pengunggahan berkas digital (KTP, KK, NPWP, Kontrak PKWT/PKWTT).
+apa bedanya mysql dan posgresql?   - Pengunggahan berkas digital (KTP, KK, NPWP, Kontrak PKWT/PKWTT).
    - Toggle Akses Presensi & Perangkat:
      - Izin Presensi Mobile (`attendance_enabled`).
      - Izin Presensi Luar Kantor / WFH (`wfh_enabled`).

@@ -584,6 +584,14 @@ class _SpvLeaveApprovalScreenState extends State<SpvLeaveApprovalScreen>
       case 'wfh':
         typeColor = const Color(0xFF7C3AED); // Purple
         break;
+      case 'cuti_setengah_hari':
+        typeColor = const Color(0xFF0284C7); // Sky blue
+        typeLabel = item.halfDaySession == 'morning'
+            ? 'CUTI SETENGAH HARI (SESI 1)'
+            : item.halfDaySession == 'afternoon'
+                ? 'CUTI SETENGAH HARI (SESI 2)'
+                : 'CUTI SETENGAH HARI';
+        break;
       default:
         typeColor = const Color(0xFF0D9488); // Teal
     }

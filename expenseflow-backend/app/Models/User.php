@@ -13,8 +13,8 @@ use Illuminate\Notifications\Notifiable;
 use Illuminate\Support\Carbon;
 use Laravel\Sanctum\HasApiTokens;
 
-#[Fillable(['company_id', 'role_id', 'division_id', 'position_id', 'manager_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim', 'is_active', 'can_login', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
-#[Hidden(['password', 'remember_token'])]
+#[Fillable(['company_id', 'role_id', 'division_id', 'position_id', 'manager_id', 'employee_code', 'identity_number', 'name', 'email', 'password', 'role', 'department', 'attendance_setting_id', 'payroll_group_id', 'monthly_claim_limit', 'allow_receipt_claim', 'is_active', 'can_login', 'attendance_enabled', 'overtime_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'allow_leave', 'fcm_token', 'device_id', 'device_name', 'device_bound_at', 'phone', 'gender', 'birth_place', 'birth_date', 'is_pregnant', 'employment_type', 'bank_name', 'bank_account_no', 'bank_account_holder', 'joined_date', 'contract_start_date', 'contract_end_date', 'emergency_contact_name', 'emergency_contact_relation', 'emergency_contact_phone', 'emergency_contact_address', 'ktp_address', 'ktp_postal_code', 'ktp_city', 'ktp_province', 'domicile_address', 'is_domicile_same_as_ktp', 'religion', 'marital_status', 'number_of_dependents', 'blood_type', 'medical_conditions', 'education_level', 'institution_name', 'major', 'graduation_year', 'exit_date', 'exit_reason', 'exit_notes', 'severance_status', 'clearance_status'])]
+#[Hidden(['password', 'remember_token', 'security_pin'])]
 class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, Notifiable, SoftDeletes;
@@ -112,6 +112,8 @@ class User extends Authenticatable
         return [
             'email_verified_at'    => 'datetime',
             'password'             => 'hashed',
+            'security_pin'         => 'hashed',
+            'security_pin_set_at'  => 'datetime',
             'is_active'            => 'boolean',
             'can_login'            => 'boolean',
             'attendance_enabled'   => 'boolean',
@@ -123,6 +125,7 @@ class User extends Authenticatable
             'allow_attendance'     => 'boolean',
             'allow_wfh'            => 'boolean',
             'allow_radius'         => 'boolean',
+            'allow_leave'          => 'boolean',
             'monthly_claim_limit'  => 'decimal:2',
             'allow_receipt_claim'  => 'boolean',
             'device_bound_at'      => 'datetime',
@@ -153,6 +156,15 @@ class User extends Authenticatable
         }
 
         return (bool) ($this->allow_receipt_claim ?? true);
+    }
+
+    public function canTakeLeave(): bool
+    {
+        if (! $this->is_active) {
+            return false;
+        }
+
+        return (bool) ($this->allow_leave ?? true);
     }
 
     public function hasApprovedWfhToday(?string $date = null): bool
@@ -380,11 +392,13 @@ class User extends Authenticatable
                 Role::MODULE_RECEIPT => in_array($requiredLevel, ['read', 'manage', 'finance'], true),
                 Role::MODULE_EXPENSE_REPORT, Role::MODULE_INVOICE, Role::MODULE_VENDOR, Role::MODULE_SETTINGS => in_array($requiredLevel, ['read', 'manage'], true),
                 Role::MODULE_AUDIT_LOG => $requiredLevel === 'read',
+                Role::MODULE_PAYROLL => in_array($requiredLevel, ['read', 'manage'], true),
                 default => false,
             },
             'hrd' => match ($module) {
                 Role::MODULE_USER, Role::MODULE_ATTENDANCE, Role::MODULE_LEAVE, Role::MODULE_OVERTIME, Role::MODULE_SHIFT => true,
                 Role::MODULE_AUDIT_LOG => $requiredLevel === 'read',
+                Role::MODULE_PAYROLL => in_array($requiredLevel, ['read', 'manage'], true),
                 default => false,
             },
             'employee' => match ($module) {
@@ -462,6 +476,63 @@ class User extends Authenticatable
         return $this->hasMany(UserDocument::class);
     }
 
+    /** Riwayat gaji pokok efektif karyawan (employee_salaries). */
+    public function employeeSalaries()
+    {
+        return $this->hasMany(EmployeeSalary::class);
+    }
+
+    /** Tunjangan / potongan tetap karyawan (employee_salary_components). */
+    public function salaryComponents()
+    {
+        return $this->hasMany(EmployeeSalaryComponent::class);
+    }
+
+    /** Profil pajak karyawan (employee_tax_profiles). */
+    public function taxProfile()
+    {
+        return $this->hasOne(EmployeeTaxProfile::class);
+    }
+
+    /** Profil kepesertaan BPJS karyawan (employee_bpjs_profiles). */
+    public function bpjsProfile()
+    {
+        return $this->hasOne(EmployeeBpjsProfile::class);
+    }
+
+    /** Slip gaji karyawan (payslips). */
+    public function payslips()
+    {
+        return $this->hasMany(Payslip::class);
+    }
+
+    /** Rekening bank karyawan (employee_bank_accounts). */
+    public function bankAccounts()
+    {
+        return $this->hasMany(EmployeeBankAccount::class);
+    }
+
+    /** Kasbon / pinjaman karyawan (employee_loans). */
+    public function loans()
+    {
+        return $this->hasMany(EmployeeLoan::class);
+    }
+
+    /** Gaji pokok efektif karyawan pada tanggal tertentu (default: hari ini). */
+    public function activeSalaryOn(?string $date = null): ?EmployeeSalary
+    {
+        $targetDate = $date ?? now('Asia/Jakarta')->toDateString();
+
+        return $this->employeeSalaries()
+            ->where('is_active', true)
+            ->whereDate('effective_date', '<=', $targetDate)
+            ->where(function ($q) use ($targetDate) {
+                $q->whereNull('end_date')->orWhereDate('end_date', '>=', $targetDate);
+            })
+            ->orderByDesc('effective_date')
+            ->first();
+    }
+
     /** Divisi karyawan. */
     public function division()
     {
@@ -472,6 +543,12 @@ class User extends Authenticatable
     public function position()
     {
         return $this->belongsTo(Position::class, 'position_id');
+    }
+
+    /** Grup payroll (keanggotaan MVP; nullable = ungrouped). */
+    public function payrollGroup()
+    {
+        return $this->belongsTo(PayrollGroup::class, 'payroll_group_id');
     }
 
     /** Atasan langsung karyawan. */

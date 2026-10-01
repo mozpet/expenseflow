@@ -44,6 +44,10 @@ import {
   Eye,
   Smartphone,
   Lock,
+  SlidersHorizontal,
+  ShieldCheck,
+  BookOpen,
+  Infinity,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError, getRetryAfterSeconds, invalidateCache, onDataVersionChange } from '../services/api';
@@ -51,7 +55,270 @@ import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../auth/AuthContext';
 import CustomDatePicker from './CustomDatePicker';
 import { ConfirmationDialog } from './ConfirmationDialog';
+import type { LeaveTypeSettingItem } from '../types';
 
+export const LEAVE_TYPE_LABELS: Record<string, string> = {
+  cuti: 'Cuti Tahunan',
+  izin: 'Izin',
+  sakit: 'Sakit',
+  wfh: 'WFH',
+  cuti_hamil: 'Cuti Hamil & Melahirkan',
+  cuti_keguguran: 'Cuti Keguguran',
+  cuti_ayah: 'Cuti Ayah (Istri Melahirkan / Keguguran)',
+  cuti_haid: 'Cuti Haid',
+  cuti_menikah: 'Cuti Menikah',
+  cuti_menikahkan_anak: 'Menikahkan Anak',
+  cuti_khitan_baptis_anak: 'Mengkhitankan / Membaptiskan Anak',
+  cuti_duka_keluarga_inti: 'Duka Keluarga Inti',
+  cuti_duka_serumah: 'Duka Anggota Serumah',
+  cuti_ibadah_haji_umrah: 'Ibadah Keagamaan (Haji / Umrah)',
+  cuti_setengah_hari: 'Cuti Setengah Hari',
+};
+
+export const LEAVE_TYPE_ELIGIBILITY_MAP: Record<string, { gender?: string; marital?: string; pregnant?: boolean; note: string }> = {
+  cuti_hamil: {
+    gender: 'Perempuan',
+    marital: 'Sudah Menikah',
+    pregnant: true,
+    note: 'Khusus karyawati perempuan yang sudah menikah sah & berstatus hamil aktif di data karyawan.',
+  },
+  cuti_keguguran: {
+    gender: 'Perempuan',
+    marital: 'Sudah Menikah',
+    note: 'Khusus karyawati perempuan yang berstatus menikah (wajib surat dokter kandungan).',
+  },
+  cuti_ayah: {
+    gender: 'Laki-laki',
+    marital: 'Sudah Menikah',
+    note: 'Khusus karyawan laki-laki yang sudah berstatus menikah pada data karyawan.',
+  },
+  cuti_haid: {
+    gender: 'Perempuan',
+    note: 'Khusus pekerja perempuan yang merasakan sakit fisik hari pertama & kedua masa haid.',
+  },
+  cuti_menikahkan_anak: {
+    marital: 'Sudah Menikah',
+    note: 'Khusus karyawan yang sudah menikah/berkeluarga untuk keperluan menikahkan anak.',
+  },
+  cuti_khitan_baptis_anak: {
+    marital: 'Sudah Menikah',
+    note: 'Khusus karyawan yang sudah menikah/berkeluarga untuk upacara khitan atau baptis anak.',
+  },
+};
+
+export const checkLeaveEligibility = (
+  leaveType: string,
+  userProfile?: { gender?: string; maritalStatus?: string; isPregnant?: boolean }
+): { isEligible: boolean; note?: string } => {
+  const rule = LEAVE_TYPE_ELIGIBILITY_MAP[leaveType];
+  if (!rule) return { isEligible: true };
+
+  const gender = (userProfile?.gender || '').toLowerCase();
+  const marital = (userProfile?.maritalStatus || '').toLowerCase();
+  const isPregnant = Boolean(userProfile?.isPregnant);
+
+  // Periksa gender
+  if (rule.gender) {
+    const isTargetFemale = rule.gender.toLowerCase().includes('perempuan');
+    const isTargetMale = rule.gender.toLowerCase().includes('laki');
+    if (isTargetFemale) {
+      if (gender && !gender.includes('perempuan') && !gender.includes('female') && !gender.includes('wanita') && gender !== 'p' && gender !== 'f') {
+        return { isEligible: false, note: 'Khusus pekerja perempuan (berdasarkan data profil jenis kelamin)' };
+      }
+    } else if (isTargetMale) {
+      if (gender && !gender.includes('laki') && !gender.includes('pria') && !gender.includes('male') && gender !== 'l' && gender !== 'm') {
+        return { isEligible: false, note: 'Khusus pekerja laki-laki (berdasarkan data profil jenis kelamin)' };
+      }
+    }
+  }
+
+  // Periksa status pernikahan
+  if (rule.marital) {
+    const isSingle = marital.includes('belum') || marital.includes('lajang') || marital.includes('single') || marital.includes('tidak');
+    if (isSingle) {
+      return { isEligible: false, note: 'Khusus pekerja yang sudah berstatus menikah' };
+    }
+  }
+
+  // Periksa status kehamilan
+  if (rule.pregnant) {
+    if (!isPregnant) {
+      return { isEligible: false, note: 'Khusus pekerja dengan status kehamilan aktif' };
+    }
+  }
+
+  return { isEligible: true, note: rule.note };
+};
+
+export const LEAVE_REGULATIONS_GUIDE = [
+  {
+    type: 'cuti',
+    label: 'Cuti Tahunan',
+    quota: '12 hari/tahun',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Tidak Wajib',
+    legal: 'UU No. 13/2003 Ps. 79 (2)c',
+    description: 'Hak istirahat tahunan bagi pekerja dengan masa kerja 12 bulan terus menerus. Kuota dasar dan tanggal reset tahunan dapat dikonfigurasi per kantor cabang.',
+  },
+  {
+    type: 'cuti_hamil',
+    label: 'Cuti Hamil & Melahirkan',
+    quota: '90 hari (3 s.d. 6 bulan)',
+    gender: 'Khusus Perempuan',
+    marital: 'Wajib Menikah',
+    pregnant: 'Wajib Status Hamil Aktif',
+    document: 'Wajib (Surat Dokter/Bidan)',
+    legal: 'UU No. 13/2003 Ps. 82 (1) jo. UU KIA No. 4/2024',
+    description: 'Istirahat 1,5 bulan sebelum melahirkan dan 1,5 bulan setelah melahirkan. Menurut UU KIA No. 4/2024, dapat diperpanjang hingga 6 bulan bila ada kondisi/indikasi medis khusus.',
+  },
+  {
+    type: 'cuti_keguguran',
+    label: 'Cuti Keguguran',
+    quota: '45 hari (1,5 bulan)',
+    gender: 'Khusus Perempuan',
+    marital: 'Wajib Menikah',
+    pregnant: 'Pasca-keguguran',
+    document: 'Wajib (Surat Dokter Kandungan)',
+    legal: 'UU No. 13/2003 Pasal 82 ayat (2)',
+    description: 'Istirahat 1,5 bulan atau sesuai surat keterangan dokter spesialis kandungan/kebidanan setelah pekerja mengalami keguguran kandungan.',
+  },
+  {
+    type: 'cuti_ayah',
+    label: 'Cuti Ayah (Istri Melahirkan / Keguguran)',
+    quota: '2 hari kerja',
+    gender: 'Khusus Laki-laki',
+    marital: 'Wajib Menikah',
+    pregnant: '-',
+    document: 'Opsional (SOP Kantor)',
+    legal: 'UU No. 13/2003 Pasal 93 ayat (4) huruf e',
+    description: 'Pendampingan suami saat istri sah melahirkan anak atau mengalami musibah keguguran kandungan.',
+  },
+  {
+    type: 'cuti_haid',
+    label: 'Cuti Haid',
+    quota: '2 hari kerja',
+    gender: 'Khusus Perempuan',
+    marital: 'Bebas (Lajang/Menikah)',
+    pregnant: '-',
+    document: 'Opsional',
+    legal: 'UU No. 13/2003 Pasal 81 ayat (1)',
+    description: 'Pekerja perempuan yang merasakan sakit fisik pada hari pertama dan kedua masa haid sehingga tidak dapat melakukan pekerjaan.',
+  },
+  {
+    type: 'cuti_menikah',
+    label: 'Cuti Menikah Karyawan',
+    quota: '3 hari kerja',
+    gender: 'Semua Gender',
+    marital: 'Bebas (Melangsungkan Nikah)',
+    pregnant: '-',
+    document: 'Opsional (Undangan/Akad)',
+    legal: 'UU No. 13/2003 Pasal 93 ayat (4) huruf a',
+    description: 'Pekerja/buruh melangsungkan akad atau pemberkatan pernikahan dirinya sendiri.',
+  },
+  {
+    type: 'cuti_menikahkan_anak',
+    label: 'Menikahkan Anak',
+    quota: '2 hari kerja',
+    gender: 'Semua Gender',
+    marital: 'Wajib Menikah',
+    pregnant: '-',
+    document: 'Opsional',
+    legal: 'UU No. 13/2003 Pasal 93 ayat (4) huruf b',
+    description: 'Pekerja/buruh yang telah menikah/berkeluarga menikahkan anak kandungnya.',
+  },
+  {
+    type: 'cuti_khitan_baptis_anak',
+    label: 'Mengkhitankan / Membaptiskan Anak',
+    quota: '2 hari kerja',
+    gender: 'Semua Gender',
+    marital: 'Wajib Menikah',
+    pregnant: '-',
+    document: 'Opsional',
+    legal: 'UU No. 13/2003 Pasal 93 ayat (4) huruf c',
+    description: 'Pekerja/buruh menyelenggarakan upacara khitanan atau pembaptisan anak kandungnya.',
+  },
+  {
+    type: 'cuti_duka_keluarga_inti',
+    label: 'Duka Cita Keluarga Inti',
+    quota: '2 hari kerja',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Opsional',
+    legal: 'UU No. 13/2003 Pasal 93 ayat (4) huruf d',
+    description: 'Suami/istri, orang tua/mertua, atau anak pekerja/buruh meninggal dunia.',
+  },
+  {
+    type: 'cuti_duka_serumah',
+    label: 'Duka Cita Anggota Serumah',
+    quota: '1 hari kerja',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Opsional',
+    legal: 'UU No. 13/2003 Pasal 93 ayat (4) huruf f',
+    description: 'Anggota keluarga yang bertempat tinggal dalam satu rumah dengan pekerja meninggal dunia.',
+  },
+  {
+    type: 'cuti_ibadah_haji_umrah',
+    label: 'Ibadah Keagamaan (Haji / Umrah)',
+    quota: '40 hari kerja',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Wajib (Bukti Keberangkatan)',
+    legal: 'UU No. 13/2003 Ps. 80 & Ps. 93 (2)e',
+    description: 'Menunaikan kewajiban ibadah keagamaan haji (atau umrah) yang diperintahkan oleh agamanya.',
+  },
+  {
+    type: 'cuti_setengah_hari',
+    label: 'Cuti Setengah Hari',
+    quota: '10 unit/tahun',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Opsional',
+    legal: 'Kebijakan Internal Kantor',
+    description: 'Cuti fleksibel setengah hari kerja mandiri (bersifat opsional/opt-in per regulasi cabang kantor).',
+  },
+  {
+    type: 'sakit',
+    label: 'Cuti Sakit',
+    quota: 'Sesuai rujukan medis (Standar: 14 hari)',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Wajib Surat Dokter (Dapat dikonfigurasi)',
+    legal: 'UU No. 13/2003 Ps. 93 (2)a',
+    description: 'Pekerja/buruh sakit dengan melampirkan surat keterangan dokter yang sah. Kuota estimasi, kewajiban surat dokter, dan SOP pengajuan dapat dikonfigurasi per kantor cabang.',
+  },
+  {
+    type: 'izin',
+    label: 'Izin Tidak Masuk Kerja',
+    quota: 'SOP Perusahaan',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Opsional',
+    legal: 'Perjanjian Kerja / PP',
+    description: 'Izin meninggalkan pekerjaan untuk keperluan mendesak dengan persetujuan atasan/HRD.',
+  },
+  {
+    type: 'wfh',
+    label: 'Work From Home (WFH)',
+    quota: 'Sesuai Jadwal Shift',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Presensi GPS & Swafoto',
+    legal: 'Kebijakan Kerja Remote',
+    description: 'Bekerja secara jarak jauh/WFH dengan pencatatan presensi GPS dan swafoto masuk/pulang.',
+  },
+];
+
+export const getLeaveTypeLabel = (type: string) => LEAVE_TYPE_LABELS[type] ?? type;
 
 type TabKey = 'today' | 'leaves' | 'users' | 'balances' | 'report' | 'holidays';
 
@@ -584,7 +851,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [leaves, setLeaves] = useState<any[]>([]);
   const [leaveStatus, setLeaveStatus] = useState<'pending' | 'approved' | 'rejected' | ''>('pending');
   const [leaveStepFilter, setLeaveStepFilter] = useState<'all' | 'spv' | 'hrd'>('all');
-  const [leaveTypeFilter, setLeaveTypeFilter] = useState<'wfh' | 'izin' | 'sakit' | 'cuti' | ''>('');
+  const [leaveTypeFilter, setLeaveTypeFilter] = useState<string>('');
   const [leaveSourceFilter, setLeaveSourceFilter] = useState<'all' | 'mandiri' | 'collective'>('all');
   const [leaveOfficeFilter, setLeaveOfficeFilter] = useState(''); // '' = semua cabang
   const [leaveSearch, setLeaveSearch] = useState('');
@@ -613,7 +880,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
 
   // Sub-tab & history state untuk Saldo Cuti
-  const [balanceSubTab, setBalanceSubTab] = useState<'active' | 'history'>('active');
+  const [balanceSubTab, setBalanceSubTab] = useState<'active' | 'history' | 'leave_types'>('active');
   const [balanceHistories, setBalanceHistories] = useState<any[]>([]);
   const [balanceHistoryStats, setBalanceHistoryStats] = useState<{
     total_records: number;
@@ -627,6 +894,74 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [balanceHistoryLoading, setBalanceHistoryLoading] = useState(false);
   const [resetOfficeModal, setResetOfficeModal] = useState<{ id: number; name: string; quota: number; resetDate: string } | null>(null);
   const [isResettingOffice, setIsResettingOffice] = useState(false);
+
+  // State ekspansi jenis cuti tambahan per user & modal edit saldo
+  const [expandedUserLeaves, setExpandedUserLeaves] = useState<Record<string, boolean>>({});
+  const [editUserBalanceModal, setEditUserBalanceModal] = useState<{
+    user_id: number;
+    user_name: string;
+    employee_code?: string;
+    office_name?: string;
+    leave_type: string;
+    quota: number;
+    used: number;
+    remaining: number;
+  } | null>(null);
+  const [isSavingUserBalance, setIsSavingUserBalance] = useState(false);
+
+  // Modal mini-dashboard 360° kelola saldo seluruh jenis cuti & laporan cuti terpakai per karyawan
+  const [userLeaveDetailModal, setUserLeaveDetailModal] = useState<{
+    userId: number;
+    userName: string;
+    employeeCode: string;
+    department: string;
+    officeName: string;
+    gender?: string;
+    maritalStatus?: string;
+    isPregnant?: boolean;
+    activeTab: 'matrix' | 'history';
+    balancesMap: Record<string, {
+      quota: number;
+      used: number;
+      remaining: number;
+      officeDefault: number;
+    }>;
+    originalBalancesMap: Record<string, number>;
+    leavesHistory: any[];
+    loadingHistory: boolean;
+    historyFilterStatus: string;
+    historyFilterType: string;
+    historySearch: string;
+    historySummary: { approved: number; pending: number; rejected: number; totalDays: number };
+  } | null>(null);
+  const [isSavingUserDetailBalances, setIsSavingUserDetailBalances] = useState(false);
+
+  // Modal rincian snapshot cuti tambahan periode lalu
+  const [viewingSnapshotHistory, setViewingSnapshotHistory] = useState<any | null>(null);
+
+  // State untuk sub-tab "Pengaturan Jenis Cuti Kantor"
+  const [leaveTypeOfficeId, setLeaveTypeOfficeId] = useState<string>('');
+  const leaveTypeOfficeIdRef = useRef<string>('');
+  leaveTypeOfficeIdRef.current = leaveTypeOfficeId;
+  const loadingLeaveTypeSettingsRef = useRef<boolean>(false);
+  const officesRef = useRef<any[]>([]);
+  const [leaveTypeSettingsList, setLeaveTypeSettingsList] = useState<LeaveTypeSettingItem[]>([]);
+  const [leaveTypeSettingsOfficeName, setLeaveTypeSettingsOfficeName] = useState<string>('');
+  const [leaveTypeOfficeQuota, setLeaveTypeOfficeQuota] = useState<number>(12);
+  const [leaveTypeOfficeResetMonth, setLeaveTypeOfficeResetMonth] = useState<string>('12');
+  const [leaveTypeOfficeResetDay, setLeaveTypeOfficeResetDay] = useState<string>('01');
+  const [leaveTypeOfficeMultiApproval, setLeaveTypeOfficeMultiApproval] = useState<boolean>(true);
+  const [leaveTypeSettingsLoading, setLeaveTypeSettingsLoading] = useState(false);
+  const [leaveTypeSettingsSaving, setLeaveTypeSettingsSaving] = useState(false);
+  const [leaveTypeSettingsEdited, setLeaveTypeSettingsEdited] = useState<Record<string, {
+    is_enabled: boolean;
+    quota_days: number;
+    requires_document: boolean;
+    notes: string;
+  }>>({});
+  const [showLeaveInfoModal, setShowLeaveInfoModal] = useState<boolean>(false);
+  const [leaveInfoModalTab, setLeaveInfoModalTab] = useState<'overview' | 'catalog' | 'validation'>('overview');
+  const [leaveInfoSearch, setLeaveInfoSearch] = useState<string>('');
 
   const debouncedBalanceHistorySearch = useDebounce(balanceHistorySearch, 500);
   const [report, setReport] = useState<any | null>(null);
@@ -645,6 +980,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [reportAvailableShifts, setReportAvailableShifts] = useState<any[]>([]);
   const [reportSubTab, setReportSubTab] = useState<'log' | 'matrix'>('log');
   const [offices, setOffices] = useState<any[]>([]);
+  officesRef.current = offices;
   const [todayOfficeFilter, setTodayOfficeFilter] = useState('');
   const [searchCheckedIn, setSearchCheckedIn] = useState('');
   const [searchNotCheckedIn, setSearchNotCheckedIn] = useState('');
@@ -694,6 +1030,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     attendanceApi.settings.list().then(res => {
       const list = (res as any)?.settings ?? [];
       setOffices(list);
+      if (list.length > 0) {
+        setLeaveTypeOfficeId(prev => prev || String(list[0].id));
+      }
       if (list.length === 1) {
         const singleId = String(list[0].id);
         setTodayOfficeFilter(singleId);
@@ -862,6 +1201,311 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     }
   };
 
+  const loadLeaveTypeSettings = useCallback(async (officeId?: string, forceRefresh = false) => {
+    // Hindari race condition dan panggilan duplikat simultan yang memicu HTTP 429
+    if (loadingLeaveTypeSettingsRef.current) return;
+    loadingLeaveTypeSettingsRef.current = true;
+    setLeaveTypeSettingsLoading(true);
+    try {
+      if (forceRefresh) invalidateCache('/dashboard/attendance/leave-types');
+      const targetOffice = officeId || leaveTypeOfficeIdRef.current || (officesRef.current[0]?.id ? String(officesRef.current[0].id) : undefined);
+      const res: any = await attendanceApi.leaveTypeSettings(targetOffice, forceRefresh);
+      const list = res?.leave_types ?? [];
+      setLeaveTypeSettingsList(list);
+      setLeaveTypeSettingsOfficeName(res?.office_name ?? '');
+      if (res?.attendance_setting_id) {
+        const returnedId = String(res.attendance_setting_id);
+        setLeaveTypeOfficeId(prev => (prev === returnedId ? prev : (prev || returnedId)));
+      }
+      if (res?.default_leave_quota !== undefined) {
+        setLeaveTypeOfficeQuota(Number(res.default_leave_quota));
+      }
+      if (res?.leave_reset_date) {
+        const [m, d] = res.leave_reset_date.split('-');
+        setLeaveTypeOfficeResetMonth(m || '');
+        setLeaveTypeOfficeResetDay(d || '');
+      } else {
+        setLeaveTypeOfficeResetMonth('');
+        setLeaveTypeOfficeResetDay('');
+      }
+      if (res?.leave_multi_approval_enabled !== undefined) {
+        setLeaveTypeOfficeMultiApproval(Boolean(res.leave_multi_approval_enabled));
+      }
+
+      const edited: Record<string, any> = {};
+      list.forEach((item: any) => {
+        edited[item.leave_type] = {
+          is_enabled: Boolean(item.is_enabled),
+          quota_days: Number(item.quota_days ?? 0),
+          requires_document: Boolean(item.requires_document),
+          notes: item.notes || '',
+        };
+      });
+      setLeaveTypeSettingsEdited(edited);
+    } catch (e) {
+      reportApiError(e, 'Gagal memuat pengaturan jenis cuti kantor.');
+    } finally {
+      loadingLeaveTypeSettingsRef.current = false;
+      setLeaveTypeSettingsLoading(false);
+    }
+  }, []);
+
+  const handleSaveLeaveTypeSettings = async () => {
+    const targetOfficeId = leaveTypeOfficeId ? Number(leaveTypeOfficeId) : offices[0]?.id;
+    if (!targetOfficeId) {
+      reportApiError(null, 'Pilih kantor terlebih dahulu.');
+      return;
+    }
+    setLeaveTypeSettingsSaving(true);
+    try {
+      const resetDateStr = leaveTypeOfficeResetMonth && leaveTypeOfficeResetDay
+        ? `${leaveTypeOfficeResetMonth}-${leaveTypeOfficeResetDay}`
+        : null;
+
+      const settings = Object.entries(leaveTypeSettingsEdited).map(([leave_type, val]: [string, any]) => ({
+        leave_type,
+        is_enabled: val.is_enabled,
+        quota_days: Number(val.quota_days),
+        requires_document: val.requires_document,
+        notes: val.notes || null,
+      }));
+
+      const res: any = await attendanceApi.updateLeaveTypeSettings({
+        attendance_setting_id: targetOfficeId,
+        default_leave_quota: Number(leaveTypeOfficeQuota),
+        leave_reset_date: resetDateStr,
+        leave_multi_approval_enabled: leaveTypeOfficeMultiApproval,
+        settings,
+      });
+
+      // Invalidate cache settings kantor umum agar sinkron
+      invalidateCache('/dashboard/attendance/settings');
+
+      onAddAuditLog(
+        'Pengaturan Jenis Cuti Kantor Diperbarui',
+        `Kantor ${leaveTypeSettingsOfficeName || targetOfficeId}: Saldo default ${leaveTypeOfficeQuota} hari, reset ${resetDateStr || 'manual'}, ${settings.length} jenis cuti diperbarui`,
+        'bg-teal-600'
+      );
+      onAddNotification(
+        'success',
+        'Pengaturan Cuti Tersimpan',
+        res.message || 'Pengaturan saldo dan jenis cuti kantor berhasil diperbarui.'
+      );
+      await Promise.all([loadLeaveTypeSettings(String(targetOfficeId), true), loadBalances(true)]);
+    } catch (e) {
+      reportApiError(e, 'Gagal menyimpan pengaturan jenis cuti.');
+    } finally {
+      setLeaveTypeSettingsSaving(false);
+    }
+  };
+
+  const handleResetLeaveTypeSettingsToDefault = () => {
+    setLeaveTypeOfficeQuota(12);
+    setLeaveTypeOfficeResetMonth('12');
+    setLeaveTypeOfficeResetDay('01');
+    setLeaveTypeOfficeMultiApproval(true);
+
+    const resetMap: Record<string, any> = {};
+    leaveTypeSettingsList.forEach((item) => {
+      resetMap[item.leave_type] = {
+        is_enabled: item.default_quota_days > 0 || item.leave_type !== 'cuti_setengah_hari',
+        quota_days: item.default_quota_days,
+        requires_document: item.requires_document,
+        notes: item.notes || '',
+      };
+    });
+    setLeaveTypeSettingsEdited(resetMap);
+    onAddNotification('new', 'Form Direset', 'Nilai kuota dikembalikan ke standar regulasi (belum disimpan).');
+  };
+
+  const handleSaveUserBalance = async () => {
+    if (!editUserBalanceModal) return;
+    if (editUserBalanceModal.leave_type === 'izin') {
+      onAddNotification('warning', 'Tidak Dapat Diubah', 'Izin pribadi tidak memiliki batasan kuota (unlimited) dan akan terakumulasi otomatis.');
+      setEditUserBalanceModal(null);
+      return;
+    }
+    setIsSavingUserBalance(true);
+    try {
+      await attendanceApi.setLeaveBalance({
+        user_id: editUserBalanceModal.user_id,
+        leave_type: editUserBalanceModal.leave_type,
+        quota: Number(editUserBalanceModal.quota),
+      });
+      onAddAuditLog(
+        'Saldo Cuti Karyawan Disesuaikan',
+        `${editUserBalanceModal.user_name}: kuota ${getLeaveTypeLabel(editUserBalanceModal.leave_type)} diatur menjadi ${editUserBalanceModal.quota} hari`,
+        'bg-indigo-600'
+      );
+      onAddNotification(
+        'success',
+        'Saldo Cuti Disimpan',
+        `Kuota ${getLeaveTypeLabel(editUserBalanceModal.leave_type)} untuk ${editUserBalanceModal.user_name} berhasil disimpan.`
+      );
+      setEditUserBalanceModal(null);
+      await loadBalances(true);
+    } catch (e) {
+      reportApiError(e, 'Gagal menyimpan saldo cuti karyawan.');
+    } finally {
+      setIsSavingUserBalance(false);
+    }
+  };
+
+  const handleOpenUserDetailModal = async (
+    userId: number,
+    userName: string,
+    data: any,
+    initialTab: 'matrix' | 'history' = 'matrix'
+  ) => {
+    const userBalances = balances.filter(b => b.user_id === userId);
+    const balanceMap: Record<string, { quota: number; used: number; remaining: number; officeDefault: number }> = {};
+    const originalMap: Record<string, number> = {};
+
+    Object.keys(LEAVE_TYPE_LABELS).forEach(type => {
+      if (type === 'wfh') return; // WFH adalah mode presensi, bukan jenis saldo hak cuti
+      const isIzin = type === 'izin';
+      const found = userBalances.find(b => b.leave_type === type);
+      const officeDefault = isIzin ? 0 : (found?.office_default_quota 
+        ?? (type === 'cuti' ? 12 : type === 'cuti_setengah_hari' ? 10 : type === 'cuti_hamil' ? 90 : type === 'cuti_keguguran' ? 45 : type === 'cuti_menikah' ? 3 : type === 'cuti_ayah' || type === 'cuti_haid' || type === 'cuti_menikahkan_anak' || type === 'cuti_khitan_baptis_anak' || type === 'cuti_duka_keluarga_inti' ? 2 : type === 'cuti_duka_serumah' ? 1 : type === 'cuti_ibadah_haji_umrah' ? 40 : type === 'sakit' ? 14 : 0));
+      
+      const currentQuota = isIzin ? 0 : (found ? Number(found.quota ?? 0) : (type === 'cuti' ? 12 : 0));
+      const used = found ? Number(found.used ?? 0) : 0;
+      const remaining = isIzin ? 0 : (found ? Number(found.remaining ?? Math.max(0, currentQuota - used)) : Math.max(0, currentQuota - used));
+
+      balanceMap[type] = {
+        quota: currentQuota,
+        used,
+        remaining,
+        officeDefault,
+      };
+      originalMap[type] = currentQuota;
+    });
+
+    setUserLeaveDetailModal({
+      userId,
+      userName,
+      employeeCode: data.employeeCode || '',
+      department: data.department || '',
+      officeName: data.officeName || '',
+      gender: data.gender || '',
+      maritalStatus: data.maritalStatus || '',
+      isPregnant: data.isPregnant,
+      activeTab: initialTab,
+      balancesMap: balanceMap,
+      originalBalancesMap: originalMap,
+      leavesHistory: [],
+      loadingHistory: true,
+      historyFilterStatus: 'all',
+      historyFilterType: 'all',
+      historySearch: '',
+      historySummary: { approved: 0, pending: 0, rejected: 0, totalDays: 0 },
+    });
+
+    try {
+      const res = await attendanceApi.leaves({ user_id: userId, per_page: 500 }, true);
+      const list = res?.data?.data || res?.data?.leaves?.data || res?.data?.leaves || (Array.isArray(res?.data) ? res.data : []);
+      const approvedList = list.filter((l: any) => l.status === 'approved');
+      const totalDaysApproved = approvedList.reduce((acc: number, l: any) => acc + (Number(l.total_days) || 0), 0);
+
+      setUserLeaveDetailModal(prev => {
+        if (!prev || prev.userId !== userId) return prev;
+        return {
+          ...prev,
+          leavesHistory: list,
+          loadingHistory: false,
+          historySummary: {
+            approved: res?.data?.summary?.approved ?? approvedList.length,
+            pending: res?.data?.summary?.pending ?? list.filter((l: any) => l.status === 'pending').length,
+            rejected: res?.data?.summary?.rejected ?? list.filter((l: any) => l.status === 'rejected').length,
+            totalDays: totalDaysApproved,
+          }
+        };
+      });
+    } catch (err) {
+      console.error('Failed to load leaves history for user', err);
+      setUserLeaveDetailModal(prev => prev ? { ...prev, loadingHistory: false } : null);
+    }
+  };
+
+  const handleResetUserDetailToOfficeDefaults = () => {
+    if (!userLeaveDetailModal) return;
+    setUserLeaveDetailModal(prev => {
+      if (!prev) return null;
+      const updatedMap = { ...prev.balancesMap };
+      Object.keys(updatedMap).forEach(key => {
+        if (key === 'izin') return; // Izin tanpa batas kuota (unlimited), abaikan
+        const def = updatedMap[key].officeDefault;
+        updatedMap[key] = {
+          ...updatedMap[key],
+          quota: def,
+          remaining: Math.max(0, def - updatedMap[key].used),
+        };
+      });
+      return {
+        ...prev,
+        balancesMap: updatedMap,
+      };
+    });
+    onAddNotification('info', 'Diisi Sesuai Standar Kantor', 'Nilai kuota seluruh jenis cuti telah disesuaikan ke standar cabang kantor karyawan.');
+  };
+
+  const handleSaveUserDetailBalances = async () => {
+    if (!userLeaveDetailModal) return;
+    setIsSavingUserDetailBalances(true);
+    try {
+      const balancesToUpdate: Array<{ leave_type: string; quota: number }> = [];
+      Object.entries(userLeaveDetailModal.balancesMap).forEach(([leaveType, data]: [string, any]) => {
+        if (leaveType === 'izin') return; // Izin tidak memiliki limit kuota (unlimited)
+        if (data.quota !== userLeaveDetailModal.originalBalancesMap[leaveType]) {
+          balancesToUpdate.push({
+            leave_type: leaveType,
+            quota: Number(data.quota),
+          });
+        }
+      });
+
+      if (balancesToUpdate.length === 0) {
+        onAddNotification('info', 'Tidak Ada Perubahan', 'Tidak ada kuota cuti yang diubah.');
+        setIsSavingUserDetailBalances(false);
+        return;
+      }
+
+      await attendanceApi.setLeaveBalance({
+        user_id: userLeaveDetailModal.userId,
+        balances: balancesToUpdate,
+      });
+
+      onAddAuditLog(
+        'Saldo Cuti Karyawan Diperbarui (Batch)',
+        `${userLeaveDetailModal.userName}: kuota ${balancesToUpdate.length} jenis cuti diperbarui`,
+        'bg-indigo-600'
+      );
+      onAddNotification(
+        'success',
+        'Saldo Cuti Disimpan',
+        `Berhasil menyimpan pembaruan kuota cuti untuk ${userLeaveDetailModal.userName}.`
+      );
+
+      await loadBalances(true);
+
+      setUserLeaveDetailModal(prev => {
+        if (!prev) return null;
+        const newOriginal = { ...prev.originalBalancesMap };
+        balancesToUpdate.forEach(b => {
+          newOriginal[b.leave_type] = b.quota;
+        });
+        return {
+          ...prev,
+          originalBalancesMap: newOriginal,
+        };
+      });
+    } catch (e) {
+      reportApiError(e, 'Gagal menyimpan saldo cuti karyawan.');
+    } finally {
+      setIsSavingUserDetailBalances(false);
+    }
+  };
+
   const loadReport = useCallback(async (page = reportPage, forceRefresh = false) => {
     setLoading(true);
     setError(null);
@@ -917,8 +1561,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     else if (tab === 'balances') {
       if (balanceSubTab === 'active') {
         loadBalances();
-      } else {
+      } else if (balanceSubTab === 'history') {
         loadBalanceHistories();
+      } else if (balanceSubTab === 'leave_types') {
+        loadLeaveTypeSettings();
       }
     }
     else if (tab === 'report') loadReport(reportPage);
@@ -929,7 +1575,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, balanceSubTab, reportFilter, reportPage, reportPageSize, holidayYear, loadBalanceHistories]);
+  }, [tab, balanceSubTab, reportFilter, reportPage, reportPageSize, holidayYear, loadBalanceHistories, loadLeaveTypeSettings]);
 
   // Ketentuan 3: Auto-refresh data jika server mendeteksi data baru masuk dari mobile/backend
   useEffect(() => {
@@ -1154,21 +1800,33 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setVisitDetailModal(null);
   };
 
-  const handleToggleCutiQuota = async (userId: number, userName: string, currentQuota: number) => {
-    const newQuota = currentQuota > 0 ? 0 : 12;
+  const handleToggleCutiQuota = async (
+    userId: number,
+    userName: string,
+    currentQuota: number,
+    refQuota = 12,
+    isCurrentlyActive = true
+  ) => {
+    const willBeActive = !isCurrentlyActive;
+    const newQuota = willBeActive ? (refQuota > 0 ? refQuota : 12) : 0;
     setTogglingUserId(userId);
     try {
-      await attendanceApi.setLeaveBalance({ user_id: userId, leave_type: 'cuti', quota: newQuota });
+      await attendanceApi.setLeaveBalance({
+        user_id: userId,
+        leave_type: 'cuti',
+        quota: newQuota,
+        allow_leave: willBeActive,
+      });
       onAddAuditLog(
-        'Kuota Cuti Tahunan Diubah',
-        `${userName}: kuota cuti ${currentQuota > 0 ? 'dinonaktifkan (0 hari)' : 'diaktifkan (12 hari)'}`,
-        currentQuota > 0 ? 'bg-slate-600' : 'bg-teal-600'
+        'Hak Cuti Diubah',
+        `${userName}: seluruh hak cuti ${willBeActive ? `diaktifkan (${newQuota} hari cuti tahunan)` : 'dinonaktifkan (karyawan hanya dapat mengajukan Izin & WFH)'}`,
+        willBeActive ? 'bg-teal-600' : 'bg-slate-600'
       );
       await loadBalances();
       // Perbarui juga data allUsers agar status leave_active userOptions langsung sinkron
       attendanceApi.allUsers(true).catch(() => {}); // forceRefresh=true agar cache tidak stale
     } catch (e) {
-      reportApiError(e, 'Gagal mengubah kuota cuti.');
+      reportApiError(e, 'Gagal mengubah status hak cuti.');
     } finally {
       setTogglingUserId(null);
     }
@@ -1290,7 +1948,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               else if (tab === 'users') loadUsers(true);
               else if (tab === 'balances') {
                 if (balanceSubTab === 'active') loadBalances(true);
-                else loadBalanceHistories(true);
+                else if (balanceSubTab === 'history') loadBalanceHistories(true);
+                else if (balanceSubTab === 'leave_types') loadLeaveTypeSettings(leaveTypeOfficeId, true);
               }
               else if (tab === 'report') loadReport(reportPage, true);
               else if (tab === 'holidays') loadHolidays(true);
@@ -1726,8 +2385,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             return found;
           };
 
-          const leaveTypeLabel = (t: string) =>
-            ({ cuti: 'Cuti', izin: 'Izin', sakit: 'Sakit', wfh: 'WFH' }[t] ?? t);
+          const leaveTypeLabel = (t: string) => getLeaveTypeLabel(t);
 
           return (
             <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 space-y-4">
@@ -1756,14 +2414,29 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <select
                     value={showUpcoming ? '' : leaveTypeFilter}
                     disabled={showUpcoming}
-                    onChange={(e) => setLeaveTypeFilter(e.target.value as any)}
+                    onChange={(e) => setLeaveTypeFilter(e.target.value)}
                     className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
-                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Tipe</option>
-                    <option value="izin" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Izin</option>
-                    <option value="sakit" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Sakit</option>
-                    <option value="cuti" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Cuti</option>
-                    <option value="wfh" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">WFH</option>
+                    <option value="" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Tipe Cuti &amp; Izin</option>
+                    <optgroup label="Tipe Standar" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                      <option value="cuti">Cuti Tahunan</option>
+                      <option value="izin">Izin</option>
+                      <option value="sakit">Sakit</option>
+                      <option value="wfh">WFH</option>
+                    </optgroup>
+                    <optgroup label="Regulasi UU &amp; Khusus" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                      <option value="cuti_hamil">Cuti Hamil &amp; Melahirkan</option>
+                      <option value="cuti_keguguran">Cuti Keguguran</option>
+                      <option value="cuti_ayah">Cuti Ayah (Istri Melahirkan)</option>
+                      <option value="cuti_haid">Cuti Haid</option>
+                      <option value="cuti_menikah">Cuti Menikah</option>
+                      <option value="cuti_menikahkan_anak">Menikahkan Anak</option>
+                      <option value="cuti_khitan_baptis_anak">Mengkhitankan / Membaptiskan Anak</option>
+                      <option value="cuti_duka_keluarga_inti">Duka Keluarga Inti</option>
+                      <option value="cuti_duka_serumah">Duka Anggota Serumah</option>
+                      <option value="cuti_ibadah_haji_umrah">Ibadah Keagamaan (Haji / Umrah)</option>
+                      <option value="cuti_setengah_hari">Cuti Setengah Hari</option>
+                    </optgroup>
                   </select>
 
                   {/* Dropdown tahap persetujuan */}
@@ -2413,7 +3086,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         <div className="space-y-5">
           {/* Sub-tab Navigation (Segmented Switch) */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 pb-2 border-b border-slate-100 dark:border-slate-800">
-            <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
+            <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl border border-slate-200/60 dark:border-slate-700/60 flex-wrap">
               <button
                 onClick={() => setBalanceSubTab('active')}
                 className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
@@ -2444,6 +3117,19 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </span>
                 )}
               </button>
+              <button
+                onClick={() => {
+                  setBalanceSubTab('leave_types');
+                }}
+                className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all ${
+                  balanceSubTab === 'leave_types'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                    : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                }`}
+              >
+                <SlidersHorizontal className="w-3.5 h-3.5" />
+                Pengaturan Jenis Cuti Kantor
+              </button>
             </div>
 
             {/* Info ringkas anniversary / reset */}
@@ -2456,17 +3142,44 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           {/* ── SUB-TAB: Saldo Berjalan (Periode Aktif) ── */}
           {balanceSubTab === 'active' && (
             loading ? <TabSkeleton tab="balances" /> : (() => {
-              type BalanceEntry = { cuti?: any; izin?: any; employeeCode?: string; department?: string; officeName?: string };
+              type BalanceEntry = {
+                userId: number;
+                employeeCode: string;
+                department: string;
+                officeName: string;
+                gender?: string;
+                maritalStatus?: string;
+                isPregnant?: boolean;
+                allowLeave?: boolean;
+                cuti?: any;
+                izin?: any;
+                otherBalances: any[];
+                allBalances: any[];
+              };
               const grouped = balances.reduce<Record<string, BalanceEntry>>((acc, b) => {
                 if (!acc[b.user_name]) {
                   acc[b.user_name] = {
+                    userId: b.user_id,
                     employeeCode: b.employee_code || b.nik || b.user?.employee_code || '',
                     department: b.user?.department || b.department || '',
                     officeName: b.office_name || b.office?.office_name || '',
+                    gender: b.gender || b.user?.gender || '',
+                    maritalStatus: b.marital_status || b.user?.marital_status || '',
+                    isPregnant: b.is_pregnant !== undefined ? Boolean(b.is_pregnant) : Boolean(b.user?.is_pregnant),
+                    allowLeave: b.allow_leave !== undefined ? Boolean(b.allow_leave) : true,
+                    otherBalances: [],
+                    allBalances: [],
                   };
                 }
+                if (b.gender && !acc[b.user_name].gender) acc[b.user_name].gender = b.gender;
+                if (b.marital_status && !acc[b.user_name].maritalStatus) acc[b.user_name].maritalStatus = b.marital_status;
+                if (b.is_pregnant !== undefined && acc[b.user_name].isPregnant === undefined) acc[b.user_name].isPregnant = Boolean(b.is_pregnant);
+                if (b.allow_leave !== undefined) acc[b.user_name].allowLeave = Boolean(b.allow_leave);
+
+                acc[b.user_name].allBalances.push(b);
                 if (b.leave_type === 'cuti') acc[b.user_name].cuti = b;
-                else acc[b.user_name].izin = b;
+                else if (b.leave_type === 'izin') acc[b.user_name].izin = b;
+                else acc[b.user_name].otherBalances.push(b);
                 return acc;
               }, {});
 
@@ -2563,7 +3276,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           const cuti = data.cuti;
                           const izin = data.izin;
                           const userId = cuti?.user_id ?? izin?.user_id;
-                          const isActive = (cuti?.quota ?? 0) > 0;
+                          const isLeaveAllowed = data.allowLeave !== false && cuti?.allow_leave !== false;
+                          const isActive = isLeaveAllowed && (cuti?.quota ?? 0) > 0;
                           const isToggling = togglingUserId === userId;
 
                           return (
@@ -2571,10 +3285,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                               key={name}
                               className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3 transition-all hover:shadow-sm ${isActive
                                 ? 'border-slate-100 dark:border-slate-800'
-                                : 'border-slate-200 dark:border-slate-700 opacity-75'
+                                : 'border-slate-200 dark:border-slate-700 opacity-80'
                                 }`}
                             >
-                              {/* Header karyawan + toggle */}
+                              {/* Header karyawan + toggle & tombol kelola saldo */}
                               <div className="flex items-center gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
                                 <div className="w-8 h-8 rounded-full bg-indigo-50 dark:bg-indigo-950/50 flex items-center justify-center shrink-0 border border-indigo-100/50 dark:border-indigo-900/30">
                                   <Users className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
@@ -2591,15 +3305,26 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   </p>
                                 </div>
 
-                                {/* Toggle kuota cuti 12hr/thn */}
+                                {/* Aksi kuota & edit individual 360° */}
                                 <div className="flex items-center gap-2 shrink-0">
-                                  <span className={`text-[9px] font-semibold ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
-                                    Cuti 12hr/thn
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenUserDetailModal(userId, name, data, 'matrix')}
+                                    className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-bold rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800 shadow-2xs transition-all cursor-pointer group"
+                                    title="Kelola Saldo Seluruh Jenis Cuti & Laporan Pemakaian Karyawan"
+                                  >
+                                    <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400 group-hover:rotate-45 transition-transform duration-200 shrink-0" />
+                                    <span className="hidden sm:inline">Kelola Saldo &amp; Laporan</span>
+                                    <span className="sm:hidden">Kelola</span>
+                                  </button>
+
+                                  <span className={`text-[9px] font-semibold hidden md:inline ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
+                                    {isActive ? `Cuti ${cuti?.quota ?? 12}hr/thn` : 'Hak Cuti Nonaktif'}
                                   </span>
                                   <button
                                     disabled={isToggling || !userId}
-                                    onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0)}
-                                    title={isActive ? 'Nonaktifkan kuota cuti tahunan' : 'Aktifkan kuota cuti 12 hari/tahun'}
+                                    onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0, cuti?.office_default_quota ?? 12, isActive)}
+                                    title={isActive ? 'Nonaktifkan seluruh jenis cuti karyawan (hanya izin dan WFH yang bisa diajukan)' : 'Aktifkan kembali seluruh jenis cuti karyawan'}
                                     className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
                                       }`}
                                   >
@@ -2637,39 +3362,128 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                           style={{ width: progressWidth(cuti.remaining, cuti.quota) }}
                                         />
                                       </div>
-                                      <p className="text-[10px] text-slate-400">
-                                        Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
-                                      </p>
+                                      <div className="flex items-center justify-between pt-0.5 text-[10px]">
+                                        <p className="text-slate-400">
+                                          Terpakai <span className="font-semibold text-slate-600 dark:text-slate-300">{cuti.used} hari</span>
+                                        </p>
+                                        <button
+                                          type="button"
+                                          onClick={() => handleOpenUserDetailModal(userId, name, data, 'history')}
+                                          className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium cursor-pointer"
+                                        >
+                                          Laporan &rarr;
+                                        </button>
+                                      </div>
                                     </>
                                   ) : (
                                     <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
                                   )}
                                 </div>
 
-                                {/* Blok Izin / Sakit */}
+                                {/* Blok Izin Pribadi (Tanpa Batas Kuota) */}
                                 <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
                                   <div className="flex items-center justify-between">
-                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin &amp; Sakit</p>
-                                    <span className="text-[9px] font-semibold text-indigo-500 bg-indigo-50 dark:bg-indigo-950/40 px-1.5 py-0.5 rounded">
-                                      Periode Ini
+                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin (Pribadi)</p>
+                                    <span className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-700/60 px-1.5 py-0.5 rounded">
+                                      Tanpa Limit
                                     </span>
                                   </div>
-                                  {izin ? (
-                                    <>
-                                      <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                        {izin.used}
-                                        <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
-                                      </p>
-                                      <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                                        <div className="h-full w-0 rounded-full bg-slate-300" />
-                                      </div>
-                                      <p className="text-[10px] text-slate-400">Direset ke 0 saat anniversary</p>
-                                    </>
-                                  ) : (
-                                    <p className="text-[10px] text-slate-400 italic">Belum ada data</p>
-                                  )}
+                                  <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                    {izin ? izin.used : 0}
+                                    <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
+                                  </p>
+                                  <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                    <div className="h-full w-full rounded-full bg-indigo-500/30" />
+                                  </div>
+                                  <div className="flex items-center justify-between pt-0.5 text-[10px]">
+                                    <p className="text-slate-400">Direset ke 0 saat tanggal reset</p>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleOpenUserDetailModal(userId, name, data, 'history')}
+                                      className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium cursor-pointer"
+                                    >
+                                      Laporan &rarr;
+                                    </button>
+                                  </div>
                                 </div>
                               </div>
+
+                              {/* Accordion / Bagian Jenis Cuti Tambahan */}
+                              {data.otherBalances.length > 0 ? (
+                                <div className="pt-2 border-t border-slate-100 dark:border-slate-800/80">
+                                  <button
+                                    type="button"
+                                    onClick={() => setExpandedUserLeaves(prev => ({ ...prev, [name]: !prev[name] }))}
+                                    className="w-full flex items-center justify-between text-[11px] font-semibold text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition py-0.5 cursor-pointer"
+                                  >
+                                    <span className="flex items-center gap-1.5">
+                                      <span>Cuti Khusus &amp; Tambahan</span>
+                                      <span className="px-1.5 py-0.2 rounded-full text-[9px] font-mono bg-indigo-50 text-indigo-600 dark:bg-indigo-950/40 dark:text-indigo-400 font-bold">
+                                        {data.otherBalances.length}
+                                      </span>
+                                      {!isActive && (
+                                        <span className="px-1.5 py-0.5 rounded text-[9px] font-semibold bg-rose-50 text-rose-600 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200/60 dark:border-rose-900/40">
+                                          Semua Nonaktif
+                                        </span>
+                                      )}
+                                    </span>
+                                    <ChevronDown className={`w-3.5 h-3.5 transition-transform ${expandedUserLeaves[name] ? 'rotate-180' : ''}`} />
+                                  </button>
+
+                                  {expandedUserLeaves[name] && (
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-2 pt-1">
+                                      {data.otherBalances.map((ob: any) => {
+                                        const isObDisabled = !isActive || ob.is_disabled;
+                                        return (
+                                          <div
+                                            key={ob.leave_type}
+                                            className={`p-2 rounded-xl border text-[11px] space-y-1 transition-all ${
+                                              isObDisabled
+                                                ? 'bg-slate-100/60 dark:bg-slate-800/20 border-slate-200/60 dark:border-slate-800/40 opacity-60'
+                                                : 'bg-slate-50/70 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800/60'
+                                            }`}
+                                          >
+                                            <div className="flex items-center justify-between gap-1">
+                                              <div className="flex items-center gap-1 truncate min-w-0">
+                                                <span className="font-semibold text-slate-700 dark:text-slate-200 truncate text-[10px]" title={getLeaveTypeLabel(ob.leave_type)}>
+                                                  {getLeaveTypeLabel(ob.leave_type)}
+                                                </span>
+                                                {isObDisabled && (
+                                                  <span className="text-[8px] font-semibold text-rose-500 bg-rose-50 dark:bg-rose-950/40 px-1 py-0.2 rounded shrink-0">
+                                                    Off
+                                                  </span>
+                                                )}
+                                              </div>
+                                              <button
+                                                type="button"
+                                                onClick={() => handleOpenUserDetailModal(userId, name, data, 'matrix')}
+                                                className="text-[10px] text-indigo-600 dark:text-indigo-400 hover:underline shrink-0 font-medium cursor-pointer"
+                                              >
+                                                Kelola
+                                              </button>
+                                            </div>
+                                            <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+                                              <span>Pakai: <strong className="text-slate-700 dark:text-slate-200">{ob.used}</strong></span>
+                                              <span>Sisa: <strong className="text-slate-700 dark:text-slate-200">{!isObDisabled && ob.quota > 0 ? ob.remaining : '0'}</strong> / {isObDisabled ? '0' : ob.quota} hr</span>
+                                            </div>
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : (
+                                <div className="pt-1.5 flex items-center justify-between text-[10px] text-slate-400">
+                                  <span>Belum ada kuota cuti khusus individu</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleOpenUserDetailModal(userId, name, data, 'matrix')}
+                                    className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium cursor-pointer"
+                                  >
+                                    + Kelola Saldo &amp; Laporan
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           );
                         })}
@@ -2935,6 +3749,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 <CheckCircle2 className="w-3 h-3" />
                                 Telah Di-reset
                               </span>
+                              {h.leave_types_snapshot && typeof h.leave_types_snapshot === 'object' && Object.keys(h.leave_types_snapshot).length > 0 && (
+                                <div className="mt-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingSnapshotHistory(h)}
+                                    className="inline-flex items-center gap-1 text-[10px] font-bold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 hover:underline cursor-pointer"
+                                  >
+                                    <FileText className="w-3 h-3" />
+                                    Snapshot Cuti Khusus
+                                  </button>
+                                </div>
+                              )}
                               {h.notes && (
                                 <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[200px] ml-auto" title={h.notes}>
                                   {h.notes}
@@ -2948,6 +3774,451 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </table>
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* ── SUB-TAB: Pengaturan Jenis Cuti Kantor (Regulasi UU & Kebijakan) ── */}
+          {balanceSubTab === 'leave_types' && (
+            <div className="space-y-4">
+              {/* Header Filter & Action Bar */}
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-semibold text-slate-500 dark:text-slate-400">Kantor Cabang:</span>
+                  <select
+                    value={leaveTypeOfficeId || (offices[0]?.id ? String(offices[0].id) : '')}
+                    onChange={(e) => {
+                      const newId = e.target.value;
+                      setLeaveTypeOfficeId(newId);
+                      loadLeaveTypeSettings(newId, false);
+                    }}
+                    className="py-1.5 px-3 text-xs font-bold border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer min-w-[200px]"
+                  >
+                    {offices.map(o => (
+                      <option key={o.id} value={o.id} className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">
+                        {o.office_name} (ID: {o.id})
+                      </option>
+                    ))}
+                  </select>
+
+                  <button
+                    type="button"
+                    onClick={() => loadLeaveTypeSettings(leaveTypeOfficeId, true)}
+                    disabled={leaveTypeSettingsLoading}
+                    className="p-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition disabled:opacity-50 cursor-pointer"
+                    title="Segarkan Pengaturan"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${leaveTypeSettingsLoading ? 'animate-spin' : ''}`} />
+                  </button>
+                </div>
+
+                <div className="flex items-center gap-2 flex-wrap">
+                  <button
+                    type="button"
+                    onClick={() => setShowLeaveInfoModal(true)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-700 dark:text-indigo-300 bg-indigo-50 hover:bg-indigo-100 dark:bg-indigo-950/40 dark:hover:bg-indigo-900/50 rounded-xl border border-indigo-200 dark:border-indigo-800/50 transition cursor-pointer shadow-2xs"
+                    title="Buka panduan lengkap sistem, regulasi cuti, dan validasi kelayakan profil karyawan"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                    <span>Panduan &amp; Regulasi Cuti</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleResetLeaveTypeSettingsToDefault}
+                    disabled={leaveTypeSettingsLoading || leaveTypeSettingsSaving}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl transition cursor-pointer disabled:opacity-50"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Standar Regulasi UU</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={handleSaveLeaveTypeSettings}
+                    disabled={leaveTypeSettingsLoading || leaveTypeSettingsSaving}
+                    className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 rounded-xl shadow-sm transition disabled:opacity-50 cursor-pointer"
+                  >
+                    {leaveTypeSettingsSaving ? (
+                      <>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        <span>Menyimpan...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Simpan Pengaturan Kantor</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              {/* Banner Penjelasan Regulasi UU Ketenagakerjaan */}
+              <div className="bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 rounded-2xl p-4 space-y-2">
+                <div className="flex items-start justify-between gap-3 flex-wrap sm:flex-nowrap">
+                  <div className="flex items-start gap-2.5">
+                    <div className="p-2 rounded-xl bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 shrink-0">
+                      <ShieldCheck className="w-4 h-4" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
+                        Harmonisasi Regulasi Ketenagakerjaan &amp; Validasi Profil Karyawan (UU Ketenagakerjaan &amp; UU KIA)
+                      </h4>
+                      <p className="text-[11px] text-indigo-800/80 dark:text-indigo-300/80 leading-relaxed">
+                        Sistem ExpenseFlow mendukung <strong>15 jenis cuti resmi</strong> dengan validasi kelayakan otomatis (memeriksa <strong>Gender</strong>, <strong>Status Pernikahan</strong>, dan <strong>Status Kehamilan</strong> karyawan pada profil data master karyawan). 3 jenis dasar (<em>Cuti Tahunan, Izin, WFH</em>) selalu aktif permanen, sedangkan <strong>Cuti Sakit</strong> dan <strong>11 jenis cuti khusus regulasi</strong> dapat Anda atur langsung di bawah ini (kebijakan kuota standar, wajib bukti surat dokter, serta catatan SOP kantor).
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setShowLeaveInfoModal(true)}
+                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 dark:text-indigo-200 bg-white dark:bg-indigo-900/60 hover:bg-indigo-50 dark:hover:bg-indigo-900 rounded-xl border border-indigo-200 dark:border-indigo-700/60 shadow-2xs transition cursor-pointer"
+                  >
+                    <BookOpen className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
+                    <span>Panduan Halaman Ini</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Card Saldo Cuti & Reset Tahunan Kantor (Dipindahkan dari Form Edit Kantor) */}
+              <div className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-xs space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+                  <div className="flex items-center gap-2">
+                    <div className="p-2 rounded-xl bg-teal-50 dark:bg-teal-950/40 text-teal-600 dark:text-teal-400">
+                      <CalendarDays className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                        <span>Saldo Cuti &amp; Reset Tahunan</span>
+                        <span className="text-[10px] font-normal text-teal-600 dark:text-teal-400 bg-teal-50 dark:bg-teal-950/40 px-2 py-0.5 rounded-full font-sans">
+                          {leaveTypeSettingsOfficeName || 'Kantor Cabang'}
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-slate-400">
+                        Atur kuota default saat cuti diaktivasi &amp; jadwal arsip reset tahunan kantor
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Tombol Reset Kantor Manual */}
+                  {leaveTypeOfficeId && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const officeObj = offices.find(o => String(o.id) === String(leaveTypeOfficeId));
+                        setResetOfficeModal({
+                          id: Number(leaveTypeOfficeId),
+                          name: leaveTypeSettingsOfficeName || officeObj?.office_name || 'Kantor',
+                          quota: leaveTypeOfficeQuota,
+                          resetDate: leaveTypeOfficeResetMonth && leaveTypeOfficeResetDay ? `${leaveTypeOfficeResetMonth}-${leaveTypeOfficeResetDay}` : '12-01',
+                        });
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold text-amber-700 bg-amber-50 hover:bg-amber-100 dark:bg-amber-950/40 dark:text-amber-300 dark:hover:bg-amber-900/50 rounded-xl border border-amber-200 dark:border-amber-900/50 transition cursor-pointer self-start sm:self-auto"
+                      title="Reset dan arsipkan pemakaian cuti semua karyawan kantor ini sekarang"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                      <span>Reset Saldo Kantor Sekarang</span>
+                    </button>
+                  )}
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-1">
+                  {/* Saldo Cuti Default (hari/tahun) */}
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                      <span>Saldo cuti default (hari/tahun) <span className="text-rose-500 font-bold">*</span></span>
+                      <span className="text-[10px] text-slate-400 font-normal">Standar: 12 hari</span>
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={365}
+                      value={leaveTypeOfficeQuota}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value);
+                        setLeaveTypeOfficeQuota(isNaN(val) ? 0 : Math.max(0, val));
+                      }}
+                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs font-bold focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                    />
+                    <p className="text-[10px] text-slate-400">
+                      Jumlah hari Cuti Tahunan yang diberikan saat HRD mengaktifkan kuota karyawan di kantor ini.
+                    </p>
+                  </div>
+
+                  {/* Tanggal Reset Saldo Cuti */}
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 block">
+                      Tanggal reset saldo cuti
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <select
+                        value={leaveTypeOfficeResetMonth}
+                        onChange={(e) => {
+                          const month = e.target.value;
+                          setLeaveTypeOfficeResetMonth(month);
+                          if (!month) {
+                            setLeaveTypeOfficeResetDay('');
+                            return;
+                          }
+                          const maxDays = month === '02' ? 29 : (['04', '06', '09', '11'].includes(month) ? 30 : 31);
+                          if (parseInt(leaveTypeOfficeResetDay || '01') > maxDays) {
+                            setLeaveTypeOfficeResetDay(String(maxDays).padStart(2, '0'));
+                          } else if (!leaveTypeOfficeResetDay) {
+                            setLeaveTypeOfficeResetDay('01');
+                          }
+                        }}
+                        className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-400 cursor-pointer"
+                      >
+                        <option value="">— Tanpa Reset Otomatis —</option>
+                        {['Januari', 'Februari', 'Maret', 'April', 'Mei', 'Juni', 'Juli', 'Agustus', 'September', 'Oktober', 'November', 'Desember'].map((m, i) => (
+                          <option key={m} value={String(i + 1).padStart(2, '0')}>{m}</option>
+                        ))}
+                      </select>
+
+                      <select
+                        value={leaveTypeOfficeResetDay}
+                        onChange={(e) => setLeaveTypeOfficeResetDay(e.target.value)}
+                        disabled={!leaveTypeOfficeResetMonth}
+                        className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 cursor-pointer font-mono"
+                      >
+                        <option value="">— Tanggal —</option>
+                        {(() => {
+                          const m = leaveTypeOfficeResetMonth;
+                          const maxDays = m === '02' ? 29 : (['04', '06', '09', '11'].includes(m) ? 30 : 31);
+                          return Array.from({ length: maxDays }, (_, i) => i + 1).map((d) => (
+                            <option key={d} value={String(d).padStart(2, '0')}>{d}</option>
+                          ));
+                        })()}
+                      </select>
+                    </div>
+
+                    {leaveTypeOfficeResetMonth && leaveTypeOfficeResetDay ? (
+                      (() => {
+                        const mm = Number(leaveTypeOfficeResetMonth);
+                        const dd = Number(leaveTypeOfficeResetDay);
+                        const now = new Date();
+                        const sudahLewat = new Date(now.getFullYear(), mm - 1, dd).getTime() <= now.getTime();
+                        return (
+                          <p className={`text-[10px] font-semibold ${sudahLewat ? 'text-amber-600 dark:text-amber-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                            Reset tiap {dd} {['Jan', 'Feb', 'Mar', 'Apr', 'Mei', 'Jun', 'Jul', 'Agu', 'Sep', 'Okt', 'Nov', 'Des'][mm - 1]}. Sisa cuti tahun berjalan akan diarsipkan ke Riwayat Saldo Sebelumnya.
+                            {sudahLewat && ' (Siklus tahun ini telah berjalan).'}
+                          </p>
+                        );
+                      })()
+                    ) : (
+                      <p className="text-[10px] text-slate-400">
+                        Tanpa reset otomatis (saldo hanya di-reset secara manual oleh HRD).
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Switch Multi-Approval (Atasan -> HRD) */}
+                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                  <div>
+                    <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                      Persetujuan Berjenjang (Multi-Level Approval Cuti)
+                    </p>
+                    <p className="text-[10px] text-slate-400">
+                      Pengajuan izin &amp; cuti harus disetujui Atasan Langsung (SPV) terlebih dahulu sebelum diproses final oleh HRD
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setLeaveTypeOfficeMultiApproval(!leaveTypeOfficeMultiApproval)}
+                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${
+                      leaveTypeOfficeMultiApproval ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                        leaveTypeOfficeMultiApproval ? 'translate-x-4' : 'translate-x-1'
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              {/* Grid Pengaturan Jenis Cuti Kantor */}
+              {leaveTypeSettingsLoading ? (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {[...Array(6)].map((_, i) => (
+                    <div key={i} className="h-44 bg-slate-100 dark:bg-slate-800/60 rounded-2xl animate-pulse" />
+                  ))}
+                </div>
+              ) : leaveTypeSettingsList.length === 0 ? (
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-10 text-center space-y-2">
+                  <SlidersHorizontal className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
+                  <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">Belum ada pengaturan jenis cuti untuk kantor ini.</p>
+                  <p className="text-[11px] text-slate-400">Pilih kantor cabang di atas untuk memuat pengaturan.</p>
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {leaveTypeSettingsList.map((item) => {
+                    const edited = leaveTypeSettingsEdited[item.leave_type] ?? {
+                      is_enabled: Boolean(item.is_enabled),
+                      quota_days: Number(item.quota_days ?? item.default_quota_days ?? 0),
+                      requires_document: Boolean(item.requires_document),
+                      notes: item.notes || '',
+                    };
+                    const isEnabled = edited.is_enabled;
+
+                    return (
+                      <div
+                        key={item.leave_type}
+                        className={`bg-white dark:bg-slate-900 border rounded-2xl p-4 space-y-3.5 transition-all ${
+                          isEnabled
+                            ? 'border-slate-200 dark:border-slate-800 shadow-xs'
+                            : 'border-slate-100 dark:border-slate-800/60 opacity-60 bg-slate-50/30'
+                        }`}
+                      >
+                        {/* Header Item Cuti */}
+                        <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <h5 className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</h5>
+                              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
+                                {item.leave_type}
+                              </span>
+                              {item.leave_type === 'sakit' && (
+                                <span className="text-[9px] font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 px-1.5 py-0.5 rounded border border-rose-200 dark:border-rose-800">
+                                  Hak Normatif UU
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Toggle Aktif / Nonaktif per kantor */}
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            <span className={`text-[9px] font-bold ${isEnabled ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
+                              {isEnabled ? 'Diizinkan' : 'Dinonaktifkan'}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setLeaveTypeSettingsEdited(prev => ({
+                                  ...prev,
+                                  [item.leave_type]: {
+                                    ...edited,
+                                    is_enabled: !isEnabled,
+                                  },
+                                }));
+                              }}
+                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${
+                                isEnabled ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
+                              }`}
+                            >
+                              <span
+                                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                                  isEnabled ? 'translate-x-4' : 'translate-x-1'
+                                }`}
+                              />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Pengaturan Input Form */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                          {/* Input Kuota Hari */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                              <span>Standar Kuota (Hari):</span>
+                              <span className="text-[9px] text-slate-400 font-normal">
+                                {item.leave_type === 'sakit' ? 'Rujukan Medis / UU' : `UU: ${item.default_quota_days} hari`}
+                              </span>
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={365}
+                              disabled={!isEnabled}
+                              value={edited.quota_days}
+                              onChange={(e) => {
+                                const val = Number(e.target.value);
+                                setLeaveTypeSettingsEdited(prev => ({
+                                  ...prev,
+                                  [item.leave_type]: {
+                                    ...edited,
+                                    quota_days: isNaN(val) ? 0 : val,
+                                  },
+                                }));
+                              }}
+                              className="w-full px-2.5 py-1.5 text-xs font-mono font-bold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50"
+                            />
+                          </div>
+
+                          {/* Toggle Dokumen Pendukung */}
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 block">
+                              Wajib Bukti / Dokumen:
+                            </label>
+                            <button
+                              type="button"
+                              disabled={!isEnabled}
+                              onClick={() => {
+                                setLeaveTypeSettingsEdited(prev => ({
+                                  ...prev,
+                                  [item.leave_type]: {
+                                    ...edited,
+                                    requires_document: !edited.requires_document,
+                                  },
+                                }));
+                              }}
+                              className={`w-full py-1.5 px-2.5 rounded-xl border text-xs font-semibold flex items-center justify-between transition cursor-pointer disabled:opacity-50 ${
+                                edited.requires_document
+                                  ? 'bg-amber-50 border-amber-200 text-amber-800 dark:bg-amber-950/30 dark:border-amber-900/40 dark:text-amber-300'
+                                  : 'bg-slate-50 border-slate-200 text-slate-500 dark:bg-slate-800 dark:border-slate-700 dark:text-slate-400'
+                              }`}
+                            >
+                              <span>
+                                {edited.requires_document
+                                  ? (item.leave_type === 'sakit' ? 'Wajib Surat Dokter' : 'Wajib Lampirkan Dokumen')
+                                  : 'Tidak Wajib'}
+                              </span>
+                              {edited.requires_document ? (
+                                <FileText className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                              ) : (
+                                <span className="text-[10px] text-slate-400">Opsional</span>
+                              )}
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Catatan SOP / Kebijakan */}
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-semibold text-slate-500 dark:text-slate-400 block">
+                            Catatan Kebijakan Kantor / Syarat Khusus:
+                          </label>
+                          <input
+                            type="text"
+                            disabled={!isEnabled}
+                            placeholder={
+                              item.leave_type === 'sakit'
+                                ? 'Misal: Wajib lapor atasan & HRD via WA maks pkl 09.00, serahkan surat dokter fisik saat masuk...'
+                                : 'Misal: Lampirkan surat keterangan dokter dari RS rujukan...'
+                            }
+                            value={edited.notes}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              setLeaveTypeSettingsEdited(prev => ({
+                                ...prev,
+                                ...{
+                                  [item.leave_type]: {
+                                    ...edited,
+                                    notes: val,
+                                  },
+                                },
+                              }));
+                            }}
+                            className="w-full px-2.5 py-1.5 text-[11px] border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50"
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -3841,6 +5112,1250 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl text-sm font-semibold transition"
               >
                 Mengerti
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal 360°: Kelola Saldo Seluruh Jenis Cuti & Laporan Pemakaian Karyawan ── */}
+      {userLeaveDetailModal && (() => {
+        const balancesEntries = Object.entries(userLeaveDetailModal.balancesMap) as [string, any][];
+        const totalDistributedQuota = balancesEntries.filter(([type]) => type !== 'izin').reduce((sum, [, d]) => sum + (Number(d.quota) || 0), 0);
+        const totalUsedQuota = balancesEntries.reduce((sum, [, d]) => sum + (Number(d.used) || 0), 0);
+        const totalRemainingQuota = balancesEntries.filter(([type]) => type !== 'izin').reduce((sum, [, d]) => sum + (Number(d.remaining) || 0), 0);
+        const totalActiveLeaveTypes = balancesEntries.filter(([type, d]) => type === 'izin' || (Number(d.quota) || 0) > 0).length;
+        const modifiedCount = balancesEntries.filter(([type, d]) => type !== 'izin' && d.quota !== userLeaveDetailModal.originalBalancesMap[type]).length;
+
+        const filteredLeavesHistory = userLeaveDetailModal.leavesHistory.filter((item) => {
+          if (userLeaveDetailModal.historyFilterStatus !== 'all' && item.status !== userLeaveDetailModal.historyFilterStatus) {
+            return false;
+          }
+          if (userLeaveDetailModal.historyFilterType !== 'all' && item.leave_type !== userLeaveDetailModal.historyFilterType) {
+            return false;
+          }
+          if (userLeaveDetailModal.historySearch) {
+            const q = userLeaveDetailModal.historySearch.toLowerCase();
+            const reason = (item.reason || '').toLowerCase();
+            const dateStr = `${item.start_date || ''} ${item.end_date || ''}`.toLowerCase();
+            const leaveTypeStr = getLeaveTypeLabel(item.leave_type).toLowerCase();
+            if (!reason.includes(q) && !dateStr.includes(q) && !leaveTypeStr.includes(q)) {
+              return false;
+            }
+          }
+          return true;
+        });
+
+        const userProfile = {
+          gender: userLeaveDetailModal.gender,
+          maritalStatus: userLeaveDetailModal.maritalStatus,
+          isPregnant: userLeaveDetailModal.isPregnant,
+        };
+
+        return (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-xs">
+            <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl shadow-2xl max-w-4xl w-full max-h-[92vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+              
+              {/* ── 1. HEADER MODAL & PROFIL KARYAWAN ── */}
+              <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 bg-gradient-to-r from-slate-50 to-indigo-50/30 dark:from-slate-900 dark:to-indigo-950/20 flex items-start justify-between gap-4">
+                <div className="flex items-start gap-3.5">
+                  <div className="w-11 h-11 rounded-2xl bg-indigo-600 dark:bg-indigo-500 text-white flex items-center justify-center font-bold text-base shadow-sm shrink-0 mt-0.5">
+                    {userLeaveDetailModal.userName.charAt(0).toUpperCase()}
+                  </div>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-base font-bold text-slate-800 dark:text-slate-100">
+                        {userLeaveDetailModal.userName}
+                      </h3>
+                      {userLeaveDetailModal.employeeCode && (
+                        <span className="font-mono text-xs px-2 py-0.5 rounded-md bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                          {userLeaveDetailModal.employeeCode}
+                        </span>
+                      )}
+                      {userLeaveDetailModal.officeName && (
+                        <span className="text-xs px-2 py-0.5 rounded-md bg-indigo-50 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-300 font-medium border border-indigo-100 dark:border-indigo-900/50 flex items-center gap-1">
+                          <Building2 className="w-3 h-3" />
+                          {userLeaveDetailModal.officeName}
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Profil Indikator Kelayakan */}
+                    <div className="flex items-center gap-2 flex-wrap text-[11px] text-slate-500 dark:text-slate-400 pt-0.5">
+                      <span>Divisi: <strong className="text-slate-700 dark:text-slate-200">{userLeaveDetailModal.department || '—'}</strong></span>
+                      <span>•</span>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold">
+                        {userLeaveDetailModal.gender ? (userLeaveDetailModal.gender.toLowerCase().includes('perempuan') || userLeaveDetailModal.gender.toLowerCase().includes('female') || userLeaveDetailModal.gender.toLowerCase() === 'p' ? '♀ Perempuan' : '♂ Laki-laki') : 'Gender: —'}
+                      </span>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-semibold">
+                        {userLeaveDetailModal.maritalStatus ? userLeaveDetailModal.maritalStatus : 'Status Nikah: —'}
+                      </span>
+                      {userLeaveDetailModal.isPregnant && (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 font-semibold border border-rose-200 dark:border-rose-900/40">
+                          <Sparkles className="w-3 h-3 text-rose-500" />
+                          Status Hamil Aktif
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setUserLeaveDetailModal(null)}
+                  className="p-1.5 rounded-xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-white dark:hover:bg-slate-800 transition cursor-pointer shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* ── 2. SEGMENTED TAB SWITCHER ── */}
+              <div className="px-6 pt-3 pb-2 border-b border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/60 flex items-center justify-between gap-3 flex-wrap">
+                <div className="inline-flex p-1 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200/60 dark:border-slate-700/60">
+                  <button
+                    type="button"
+                    onClick={() => setUserLeaveDetailModal(prev => prev ? { ...prev, activeTab: 'matrix' } : null)}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      userLeaveDetailModal.activeTab === 'matrix'
+                        ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <SlidersHorizontal className="w-3.5 h-3.5" />
+                    <span>Matriks Saldo &amp; Alokasi Kuota</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 font-bold">
+                      {totalActiveLeaveTypes} Aktif
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setUserLeaveDetailModal(prev => prev ? { ...prev, activeTab: 'history' } : null)}
+                    className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                      userLeaveDetailModal.activeTab === 'history'
+                        ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs'
+                        : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
+                    }`}
+                  >
+                    <History className="w-3.5 h-3.5" />
+                    <span>Laporan Riwayat Cuti Terpakai</span>
+                    <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 font-bold">
+                      {userLeaveDetailModal.leavesHistory.length}
+                    </span>
+                  </button>
+                </div>
+
+                {userLeaveDetailModal.activeTab === 'matrix' && (
+                  <button
+                    type="button"
+                    onClick={handleResetUserDetailToOfficeDefaults}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-xl bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-750 transition shadow-2xs cursor-pointer"
+                    title="Isi semua kuota jenis cuti sesuai standar kantor cabang karyawan ini"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Kembalikan ke Standar Kantor</span>
+                  </button>
+                )}
+              </div>
+
+              {/* ── 3. BODY TAB KONTEN ── */}
+              <div className="flex-1 overflow-y-auto p-6 space-y-5">
+                
+                {/* ════ TAB 1: MATRIKS SALDO & ALOKASI KUOTA ════ */}
+                {userLeaveDetailModal.activeTab === 'matrix' && (
+                  <div className="space-y-4">
+                    {/* Stat Cards Ringkasan */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Total Kuota Diberikan</p>
+                        <p className="text-xl font-bold font-mono text-slate-800 dark:text-slate-100 leading-tight">
+                          {totalDistributedQuota} <span className="text-xs font-normal text-slate-400 font-sans">hari</span>
+                        </p>
+                        <p className="text-[10px] text-slate-400">Dari {totalActiveLeaveTypes} jenis cuti aktif</p>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Cuti Telah Terpakai</p>
+                        <p className="text-xl font-bold font-mono text-slate-800 dark:text-slate-100 leading-tight">
+                          {totalUsedQuota} <span className="text-xs font-normal text-slate-400 font-sans">hari</span>
+                        </p>
+                        <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-medium">Periode berjalan aktif</p>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Estimasi Sisa Saldo</p>
+                        <p className="text-xl font-bold font-mono text-teal-600 dark:text-teal-400 leading-tight">
+                          {totalRemainingQuota} <span className="text-xs font-normal text-slate-400 font-sans">hari</span>
+                        </p>
+                        <p className="text-[10px] text-slate-400">Tersedia untuk diajukan</p>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Status Modifikasi</p>
+                        <p className="text-xl font-bold font-mono text-indigo-600 dark:text-indigo-400 leading-tight">
+                          {modifiedCount} <span className="text-xs font-normal text-slate-400 font-sans">jenis</span>
+                        </p>
+                        <p className="text-[10px] text-slate-400">
+                          {modifiedCount > 0 ? 'Menunggu disimpan' : 'Semua kuota tersinkron'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Banner Info */}
+                    <div className="flex items-start gap-2.5 p-3.5 bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-100/90 dark:border-indigo-900/50 rounded-2xl text-xs text-indigo-800 dark:text-indigo-200">
+                      <Info className="w-4 h-4 shrink-0 mt-0.5 text-indigo-600 dark:text-indigo-400" />
+                      <div className="space-y-1 text-[11px] leading-relaxed">
+                        <p><strong>Tips Pengelolaan Kuota:</strong> Alokasi kuota 0 hari berarti hak jenis cuti tersebut dinonaktifkan untuk karyawan ini.</p>
+                        <p className="text-indigo-600 dark:text-indigo-300">
+                          Khusus <strong>Izin (Pribadi)</strong> tidak memiliki batasan kuota tahunan (<em>unlimited</em>) sehingga tidak dapat diedit kuotanya. Pemakaian hari akan terus bertambah setiap kali permohonan disetujui dan otomatis tereset kembali ke 0 saat tanggal reset tahunan kantor atau reset manual oleh HRD.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Tabel Matriks Jenis Cuti */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
+                      <div className="overflow-x-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-700/80 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                              <th className="py-3 px-3.5">Jenis Cuti</th>
+                              <th className="py-3 px-3">Kelayakan Profil</th>
+                              <th className="py-3 px-3 text-center">Standar Kantor</th>
+                              <th className="py-3 px-3 text-center">Alokasi Karyawan</th>
+                              <th className="py-3 px-3 text-center">Terpakai</th>
+                              <th className="py-3 px-3 text-center">Sisa</th>
+                              <th className="py-3 px-3.5 text-center">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800/70 font-sans">
+                            {Object.entries(LEAVE_TYPE_LABELS).map(([leaveType, label]) => {
+                              if (leaveType === 'wfh') return null; // WFH adalah mode presensi, bukan jenis hak cuti
+
+                              const isIzin = leaveType === 'izin';
+                              const item = userLeaveDetailModal.balancesMap[leaveType] || {
+                                quota: 0,
+                                used: 0,
+                                remaining: 0,
+                                officeDefault: 0,
+                              };
+                              const isModified = !isIzin && item.quota !== userLeaveDetailModal.originalBalancesMap[leaveType];
+                              const eligibility = isIzin
+                                ? { isEligible: true, note: 'Berlaku untuk seluruh karyawan tanpa batas kuota' }
+                                : checkLeaveEligibility(leaveType, userProfile);
+                              const isZero = !isIzin && item.quota === 0;
+
+                              return (
+                                <tr
+                                  key={leaveType}
+                                  className={`transition-colors hover:bg-slate-50/70 dark:hover:bg-slate-800/40 ${
+                                    isModified ? 'bg-indigo-50/30 dark:bg-indigo-950/20' : ''
+                                  }`}
+                                >
+                                  {/* Kolom Jenis Cuti */}
+                                  <td className="py-3 px-3.5">
+                                    <div className="flex items-center gap-2">
+                                      <div className={`p-1.5 rounded-lg shrink-0 ${
+                                        leaveType === 'cuti'
+                                          ? 'bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400'
+                                          : leaveType === 'sakit'
+                                          ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400'
+                                          : isIzin
+                                          ? 'bg-amber-50 dark:bg-amber-950/50 text-amber-600 dark:text-amber-400'
+                                          : 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400'
+                                      }`}>
+                                        <CalendarDays className="w-3.5 h-3.5" />
+                                      </div>
+                                      <div className="min-w-0">
+                                        <div className="flex items-center gap-1.5">
+                                          <p className="font-bold text-slate-800 dark:text-slate-100 text-xs">
+                                            {isIzin ? 'Izin (Pribadi)' : label}
+                                          </p>
+                                          {isIzin && (
+                                            <span className="text-[9px] font-semibold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                                              Tanpa Limit
+                                            </span>
+                                          )}
+                                        </div>
+                                        <p className="text-[10px] text-slate-400 font-mono">
+                                          {leaveType}
+                                        </p>
+                                      </div>
+                                    </div>
+                                  </td>
+
+                                  {/* Kolom Kelayakan Profil */}
+                                  <td className="py-3 px-3">
+                                    {eligibility.isEligible ? (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 border border-emerald-200/80 dark:border-emerald-800">
+                                        <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
+                                        <span>Eligible</span>
+                                      </span>
+                                    ) : (
+                                      <span
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400 border border-amber-200/80 dark:border-amber-800 cursor-help"
+                                        title={eligibility.note}
+                                      >
+                                        <AlertCircle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
+                                        <span>Tidak Sesuai Profil</span>
+                                      </span>
+                                    )}
+                                  </td>
+
+                                  {/* Kolom Standar Kantor */}
+                                  <td className="py-3 px-3 text-center text-xs font-mono text-slate-500 dark:text-slate-400">
+                                    {isIzin ? (
+                                      <span className="text-slate-400 italic text-[11px]" title="Tidak dibatasi standar kuota kantor">—</span>
+                                    ) : (
+                                      `${item.officeDefault} hr`
+                                    )}
+                                  </td>
+
+                                  {/* Kolom Alokasi Kuota Karyawan */}
+                                  <td className="py-2 px-3 text-center">
+                                    {isIzin ? (
+                                      <span
+                                        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-xs font-bold border border-amber-200/80 dark:border-amber-800/60 select-none cursor-default shadow-2xs"
+                                        title="Izin pribadi tidak memiliki batasan kuota (unlimited). Kuota tidak dapat diedit dan akan terakumulasi otomatis."
+                                      >
+                                        <Infinity className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
+                                        <span>Tanpa Limit</span>
+                                      </span>
+                                    ) : (
+                                      <div className="inline-flex items-center gap-1">
+                                        <input
+                                          type="number"
+                                          min={0}
+                                          max={365}
+                                          value={item.quota}
+                                          onChange={(e) => {
+                                            const val = Math.max(0, parseInt(e.target.value) || 0);
+                                            setUserLeaveDetailModal(prev => {
+                                              if (!prev) return null;
+                                              return {
+                                                ...prev,
+                                                balancesMap: {
+                                                  ...prev.balancesMap,
+                                                  [leaveType]: {
+                                                    ...prev.balancesMap[leaveType],
+                                                    quota: val,
+                                                    remaining: Math.max(0, val - item.used),
+                                                  }
+                                                }
+                                              };
+                                            });
+                                          }}
+                                          className={`w-16 py-1 px-2 text-center text-xs font-bold font-mono rounded-xl border transition-all ${
+                                            isModified
+                                              ? 'border-indigo-500 ring-2 ring-indigo-400/20 bg-indigo-50/50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300'
+                                              : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100'
+                                          }`}
+                                        />
+                                        <span className="text-[10px] text-slate-400">hr</span>
+                                      </div>
+                                    )}
+                                  </td>
+
+                                  {/* Kolom Terpakai */}
+                                  <td className="py-3 px-3 text-center text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">
+                                    {item.used} hr
+                                  </td>
+
+                                  {/* Kolom Sisa */}
+                                  <td className="py-3 px-3 text-center text-xs font-mono font-bold">
+                                    {isIzin ? (
+                                      <span className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 text-xs font-bold" title="Tidak dibatasi kuota tahunan">
+                                        <Infinity className="w-3.5 h-3.5" />
+                                        <span>Tanpa Batas</span>
+                                      </span>
+                                    ) : (
+                                      <span className="text-teal-600 dark:text-teal-400">
+                                        {isZero ? '0' : Math.max(0, item.quota - item.used)} hr
+                                      </span>
+                                    )}
+                                  </td>
+
+                                  {/* Kolom Status */}
+                                  <td className="py-3 px-3.5 text-center">
+                                    {isIzin ? (
+                                      <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300 font-semibold border border-indigo-200/80 dark:border-indigo-800/60">
+                                        Akumulasi Aktif
+                                      </span>
+                                    ) : isZero ? (
+                                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 font-medium">
+                                        Nonaktif
+                                      </span>
+                                    ) : item.remaining <= 0 ? (
+                                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 font-semibold">
+                                        Habis
+                                      </span>
+                                    ) : (
+                                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-teal-50 text-teal-700 dark:bg-teal-950/40 dark:text-teal-400 font-semibold">
+                                        Aktif
+                                      </span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* ════ TAB 2: LAPORAN RIWAYAT CUTI TERPAKAI ════ */}
+                {userLeaveDetailModal.activeTab === 'history' && (
+                  <div className="space-y-4">
+                    {/* Ringkasan Stat Cuti Karyawan */}
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Total Pengajuan Cuti</p>
+                        <p className="text-xl font-bold font-mono text-slate-800 dark:text-slate-100 leading-tight">
+                          {userLeaveDetailModal.leavesHistory.length} <span className="text-xs font-normal text-slate-400 font-sans">kali</span>
+                        </p>
+                        <p className="text-[10px] text-slate-400">Seluruh riwayat pengajuan</p>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Total Hari Disetujui</p>
+                        <p className="text-xl font-bold font-mono text-teal-600 dark:text-teal-400 leading-tight">
+                          {userLeaveDetailModal.historySummary.totalDays} <span className="text-xs font-normal text-slate-400 font-sans">hari</span>
+                        </p>
+                        <p className="text-[10px] text-teal-600 dark:text-teal-400 font-medium">Cuti sah terpakai</p>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Menunggu Persetujuan</p>
+                        <p className="text-xl font-bold font-mono text-amber-500 leading-tight">
+                          {userLeaveDetailModal.historySummary.pending} <span className="text-xs font-normal text-slate-400 font-sans">pengajuan</span>
+                        </p>
+                        <p className="text-[10px] text-amber-500 font-medium">Perlu review SPV/HRD</p>
+                      </div>
+
+                      <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                        <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Pengajuan Ditolak</p>
+                        <p className="text-xl font-bold font-mono text-rose-500 leading-tight">
+                          {userLeaveDetailModal.historySummary.rejected} <span className="text-xs font-normal text-slate-400 font-sans">pengajuan</span>
+                        </p>
+                        <p className="text-[10px] text-slate-400">Tidak memotong saldo</p>
+                      </div>
+                    </div>
+
+                    {/* Filter & Search Bar */}
+                    <div className="flex items-center justify-between gap-3 flex-wrap bg-slate-50 dark:bg-slate-800/50 p-3 rounded-2xl border border-slate-100 dark:border-slate-800">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {/* Filter Status */}
+                        <select
+                          value={userLeaveDetailModal.historyFilterStatus}
+                          onChange={(e) => setUserLeaveDetailModal(prev => prev ? { ...prev, historyFilterStatus: e.target.value } : null)}
+                          className="py-1.5 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                        >
+                          <option value="all">Semua Status</option>
+                          <option value="approved">Disetujui</option>
+                          <option value="pending">Menunggu Persetujuan</option>
+                          <option value="rejected">Ditolak</option>
+                        </select>
+
+                        {/* Filter Jenis Cuti */}
+                        <select
+                          value={userLeaveDetailModal.historyFilterType}
+                          onChange={(e) => setUserLeaveDetailModal(prev => prev ? { ...prev, historyFilterType: e.target.value } : null)}
+                          className="py-1.5 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 max-w-[200px]"
+                        >
+                          <option value="all">Semua Jenis Cuti</option>
+                          {Object.entries(LEAVE_TYPE_LABELS).map(([k, label]) => (
+                            <option key={k} value={k}>{label}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="relative">
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                        <input
+                          type="text"
+                          placeholder="Cari alasan / tanggal..."
+                          value={userLeaveDetailModal.historySearch}
+                          onChange={(e) => setUserLeaveDetailModal(prev => prev ? { ...prev, historySearch: e.target.value } : null)}
+                          className="pl-8 pr-3 py-1.5 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400 w-52"
+                        />
+                      </div>
+                    </div>
+
+                    {/* Konten Daftar Riwayat Cuti */}
+                    {userLeaveDetailModal.loadingHistory ? (
+                      <div className="p-12 text-center space-y-2">
+                        <Loader2 className="w-8 h-8 text-indigo-500 animate-spin mx-auto" />
+                        <p className="text-xs text-slate-500">Memuat riwayat pengajuan cuti karyawan...</p>
+                      </div>
+                    ) : filteredLeavesHistory.length === 0 ? (
+                      <div className="p-10 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl text-center space-y-2">
+                        <CalendarCheck className="w-8 h-8 text-slate-300 dark:text-slate-600 mx-auto" />
+                        <p className="text-xs font-semibold text-slate-600 dark:text-slate-300">
+                          {userLeaveDetailModal.leavesHistory.length === 0
+                            ? 'Karyawan ini belum pernah mengajukan cuti, izin, atau sakit.'
+                            : 'Tidak ada riwayat cuti yang cocok dengan filter yang dipilih.'}
+                        </p>
+                        <p className="text-[11px] text-slate-400">Semua permohonan cuti resmi akan tercatat di sini secara otomatis.</p>
+                      </div>
+                    ) : (
+                      <div className="space-y-2.5">
+                        {filteredLeavesHistory.map((item: any) => {
+                          const isApproved = item.status === 'approved';
+                          const isPending = item.status === 'pending';
+                          const isRejected = item.status === 'rejected';
+
+                          return (
+                            <div
+                              key={item.id}
+                              className="p-3.5 rounded-2xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 hover:shadow-xs transition space-y-2.5"
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/40">
+                                      {getLeaveTypeLabel(item.leave_type)}
+                                    </span>
+                                    <span className="text-xs font-bold text-slate-800 dark:text-slate-100">
+                                      {item.start_date} {item.end_date && item.end_date !== item.start_date ? `s.d. ${item.end_date}` : ''}
+                                    </span>
+                                    <span className="font-mono text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 font-bold text-slate-700 dark:text-slate-200">
+                                      {item.total_days} hari
+                                    </span>
+                                  </div>
+
+                                  {item.reason && (
+                                    <p className="text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/40 p-2 rounded-xl border border-slate-100 dark:border-slate-800/60 leading-relaxed">
+                                      "{item.reason}"
+                                    </p>
+                                  )}
+                                </div>
+
+                                <div className="shrink-0 text-right space-y-1">
+                                  {isApproved && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border border-emerald-200/80 dark:border-emerald-800">
+                                      <Check className="w-3.5 h-3.5" />
+                                      Disetujui
+                                    </span>
+                                  )}
+                                  {isPending && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-400 border border-amber-200/80 dark:border-amber-800">
+                                      <Clock className="w-3.5 h-3.5" />
+                                      Menunggu
+                                    </span>
+                                  )}
+                                  {isRejected && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400 border border-rose-200/80 dark:border-rose-800">
+                                      <X className="w-3.5 h-3.5" />
+                                      Ditolak
+                                    </span>
+                                  )}
+
+                                  {item.created_at && (
+                                    <p className="text-[10px] text-slate-400">
+                                      Diajukan: {new Date(item.created_at).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' })}
+                                    </p>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Footer detail approval & dokumen surat dokter */}
+                              <div className="flex items-center justify-between gap-2 pt-2 border-t border-slate-100 dark:border-slate-800/80 text-[11px] text-slate-500 flex-wrap">
+                                <div>
+                                  {isApproved && item.approved_by && (
+                                    <span>Disetujui oleh: <strong className="text-slate-700 dark:text-slate-200">{item.approved_by}</strong></span>
+                                  )}
+                                  {isRejected && item.rejection_reason && (
+                                    <span className="text-rose-600 dark:text-rose-400">Alasan penolakan: <em>{item.rejection_reason}</em></span>
+                                  )}
+                                  {item.holiday_id && (
+                                    <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/50 text-amber-700 dark:text-amber-400 font-semibold text-[10px]">
+                                      Cuti Bersama (Kantor)
+                                    </span>
+                                  )}
+                                </div>
+
+                                {item.has_document && (
+                                  <button
+                                    type="button"
+                                    onClick={() => openLeaveDocument(item.id, userLeaveDetailModal.userName)}
+                                    disabled={docLoadingId === item.id}
+                                    className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-semibold rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 dark:bg-indigo-950/50 dark:hover:bg-indigo-900/60 dark:text-indigo-300 transition cursor-pointer"
+                                  >
+                                    {docLoadingId === item.id ? (
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                    ) : (
+                                      <FileText className="w-3.5 h-3.5" />
+                                    )}
+                                    <span>Lihat Bukti Surat Dokter</span>
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              </div>
+
+              {/* ── 4. STICKY MODAL FOOTER ── */}
+              <div className="px-6 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50/80 dark:bg-slate-900/80 flex items-center justify-between gap-3">
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  {userLeaveDetailModal.activeTab === 'matrix' ? (
+                    modifiedCount > 0 ? (
+                      <span className="font-semibold text-indigo-600 dark:text-indigo-400">
+                        {modifiedCount} alokasi kuota jenis cuti telah dimodifikasi (belum disimpan).
+                      </span>
+                    ) : (
+                      <span>Seluruh nilai kuota sesuai data tersimpan di sistem.</span>
+                    )
+                  ) : (
+                    <span>Menampilkan {filteredLeavesHistory.length} dari {userLeaveDetailModal.leavesHistory.length} riwayat pengajuan cuti.</span>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setUserLeaveDetailModal(null)}
+                    disabled={isSavingUserDetailBalances}
+                    className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+                  >
+                    Tutup
+                  </button>
+
+                  {userLeaveDetailModal.activeTab === 'matrix' && (
+                    <button
+                      type="button"
+                      onClick={handleSaveUserDetailBalances}
+                      disabled={isSavingUserDetailBalances || modifiedCount === 0}
+                      className="flex items-center gap-1.5 px-5 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                    >
+                      {isSavingUserDetailBalances ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>Menyimpan Saldo...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Check className="w-4 h-4" />
+                          <span>Simpan Semua Perubahan ({modifiedCount})</span>
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* ── Modal Penyesuaian Saldo Cuti Individu Karyawan ── */}
+      {editUserBalanceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl shadow-2xl max-w-md w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400">
+                  <SlidersHorizontal className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Sesuaikan Saldo Cuti</h3>
+                  <p className="text-[11px] text-slate-400">Atur kuota khusus untuk karyawan ini</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditUserBalanceModal(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4 text-xs">
+              {/* Profil Karyawan Info */}
+              <div className="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                <p className="font-bold text-slate-800 dark:text-slate-100 text-sm">
+                  {editUserBalanceModal.user_name}
+                  {editUserBalanceModal.employee_code && (
+                    <span className="font-mono text-xs font-normal text-slate-400 ml-1.5">
+                      ({editUserBalanceModal.employee_code})
+                    </span>
+                  )}
+                </p>
+                {editUserBalanceModal.office_name && (
+                  <p className="text-[11px] text-slate-400 flex items-center gap-1">
+                    <Building2 className="w-3 h-3 text-slate-400" />
+                    {editUserBalanceModal.office_name}
+                  </p>
+                )}
+              </div>
+
+              {/* Pilihan Jenis Cuti */}
+              <div className="space-y-1.5">
+                <label className="font-semibold text-slate-700 dark:text-slate-300">
+                  Pilih Jenis Cuti:
+                </label>
+                <select
+                  value={editUserBalanceModal.leave_type}
+                  onChange={(e) => {
+                    const newType = e.target.value;
+                    const foundUserBalances = balances.filter(b => b.user_id === editUserBalanceModal.user_id);
+                    const matching = foundUserBalances.find(b => b.leave_type === newType);
+                    setEditUserBalanceModal({
+                      ...editUserBalanceModal,
+                      leave_type: newType,
+                      quota: matching?.quota ?? (newType === 'cuti' ? 12 : newType === 'cuti_setengah_hari' ? 10 : 0),
+                      used: matching?.used ?? 0,
+                      remaining: matching?.remaining ?? 0,
+                    });
+                  }}
+                  className="w-full py-2 px-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 font-medium cursor-pointer"
+                >
+                  {Object.entries(LEAVE_TYPE_LABELS)
+                    .filter(([k]) => k !== 'wfh' && k !== 'izin')
+                    .map(([k, label]) => (
+                      <option key={k} value={k}>
+                        {label} ({k})
+                      </option>
+                    ))}
+                </select>
+
+                {LEAVE_TYPE_ELIGIBILITY_MAP[editUserBalanceModal.leave_type] && (
+                  <div className="flex items-start gap-1.5 p-2 rounded-lg bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/30 text-[10px] text-indigo-700 dark:text-indigo-300">
+                    <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-indigo-600 dark:text-indigo-400" />
+                    <p>
+                      <strong>Ketentuan Syarat Karyawan: </strong>
+                      {LEAVE_TYPE_ELIGIBILITY_MAP[editUserBalanceModal.leave_type].note}
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Input Kuota Baru */}
+              <div className="space-y-1.5">
+                <label className="font-semibold text-slate-700 dark:text-slate-300 flex items-center justify-between">
+                  <span>Alokasi Kuota (Hari):</span>
+                  <span className="text-[10px] text-slate-400">0 = Kuota Nonaktif</span>
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={0}
+                    max={365}
+                    value={editUserBalanceModal.quota}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setEditUserBalanceModal({
+                        ...editUserBalanceModal,
+                        quota: isNaN(val) ? 0 : val,
+                      });
+                    }}
+                    className="w-full py-2 px-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 font-mono font-bold text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 font-medium text-xs">
+                    hari
+                  </span>
+                </div>
+              </div>
+
+              {/* Status Pemakaian Saat Ini */}
+              <div className="grid grid-cols-2 gap-2 text-center pt-1">
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+                  <p className="text-[10px] text-slate-400 uppercase font-semibold">Telah Dipakai</p>
+                  <p className="text-sm font-bold text-slate-700 dark:text-slate-200 mt-0.5">
+                    {editUserBalanceModal.used} <span className="text-[10px] font-normal text-slate-400">hari</span>
+                  </p>
+                </div>
+                <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
+                  <p className="text-[10px] text-slate-400 uppercase font-semibold">Estimasi Sisa</p>
+                  <p className="text-sm font-bold text-teal-600 dark:text-teal-400 mt-0.5">
+                    {Math.max(0, editUserBalanceModal.quota - editUserBalanceModal.used)}{' '}
+                    <span className="text-[10px] font-normal text-slate-400">hari</span>
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setEditUserBalanceModal(null)}
+                disabled={isSavingUserBalance}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveUserBalance}
+                disabled={isSavingUserBalance}
+                className="flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition disabled:opacity-50 cursor-pointer"
+              >
+                {isSavingUserBalance ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menyimpan...</span>
+                  </>
+                ) : (
+                  <>
+                    <Check className="w-3.5 h-3.5" />
+                    <span>Simpan Saldo</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Rincian Snapshot Cuti Khusus Periode Lalu ── */}
+      {viewingSnapshotHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl shadow-2xl max-w-xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-purple-50 dark:bg-purple-950/50 text-purple-600 dark:text-purple-400">
+                  <Archive className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">Snapshot Cuti Khusus</h3>
+                  <p className="text-[11px] text-slate-400">Arsip rincian hak cuti periode lampau yang tersimpan saat reset</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingSnapshotHistory(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Info Karyawan & Periode */}
+            <div className="p-6 space-y-4 text-xs">
+              <div className="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                <div className="flex items-center justify-between">
+                  <p className="font-bold text-slate-800 dark:text-slate-100 text-sm">
+                    {viewingSnapshotHistory.user_name}
+                  </p>
+                  <span className="font-mono text-[10px] text-slate-400">
+                    {viewingSnapshotHistory.employee_code}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px] text-slate-400 flex-wrap">
+                  <span>{viewingSnapshotHistory.office_name}</span>
+                  <span>•</span>
+                  <span>Periode: <strong>{viewingSnapshotHistory.period_label}</strong></span>
+                  <span>•</span>
+                  <span>Reset: {viewingSnapshotHistory.reset_date_formatted || fmtDate(viewingSnapshotHistory.reset_date)}</span>
+                </div>
+              </div>
+
+              {/* Tabel Snapshot Cuti Khusus */}
+              <div className="border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden">
+                <table className="w-full text-xs text-left">
+                  <thead>
+                    <tr className="bg-slate-50/70 dark:bg-slate-800/50 border-b border-slate-100 dark:border-slate-800 text-slate-500">
+                      <th className="py-2.5 px-3 font-semibold">Jenis Cuti</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">Kuota Awal</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">Terpakai</th>
+                      <th className="py-2.5 px-3 font-semibold text-center">Sisa Hangus</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 font-mono">
+                    {Object.entries(viewingSnapshotHistory.leave_types_snapshot || {}).map(([type, snap]: [string, any]) => (
+                      <tr key={type} className="hover:bg-slate-50/40 dark:hover:bg-slate-800/20">
+                        <td className="py-2.5 px-3 font-sans">
+                          <p className="font-bold text-slate-700 dark:text-slate-200">{getLeaveTypeLabel(type)}</p>
+                          <p className="text-[9px] text-slate-400 font-mono">{type}</p>
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-slate-600 dark:text-slate-400">
+                          {snap?.quota ?? snap?.quota_days ?? 0} hr
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-indigo-600 dark:text-indigo-400 font-bold">
+                          {snap?.used ?? 0} hr
+                        </td>
+                        <td className="py-2.5 px-3 text-center text-amber-600 dark:text-amber-400 font-bold">
+                          {snap?.remaining ?? 0} hr
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setViewingSnapshotHistory(null)}
+                className="px-4 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Dialog Panduan & Regulasi Pengaturan Cuti Kantor */}
+      {showLeaveInfoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-5 bg-slate-950/70 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl w-full max-w-5xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Header Modal */}
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-start justify-between gap-4 bg-slate-50/50 dark:bg-slate-900/50">
+              <div className="flex items-center gap-3">
+                <div className="p-2.5 rounded-2xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow-md shadow-indigo-500/20">
+                  <BookOpen className="w-5 h-5" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-base font-bold text-slate-900 dark:text-slate-100">
+                      Panduan &amp; Regulasi Pengaturan Cuti Kantor
+                    </h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800/60">
+                      Standar UU Ketenagakerjaan &amp; UU KIA
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    Dokumentasi lengkap fungsi halaman, aturan saldo &amp; siklus tahunan, validasi otomatis profil karyawan, serta matriks 15 jenis cuti resmi.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowLeaveInfoModal(false)}
+                className="p-2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+                title="Tutup Modal"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Navigasi Tab Segmented */}
+            <div className="px-6 pt-3 pb-2 border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center gap-2 overflow-x-auto">
+              <button
+                type="button"
+                onClick={() => setLeaveInfoModalTab('overview')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                  leaveInfoModalTab === 'overview'
+                    ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/20'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+                <span>1. Fungsi Halaman &amp; Siklus Kantor</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setLeaveInfoModalTab('validation')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                  leaveInfoModalTab === 'validation'
+                    ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/20'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <ShieldCheck className="w-4 h-4" />
+                <span>2. Sistem Validasi Profil Karyawan</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setLeaveInfoModalTab('catalog')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold transition cursor-pointer shrink-0 ${
+                  leaveInfoModalTab === 'catalog'
+                    ? 'bg-indigo-600 text-white shadow-sm shadow-indigo-600/20'
+                    : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'
+                }`}
+              >
+                <FileText className="w-4 h-4" />
+                <span>3. Matriks 15 Jenis Cuti Resmi UU</span>
+              </button>
+            </div>
+
+            {/* Isi Konten Tab */}
+            <div className="p-6 overflow-y-auto flex-1 min-h-0 space-y-6 text-slate-700 dark:text-slate-300">
+              {/* TAB 1: OVERVIEW HALAMAN & KEBIJAKAN KANTOR */}
+              {leaveInfoModalTab === 'overview' && (
+                <div className="space-y-6">
+                  {/* Hero Pengantar */}
+                  <div className="bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-950/30 dark:to-purple-950/20 border border-indigo-100 dark:border-indigo-900/40 rounded-2xl p-4.5">
+                    <h4 className="text-sm font-bold text-indigo-950 dark:text-indigo-200 flex items-center gap-2">
+                      <Sparkles className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                      Otonomi Kebijakan Cuti &amp; Saldo Cabang Kantor
+                    </h4>
+                    <p className="text-xs text-indigo-900/80 dark:text-indigo-300/80 leading-relaxed mt-1.5">
+                      Setiap kantor cabang dapat memiliki karakteristik operasional yang berbeda (misalnya kantor pusat korporat vs gudang logistik vs pabrik produksi). Tab ini memungkinkan HRD/Superadmin menetapkan parameter kebijakan cuti spesifik untuk kantor <strong>{leaveTypeSettingsOfficeName || 'cabang yang dipilih'}</strong> tanpa mengganggu kantor cabang lain.
+                    </p>
+                  </div>
+
+                  {/* 4 Pilar Fitur Halaman */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Pilar 1 */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                      <div className="flex items-center gap-2 text-teal-600 dark:text-teal-400 font-bold text-xs">
+                        <CalendarDays className="w-4 h-4" />
+                        <h5>Saldo Cuti Default (Hari/Tahun)</h5>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Jumlah kuota hak cuti tahunan awal yang dialokasikan ke profil karyawan saat akun mereka pertama kali diaktifkan atau dipindahkan ke cabang ini (standar umum ketenagakerjaan adalah <strong>12 hari kerja</strong>).
+                      </p>
+                    </div>
+
+                    {/* Pilar 2 */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                      <div className="flex items-center gap-2 text-indigo-600 dark:text-indigo-400 font-bold text-xs">
+                        <History className="w-4 h-4" />
+                        <h5>Siklus Reset Tahunan (Anniversary Reset)</h5>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Tanggal otomatis di mana saldo cuti tahunan karyawan di-reset. Saat tanggal tersebut tiba, sisa cuti periode berjalan otomatis diarsipkan ke <em>Riwayat Saldo Sebelumnya</em> untuk menjaga akuntabilitas audit, dan kuota baru diisikan kembali secara otomatis.
+                      </p>
+                    </div>
+
+                    {/* Pilar 3 */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                      <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400 font-bold text-xs">
+                        <Users className="w-4 h-4" />
+                        <h5>Persetujuan Berjenjang (Multi-Level Approval)</h5>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Jika diaktifkan, pengajuan izin/cuti wajib diverifikasi dan disetujui oleh <strong>Atasan Langsung (SPV)</strong> karyawan terlebih dahulu sebelum diteruskan ke <strong>HRD</strong> untuk persetujuan akhir dan pemotongan saldo.
+                      </p>
+                    </div>
+
+                    {/* Pilar 4 */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                      <div className="flex items-center gap-2 text-purple-600 dark:text-purple-400 font-bold text-xs">
+                        <SlidersHorizontal className="w-4 h-4" />
+                        <h5>Aktivasi Cuti, Kuota &amp; Dokumen</h5>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        3 jenis dasar (<em>Cuti Tahunan, Izin, WFH</em>) selalu aktif. <strong>Cuti Sakit</strong> serta 11 jenis cuti khusus berbayar lainnya dapat dikonfigurasi per kantor cabang (menentukan standar kuota hari, kewajiban berkas surat dokter/dokumen pendukung, serta catatan SOP kebijakan kantor).
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 2: SISTEM VALIDASI PROFIL KARYAWAN OTOMATIS */}
+              {leaveInfoModalTab === 'validation' && (
+                <div className="space-y-6">
+                  <div className="bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 rounded-2xl p-4 space-y-1.5">
+                    <h4 className="text-xs font-bold text-amber-900 dark:text-amber-200 flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                      Proteksi &amp; Validasi Otomatis Data Master Karyawan
+                    </h4>
+                    <p className="text-xs text-amber-800/90 dark:text-amber-300/90 leading-relaxed">
+                      Sistem ExpenseFlow mencegah kesalahan manusia (human error) dan penyalahgunaan hak cuti dengan memvalidasi data profil master karyawan secara real-time saat formulir pengajuan izin/cuti disubmit oleh karyawan.
+                    </p>
+                  </div>
+
+                  {/* 3 Validasi Kunci */}
+                  <div className="space-y-3.5">
+                    {/* Validasi 1: Gender */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4.5 bg-white dark:bg-slate-900 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <h5 className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-rose-100 dark:bg-rose-950/60 text-rose-700 dark:text-rose-300 flex items-center justify-center text-xs font-bold">1</span>
+                          Validasi Pembatasan Gender (Gender Restriction)
+                        </h5>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200">
+                          Khusus Gender Tertentu
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Sistem memeriksa atribut <code>gender</code> pada data master karyawan:
+                      </p>
+                      <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-1.5 list-disc list-inside pl-1">
+                        <li>
+                          <strong>Khusus Perempuan:</strong> <em>Cuti Hamil &amp; Melahirkan (90 hari)</em>, <em>Cuti Keguguran (45 hari)</em>, dan <em>Cuti Haid (2 hari)</em>. Karyawan laki-laki yang mencoba mengajukan jenis ini otomatis ditolak oleh sistem dengan penjelasan ramah.
+                        </li>
+                        <li>
+                          <strong>Khusus Laki-laki:</strong> <em>Cuti Ayah (Pendampingan Istri Melahirkan / Keguguran - 2 hari)</em>. Karyawan perempuan tidak dapat mengajukan Cuti Ayah.
+                        </li>
+                        <li>
+                          <strong>Semua Gender:</strong> Cuti Tahunan, Menikah, Duka Cita Keluarga, Ibadah Keagamaan, Sakit, Izin, dan WFH terbuka untuk seluruh gender.
+                        </li>
+                      </ul>
+                    </div>
+
+                    {/* Validasi 2: Status Pernikahan */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4.5 bg-white dark:bg-slate-900 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <h5 className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 flex items-center justify-center text-xs font-bold">2</span>
+                          Validasi Status Pernikahan (Marital Status)
+                        </h5>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border border-purple-200">
+                          Wajib Berstatus Menikah (Married)
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Cuti yang hak dasarnya terkait langsung dengan pasangan sah dan anak wajib berstatus <code>married</code> (Sudah Menikah) pada profil karyawan:
+                      </p>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+                        <div className="p-2.5 rounded-xl bg-purple-50/50 dark:bg-purple-950/20 border border-purple-100 dark:border-purple-900/30">
+                          <p className="font-semibold text-purple-900 dark:text-purple-300">💍 Cuti Keluarga Pasangan &amp; Anak:</p>
+                          <p className="text-slate-600 dark:text-slate-400 text-[11px] mt-0.5">
+                            • Cuti Hamil &amp; Melahirkan<br />
+                            • Cuti Keguguran<br />
+                            • Cuti Ayah (Istri Melahirkan/Keguguran)<br />
+                            • Menikahkan Anak Kandung<br />
+                            • Mengkhitankan / Membaptiskan Anak
+                          </p>
+                        </div>
+                        <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-200 dark:border-slate-700">
+                          <p className="font-semibold text-slate-800 dark:text-slate-200">ℹ️ Karyawan Belum Menikah (Single):</p>
+                          <p className="text-slate-600 dark:text-slate-400 text-[11px] mt-0.5">
+                            Jika mengajukan cuti-cuti di samping, pengajuan otomatis ditolak: <em>"Cuti ini hanya dapat diajukan oleh karyawan yang berstatus sudah menikah pada profil kepegawaian."</em>
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Validasi 3: Status Kehamilan */}
+                    <div className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4.5 bg-white dark:bg-slate-900 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <h5 className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                          <span className="w-6 h-6 rounded-full bg-pink-100 dark:bg-pink-950/60 text-pink-700 dark:text-pink-300 flex items-center justify-center text-xs font-bold">3</span>
+                          Validasi Status Kehamilan (Active Pregnancy)
+                        </h5>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-pink-50 text-pink-700 dark:bg-pink-950/40 dark:text-pink-300 border border-pink-200">
+                          Khusus Cuti Hamil
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                        Pengajuan <strong>Cuti Hamil &amp; Melahirkan</strong> mewajibkan penanda status hamil aktif (<code>is_pregnant === true</code>) pada master profil data karyawan. Jika belum aktif, HRD atau karyawan dapat memperbarui data di tab Master Karyawan terlebih dahulu.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB 3: KATALOG MASTER 15 JENIS CUTI RESMI UU */}
+              {leaveInfoModalTab === 'catalog' && (
+                <div className="space-y-4">
+                  {/* Search Filter Cuti */}
+                  <div className="flex items-center justify-between gap-3 flex-wrap sm:flex-nowrap">
+                    <div className="relative flex-1 min-w-[240px]">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                      <input
+                        type="text"
+                        placeholder="Cari jenis cuti, syarat, atau dasar hukum UU..."
+                        value={leaveInfoSearch}
+                        onChange={(e) => setLeaveInfoSearch(e.target.value)}
+                        className="w-full pl-9 pr-3 py-2 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-indigo-400"
+                      />
+                    </div>
+                    <span className="text-[11px] text-slate-400 shrink-0">
+                      Total 15 Jenis Cuti Resmi
+                    </span>
+                  </div>
+
+                  {/* Grid Matriks Regulasi Cuti */}
+                  <div className="space-y-3">
+                    {LEAVE_REGULATIONS_GUIDE
+                      .filter(item => {
+                        if (!leaveInfoSearch.trim()) return true;
+                        const q = leaveInfoSearch.toLowerCase();
+                        return (
+                          item.label.toLowerCase().includes(q) ||
+                          item.type.toLowerCase().includes(q) ||
+                          item.legal.toLowerCase().includes(q) ||
+                          item.description.toLowerCase().includes(q) ||
+                          item.gender.toLowerCase().includes(q)
+                        );
+                      })
+                      .map((item) => (
+                        <div
+                          key={item.type}
+                          className="border border-slate-200 dark:border-slate-800 rounded-2xl p-4 bg-white dark:bg-slate-900 shadow-2xs space-y-2.5"
+                        >
+                          <div className="flex items-start justify-between gap-2 flex-wrap">
+                            <div>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h5 className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</h5>
+                                <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
+                                  {item.type}
+                                </span>
+                              </div>
+                              <p className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold mt-0.5">
+                                ⚖️ Dasar Hukum: {item.legal}
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {/* Kuota */}
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-teal-50 text-teal-700 dark:bg-teal-950/40 dark:text-teal-300 border border-teal-200">
+                                Kuota: {item.quota}
+                              </span>
+
+                              {/* Gender */}
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                                item.gender.includes('Perempuan')
+                                  ? 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-300 border border-rose-200'
+                                  : item.gender.includes('Laki-laki')
+                                  ? 'bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200'
+                                  : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                              }`}>
+                                {item.gender}
+                              </span>
+
+                              {/* Nikah */}
+                              {item.marital.includes('Wajib') && (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-purple-50 text-purple-700 dark:bg-purple-950/40 dark:text-purple-300 border border-purple-200">
+                                  💍 Wajib Menikah
+                                </span>
+                              )}
+
+                              {/* Dokumen */}
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
+                                item.document.includes('Wajib')
+                                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 dark:text-amber-300 border border-amber-200'
+                                  : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                              }`}>
+                                {item.document}
+                              </span>
+                            </div>
+                          </div>
+
+                          <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-slate-50 dark:bg-slate-800/40 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800">
+                            {item.description}
+                          </p>
+                        </div>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer Modal */}
+            <div className="px-6 py-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-between">
+              <div className="text-xs text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
+                <Building2 className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400" />
+                <span>Kantor Aktif: <strong>{leaveTypeSettingsOfficeName || 'Semua Kantor Cabang'}</strong></span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLeaveInfoModal(false)}
+                className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition cursor-pointer"
+              >
+                Tutup Panduan
               </button>
             </div>
           </div>
@@ -5625,6 +8140,7 @@ const HolidaysTab: React.FC<{
           </div>
         </div>
       )}
+
     </div>
   );
 };

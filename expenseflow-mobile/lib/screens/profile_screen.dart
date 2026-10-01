@@ -6,6 +6,7 @@ import '../presensi_provider.dart';
 import '../providers/auth_provider.dart';
 import 'login_screen.dart';
 import 'notification_screen.dart';
+import 'slip_gaji_screen.dart';
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -243,6 +244,20 @@ class ProfileScreen extends StatelessWidget {
                   context,
                   MaterialPageRoute(
                     builder: (context) => const NotificationScreen(),
+                  ),
+                );
+              },
+            ),
+            _buildProfileMenu(
+              context,
+              Icons.receipt_long_outlined,
+              'Slip Gaji',
+              'Lihat & unduh slip gaji Anda',
+              onTap: () {
+                Navigator.push(
+                  context,
+                  MaterialPageRoute(
+                    builder: (context) => const SlipGajiScreen(),
                   ),
                 );
               },

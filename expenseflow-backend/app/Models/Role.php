@@ -21,6 +21,7 @@ class Role extends Model
     public const MODULE_LEAVE          = 'leave';
     public const MODULE_OVERTIME       = 'overtime';
     public const MODULE_SHIFT           = 'shift';
+    public const MODULE_PAYROLL         = 'payroll';
     public const MODULE_AUDIT_LOG       = 'audit_log';
     public const MODULE_SETTINGS        = 'settings';
     public const MODULE_ROLE_MANAGEMENT = 'role_management';
@@ -35,6 +36,7 @@ class Role extends Model
         self::MODULE_LEAVE           => ['id' => self::MODULE_LEAVE, 'name' => 'Cuti & Izin', 'desc' => 'Pengajuan & kuota saldo cuti karyawan'],
         self::MODULE_OVERTIME        => ['id' => self::MODULE_OVERTIME, 'name' => 'Persetujuan Lembur', 'desc' => 'Verifikasi dan persetujuan klaim lembur'],
         self::MODULE_SHIFT           => ['id' => self::MODULE_SHIFT, 'name' => 'Shift & Penjadwalan', 'desc' => 'Roster shift, pola rotasi & kalender libur'],
+        self::MODULE_PAYROLL         => ['id' => self::MODULE_PAYROLL, 'name' => 'Penggajian', 'desc' => 'Komponen gaji, proses payroll bertahap, slip gaji & PPh21'],
         self::MODULE_AUDIT_LOG       => ['id' => self::MODULE_AUDIT_LOG, 'name' => 'Audit Log', 'desc' => 'Log audit aktivitas sensitif & rekaman login'],
         self::MODULE_SETTINGS        => ['id' => self::MODULE_SETTINGS, 'name' => 'Pengaturan Aturan', 'desc' => 'Aturan presensi, cut-off, konfigurasi kantor cabang & finance'],
         self::MODULE_ROLE_MANAGEMENT => ['id' => self::MODULE_ROLE_MANAGEMENT, 'name' => 'Manajemen Role & Hak Akses', 'desc' => 'Kelola pembuatan custom role, izin modul & peran akun'],

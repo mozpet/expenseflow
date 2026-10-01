@@ -16,6 +16,7 @@ class LeaveRequest extends Model
         'user_id',
         'company_id',
         'leave_type',
+        'half_day_session',
         'start_date',
         'end_date',
         'total_days',

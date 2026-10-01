@@ -11,6 +11,7 @@ import 'providers/receipt_provider.dart';
 import 'providers/shift_provider.dart';
 import 'providers/spv_overtime_provider.dart';
 import 'providers/spv_leave_provider.dart';
+import 'providers/payslip_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/home_screen.dart';
 import 'services/device_integrity_service.dart';
@@ -40,6 +41,7 @@ void main() async {
         ChangeNotifierProvider(create: (_) => ExpenseReportProvider()),
         ChangeNotifierProvider(create: (_) => SpvOvertimeProvider()),
         ChangeNotifierProvider(create: (_) => SpvLeaveProvider()),
+        ChangeNotifierProvider(create: (_) => PayslipProvider()),
       ],
       child: const ExpenseFlowApp(),
     ),

@@ -54,6 +54,7 @@ const OvertimeApprovalView = lazy(() => import('./components/OvertimeApprovalVie
 const DeviceChangeApprovalView = lazy(() => import('./components/DeviceChangeApprovalView').then(m => ({ default: m.DeviceChangeApprovalView })));
 const SettingsManagement = lazy(() => import('./components/SettingsManagement').then(m => ({ default: m.SettingsManagement })));
 const RecruitmentManagement = lazy(() => import('./components/RecruitmentManagement').then(m => ({ default: m.RecruitmentManagement })));
+const PayrollManagement = lazy(() => import('./components/PayrollManagement').then(m => ({ default: m.PayrollManagement })));
 
 import { 
   Inbox, 
@@ -81,7 +82,8 @@ import {
   Briefcase,
   Sun,
   Moon,
-  Laptop
+  Laptop,
+  Wallet
 } from 'lucide-react';
 
 export default function App() {
@@ -108,6 +110,16 @@ export default function App() {
       (user as any)?.can_manage_receipt
     );
   const SETTINGS_PAGES = ['setting'];
+
+  // Penggajian: dapat diakses finance & hrd (keduanya manage), admin/super_admin,
+  // atau pengguna dengan hak modul payroll. Karena tampil untuk finance DAN hrd,
+  // tombol harus di luar blok Finance (!isHrd) maupun Manajemen (!isFinance).
+  const canAccessPayroll =
+    isAdminOrSuperAdmin ||
+    isFinance ||
+    isHrd ||
+    Boolean((user as any)?.can_manage_payroll || (user as any)?.can_read_payroll);
+  const PAYROLL_PAGES = ['payroll'];
 
   // Global React States
   // HRD mendarat langsung ke Manajemen Karyawan (bukan fitur Finance).
@@ -229,7 +241,11 @@ export default function App() {
     if (!canAccessSettings && SETTINGS_PAGES.includes(activePage)) {
       setActivePage(user?.role === 'hrd' ? 'karyawan' : 'inbox');
     }
-  }, [isHrd, isFinance, isAdminOrSuperAdmin, activePage]);
+    // Pengguna tanpa hak akses Penggajian → alihkan ke halaman default.
+    if (!canAccessPayroll && PAYROLL_PAGES.includes(activePage)) {
+      setActivePage(user?.role === 'hrd' ? 'karyawan' : 'inbox');
+    }
+  }, [isHrd, isFinance, isAdminOrSuperAdmin, canAccessPayroll, activePage]);
 
   // Otomatis tandai notifikasi modul sebagai 'dibaca' ketika user membuka halamannya
   useEffect(() => {
@@ -496,6 +512,7 @@ export default function App() {
     'overtime': 'Approval Lembur Karyawan',
     'device-changes': 'Approval Pindah Perangkat',
     'rekrutmen': 'Rekrutmen & Seleksi',
+    'payroll': 'Penggajian & Slip Gaji',
   };
 
   // Render proper view based on activePage
@@ -619,6 +636,8 @@ export default function App() {
         return <DeviceChangeApprovalView onActionSuccess={() => { loadPendingDevice(true); loadNotifications(true); }} />;
       case 'rekrutmen':
         return <RecruitmentManagement />;
+      case 'payroll':
+        return <PayrollManagement onAddAuditLog={handleAddAuditLogDirect} onAddNotification={handleAddNotificationDirect} />;
       default:
         return (
           <ReceiptInbox
@@ -1094,6 +1113,36 @@ export default function App() {
                     {unreadRecruitmentCount}
                   </span>
                 )}
+              </button>
+            </div>
+            )}
+
+            {/* Group 2.75: Penggajian — tampil untuk finance & hrd (keduanya manage),
+                admin/super_admin, atau pemegang hak modul payroll. Diletakkan di luar
+                blok Finance (!isHrd) & Manajemen (!isFinance) agar terlihat oleh keduanya. */}
+            {canAccessPayroll && (
+            <div className="space-y-1.5">
+              {!isSidebarCollapsed ? (
+                <span className="px-3 text-[10px] uppercase tracking-wider text-slate-500 font-bold block mb-2 font-mono">
+                  Penggajian
+                </span>
+              ) : (
+                <div className="hidden lg:block my-2 border-t border-slate-800/60" />
+              )}
+
+              <button
+                onClick={() => navigateTo('payroll')}
+                className={`w-full text-left rounded-lg text-xs font-semibold flex items-center transition-colors duration-150 cursor-pointer ${
+                  isSidebarCollapsed ? 'lg:justify-center p-2.5' : 'gap-2.5 py-2 px-3'
+                } ${
+                  activePage === 'payroll'
+                    ? 'bg-indigo-600/15 text-white border-l-2 border-indigo-500'
+                    : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                }`}
+                title={isSidebarCollapsed ? 'Penggajian & Slip Gaji' : undefined}
+              >
+                <Wallet className="w-4 h-4 opacity-80" />
+                {(!isSidebarCollapsed || window.innerWidth < 1024) && <span>Penggajian</span>}
               </button>
             </div>
             )}

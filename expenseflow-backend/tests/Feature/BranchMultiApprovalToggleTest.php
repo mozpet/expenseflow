@@ -69,8 +69,8 @@ class BranchMultiApprovalToggleTest extends TestCase
         $spv = $this->makeUser('employee', $office);
         $employee = $this->makeUser('employee', $office, managerId: $spv->id);
 
-        $startDate = Carbon::now('Asia/Jakarta')->addDays(3)->toDateString();
-        $endDate   = Carbon::now('Asia/Jakarta')->addDays(4)->toDateString();
+        $startDate = Carbon::now('Asia/Jakarta')->next(Carbon::MONDAY)->toDateString();
+        $endDate   = Carbon::parse($startDate)->addDay()->toDateString();
 
         $res = $this->actingAs($employee, 'sanctum')->postJson('/api/v1/attendance/leave-request', [
             'leave_type' => 'izin',
@@ -106,8 +106,8 @@ class BranchMultiApprovalToggleTest extends TestCase
             'used'       => 0,
         ]);
 
-        $startDate = Carbon::now('Asia/Jakarta')->addDays(3)->toDateString();
-        $endDate   = Carbon::now('Asia/Jakarta')->addDays(4)->toDateString();
+        $startDate = Carbon::now('Asia/Jakarta')->next(Carbon::MONDAY)->toDateString();
+        $endDate   = Carbon::parse($startDate)->addDay()->toDateString();
 
         $res = $this->actingAs($employee, 'sanctum')->postJson('/api/v1/attendance/leave-request', [
             'leave_type' => 'cuti',

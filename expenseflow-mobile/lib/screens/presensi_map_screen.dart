@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import '../presensi_provider.dart';
 import '../services/api_service.dart';
 import '../services/device_integrity_service.dart';
+import '../widgets/flexitime_progress_widget.dart';
 import 'presensi_history_screen.dart';
 
 enum _LocationState { requesting, loading, ready, denied, disabled }
@@ -1811,106 +1812,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
   }
 
   Widget _buildFlexitimeBanner(PresensiProvider prov) {
-    final isCheckedIn = !prov.canCheckIn && prov.canCheckOut;
-    final arrival = prov.flexArrivalWindow ?? '07:00 - 10:00';
-    final core = prov.flexCoreHours ?? '10:00 - 15:00';
-    final targetMinutes = prov.flexTargetMinutes;
-    final targetCheckout = prov.flexTargetCheckoutTime;
-    final hours = (targetMinutes / 60).toStringAsFixed(0);
-
-    return Container(
-      margin: const EdgeInsets.only(top: 10),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      decoration: BoxDecoration(
-        color: const Color(0xFFF0FDF4),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: const Color(0xFF86EFAC)),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFF16A34A).withValues(alpha: 0.15),
-                  borderRadius: BorderRadius.circular(6),
-                ),
-                child: const Icon(Icons.auto_awesome, size: 14, color: Color(0xFF16A34A)),
-              ),
-              const SizedBox(width: 8),
-              const Expanded(
-                child: Text(
-                  'Jam Kerja Fleksibel (Flexitime)',
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.bold,
-                    color: Color(0xFF15803D),
-                  ),
-                ),
-              ),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFDCFCE7),
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: const Color(0xFF86EFAC)),
-                ),
-                child: Text(
-                  '$hours Jam Kerja',
-                  style: const TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w600,
-                    color: Color(0xFF166534),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          if (isCheckedIn && targetCheckout != null) ...[
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: const Color(0xFFBBF7D0)),
-              ),
-              child: Row(
-                children: [
-                  const Icon(Icons.flag_rounded, size: 15, color: Color(0xFF16A34A)),
-                  const SizedBox(width: 6),
-                  Text(
-                    'Target Pulang: ',
-                    style: TextStyle(fontSize: 11, color: Colors.grey.shade700),
-                  ),
-                  Text(
-                    '$targetCheckout WIB',
-                    style: const TextStyle(
-                      fontSize: 11.5,
-                      fontWeight: FontWeight.bold,
-                      color: Color(0xFF15803D),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 4),
-          ],
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  'Datang: $arrival  •  Jam Inti: $core',
-                  style: TextStyle(fontSize: 10.5, color: Colors.green.shade900),
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
+    return const FlexitimeProgressWidget(compact: false);
   }
 }
 

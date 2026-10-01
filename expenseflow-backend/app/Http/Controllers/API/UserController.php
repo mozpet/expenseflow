@@ -75,7 +75,7 @@ class UserController extends Controller
                 'contract_start_date', 'contract_end_date', 'bank_name',
                 'bank_account_no', 'bank_account_holder',
                 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled',
-                'allow_attendance', 'allow_wfh', 'allow_radius',
+                'allow_attendance', 'allow_wfh', 'allow_radius', 'allow_leave',
                 'device_name', 'device_id', 'device_bound_at',
                 // Prioritas 1 fields
                 'emergency_contact_name', 'emergency_contact_relation',
@@ -206,6 +206,7 @@ class UserController extends Controller
             'allow_attendance'      => 'nullable|boolean',
             'allow_wfh'             => 'nullable|boolean',
             'allow_radius'          => 'nullable|boolean',
+            'allow_leave'           => 'nullable|boolean',
             // Tipe hubungan kerja
             'employment_type'       => ['nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
             'joined_date'           => 'nullable|date',
@@ -282,6 +283,7 @@ class UserController extends Controller
             'allow_attendance'      => $allowAttendance,
             'allow_wfh'             => $allowWfh,
             'allow_radius'          => $allowRadius,
+            'allow_leave'           => $validated['allow_leave'] ?? true,
             'attendance_enabled'    => $attEnabled,
             'wfh_enabled'           => $wfhEnabled,
             'radius_enabled'        => $radiusEnabled,
@@ -488,6 +490,7 @@ class UserController extends Controller
             'allow_attendance'      => 'sometimes|nullable|boolean',
             'allow_wfh'             => 'sometimes|nullable|boolean',
             'allow_radius'          => 'sometimes|nullable|boolean',
+            'allow_leave'           => 'sometimes|nullable|boolean',
             // Tipe hubungan kerja
             'employment_type'       => ['sometimes', 'nullable', Rule::in(['PKWTT', 'PKWT', 'Probation', 'Internship'])],
             'joined_date'           => 'sometimes|nullable|date',
@@ -627,7 +630,7 @@ class UserController extends Controller
             'role', 'role_id', 'division_id', 'position_id', 'manager_id', 'department', 'employee_code',
             'identity_number', 'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim', 'overtime_enabled',
             'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled',
-            'allow_attendance', 'allow_wfh', 'allow_radius',
+            'allow_attendance', 'allow_wfh', 'allow_radius', 'allow_leave',
             'employment_type', 'joined_date', 'contract_start_date',
             'contract_end_date', 'bank_name', 'bank_account_no', 'bank_account_holder',
             'emergency_contact_name', 'emergency_contact_relation',
@@ -680,7 +683,7 @@ class UserController extends Controller
             'user'    => array_merge($user->only([
                 'id', 'employee_code', 'name', 'email', 'phone', 'role', 'role_id', 'division_id', 'position_id', 'manager_id', 'department',
                 'gender', 'birth_place', 'birth_date', 'is_pregnant',
-                'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'shift_locks', 'is_active', 'company_id',
+                'attendance_setting_id', 'monthly_claim_limit', 'allow_receipt_claim', 'overtime_enabled', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'allow_attendance', 'allow_wfh', 'allow_radius', 'allow_leave', 'shift_locks', 'is_active', 'company_id',
                 'employment_type', 'joined_date', 'contract_start_date', 'contract_end_date',
                 'identity_number', 'bank_name', 'bank_account_no', 'bank_account_holder',
                 'emergency_contact_name', 'emergency_contact_relation',

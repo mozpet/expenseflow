@@ -1,0 +1,160 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Skema XSD ekspor e-Bupot 21/26 — ExpenseFlow, Fase 6.
+
+  Skema ini menegakkan BENTUK dokumen yang kami hasilkan: elemen wajib, urutan,
+  kardinalitas, format NPWP (15/16 digit tanpa pemisah), dan format uang
+  decimal:2. Setiap ekspor DIVALIDASI terhadap skema aktif; bila gagal, berkas
+  TIDAK dikirim (HTTP 422 berisi daftar galat) — jadi tidak mungkin ada berkas
+  cacat yang lolos ke pengguna.
+
+  ── Menaikkan status menjadi RESMI ──────────────────────────────────────────
+  Berkas XSD RESMI diterbitkan oleh DJP dan tidak didistribusikan bersama
+  aplikasi ini. Letakkan berkas tersebut pada path
+  `config('payroll_ebupot.schema.official')` (default:
+  storage/app/private/pajak/ebupot/xsd/ebupot.xsd). Bila ada, validator memakai
+  skema DJP tersebut dan root ditandai `resmi="true"`. Bila skema DJP menolak
+  dokumen, ekspor GAGAL dengan daftar galat — pemetaan elemen harus disesuaikan
+  lebih dulu; berkas tidak pernah dilabeli resmi tanpa lolos skema resmi.
+-->
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema" elementFormDefault="qualified">
+
+  <!-- ── Tipe dasar ──────────────────────────────────────────────────────── -->
+
+  <!-- Uang decimal:2, titik desimal, tanpa pemisah ribuan (konsisten CSV/JSON). -->
+  <xs:simpleType name="Uang">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="-?[0-9]{1,15}\.[0-9]{2}"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- NPWP 15 digit (lama) atau 16 digit (NPWP16/NIK). Boleh kosong bila
+       penerima penghasilan memang tidak ber-NPWP. -->
+  <xs:simpleType name="Npwp">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="([0-9]{15}|[0-9]{16})?"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- Status PTKP: TK/0–TK/3, K/0–K/3, K/I/0–K/I/3 (penghasilan istri digabung). -->
+  <xs:simpleType name="StatusPtkp">
+    <xs:restriction base="xs:string">
+      <xs:pattern value="((TK|K|K/I)/[0-3])?"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="Teks">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="255"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TeksPanjang">
+    <xs:restriction base="xs:string">
+      <xs:maxLength value="1000"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="TahunPajak">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="2000"/>
+      <xs:maxInclusive value="2999"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <xs:simpleType name="JumlahMasa">
+    <xs:restriction base="xs:integer">
+      <xs:minInclusive value="0"/>
+      <xs:maxInclusive value="12"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- PPh 21 (subjek dalam negeri) atau PPh 26 (subjek luar negeri). -->
+  <xs:simpleType name="JenisPajak">
+    <xs:restriction base="xs:string">
+      <xs:enumeration value="PPh21"/>
+      <xs:enumeration value="PPh26"/>
+    </xs:restriction>
+  </xs:simpleType>
+
+  <!-- ── Tipe kompleks ───────────────────────────────────────────────────── -->
+
+  <xs:complexType name="Pemotong">
+    <xs:sequence>
+      <xs:element name="Nama" type="Teks"/>
+      <xs:element name="NPWP" type="Npwp"/>
+      <xs:element name="Alamat" type="TeksPanjang"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="Penerima">
+    <xs:sequence>
+      <xs:element name="Nama" type="Teks"/>
+      <xs:element name="NPWP" type="Npwp"/>
+      <xs:element name="BerNPWP" type="xs:boolean"/>
+      <xs:element name="KodePegawai" type="Teks"/>
+      <xs:element name="Jabatan" type="Teks"/>
+      <xs:element name="StatusPTKP" type="StatusPtkp"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="MasaPerolehan">
+    <xs:attribute name="tahun" type="TahunPajak" use="required"/>
+    <xs:attribute name="jumlahMasa" type="JumlahMasa" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="Penghasilan">
+    <xs:sequence>
+      <xs:element name="Bruto" type="Uang"/>
+      <xs:element name="BrutoTeratur" type="Uang"/>
+      <xs:element name="BrutoTidakTeratur" type="Uang"/>
+      <xs:element name="BiayaJabatan" type="Uang"/>
+      <xs:element name="IuranPensiun" type="Uang"/>
+      <xs:element name="Neto" type="Uang"/>
+      <xs:element name="PTKP" type="Uang"/>
+      <xs:element name="PKP" type="Uang"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="PajakTerutang">
+    <xs:sequence>
+      <xs:element name="Terutang" type="Uang"/>
+      <xs:element name="Dipotong" type="Uang"/>
+      <xs:element name="Selisih" type="Uang"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <xs:complexType name="BuktiPotong">
+    <xs:sequence>
+      <xs:element name="Penerima" type="Penerima"/>
+      <xs:element name="MasaPerolehan" type="MasaPerolehan"/>
+      <xs:element name="Penghasilan" type="Penghasilan"/>
+      <xs:element name="PPh" type="PajakTerutang"/>
+    </xs:sequence>
+    <xs:attribute name="jenis" type="JenisPajak" use="required"/>
+  </xs:complexType>
+
+  <xs:complexType name="DaftarBuktiPotong">
+    <xs:sequence>
+      <xs:element name="BuktiPotong" type="BuktiPotong" minOccurs="0" maxOccurs="unbounded"/>
+    </xs:sequence>
+  </xs:complexType>
+
+  <!-- ── Akar dokumen ────────────────────────────────────────────────────── -->
+
+  <xs:element name="eBupot21">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element name="Pemotong" type="Pemotong"/>
+        <xs:element name="DaftarBuktiPotong" type="DaftarBuktiPotong"/>
+      </xs:sequence>
+      <!-- true HANYA bila dokumen lolos XSD resmi DJP. -->
+      <xs:attribute name="resmi" type="xs:boolean" use="required"/>
+      <xs:attribute name="skema" type="Teks" use="required"/>
+      <xs:attribute name="tahunPajak" type="TahunPajak" use="required"/>
+      <xs:attribute name="dibuat" type="xs:dateTime" use="required"/>
+      <xs:attribute name="jumlahBuktiPotong" type="xs:nonNegativeInteger" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

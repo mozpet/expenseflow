@@ -95,4 +95,9 @@ class AttendanceSetting extends Model
     {
         return $this->hasMany(User::class, 'attendance_setting_id');
     }
+
+    public function leaveTypeSettings(): HasMany
+    {
+        return $this->hasMany(LeaveTypeSetting::class, 'attendance_setting_id');
+    }
 }

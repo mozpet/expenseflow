@@ -38,6 +38,12 @@ dependencies:
   # Deteksi root/jailbreak & emulator (anti-fraud presensi)
   safe_device: ^1.4.1
 
+  # Unduh & buka PDF slip gaji (simpan ke direktori sementara → buka di viewer sistem)
+  path_provider: ^2.1.4
+  open_filex: ^4.5.0
+  # Bagikan PDF slip gaji ke aplikasi lain (WhatsApp, email, dll.)
+  share_plus: ^10.0.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

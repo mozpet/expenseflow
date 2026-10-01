@@ -521,6 +521,15 @@ class AttendanceTest extends TestCase
         ->assertCreated();
 
         $this->assertEquals(2, $submitRes->json('leave.total_days'));
+
+        // Cek preview ulang: tanggal yang sudah diajukan WFH ($mon dan $fri) sekarang ter-skip sebagai already_wfh
+        $preview2 = $this->getJson("/api/v1/attendance/leave-preview?leave_type=wfh&start_date={$mon}&end_date={$fri}", $this->token($emp))
+            ->assertOk()
+            ->json();
+        $this->assertEquals(0, $preview2['total_days']);
+        $skipped2 = collect($preview2['skipped_dates'])->keyBy('date');
+        $this->assertEquals('already_wfh', $skipped2[$mon]['reason']);
+        $this->assertEquals('already_wfh', $skipped2[$fri]['reason']);
     }
 
     public function test_approved_wfh_allows_mobile_checkin_and_checkout(): void

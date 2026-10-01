@@ -47,12 +47,13 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { ConfirmationDialog } from './ConfirmationDialog';
-import { userApi, attendanceApi, userDocumentApi, UserDocument, divisionApi, positionApi, DivisionItem, PositionItem } from '../services/endpoints';
+import { userApi, attendanceApi, userDocumentApi, UserDocument, divisionApi, positionApi, DivisionItem, PositionItem, payrollApi } from '../services/endpoints';
 import { ApiError, invalidateCache } from '../services/api';
 import { useDebounce } from '../hooks/useDebounce';
 import CustomDatePicker from './CustomDatePicker';
 import { ImportEmployeeModal } from './ImportEmployeeModal';
 import { EmployeeMultiTabForm } from './EmployeeMultiTabForm';
+import { EmployeeBankAccount } from '../types';
 
 // Tipe Tab untuk Form Tambah & Edit Karyawan (5 Tab UI Architecture)
 export type FormTabType = 'work' | 'personal' | 'payroll' | 'bpjs' | 'access';
@@ -473,6 +474,134 @@ export const KaryawanManagement: React.FC<{
   const [showSensitiveData, setShowSensitiveData] = useState<boolean>(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
 
+  // State sinkronisasi data riil Payroll & Finansial dari Backend (Fase 1-3)
+  interface PayrollDetailState {
+    loading: boolean;
+    error: string | null;
+    activeSalary: {
+      id?: number;
+      basic_salary: number;
+      effective_date: string;
+      notes?: string | null;
+    } | null;
+    salaries: Array<{
+      id: number;
+      basic_salary: number;
+      effective_date: string;
+      is_active: boolean;
+      notes?: string | null;
+    }>;
+    components: Array<{
+      id: number;
+      salary_component_id: number;
+      amount: number;
+      effective_date: string;
+      is_active: boolean;
+      component?: {
+        id: number;
+        code: string;
+        name: string;
+        type: 'earning' | 'deduction';
+        is_taxable: boolean;
+      };
+    }>;
+    taxProfile: {
+      ptkp_status: string;
+      has_npwp: boolean;
+      npwp_masked: string | null;
+      tax_method: 'gross' | 'gross_up' | 'nett';
+    } | null;
+    bpjsProfile: {
+      has_bpjs_kes: boolean;
+      has_bpjs_tk: boolean;
+      has_jkp: boolean;
+      jkk_risk_class: number;
+      bpjs_kes_no_masked: string | null;
+      bpjs_tk_no_masked: string | null;
+    } | null;
+    bankAccounts: EmployeeBankAccount[];
+  }
+
+  const [payrollDetail, setPayrollDetail] = useState<PayrollDetailState>({
+    loading: false,
+    error: null,
+    activeSalary: null,
+    salaries: [],
+    components: [],
+    taxProfile: null,
+    bpjsProfile: null,
+    bankAccounts: [],
+  });
+
+  // Pemetaan Kelas Risiko JKK Sesuai PP 44/2015
+  const JKK_CLASSES: Record<number, { label: string; rate: string; desc: string }> = {
+    1: { label: 'Tingkat 1 (Sangat Rendah)', rate: '0.24%', desc: 'Administrasi umum & perkantoran' },
+    2: { label: 'Tingkat 2 (Rendah)', rate: '0.54%', desc: 'Pekerjaan non-lapangan / retail umum' },
+    3: { label: 'Tingkat 3 (Sedang)', rate: '0.89%', desc: 'Logistik ringan & industri perakitan' },
+    4: { label: 'Tingkat 4 (Tinggi)', rate: '1.27%', desc: 'Konstruksi ringan & industri kimia dasar' },
+    5: { label: 'Tingkat 5 (Sangat Tinggi)', rate: '1.74%', desc: 'Pertambangan & konstruksi berat' },
+  };
+
+  // Kalkulator Kategori TER PPh 21 (PMK 168/2023)
+  const getTerCategory = (ptkpStatus: string | null | undefined): 'A' | 'B' | 'C' => {
+    if (!ptkpStatus) return 'A';
+    const norm = ptkpStatus.toUpperCase().trim();
+    if (['TK/0', 'TK/1', 'K/0'].includes(norm)) return 'A';
+    if (['TK/2', 'TK/3', 'K/1', 'K/2'].includes(norm)) return 'B';
+    return 'C';
+  };
+
+  // Muat data riil payroll & rekening bank ketika drawer dibuka
+  useEffect(() => {
+    if (!detailEmployee?.backendId) {
+      setPayrollDetail({
+        loading: false,
+        error: null,
+        activeSalary: null,
+        salaries: [],
+        components: [],
+        taxProfile: null,
+        bpjsProfile: null,
+        bankAccounts: [],
+      });
+      return;
+    }
+
+    let isMounted = true;
+    setPayrollDetail(prev => ({ ...prev, loading: true, error: null }));
+
+    Promise.all([
+      payrollApi.getSalary(detailEmployee.backendId).catch(() => ({ data: null })),
+      payrollApi.listBankAccounts(detailEmployee.backendId).catch(() => ({ data: [] })),
+    ]).then(([salaryRes, bankRes]) => {
+      if (!isMounted) return;
+      const sData = (salaryRes as any)?.data;
+      const bankList = Array.isArray((bankRes as any)?.data) ? (bankRes as any).data : [];
+
+      setPayrollDetail({
+        loading: false,
+        error: null,
+        activeSalary: sData?.active_salary ?? null,
+        salaries: Array.isArray(sData?.salaries) ? sData.salaries : [],
+        components: Array.isArray(sData?.components) ? sData.components : [],
+        taxProfile: sData?.tax_profile ?? null,
+        bpjsProfile: sData?.bpjs_profile ?? null,
+        bankAccounts: bankList,
+      });
+    }).catch((err) => {
+      if (!isMounted) return;
+      setPayrollDetail(prev => ({
+        ...prev,
+        loading: false,
+        error: err?.message || 'Gagal memuat detail payroll dari server.',
+      }));
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [detailEmployee?.backendId]);
+
   const handleCopyText = (text: string, fieldKey: string) => {
     if (!text || text === '—') return;
     navigator.clipboard.writeText(text);
@@ -480,36 +609,10 @@ export const KaryawanManagement: React.FC<{
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  // Helper pengisi fallback dummy data cerdas untuk field payroll/identitas yang belum ada di backend
+  // Helper pengisi data karyawan untuk Drawer Detail (mempertahankan fallback data personal & kependudukan)
   const getEmployeeFullData = (emp: Employee) => {
     const seed = emp.backendId || 1;
-    const dummyBanks = ['BCA', 'Bank Mandiri', 'BRI', 'BNI', 'CIMB Niaga'];
-    const dummyBank = dummyBanks[seed % dummyBanks.length];
-    const dummyAccountNo = `${1000000000 + (seed * 8374932) % 9000000000}`;
-    const dummyNpwp = `${1000000000000000 + (seed * 739281729481) % 9000000000000000}`.replace(/(\d{2})(\d{3})(\d{3})(\d{1})(\d{3})(\d{3})/, '$1.$2.$3.$4-$5.$6');
     const realNikKtp = emp.nikKtp || null;
-
-    const baseSalaryMap: Record<string, number> = {
-      super_admin: 22000000,
-      admin: 15000000,
-      finance: 10500000,
-      hrd: 11000000,
-      employee: 7500000,
-    };
-    const estimatedSalary = emp.basicSalary || baseSalaryMap[emp.role] || (emp.employmentType === 'Internship' ? 3500000 : 7500000);
-
-    const ptkpOptions = ['TK/0', 'TK/1', 'K/0', 'K/1', 'K/2'];
-    const dummyPtkp = emp.ptkpStatus || ptkpOptions[seed % ptkpOptions.length];
-
-    const terCategoryMap: Record<string, 'A' | 'B' | 'C'> = {
-      'TK/0': 'A', 'TK/1': 'A', 'K/0': 'A',
-      'TK/2': 'B', 'TK/3': 'B', 'K/1': 'B', 'K/2': 'B',
-      'K/3': 'C', 'K/I/0': 'C', 'K/I/1': 'C', 'K/I/2': 'C', 'K/I/3': 'C',
-    };
-    const terCategory = terCategoryMap[dummyPtkp] || 'A';
-
-    const dummyBpjsKes = emp.bpjsKesehatanNo || `000${1234567890 + seed * 37}`;
-    const dummyBpjsTk = emp.bpjsKetenagakerjaanNo || `220${12345678 + seed * 19}`;
 
     const calculatedEmpAge = (typeof emp.age === 'number') ? emp.age : (emp.birthDate ? (() => {
       const b = new Date(emp.birthDate);
@@ -525,17 +628,17 @@ export const KaryawanManagement: React.FC<{
       ...emp,
       age: calculatedEmpAge,
       nikKtp: realNikKtp,
-      bankName: emp.bankName || dummyBank,
-      bankAccountNo: emp.bankAccountNo || dummyAccountNo,
+      bankName: emp.bankName || null,
+      bankAccountNo: emp.bankAccountNo || null,
       bankAccountHolder: emp.bankAccountHolder || emp.nama,
       salaryType: emp.salaryType || (emp.employmentType === 'Internship' ? 'daily' : 'monthly'),
-      basicSalary: estimatedSalary,
-      npwp: emp.npwp || dummyNpwp,
-      ptkpStatus: dummyPtkp,
-      terCategory,
+      basicSalary: emp.basicSalary ?? null,
+      npwp: emp.npwp || null,
+      ptkpStatus: emp.ptkpStatus || 'TK/0',
+      terCategory: getTerCategory(emp.ptkpStatus),
       taxMethod: emp.taxMethod || 'gross',
-      bpjsKesehatanNo: dummyBpjsKes,
-      bpjsKetenagakerjaanNo: dummyBpjsTk,
+      bpjsKesehatanNo: emp.bpjsKesehatanNo || null,
+      bpjsKetenagakerjaanNo: emp.bpjsKetenagakerjaanNo || null,
       bpjsKesehatanEnabled: emp.bpjsKesehatanEnabled ?? true,
       bpjsKetenagakerjaanEnabled: emp.bpjsKetenagakerjaanEnabled ?? true,
       hasJht: emp.hasJht ?? (emp.employmentType !== 'Internship'),
@@ -2866,275 +2969,481 @@ export const KaryawanManagement: React.FC<{
                   )}
 
                   {/* TAB 2: PAYROLL & FINANSIAL */}
-                  {detailTab === 'payroll' && (
-                    <div className="space-y-4 animate-in fade-in duration-150">
-                      {/* Hero Gaji Pokok Card */}
-                      <div className="bg-gradient-to-br from-indigo-600 to-indigo-800 text-white p-6 rounded-3xl shadow-lg relative overflow-hidden">
-                        <div className="absolute right-0 top-0 w-48 h-48 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10" />
-                        <div className="relative z-10 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                          <div>
-                            <span className="text-[11px] font-bold tracking-widest uppercase text-indigo-200 flex items-center gap-1.5">
-                              <Wallet className="w-3.5 h-3.5" />
-                              Gaji Pokok Karyawan ({fullData.salaryType === 'daily' ? 'Harian' : fullData.salaryType === 'hourly' ? 'Per Jam' : 'Bulanan'})
-                            </span>
-                            <div className="flex items-center gap-3 mt-1.5">
-                              <h2 className="text-2xl sm:text-3xl font-black tracking-tight font-mono">
-                                {showSensitiveData
-                                  ? formatCurrency(fullData.basicSalary)
-                                  : 'Rp •••••••••'}
-                              </h2>
-                              <button
-                                onClick={() => setShowSensitiveData(!showSensitiveData)}
-                                className="p-1.5 bg-white/15 hover:bg-white/25 rounded-xl transition cursor-pointer text-indigo-100 hover:text-white"
-                                title={showSensitiveData ? 'Sembunyikan nominal' : 'Tampilkan nominal'}
-                              >
-                                {showSensitiveData ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                              </button>
+                  {detailTab === 'payroll' && (() => {
+                    const activeBasicSalary = payrollDetail.activeSalary?.basic_salary ?? fullData.basicSalary;
+                    const activeBankAccount = payrollDetail.bankAccounts.find(b => b.status === 'active') || payrollDetail.bankAccounts[0];
+                    const displayBankName = activeBankAccount?.bank_name || fullData.bankName;
+                    const displayAccountNo = activeBankAccount?.bank_account_no_masked || fullData.bankAccountNo;
+                    const ptkp = payrollDetail.taxProfile?.ptkp_status || fullData.ptkpStatus || 'TK/0';
+                    const terCategory = getTerCategory(ptkp);
+                    const taxMethod = payrollDetail.taxProfile?.tax_method || fullData.taxMethod || 'gross';
+
+                    return (
+                      <div className="space-y-4 animate-in fade-in duration-150">
+                        {/* Server Error Alert if any */}
+                        {payrollDetail.error && (
+                          <div className="p-3.5 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800/50 rounded-2xl flex items-center justify-between gap-3 text-xs text-amber-800 dark:text-amber-300">
+                            <div className="flex items-center gap-2">
+                              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                              <span>{payrollDetail.error}</span>
                             </div>
-                            <p className="text-xs text-indigo-200 mt-1">
-                              Dasar perhitungan lembur (1/173), THR, dan iuran BPJS ketenagakerjaan.
-                            </p>
+                            <button
+                              onClick={() => {
+                                if (detailEmployee?.backendId) {
+                                  setPayrollDetail(prev => ({ ...prev, loading: true, error: null }));
+                                  Promise.all([
+                                    payrollApi.getSalary(detailEmployee.backendId).catch(() => ({ data: null })),
+                                    payrollApi.listBankAccounts(detailEmployee.backendId).catch(() => ({ data: [] })),
+                                  ]).then(([salaryRes, bankRes]) => {
+                                    const sData = (salaryRes as any)?.data;
+                                    const bankList = Array.isArray((bankRes as any)?.data) ? (bankRes as any).data : [];
+                                    setPayrollDetail({
+                                      loading: false,
+                                      error: null,
+                                      activeSalary: sData?.active_salary ?? null,
+                                      salaries: Array.isArray(sData?.salaries) ? sData.salaries : [],
+                                      components: Array.isArray(sData?.components) ? sData.components : [],
+                                      taxProfile: sData?.tax_profile ?? null,
+                                      bpjsProfile: sData?.bpjs_profile ?? null,
+                                      bankAccounts: bankList,
+                                    });
+                                  }).catch((e) => setPayrollDetail(prev => ({ ...prev, loading: false, error: e?.message || 'Gagal memuat' })));
+                                }
+                              }}
+                              className="px-2.5 py-1 bg-amber-200/60 dark:bg-amber-900/60 hover:bg-amber-300 dark:hover:bg-amber-800 font-bold rounded-lg transition shrink-0 cursor-pointer flex items-center gap-1"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                              <span>Coba Lagi</span>
+                            </button>
                           </div>
+                        )}
 
-                          <div className="flex sm:flex-col items-end gap-2 shrink-0">
-                            <span className={`px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wide border ${
-                              fullData.overtimeEligible
-                                ? 'bg-emerald-500/20 text-emerald-200 border-emerald-300/30'
-                                : 'bg-slate-500/20 text-slate-300 border-slate-400/30'
-                            }`}>
-                              {fullData.overtimeEligible ? '✓ Hak Lembur Aktif' : 'Non-Eligible Lembur'}
-                            </span>
-                            <span className="px-2.5 py-0.5 rounded-md text-[10px] font-mono bg-white/15 text-indigo-100">
-                              Metode: {fullData.taxMethod.toUpperCase()}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Rekening Bank Card */}
-                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-                          <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                            <Landmark className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                            Rekening Bank Payroll
-                          </h4>
-                          <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800/40">
-                            ✓ Terenkripsi AES-256
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Bank Tujuan</span>
-                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 font-bold text-xs text-slate-800 dark:text-slate-100">
-                              {fullData.bankName}
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nomor Rekening</span>
-                            <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
-                              <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
-                                {showSensitiveData
-                                  ? fullData.bankAccountNo
-                                  : fullData.bankAccountNo ? `${fullData.bankAccountNo.slice(0, 4)}••••${fullData.bankAccountNo.slice(-3)}` : '—'}
+                        {/* Hero Gaji Pokok Card */}
+                        <div className="bg-gradient-to-br from-indigo-600 to-indigo-800 text-white p-6 rounded-3xl shadow-lg relative overflow-hidden">
+                          <div className="absolute right-0 top-0 w-48 h-48 bg-white/10 rounded-full blur-2xl -mr-10 -mt-10" />
+                          <div className="relative z-10 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+                            <div>
+                              <span className="text-[11px] font-bold tracking-widest uppercase text-indigo-200 flex items-center gap-1.5">
+                                <Wallet className="w-3.5 h-3.5" />
+                                Gaji Pokok Karyawan ({fullData.salaryType === 'daily' ? 'Harian' : fullData.salaryType === 'hourly' ? 'Per Jam' : 'Bulanan'})
                               </span>
-                              <button
-                                onClick={() => handleCopyText(fullData.bankAccountNo || '', 'bankAccountNo')}
-                                className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
-                                title="Salin No Rekening"
-                              >
-                                {copiedField === 'bankAccountNo' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                              </button>
+                              <div className="flex items-center gap-3 mt-1.5">
+                                <h2 className="text-2xl sm:text-3xl font-black tracking-tight font-mono">
+                                  {payrollDetail.loading ? (
+                                    <span className="inline-block w-40 h-8 bg-white/20 rounded-lg animate-pulse" />
+                                  ) : activeBasicSalary !== null && activeBasicSalary !== undefined ? (
+                                    showSensitiveData
+                                      ? formatCurrency(activeBasicSalary)
+                                      : 'Rp •••••••••'
+                                  ) : (
+                                    <span className="text-xl sm:text-2xl font-bold text-indigo-200">Belum Dikonfigurasi</span>
+                                  )}
+                                </h2>
+                                {(activeBasicSalary !== null && activeBasicSalary !== undefined) && (
+                                  <button
+                                    onClick={() => setShowSensitiveData(!showSensitiveData)}
+                                    className="p-1.5 bg-white/15 hover:bg-white/25 rounded-xl transition cursor-pointer text-indigo-100 hover:text-white"
+                                    title={showSensitiveData ? 'Sembunyikan nominal' : 'Tampilkan nominal'}
+                                  >
+                                    {showSensitiveData ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                  </button>
+                                )}
+                              </div>
+                              {payrollDetail.loading ? (
+                                <div className="w-56 h-3 bg-white/20 rounded mt-1.5 animate-pulse" />
+                              ) : payrollDetail.activeSalary ? (
+                                <p className="text-xs text-indigo-100 mt-1">
+                                  Berlaku sejak <span className="font-bold text-white">{formatDateId(payrollDetail.activeSalary.effective_date)}</span>
+                                  {payrollDetail.activeSalary.notes ? ` • ${payrollDetail.activeSalary.notes}` : ''}
+                                  {' '}• Dasar perhitungan lembur (1/173), THR, dan BPJS.
+                                </p>
+                              ) : (
+                                <p className="text-xs text-indigo-200 mt-1">
+                                  {activeBasicSalary !== null
+                                    ? 'Gaji profil dasar • Belum terdaftar pada master effective-date penggajian.'
+                                    : 'Gaji pokok aktif belum ditentukan di master modul Penggajian.'}
+                                </p>
+                              )}
                             </div>
-                          </div>
 
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nama Pemilik Rekening</span>
-                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
-                              {fullData.bankAccountHolder}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Perpajakan PPh 21 TER 2024 Card */}
-                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-                          <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-                            <BadgePercent className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
-                            Konfigurasi Pajak PPh 21 (TER PMK 168/2023)
-                          </h4>
-                          <span className="text-[10px] text-slate-400 font-medium">Standar Kemenkeu 2024</span>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nomor NPWP (16 Digit)</span>
-                            <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
-                              <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">{fullData.npwp || 'Tidak Ada (Tarif +20%)'}</span>
-                              {fullData.npwp && (
-                                <button
-                                  onClick={() => handleCopyText(fullData.npwp || '', 'npwp')}
-                                  className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
-                                  title="Salin NPWP"
-                                >
-                                  {copiedField === 'npwp' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                                </button>
+                            <div className="flex sm:flex-col items-end gap-2 shrink-0">
+                              <span className={`px-3 py-1 rounded-full text-[10px] font-extrabold uppercase tracking-wide border ${
+                                fullData.overtimeEligible
+                                  ? 'bg-emerald-500/20 text-emerald-200 border-emerald-300/30'
+                                  : 'bg-slate-500/20 text-slate-300 border-slate-400/30'
+                              }`}>
+                                {fullData.overtimeEligible ? '✓ Hak Lembur Aktif' : 'Non-Eligible Lembur'}
+                              </span>
+                              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-mono bg-white/15 text-indigo-100">
+                                Metode: {taxMethod.toUpperCase()}
+                              </span>
+                              {payrollDetail.activeSalary && (
+                                <span className="px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-400/20 text-emerald-200 border border-emerald-300/30 flex items-center gap-1">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-300 animate-pulse"></span>
+                                  Gaji Aktif Terdaftar
+                                </span>
                               )}
                             </div>
                           </div>
+                        </div>
 
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Status PTKP & Kategori TER</span>
-                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 flex items-center justify-between">
-                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{fullData.ptkpStatus}</span>
-                              <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-indigo-100 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
-                                TER Kategori {fullData.terCategory}
+                        {/* Rekening Bank Card */}
+                        <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-100 dark:border-slate-800">
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                                <Landmark className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                                Rekening Bank Payroll
+                              </h4>
+                              <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-bold bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800/40">
+                                ✓ Terenkripsi AES-256
                               </span>
                             </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Metode Pemotongan</span>
-                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
-                              <span className="text-xs font-bold capitalize text-slate-800 dark:text-slate-100">
-                                {fullData.taxMethod === 'gross_up' ? 'Gross-Up (Tunjangan Pajak)' : fullData.taxMethod === 'nett' ? 'Nett (Ditanggung Perusahaan)' : 'Gross (Potong Gaji)'}
+                            {/* Maker-checker status badge */}
+                            {activeBankAccount ? (
+                              activeBankAccount.status === 'active' ? (
+                                <span className="text-[10px] text-emerald-700 dark:text-emerald-300 font-extrabold bg-emerald-100/80 dark:bg-emerald-950/60 px-2.5 py-1 rounded-full border border-emerald-300 dark:border-emerald-800 flex items-center gap-1">
+                                  <Check className="w-3 h-3" /> Terverifikasi Maker-Checker
+                                </span>
+                              ) : activeBankAccount.status === 'pending_verification' ? (
+                                <span className="text-[10px] text-amber-700 dark:text-amber-300 font-extrabold bg-amber-100/80 dark:bg-amber-950/60 px-2.5 py-1 rounded-full border border-amber-300 dark:border-amber-800 flex items-center gap-1">
+                                  <Clock className="w-3 h-3" /> Menunggu Verifikasi Maker-Checker
+                                </span>
+                              ) : activeBankAccount.status === 'rejected' ? (
+                                <span className="text-[10px] text-rose-700 dark:text-rose-300 font-extrabold bg-rose-100/80 dark:bg-rose-950/60 px-2.5 py-1 rounded-full border border-rose-300 dark:border-rose-800 flex items-center gap-1">
+                                  <Ban className="w-3 h-3" /> Ditolak {activeBankAccount.reject_reason ? `(${activeBankAccount.reject_reason})` : ''}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-slate-600 dark:text-slate-400 font-medium bg-slate-100 dark:bg-slate-800 px-2.5 py-1 rounded-full">
+                                  Status: {activeBankAccount.status}
+                                </span>
+                              )
+                            ) : (displayBankName || displayAccountNo) ? (
+                              <span className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold bg-indigo-50 dark:bg-indigo-950/50 px-2.5 py-0.5 rounded-full border border-indigo-200 dark:border-indigo-800/40">
+                                Rekening Profil Karyawan
                               </span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* TAB 3: BPJS & JAMINAN */}
-                  {detailTab === 'bpjs' && (
-                    <div className="space-y-4 animate-in fade-in duration-150">
-                      {/* BPJS Kesehatan Card */}
-                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-                          <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 rounded-xl bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400 flex items-center justify-center font-bold">
-                              🏥
-                            </div>
-                            <div>
-                              <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100">BPJS Kesehatan</h4>
-                              <p className="text-[10px] text-slate-400">Jaminan Pemeliharaan Kesehatan</p>
-                            </div>
-                          </div>
-                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${
-                            fullData.bpjsKesehatanEnabled
-                              ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/40'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
-                          }`}>
-                            {fullData.bpjsKesehatanEnabled ? '✓ Keanggotaan Aktif' : 'Non-Aktif'}
-                          </span>
-                        </div>
-
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">No. Kartu BPJS Kes</span>
-                            <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
-                              <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">{fullData.bpjsKesehatanNo || '—'}</span>
-                              {fullData.bpjsKesehatanNo && (
-                                <button
-                                  onClick={() => handleCopyText(fullData.bpjsKesehatanNo || '', 'bpjsKes')}
-                                  className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
-                                  title="Salin No BPJS Kesehatan"
-                                >
-                                  {copiedField === 'bpjsKes' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Iuran Perusahaan (4%)</span>
-                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 text-xs font-semibold text-slate-700 dark:text-slate-300">
-                              Ditanggung Kantor (Maks Cap 12jt)
-                            </div>
-                          </div>
-
-                          <div className="space-y-1">
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Potongan Karyawan (1%)</span>
-                            <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 text-xs font-semibold text-slate-700 dark:text-slate-300">
-                              Dipotong dari Gaji Bulanan
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* BPJS Ketenagakerjaan Card */}
-                      <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
-                        <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-                          <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold">
-                              🛡️
-                            </div>
-                            <div>
-                              <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100">BPJS Ketenagakerjaan</h4>
-                              <p className="text-[10px] text-slate-400">JHT, JP, JKK, & JKM</p>
-                            </div>
-                          </div>
-                          <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${
-                            fullData.bpjsKetenagakerjaanEnabled
-                              ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 border-blue-200 dark:border-blue-800/40'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
-                          }`}>
-                            {fullData.bpjsKetenagakerjaanEnabled ? '✓ Keanggotaan Aktif' : 'Non-Aktif'}
-                          </span>
-                        </div>
-
-                        <div className="space-y-1">
-                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nomor KPJ Ketenagakerjaan (11 Digit)</span>
-                          <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
-                            <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">{fullData.bpjsKetenagakerjaanNo || '—'}</span>
-                            {fullData.bpjsKetenagakerjaanNo && (
-                              <button
-                                onClick={() => handleCopyText(fullData.bpjsKetenagakerjaanNo || '', 'bpjsTk')}
-                                className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
-                                title="Salin No KPJ BPJS Ketenagakerjaan"
-                              >
-                                {copiedField === 'bpjsTk' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
-                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-400 font-medium">Belum Didaftarkan</span>
                             )}
                           </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Bank Tujuan</span>
+                              <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 font-bold text-xs text-slate-800 dark:text-slate-100 truncate">
+                                {displayBankName || '—'}
+                                {activeBankAccount?.bank_branch && (
+                                  <span className="text-[10px] font-normal text-slate-400 block truncate">
+                                    Cab. {activeBankAccount.bank_branch}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nomor Rekening</span>
+                              <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                                <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                                  {activeBankAccount
+                                    ? activeBankAccount.bank_account_no_masked
+                                    : showSensitiveData
+                                    ? (fullData.bankAccountNo || '—')
+                                    : (fullData.bankAccountNo ? `${fullData.bankAccountNo.slice(0, 4)}••••${fullData.bankAccountNo.slice(-3)}` : '—')}
+                                </span>
+                                {(displayAccountNo && displayAccountNo !== '—') && (
+                                  <button
+                                    onClick={() => handleCopyText(displayAccountNo, 'bankAccountNo')}
+                                    className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
+                                    title="Salin No Rekening"
+                                  >
+                                    {copiedField === 'bankAccountNo' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nama Pemilik Rekening</span>
+                              <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
+                                {activeBankAccount?.bank_account_holder || fullData.bankAccountHolder || '—'}
+                              </div>
+                            </div>
+                          </div>
                         </div>
 
-                        {/* 4 Program Badge Matrix */}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2">
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
-                            <span className="text-[10px] font-bold text-slate-400 block">JHT (Hari Tua)</span>
-                            <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJht ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
-                              {fullData.hasJht ? '✓ 5.7% (3.7% + 2%)' : 'Non-Aktif'}
+                        {/* Perpajakan PPh 21 TER PMK 168/2023 Card */}
+                        <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                            <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                              <BadgePercent className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                              Konfigurasi Pajak PPh 21 (TER PMK 168/2023)
+                            </h4>
+                            <span className="text-[10px] text-slate-400 font-medium">Standar Kemenkeu 2024</span>
+                          </div>
+
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nomor NPWP (16 Digit)</span>
+                              <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                                <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                                  {payrollDetail.taxProfile?.npwp_masked || fullData.npwp || (payrollDetail.taxProfile?.has_npwp ? 'NPWP Terdaftar' : 'Tidak Ada (Tarif +20%)')}
+                                </span>
+                                {(payrollDetail.taxProfile?.npwp_masked || fullData.npwp) && (
+                                  <button
+                                    onClick={() => handleCopyText(payrollDetail.taxProfile?.npwp_masked || fullData.npwp || '', 'npwp')}
+                                    className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
+                                    title="Salin NPWP"
+                                  >
+                                    {copiedField === 'npwp' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Status PTKP & Kategori TER</span>
+                              <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-800 dark:text-slate-100">{ptkp}</span>
+                                <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-indigo-100 dark:bg-indigo-950/50 text-indigo-700 dark:text-indigo-400 border border-indigo-200 dark:border-indigo-800">
+                                  TER Kategori {terCategory}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Metode Pemotongan</span>
+                              <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                                <span className="text-xs font-bold capitalize text-slate-800 dark:text-slate-100">
+                                  {taxMethod === 'gross_up'
+                                    ? 'Gross-Up (Tunjangan Pajak)'
+                                    : taxMethod === 'nett'
+                                    ? 'Nett (Ditanggung Perusahaan)'
+                                    : 'Gross (Potong Gaji)'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Komponen & Tunjangan Tetap Card (Bila Ada) */}
+                        {payrollDetail.components.length > 0 && (
+                          <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-3">
+                            <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                              <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100 flex items-center gap-2">
+                                <Receipt className="w-4 h-4 text-indigo-600 dark:text-indigo-400" />
+                                Komponen Gaji & Tunjangan Tetap ({payrollDetail.components.length})
+                              </h4>
+                              <span className="text-[10px] text-slate-400">Master Penggajian</span>
+                            </div>
+
+                            <div className="divide-y divide-slate-100 dark:divide-slate-800/60">
+                              {payrollDetail.components.map((comp) => {
+                                const cName = comp.component?.name || 'Komponen Gaji';
+                                const cCode = comp.component?.code || 'COMP';
+                                const isEarning = comp.component?.type !== 'deduction';
+                                const isTaxable = comp.component?.is_taxable !== false;
+
+                                return (
+                                  <div key={comp.id} className="py-2.5 flex items-center justify-between gap-3 first:pt-0 last:pb-0">
+                                    <div className="min-w-0">
+                                      <div className="flex items-center gap-2">
+                                        <span className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">{cName}</span>
+                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                                          {cCode}
+                                        </span>
+                                        <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold ${
+                                          isEarning
+                                            ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400'
+                                            : 'bg-rose-50 text-rose-700 dark:bg-rose-950/40 dark:text-rose-400'
+                                        }`}>
+                                          {isEarning ? 'Tunjangan' : 'Potongan'}
+                                        </span>
+                                      </div>
+                                      <span className="text-[10px] text-slate-400 mt-0.5 block">
+                                        {isTaxable ? 'Objek PPh 21' : 'Non-Objek Pajak'} • Efektif sejak {formatDateId(comp.effective_date)}
+                                      </span>
+                                    </div>
+                                    <div className="text-right shrink-0">
+                                      <span className={`text-xs font-mono font-extrabold ${isEarning ? 'text-slate-900 dark:text-white' : 'text-rose-600 dark:text-rose-400'}`}>
+                                        {isEarning ? '+' : '-'}{showSensitiveData ? formatCurrency(comp.amount) : '••••••••'}
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  {/* TAB 3: BPJS & JAMINAN */}
+                  {detailTab === 'bpjs' && (() => {
+                    const hasBpjsKes = payrollDetail.bpjsProfile ? Boolean(payrollDetail.bpjsProfile.has_bpjs_kes) : fullData.bpjsKesehatanEnabled;
+                    const bpjsKesNo = payrollDetail.bpjsProfile?.bpjs_kes_no_masked || fullData.bpjsKesehatanNo;
+
+                    const hasBpjsTk = payrollDetail.bpjsProfile ? Boolean(payrollDetail.bpjsProfile.has_bpjs_tk) : fullData.bpjsKetenagakerjaanEnabled;
+                    const bpjsTkNo = payrollDetail.bpjsProfile?.bpjs_tk_no_masked || fullData.bpjsKetenagakerjaanNo;
+                    const riskClass = Number(payrollDetail.bpjsProfile?.jkk_risk_class) || 2;
+                    const riskInfo = JKK_CLASSES[riskClass] || JKK_CLASSES[2];
+                    const hasJkp = payrollDetail.bpjsProfile ? Boolean(payrollDetail.bpjsProfile.has_jkp) : (fullData.hasJp ?? true);
+
+                    return (
+                      <div className="space-y-4 animate-in fade-in duration-150">
+                        {/* BPJS Kesehatan Card */}
+                        <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                            <div className="flex items-center gap-2">
+                              <div className="w-8 h-8 rounded-xl bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400 flex items-center justify-center font-bold">
+                                🏥
+                              </div>
+                              <div>
+                                <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100">BPJS Kesehatan</h4>
+                                <p className="text-[10px] text-slate-400">Jaminan Pemeliharaan Kesehatan</p>
+                              </div>
+                            </div>
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${
+                              hasBpjsKes
+                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-400 border-emerald-200 dark:border-emerald-800/40'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                            }`}>
+                              {hasBpjsKes ? '✓ Keanggotaan Aktif' : 'Non-Aktif'}
                             </span>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
-                            <span className="text-[10px] font-bold text-slate-400 block">JP (Pensiun)</span>
-                            <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJp ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
-                              {fullData.hasJp ? '✓ 3.0% (2% + 1%)' : 'Non-Aktif'}
+                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">No. Kartu BPJS Kes</span>
+                              <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                                <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                                  {bpjsKesNo || (hasBpjsKes ? 'Belum Diisi' : 'Tidak Terdaftar')}
+                                </span>
+                                {bpjsKesNo && (
+                                  <button
+                                    onClick={() => handleCopyText(bpjsKesNo, 'bpjsKes')}
+                                    className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
+                                    title="Salin No BPJS Kesehatan"
+                                  >
+                                    {copiedField === 'bpjsKes' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Iuran Perusahaan (4%)</span>
+                              <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                Ditanggung Kantor (Maks Cap 12jt)
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Potongan Karyawan (1%)</span>
+                              <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 text-xs font-semibold text-slate-700 dark:text-slate-300">
+                                Dipotong dari Gaji Bulanan
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* BPJS Ketenagakerjaan Card */}
+                        <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-100 dark:border-slate-800 shadow-xs space-y-4">
+                          <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                            <div className="flex items-center gap-2">
+                              <div className="w-8 h-8 rounded-xl bg-blue-50 dark:bg-blue-950/50 text-blue-600 dark:text-blue-400 flex items-center justify-center font-bold">
+                                🛡️
+                              </div>
+                              <div>
+                                <h4 className="text-xs font-extrabold text-slate-800 dark:text-slate-100">BPJS Ketenagakerjaan</h4>
+                                <p className="text-[10px] text-slate-400">JHT, JP, JKK, JKM & JKP</p>
+                              </div>
+                            </div>
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-extrabold border ${
+                              hasBpjsTk
+                                ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/40 dark:text-blue-400 border-blue-200 dark:border-blue-800/40'
+                                : 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 border-slate-200 dark:border-slate-700'
+                            }`}>
+                              {hasBpjsTk ? '✓ Keanggotaan Aktif' : 'Non-Aktif'}
                             </span>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
-                            <span className="text-[10px] font-bold text-slate-400 block">JKK (Kecelakaan)</span>
-                            <span className="inline-block mt-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-400">
-                              ✓ 0.54% (Perusahaan)
-                            </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Nomor KPJ Ketenagakerjaan (11 Digit)</span>
+                              <div className="flex items-center justify-between bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60">
+                                <span className="text-xs font-mono font-bold text-slate-800 dark:text-slate-100">
+                                  {bpjsTkNo || (hasBpjsTk ? 'Belum Diisi' : 'Tidak Terdaftar')}
+                                </span>
+                                {bpjsTkNo && (
+                                  <button
+                                    onClick={() => handleCopyText(bpjsTkNo, 'bpjsTk')}
+                                    className="text-slate-400 hover:text-indigo-600 transition p-1 cursor-pointer"
+                                    title="Salin No KPJ BPJS Ketenagakerjaan"
+                                  >
+                                    {copiedField === 'bpjsTk' ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">Kelas Risiko JKK (PP 44/2015)</span>
+                              <div className="bg-slate-50 dark:bg-slate-800/60 px-3 py-2 rounded-xl border border-slate-100 dark:border-slate-700/60 flex items-center justify-between">
+                                <div className="min-w-0">
+                                  <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block truncate">
+                                    Kelas {riskClass} ({riskInfo.rate})
+                                  </span>
+                                  <span className="text-[10px] text-slate-400 block truncate">{riskInfo.label}</span>
+                                </div>
+                                <span className="px-2 py-0.5 rounded text-[10px] font-extrabold bg-blue-100 dark:bg-blue-950/50 text-blue-700 dark:text-blue-400 shrink-0">
+                                  Perusahaan
+                                </span>
+                              </div>
+                            </div>
                           </div>
 
-                          <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
-                            <span className="text-[10px] font-bold text-slate-400 block">JKM (Kematian)</span>
-                            <span className="inline-block mt-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-400">
-                              ✓ 0.30% (Perusahaan)
-                            </span>
+                          {/* 5 Program Badge Matrix */}
+                          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 pt-2">
+                            <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
+                              <span className="text-[10px] font-bold text-slate-400 block">JHT (Hari Tua)</span>
+                              <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJht ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
+                                {fullData.hasJht ? '✓ 5.7% (3.7% + 2%)' : 'Non-Aktif'}
+                              </span>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
+                              <span className="text-[10px] font-bold text-slate-400 block">JP (Pensiun)</span>
+                              <span className={`inline-block mt-1 text-[11px] font-extrabold ${fullData.hasJp ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-500'}`}>
+                                {fullData.hasJp ? '✓ 3.0% (2% + 1%)' : 'Non-Aktif'}
+                              </span>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
+                              <span className="text-[10px] font-bold text-slate-400 block">JKK (Kecelakaan)</span>
+                              <span className="inline-block mt-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-400">
+                                ✓ {riskInfo.rate} (Kantor)
+                              </span>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center">
+                              <span className="text-[10px] font-bold text-slate-400 block">JKM (Kematian)</span>
+                              <span className="inline-block mt-1 text-[11px] font-extrabold text-blue-600 dark:text-blue-400">
+                                ✓ 0.30% (Kantor)
+                              </span>
+                            </div>
+
+                            <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-xl border border-slate-100 dark:border-slate-700 text-center col-span-2 sm:col-span-1">
+                              <span className="text-[10px] font-bold text-slate-400 block">JKP (PHK)</span>
+                              <span className={`inline-block mt-1 text-[11px] font-extrabold ${hasJkp ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400 dark:text-slate-500'}`}>
+                                {hasJkp ? '✓ 0.46% (APBN)' : 'Non-Aktif'}
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
 
                   {/* TAB 4: PRESENSI & AKSES */}
                   {detailTab === 'access' && (

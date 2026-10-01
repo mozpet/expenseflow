@@ -15,6 +15,7 @@ import 'api_service.dart';
 ///   12 = konfirmasi auto-checkout
 ///   20 = overtime approved
 ///   21 = overtime rejected
+///   22 = payroll paid (gaji dibayarkan)
 class NotificationService {
   static final NotificationService _instance = NotificationService._();
   factory NotificationService() => _instance;
@@ -102,6 +103,15 @@ class NotificationService {
     playSound: true,
   );
 
+  static const _payrollDetails = AndroidNotificationDetails(
+    'payroll_status',
+    'Status Penggajian',
+    channelDescription: 'Notifikasi saat gaji berhasil dibayarkan',
+    importance: Importance.high,
+    priority: Priority.high,
+    playSound: true,
+  );
+
   static const _darwinDetails = DarwinNotificationDetails(
     presentAlert: true,
     presentSound: true,
@@ -173,6 +183,7 @@ class NotificationService {
     required String body,
     String? payload,
     bool isOvertimeNotif = false,
+    bool isPayrollNotif = false,
   }) async {
     if (kIsWeb) return; // Web tidak support local notifications
     if (!_initialized) await init();
@@ -181,7 +192,9 @@ class NotificationService {
       title,
       body,
       NotificationDetails(
-        android: isOvertimeNotif ? _overtimeDetails : _checkoutDetails,
+        android: isOvertimeNotif
+            ? _overtimeDetails
+            : (isPayrollNotif ? _payrollDetails : _checkoutDetails),
         iOS: _darwinDetails,
       ),
       payload: payload,
@@ -247,12 +260,16 @@ class NotificationService {
     final body  = msg.notification?.body  ?? '';
     if (title.isEmpty && body.isEmpty) return;
 
+    final isOvertime = type.startsWith('overtime_');
+    final isPayroll  = type.startsWith('payroll_');
+
     await showInstant(
-      id: type.startsWith('overtime_') ? 20 : 12,
+      id: isOvertime ? 20 : (isPayroll ? 22 : 12),
       title: title,
       body: body,
       payload: type,
-      isOvertimeNotif: type.startsWith('overtime_'),
+      isOvertimeNotif: isOvertime,
+      isPayrollNotif: isPayroll,
     );
   }
 

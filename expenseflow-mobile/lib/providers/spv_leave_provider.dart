@@ -21,6 +21,7 @@ class SpvLeaveItem {
   final String? rejectionReason;
   final String? notes;
   final String? documentPath;
+  final String? halfDaySession;
   final String? createdAt;
 
   SpvLeaveItem({
@@ -31,6 +32,7 @@ class SpvLeaveItem {
     required this.divisionName,
     required this.positionName,
     required this.leaveType,
+    this.halfDaySession,
     required this.startDate,
     required this.endDate,
     required this.totalDays,
@@ -72,6 +74,7 @@ class SpvLeaveItem {
       rejectionReason: json['rejection_reason'] as String?,
       notes: json['notes'] as String?,
       documentPath: json['document_path'] as String? ?? json['attachment_path'] as String?,
+      halfDaySession: json['half_day_session'] as String?,
       createdAt: json['created_at'] as String?,
     );
   }

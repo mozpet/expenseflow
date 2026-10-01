@@ -83,7 +83,7 @@ class SendAttendanceRemindersCommand extends Command
         // (CATATAN: leave_type 'wfh' dikecualikan karena WFH adalah mode kerja, bukan izin/cuti tidak masuk)
         $approvedLeaves = LeaveRequest::whereIn('user_id', $users->pluck('id'))
             ->where('status', 'approved')
-            ->whereIn('leave_type', ['cuti', 'sakit', 'izin'])
+            ->whereNotIn('leave_type', ['wfh'])
             ->whereDate('start_date', '<=', $today)
             ->whereDate('end_date', '>=', $today)
             ->pluck('user_id')

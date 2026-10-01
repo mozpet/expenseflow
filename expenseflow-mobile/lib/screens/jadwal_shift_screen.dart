@@ -31,15 +31,15 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     _selectedDate = now;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final prov = Provider.of<ShiftProvider>(context, listen: false);
-      // Info shift "hari ini" + kalender bulan berjalan (per-tanggal)
-      prov.fetchMySchedule();
-      prov.fetchScheduleCalendar(now.year, now.month);
+      // Selalu force refresh agar jadwal & pengajuan cuti/wfh yang baru disetujui seketika tampil akurat
+      prov.fetchMySchedule(forceRefresh: true);
+      prov.fetchScheduleCalendar(now.year, now.month, forceRefresh: true);
     });
   }
 
   /// Muat kalender saat berpindah bulan (pastikan jadwal per-tanggal akurat).
   void _loadMonth(ShiftProvider prov) {
-    prov.fetchScheduleCalendar(_displayedMonth.year, _displayedMonth.month);
+    prov.fetchScheduleCalendar(_displayedMonth.year, _displayedMonth.month, forceRefresh: true);
   }
 
   void _prevMonth() {
@@ -533,7 +533,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             final isHoliday = holiday != null;
             // Cuti bersama yang sudah diikuti (accepted) → shiftName 'Cuti Bersama'
             final isCollectiveLeave = calDay?.shiftName == 'Cuti Bersama';
-            // Pengajuan pribadi yang di-approve HRD (cuti / izin / sakit)
+            // Pengajuan pribadi yang di-approve HRD (cuti / izin / sakit / cuti setengah hari)
             final bool isPersonalLeave =
                 (calDay?.personalLeave ?? false) ||
                 calDay?.shiftName == 'Cuti Mandiri' ||
@@ -541,7 +541,8 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                 calDay?.shiftName == 'Sakit';
             final bool isIzin = (calDay?.isIzin == true) || calDay?.shiftName == 'Izin';
             final bool isSakit = (calDay?.isSakit == true) || calDay?.shiftName == 'Sakit';
-            final bool isCuti = isCollectiveLeave || (isPersonalLeave && !isIzin && !isSakit);
+            final bool isHalfDay = (calDay?.isHalfDay == true) || calDay?.leaveType == 'cuti_setengah_hari';
+            final bool isCuti = isCollectiveLeave || (isPersonalLeave && !isIzin && !isSakit && !isHalfDay);
 
             // Hari kerja dari rumah (WFH) — hanya jika bukan libur/OFF/cuti/izin/sakit
             final bool isWfhDay = (calDay?.isWfh ?? false) &&
@@ -553,20 +554,26 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
             // Warna aksen sesuai jenis:
             //   - Izin: ungu (0xFF7B1FA2)
             //   - Sakit: orange (0xFFEA580C)
+            //   - Cuti Setengah Hari: biru langit (0xFF0284C7)
             //   - Cuti (bersama/mandiri): amber (0xFFD97706)
+            //   - WFH: toska (0xFF0D9488)
             //   - Libur nasional: merah (0xFFEF4444)
             //   - Libur perusahaan/cabang: biru (0xFF3B82F6)
             final holidayAccent = isIzin
                 ? const Color(0xFF7B1FA2)
                 : isSakit
                     ? const Color(0xFFEA580C)
-                    : isCuti
-                        ? const Color(0xFFD97706)
-                        : holiday != null
-                            ? (holiday.isNational
-                                ? const Color(0xFFEF4444) // merah
-                                : const Color(0xFF3B82F6)) // biru
-                            : null;
+                    : isHalfDay
+                        ? const Color(0xFF0284C7)
+                        : isCuti
+                            ? const Color(0xFFD97706)
+                            : isWfhDay
+                                ? const Color(0xFF0D9488)
+                                : holiday != null
+                                    ? (holiday.isNational
+                                        ? const Color(0xFFEF4444) // merah
+                                        : const Color(0xFF3B82F6)) // biru
+                                    : null;
 
             return Expanded(
               child: GestureDetector(
@@ -584,13 +591,17 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                 ? const Color(0xFFFAF5FF)
                                 : isSakit
                                     ? const Color(0xFFFFF7ED)
-                                    : isCuti
-                                        ? const Color(0xFFFFFBEB)
-                                        : isHoliday
-                                            ? const Color(0xFFFEF2F2)
-                                            : isOff
-                                                ? const Color(0xFFFFF1F2).withValues(alpha: 0.6)
-                                                : Colors.white,
+                                    : isHalfDay
+                                        ? const Color(0xFFF0F9FF)
+                                        : isCuti
+                                            ? const Color(0xFFFFFBEB)
+                                            : isWfhDay
+                                                ? const Color(0xFFF0FDFA)
+                                                : isHoliday
+                                                    ? const Color(0xFFFEF2F2)
+                                                    : isOff
+                                                        ? const Color(0xFFFFF1F2).withValues(alpha: 0.6)
+                                                        : Colors.white,
                     borderRadius: BorderRadius.circular(8),
                     border: Border.all(
                       color: isSelected
@@ -601,13 +612,17 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                   ? const Color(0xFFE9D5FF)
                                   : isSakit
                                       ? const Color(0xFFFED7AA)
-                                      : isCuti
-                                          ? const Color(0xFFFDE68A)
-                                          : isHoliday
-                                              ? const Color(0xFFFECACA)
-                                              : isOff
-                                                  ? const Color(0xFFFFE4E6)
-                                                  : const Color(0xFFF1F5F9),
+                                      : isHalfDay
+                                          ? const Color(0xFFBAE6FD)
+                                          : isCuti
+                                              ? const Color(0xFFFDE68A)
+                                              : isWfhDay
+                                                  ? const Color(0xFF99F6E4)
+                                                  : isHoliday
+                                                      ? const Color(0xFFFECACA)
+                                                      : isOff
+                                                          ? const Color(0xFFFFE4E6)
+                                                          : const Color(0xFFF1F5F9),
                       width: isSelected ? 1.8 : (isToday ? 1.4 : 0.8),
                     ),
                   ),
@@ -689,6 +704,17 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                 color: Color(0xFFEA580C),
                               ),
                             )
+                          else if (isHalfDay)
+                            Text(
+                              calDay?.halfDaySession == 'morning'
+                                  ? '0.5 SESI 1'
+                                  : '0.5 SESI 2',
+                              style: const TextStyle(
+                                fontSize: 7,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF0284C7),
+                              ),
+                            )
                           else if (isCuti)
                             const Text(
                               'CUTI',
@@ -696,6 +722,15 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                                 fontSize: 7.5,
                                 fontWeight: FontWeight.w800,
                                 color: Color(0xFFD97706),
+                              ),
+                            )
+                          else if (isWfhDay)
+                            const Text(
+                              'WFH',
+                              style: TextStyle(
+                                fontSize: 7.5,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF0D9488),
                               ),
                             )
                           else if (isHoliday)
@@ -830,7 +865,29 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
               shiftName: calDay?.shiftName,
               leaveType: calDay?.leaveType,
               leaveReason: calDay?.leaveReason,
+              halfDaySession: calDay?.halfDaySession,
             ),
+            if ((calDay?.isHalfDay == true || calDay?.leaveType == 'cuti_setengah_hari') &&
+                !schedule.isOff &&
+                schedule.workStartTime != null) ...[
+              const SizedBox(height: 14),
+              // Jam Masuk
+              _timeRow(
+                Icons.login,
+                'Jam Masuk',
+                _fmtTime(schedule.workStartTime),
+                Colors.green,
+              ),
+              const SizedBox(height: 10),
+              // Jam Pulang
+              _timeRow(
+                Icons.logout,
+                'Jam Pulang',
+                _fmtTime(schedule.workEndTime),
+                Colors.orange,
+                isCrossDay: schedule.isCrossDay,
+              ),
+            ],
           ]
           // ── KONDISI 2: Hari Libur / Tanggal Merah Biasa (Libur Nasional / Perusahaan / Cabang)
           else if (holiday != null && !holiday.isCollective) ...[
@@ -1070,6 +1127,32 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     );
   }
 
+  /// Format nama jenis cuti untuk judul kartu
+  String _formatLeaveTitle(String? leaveType) {
+    if (leaveType == null || leaveType.isEmpty) return 'Cuti Tahunan';
+    switch (leaveType) {
+      case 'cuti_tahunan':
+      case 'cuti':
+        return 'Cuti Tahunan';
+      case 'cuti_melahirkan':
+      case 'cuti_hamil':
+        return 'Cuti Melahirkan';
+      case 'cuti_menikah':
+        return 'Cuti Menikah';
+      case 'cuti_khusus':
+        return 'Cuti Khusus';
+      case 'cuti_kematian':
+        return 'Cuti Duka Cita';
+      case 'cuti_khitanan':
+        return 'Cuti Khitanan/Baptis';
+      default:
+        return leaveType
+            .split('_')
+            .map((w) => w.isNotEmpty ? '${w[0].toUpperCase()}${w.substring(1)}' : '')
+            .join(' ');
+    }
+  }
+
   /// Kartu Cuti / Izin / Sakit (Personal Leave / Cuti Bersama)
   Widget _buildLeaveCard({
     required bool isCollective,
@@ -1077,7 +1160,9 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
     String? shiftName,
     String? leaveType,
     String? leaveReason,
+    String? halfDaySession,
   }) {
+    final bool isHalfDay = leaveType == 'cuti_setengah_hari';
     final bool isIzin = leaveType == 'izin' || shiftName == 'Izin';
     final bool isSakit = leaveType == 'sakit' || shiftName == 'Sakit';
 
@@ -1101,6 +1186,19 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
       subtitle = (holiday?.scope == 'cabang')
           ? 'Hari Libur Cuti Bersama Khusus Cabang (Diikuti)'
           : 'Hari Libur Cuti Bersama yang Diikuti';
+    } else if (isHalfDay) {
+      baseColor = const Color(0xFF0284C7);
+      bgColor = const Color(0xFFF0F9FF);
+      borderColor = const Color(0xFFBAE6FD);
+      textColor = const Color(0xFF0369A1);
+      final bool isMorning = halfDaySession == 'morning';
+      icon = isMorning ? Icons.wb_twilight_rounded : Icons.wb_sunny_rounded;
+      title = halfDaySession == null
+          ? 'Cuti Setengah Hari'
+          : (isMorning
+              ? 'Cuti Setengah Hari Sesi 1'
+              : 'Cuti Setengah Hari Sesi 2');
+      subtitle = '';
     } else if (isIzin) {
       baseColor = const Color(0xFF7B1FA2);
       bgColor = const Color(0xFFFAF5FF);
@@ -1122,13 +1220,13 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           ? 'Keterangan: $leaveReason (Disetujui HRD)'
           : 'Pengajuan Izin Sakit (Disetujui HRD)';
     } else {
-      // Cuti Mandiri / Tahunan
+      // Cuti Mandiri / Tahunan / Khusus
       baseColor = const Color(0xFFD97706);
       bgColor = const Color(0xFFFFFBEB);
       borderColor = const Color(0xFFFDE68A);
       textColor = const Color(0xFF92400E);
       icon = Icons.beach_access_rounded;
-      title = 'Cuti Tahunan';
+      title = _formatLeaveTitle(leaveType);
       subtitle = (leaveReason != null && leaveReason.trim().isNotEmpty)
           ? 'Alasan: $leaveReason (Disetujui HRD)'
           : 'Pengajuan Cuti Pribadi (Disetujui HRD)';
@@ -1143,7 +1241,9 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
         border: Border.all(color: borderColor),
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: subtitle.isNotEmpty
+            ? CrossAxisAlignment.start
+            : CrossAxisAlignment.center,
         children: [
           Container(
             padding: const EdgeInsets.all(8),
@@ -1161,6 +1261,7 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Text(
                   title,
@@ -1170,14 +1271,16 @@ class _JadwalShiftScreenState extends State<JadwalShiftScreen> {
                     color: textColor,
                   ),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  subtitle,
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: baseColor,
+                if (subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    subtitle,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: baseColor,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),

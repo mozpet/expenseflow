@@ -21,6 +21,7 @@ class PresensiProvider extends ChangeNotifier {
 
   final List<PresensiRecord> _records = [];
   final List<LeaveRequestRecord> _leaveRequests = [];
+  final List<LeaveQuotaAdjustmentRecord> _leaveAdjustments = [];
   final List<LeaveBalanceRecord> _leaveBalances = [];
   Map<String, dynamic>? _leaveResetInfo;
   final List<CollectiveLeaveRecord> _collectiveLeaves = [];
@@ -34,6 +35,8 @@ class PresensiProvider extends ChangeNotifier {
   String? _todayStatus;
   int _todayOvertimeMinutes = 0;
   int _todayLateMinutes = 0;
+  int? _todayWorkMinutes;
+  DateTime? _todayCheckInDateTime;
   bool _loadingHistory = false;
   bool _loadingBalance = false;
   bool _loadingLeaves = false;
@@ -42,6 +45,8 @@ class PresensiProvider extends ChangeNotifier {
   List<PresensiRecord> get records => List.unmodifiable(_records);
   List<LeaveRequestRecord> get leaveRequests =>
       List.unmodifiable(_leaveRequests);
+  List<LeaveQuotaAdjustmentRecord> get leaveAdjustments =>
+      List.unmodifiable(_leaveAdjustments);
   List<LeaveBalanceRecord> get leaveBalances =>
       List.unmodifiable(_leaveBalances);
   Map<String, dynamic>? get leaveResetInfo => _leaveResetInfo;
@@ -65,6 +70,72 @@ class PresensiProvider extends ChangeNotifier {
       : null;
   int get flexTargetMinutes =>
       (flexitimeConfig?['target_minutes'] as num?)?.toInt() ?? 480;
+  int get flexBreakMinutes =>
+      (flexitimeConfig?['break_minutes'] as num?)?.toInt() ?? 60;
+  String? get flexCoreStart => flexitimeConfig != null
+      ? (flexitimeConfig!['core_start'] as String? ?? '10:00')
+      : null;
+  String? get flexCoreEnd => flexitimeConfig != null
+      ? (flexitimeConfig!['core_end'] as String? ?? '15:00')
+      : null;
+
+  int? get todayWorkMinutes => _todayWorkMinutes;
+  DateTime? get todayCheckInDateTime => _todayCheckInDateTime;
+
+  /// Titik acuan DateTime check-in hari ini
+  DateTime? get effectiveCheckInTime {
+    if (_todayCheckInDateTime != null) return _todayCheckInDateTime;
+    if (_todayMasuk != null && _todayMasuk!.contains(':')) {
+      final parts = _todayMasuk!.split(':');
+      final h = int.tryParse(parts[0]) ?? 0;
+      final m = int.tryParse(parts[1]) ?? 0;
+      final now = DateTime.now();
+      var dt = DateTime(now.year, now.month, now.day, h, m);
+      if (now.isBefore(dt) && dt.difference(now).inHours > 12) {
+        dt = dt.subtract(const Duration(days: 1));
+      }
+      return dt;
+    }
+    return null;
+  }
+
+  /// Menit kerja berjalan kotor (sejak check-in sampai saat ini)
+  int get flexElapsedGrossMinutes {
+    final checkIn = effectiveCheckInTime;
+    if (checkIn == null) return 0;
+    final diff = DateTime.now().difference(checkIn).inMinutes;
+    return diff > 0 ? diff : 0;
+  }
+
+  /// Menit kerja berjalan bersih (netto) setelah memperhitungkan potongan jam istirahat sesuai UU
+  int get flexElapsedNetMinutes {
+    final gross = flexElapsedGrossMinutes;
+    final breakMins = flexBreakMinutes;
+    // Sesuai UU 13/2003 & backend: jika durasi kotor >= 300 menit (5 jam), kurangi istirahat
+    if (gross >= 300 && breakMins > 0) {
+      final net = gross - breakMins;
+      return net < 240 ? 240 : net;
+    }
+    return gross;
+  }
+
+  /// Rasio progres kerja menuju target harian (0.0 sampai 1.0)
+  double get flexProgressRatio {
+    final target = flexTargetMinutes;
+    if (target <= 0) return 0.0;
+    return (flexElapsedNetMinutes / target).clamp(0.0, 1.0);
+  }
+
+  /// Sisa menit kerja menuju target harian
+  int get flexRemainingMinutes {
+    final target = flexTargetMinutes;
+    final net = flexElapsedNetMinutes;
+    final remaining = target - net;
+    return remaining > 0 ? remaining : 0;
+  }
+
+  /// Apakah target durasi kerja harian sudah tercapai
+  bool get isFlexTargetAchieved => flexRemainingMinutes <= 0;
 
   CollectiveLeaveRecord? get activeCollectiveLeaveBanner {
     for (final item in _collectiveLeaves) {
@@ -153,6 +224,9 @@ class PresensiProvider extends ChangeNotifier {
           photoFileName: photoFileName);
       final att = res['attendance'] as Map<String, dynamic>?;
       _todayMasuk = _extractTime(att?['check_in_time']) ?? nowFormatted;
+      _todayCheckInDateTime = att?['check_in_time'] != null
+          ? DateTime.tryParse(att!['check_in_time'].toString())?.toLocal() ?? DateTime.now()
+          : DateTime.now();
       _todayStatus = att?['status'] as String? ?? 'present';
       _records.insert(
         0,
@@ -190,6 +264,7 @@ class PresensiProvider extends ChangeNotifier {
       final attId = (att?['id'] as num?)?.toInt();
       _todayPulang = _extractTime(att?['check_out_time']) ?? nowFormatted;
       _todayOvertimeMinutes = (att?['overtime_minutes'] as num?)?.toInt() ?? 0;
+      _todayWorkMinutes = (att?['work_minutes'] as num?)?.toInt();
       _todayStatus = att?['status'] as String?;
       if (_records.isNotEmpty && _records.first.date == todayDateFormatted) {
         _records[0] = _records[0].copyWith(
@@ -305,6 +380,8 @@ class PresensiProvider extends ChangeNotifier {
         _todayStatus = null;
         _todayOvertimeMinutes = 0;
         _todayLateMinutes = 0;
+        _todayWorkMinutes = null;
+        _todayCheckInDateTime = null;
         notifyListeners();
       }
       return;
@@ -322,10 +399,17 @@ class PresensiProvider extends ChangeNotifier {
       final newMasuk = _extractTime(att['check_in_time']);
       final newPulang = _extractTime(att['check_out_time']);
       final newStatus = att['status'] as String?;
+      final newCheckInDt = att['check_in_time'] != null
+          ? DateTime.tryParse(att['check_in_time'].toString())?.toLocal()
+          : null;
 
       bool changed = false;
       if (_todayMasuk != newMasuk) {
         _todayMasuk = newMasuk;
+        changed = true;
+      }
+      if (_todayCheckInDateTime != newCheckInDt && newCheckInDt != null) {
+        _todayCheckInDateTime = newCheckInDt;
         changed = true;
       }
       if (_todayPulang != newPulang) {
@@ -334,6 +418,12 @@ class PresensiProvider extends ChangeNotifier {
       }
       if (_todayStatus != newStatus) {
         _todayStatus = newStatus;
+        changed = true;
+      }
+
+      final newWorkMinutes = (att['work_minutes'] as num?)?.toInt();
+      if (_todayWorkMinutes != newWorkMinutes) {
+        _todayWorkMinutes = newWorkMinutes;
         changed = true;
       }
 
@@ -532,18 +622,11 @@ class PresensiProvider extends ChangeNotifier {
     try {
       final res = await ApiService.leaveBalance(forceRefresh: forceRefresh);
       final list = (res['balances'] as List?) ?? [];
-      _leaveResetInfo = res['reset_info'] as Map<String, dynamic>?;
+      _leaveResetInfo = (res['leave_reset_info'] ?? res['reset_info']) as Map<String, dynamic>?;
       _leaveBalances
         ..clear()
         ..addAll(
-          list.map((e) {
-            final m = e as Map<String, dynamic>;
-            return LeaveBalanceRecord(
-              leaveType: (m['leave_type'] ?? '').toString(),
-              quota: (m['quota'] ?? 0) as int,
-              used: (m['used'] ?? 0) as int,
-            );
-          }),
+          list.map((e) => LeaveBalanceRecord.fromJson(e as Map<String, dynamic>)),
         );
     } catch (_) {}
     _loadingBalance = false;
@@ -566,6 +649,7 @@ class PresensiProvider extends ChangeNotifier {
             return LeaveRequestRecord(
               id: (m['id'] ?? 0) as int,
               leaveType: (m['leave_type'] ?? '').toString(),
+              halfDaySession: m['half_day_session'] as String?,
               // Backend mengirim ISO ("2026-06-26T00:00:00..."), ambil tanggalnya saja
               startDate: _dateOnly(m['start_date']),
               endDate: _dateOnly(m['end_date']),
@@ -577,8 +661,19 @@ class PresensiProvider extends ChangeNotifier {
               spvName: m['spv_name'] as String? ?? spv?['name'] as String?,
               spvApprovedAt: m['spv_approved_at'] as String?,
               spvNotes: m['spv_notes'] as String?,
+              createdAt: m['created_at']?.toString(),
             );
           }),
+        );
+      final adjList = (res['adjustments'] as List?) ?? [];
+      _leaveAdjustments
+        ..clear()
+        ..addAll(
+          adjList.map(
+            (e) => LeaveQuotaAdjustmentRecord.fromJson(
+              e as Map<String, dynamic>,
+            ),
+          ),
         );
     } catch (_) {}
     _loadingLeaves = false;
@@ -586,19 +681,21 @@ class PresensiProvider extends ChangeNotifier {
   }
 
   // ─── Preview hari EFEKTIF pengajuan (badge "Total N hari") ────
-  /// Meminta hitungan backend utk rentang tanggal. Backend melewatkan
+  /// Meminta hitungan backend utk rentang tanggal atau tanggal acak. Backend melewatkan
   /// libur nasional/perusahaan/cabang, cuti bersama accepted, cuti pribadi
   /// yang sudah diajukan, libur mingguan kantor, off-day shift & WFH terjadwal.
   /// Return null bila gagal (mobile fallback ke hitungan kalender sederhana).
   Future<Map<String, dynamic>?> fetchLeavePreview({
-    required String startDate,
-    required String endDate,
+    String? startDate,
+    String? endDate,
+    List<String>? dates,
     String? leaveType,
   }) async {
     try {
       return await ApiService.leavePreview(
         startDate: startDate,
         endDate: endDate,
+        dates: dates,
         leaveType: leaveType,
       );
     } catch (_) {
@@ -610,34 +707,59 @@ class PresensiProvider extends ChangeNotifier {
   /// Kirim pengajuan. Lempar ApiException bila gagal.
   Future<void> submitLeave({
     required String leaveType,
-    required String startDate,
-    required String endDate,
+    String? startDate,
+    String? endDate,
+    List<String>? dates,
     required int totalDays,
     required String reason,
     Uint8List? documentBytes,
     String? documentFileName,
+    String? halfDaySession,
   }) async {
     final res = await ApiService.requestLeave(
       leaveType: leaveType,
       startDate: startDate,
       endDate: endDate,
+      dates: dates,
       reason: reason,
       documentBytes: documentBytes,
       documentFileName: documentFileName,
+      halfDaySession: halfDaySession,
     );
     final leave = res['leave'] as Map<String, dynamic>?;
-    _leaveRequests.insert(
-      0,
-      LeaveRequestRecord(
-        id: (leave?['id'] ?? 0) as int,
-        leaveType: leaveType,
-        startDate: startDate,
-        endDate: endDate,
-        totalDays: totalDays,
-        reason: reason,
-        status: (leave?['status'] ?? 'pending').toString(),
-      ),
-    );
+    final leaves = res['leaves'] as List?;
+    if (leaves != null && leaves.isNotEmpty) {
+      for (final item in leaves.reversed) {
+        final m = item as Map<String, dynamic>;
+        _leaveRequests.insert(
+          0,
+          LeaveRequestRecord(
+            id: (m['id'] ?? 0) as int,
+            leaveType: leaveType,
+            halfDaySession: halfDaySession,
+            startDate: (m['start_date'] ?? startDate ?? '').toString().split('T').first,
+            endDate: (m['end_date'] ?? endDate ?? '').toString().split('T').first,
+            totalDays: (m['total_days'] ?? 1) as int,
+            reason: reason,
+            status: (m['status'] ?? 'pending').toString(),
+          ),
+        );
+      }
+    } else {
+      _leaveRequests.insert(
+        0,
+        LeaveRequestRecord(
+          id: (leave?['id'] ?? 0) as int,
+          leaveType: leaveType,
+          halfDaySession: halfDaySession,
+          startDate: startDate ?? '',
+          endDate: endDate ?? '',
+          totalDays: totalDays,
+          reason: reason,
+          status: (leave?['status'] ?? 'pending').toString(),
+        ),
+      );
+    }
     notifyListeners();
   }
 

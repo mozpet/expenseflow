@@ -170,6 +170,7 @@ class ShiftRotationMobileEndpointsTest extends TestCase
 
     public function test_leave_preview_skips_pattern_off_days(): void
     {
+        Carbon::setTestNow('2026-08-30');
         Sanctum::actingAs($this->employee);
 
         // Employee mengambil cuti 3 hari dari 2026-09-01 s/d 2026-09-03

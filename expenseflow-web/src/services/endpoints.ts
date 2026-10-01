@@ -402,7 +402,7 @@ export const attendanceApi = {
   // Pengajuan izin/cuti
   leaves: (filters?: {
     status?: 'pending' | 'approved' | 'rejected';
-    leave_type?: 'wfh' | 'izin' | 'sakit' | 'cuti';
+    leave_type?: string;
     user_id?: number;
     page?: number;
     per_page?: number;
@@ -440,10 +440,29 @@ export const attendanceApi = {
     apiPost(`/dashboard/attendance/settings/${officeId}/reset-leave-balances`),
   setLeaveBalance: (payload: {
     user_id: number;
-    leave_type: 'cuti' | 'izin';
-    quota: number;
+    leave_type?: string;
+    quota?: number;
+    allow_leave?: boolean;
     year?: number;
+    balances?: Array<{ leave_type: string; quota: number }>;
   }) => apiPost('/dashboard/attendance/leave-balances', payload),
+
+  // Pengaturan jenis cuti per kantor (toggle on/off, kuota default kantor, & reset tahunan)
+  leaveTypeSettings: (officeId?: number | string, forceRefresh = false) =>
+    apiGet<LeaveTypeSettingsResponse>('/dashboard/attendance/leave-types', officeId ? { attendance_setting_id: officeId } : undefined, { forceRefresh }),
+  updateLeaveTypeSettings: (payload: {
+    attendance_setting_id: number;
+    default_leave_quota?: number;
+    leave_reset_date?: string | null;
+    leave_multi_approval_enabled?: boolean;
+    settings?: Array<{
+      leave_type: string;
+      is_enabled: boolean;
+      quota_days: number;
+      requires_document?: boolean;
+      notes?: string | null;
+    }>;
+  }) => apiPut<{ message: string }>('/dashboard/attendance/leave-types', payload),
 
   // Laporan presensi — mencakup baris virtual absent/leave
   report: (filters?: {
@@ -974,6 +993,495 @@ export const userDocumentApi = {
   viewFile: async (userId: number | string, documentId: number | string, title?: string) =>
     apiViewFile(`/admin/users/${userId}/documents/${documentId}/stream`, title || 'Dokumen Karyawan'),
 };
+
+// ─── Payroll (Penggajian) — Finance/HRD dashboard ───────────
+// Semua endpoint di bawah /dashboard/payroll/* butuh izin modul Payroll.
+// Data gaji/PPh21/NPWP bersifat sensitif → GET memakai { cache: false } agar
+// selalu segar (modul admin trafik rendah, kesegaran > kecepatan cache).
+export type PayrollStatus = 'draft' | 'calculated' | 'submitted' | 'approved' | 'paid' | 'rejected';
+
+import type {
+  BpjsProfile,
+  PayrollAdjustment,
+  EmployeeBankAccount,
+  RunLogsResponse,
+  PinStatus,
+  PayrollPaymentBatch,
+  PaymentBatchesResponse,
+  PaymentBatchGeneratePayload,
+  PaymentBatchReconcilePayload,
+  GlAccount,
+  GlAccountsResponse,
+  GlJournalResponse,
+  TaxCertificate1721A1,
+  TaxCertificate1721A1Detail,
+  PayslipTraceResponse,
+  PayrollGroup,
+  CompanyTaxProfile,
+  LeaveTypeSettingsResponse,
+  JobLevel,
+  SalaryGrade,
+  CurrencyRate,
+  SeveranceCase,
+  SeverancePreview,
+  EbupotSchemaStatus,
+  TaxProfile,
+} from '../types';
+
+export const payrollApi = {
+  // ── Komponen gaji (master per perusahaan) ──
+  listComponents: () =>
+    apiGet<{ data: any[] }>('/dashboard/payroll/components', undefined, { cache: false }),
+
+  createComponent: (payload: {
+    code: string;
+    name: string;
+    type: 'earning' | 'deduction';
+    calc_type?: 'fixed' | 'manual' | 'auto';
+    category?: string;
+    is_taxable?: boolean;
+    is_active?: boolean;
+    sort_order?: number;
+  }) => apiPost<{ message: string; data: any }>('/dashboard/payroll/components', payload),
+
+  updateComponent: (id: number | string, payload: Record<string, any>) =>
+    apiPut<{ message: string; data: any }>(`/dashboard/payroll/components/${id}`, payload),
+
+  deleteComponent: (id: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/components/${id}`),
+
+  // ── Gaji karyawan (gaji pokok efektif + tunjangan tetap + profil pajak + BPJS) ──
+  listSalaries: () =>
+    apiGet<{ data: any[] }>('/dashboard/payroll/salaries', undefined, { cache: false }),
+
+  getSalary: (userId: number | string) =>
+    apiGet<{ data: any }>(`/dashboard/payroll/salaries/${userId}`, undefined, { cache: false }),
+
+  saveSalary: (
+    userId: number | string,
+    payload: {
+      basic_salary: number;
+      effective_date: string;
+      notes?: string;
+      salary_grade_id?: number | null;
+      job_level_id?: number | null;
+      currency?: string;
+    }
+  ) => apiPost<{ message: string; data: any }>(`/dashboard/payroll/salaries/${userId}`, payload),
+
+  saveSalaryComponent: (
+    userId: number | string,
+    payload: { salary_component_id: number; amount: number; effective_date: string },
+  ) => apiPost<{ message: string; data: any }>(`/dashboard/payroll/salaries/${userId}/components`, payload),
+
+  deleteSalaryComponent: (componentId: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/salary-components/${componentId}`),
+
+  saveTaxProfile: (
+    userId: number | string,
+    payload: {
+      ptkp_status: string;
+      tax_method?: 'gross' | 'gross_up';
+      npwp?: string;
+      tax_subject_type?: 'domestic' | 'foreign';
+      treaty_country?: string | null;
+      treaty_rate?: number | null;
+      foreign_tax_id?: string | null;
+    },
+  ) => apiPut<{ message: string; data: any }>(`/dashboard/payroll/salaries/${userId}/tax-profile`, payload),
+
+  // Fase 2: Simpan profil kepesertaan BPJS
+  saveBpjsProfile: (
+    userId: number | string,
+    payload: {
+      has_bpjs_kes: boolean;
+      has_bpjs_tk: boolean;
+      has_jkp?: boolean;
+      jkk_risk_class?: number;
+      bpjs_kes_no?: string;
+      bpjs_tk_no?: string;
+    },
+  ) => apiPut<{ message: string; data: BpjsProfile }>(`/dashboard/payroll/salaries/${userId}/bpjs-profile`, payload),
+
+  // ── Batch payroll (run) — draft → calculated → submitted → approved → paid ──
+  listRuns: () =>
+    apiGet<{ data: any[] }>('/dashboard/payroll/runs', undefined, { cache: false }),
+
+  createRun: (payload: {
+    period_month: number;
+    period_year: number;
+    attendance_setting_id?: number | null;
+    run_type?: 'regular' | 'thr' | 'severance';
+    payroll_group_id?: number | null;
+    is_year_end?: boolean;
+    notes?: string;
+  }) => apiPost<{ message: string; data: any }>('/dashboard/payroll/runs', payload),
+
+  getRun: (id: number | string) =>
+    apiGet<{ data: any }>(`/dashboard/payroll/runs/${id}`, undefined, { cache: false }),
+
+  calculateRun: (
+    id: number | string,
+    options?: {
+      pph21?: boolean;
+      bpjs?: boolean;
+      overtime?: boolean;
+      attendance_deduction?: boolean;
+      receipt_reimbursement?: boolean;
+      loan_installment?: boolean;
+      working_days_divisor?: number;
+    },
+  ) => apiPost<{ message: string; data: any }>(`/dashboard/payroll/runs/${id}/calculate`, options ?? {}),
+
+  submitRun: (id: number | string) =>
+    apiPost<{ message: string; data: any }>(`/dashboard/payroll/runs/${id}/submit`),
+
+  approveRun: (id: number | string, pin?: string) =>
+    apiPost<{ message: string; data: any }>(`/dashboard/payroll/runs/${id}/approve`, pin ? { pin } : {}),
+
+  rejectRun: (id: number | string, reason: string) =>
+    apiPost<{ message: string; data: any }>(`/dashboard/payroll/runs/${id}/reject`, { reason }),
+
+  markPaid: (id: number | string, pin?: string) =>
+    apiPost<{ message: string; data: any }>(`/dashboard/payroll/runs/${id}/mark-paid`, pin ? { pin } : {}),
+
+  deleteRun: (id: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/runs/${id}`),
+
+  // Fase 3 Modul C: Jejak audit tamper-evident hash-chain
+  getRunLogs: (id: number | string) =>
+    apiGet<{ data: RunLogsResponse }>(`/dashboard/payroll/runs/${id}/logs`, undefined, { cache: false }),
+
+  // ── Fase 4+: Grup Payroll (CRUD + scoping run) ──
+  listGroups: () =>
+    apiGet<{ data: PayrollGroup[] }>('/dashboard/payroll/groups', undefined, { cache: false }),
+
+  createGroup: (payload: { name: string; code?: string; description?: string; is_active?: boolean }) =>
+    apiPost<{ message: string; data: PayrollGroup }>('/dashboard/payroll/groups', payload),
+
+  updateGroup: (id: number | string, payload: { name: string; code?: string; description?: string; is_active?: boolean }) =>
+    apiPut<{ message: string; data: PayrollGroup }>(`/dashboard/payroll/groups/${id}`, payload),
+
+  deleteGroup: (id: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/groups/${id}`),
+
+  // ── Fase 4+: Profil Pajak Perusahaan (NPWP pemberi kerja) ──
+  getCompanyTaxProfile: () =>
+    apiGet<{ data: CompanyTaxProfile }>('/dashboard/payroll/company-tax-profile', undefined, { cache: false }),
+
+  saveCompanyTaxProfile: (payload: { npwp?: string }) =>
+    apiPut<{ message: string; data: CompanyTaxProfile }>('/dashboard/payroll/company-tax-profile', payload),
+
+  // ── Fase 3 Modul A: Penyesuaian & Koreksi Retroaktif (Adjustments) ──
+  listAdjustments: (filters?: { status?: string; user_id?: number | string; payroll_id?: number | string }) =>
+    apiGet<{ data: PayrollAdjustment[] }>('/dashboard/payroll/adjustments', filters as Record<string, string | number>, { cache: false }),
+
+  createAdjustment: (payload: {
+    user_id: number | string;
+    type: 'earning' | 'deduction';
+    name: string;
+    amount: number;
+    is_taxable?: boolean;
+    reason?: string;
+    source_document_path?: string | null;
+    retroactive_payroll_id?: number | null;
+  }) => apiPost<{ message: string; data: PayrollAdjustment }>('/dashboard/payroll/adjustments', payload),
+
+  approveAdjustment: (id: number | string) =>
+    apiPost<{ message: string; data: PayrollAdjustment }>(`/dashboard/payroll/adjustments/${id}/approve`),
+
+  voidAdjustment: (id: number | string, reason: string) =>
+    apiPost<{ message: string; data: PayrollAdjustment }>(`/dashboard/payroll/adjustments/${id}/void`, { reason }),
+
+  // ── Fase 3 Modul B: Rekening Bank Karyawan (Proteksi & Maker-Checker) ──
+  listBankAccounts: (userId: number | string) =>
+    apiGet<{ data: EmployeeBankAccount[] }>(`/dashboard/payroll/employees/${userId}/bank-accounts`, undefined, { cache: false }),
+
+  submitBankAccount: (
+    userId: number | string,
+    payload: {
+      bank_name: string;
+      bank_account_no: string;
+      bank_account_holder: string;
+      bank_branch?: string | null;
+      swift_code?: string | null;
+      notes?: string | null;
+    },
+  ) => apiPost<{ message: string; data: EmployeeBankAccount }>(`/dashboard/payroll/employees/${userId}/bank-account`, payload),
+
+  verifyBankAccount: (id: number | string) =>
+    apiPost<{ message: string; data: EmployeeBankAccount }>(`/dashboard/payroll/bank-accounts/${id}/verify`),
+
+  rejectBankAccount: (id: number | string, reason: string) =>
+    apiPost<{ message: string; data: EmployeeBankAccount }>(`/dashboard/payroll/bank-accounts/${id}/reject`, { reason }),
+
+  // ── Fase 3 Modul D: Step-up PIN Keamanan ──
+  getPinStatus: () =>
+    apiGet<{ data: PinStatus }>('/dashboard/payroll/security/pin', undefined, { cache: false }),
+
+  setPin: (payload: {
+    current_password: string;
+    current_pin?: string;
+    pin: string;
+    pin_confirmation: string;
+  }) => apiPost<{ message: string; data: { has_pin: boolean } }>('/dashboard/payroll/security/pin', payload),
+
+  // ── Slip gaji (sisi dashboard) ──
+  listPayslips: (filters?: { payroll_id?: number | string; user_id?: number | string }) =>
+    apiGet<{ data: any[] }>('/dashboard/payroll/payslips', filters as Record<string, string | number>, { cache: false }),
+
+  getPayslip: (id: number | string) =>
+    apiGet<{ data: { payslip: any; period: string; earnings: any[]; deductions: any[]; calculation_steps?: any[] } }>(
+      `/dashboard/payroll/payslips/${id}`,
+      undefined,
+      { cache: false },
+    ),
+
+  downloadPayslipPdf: (id: number | string, filename?: string) =>
+    apiDownload(`/dashboard/payroll/payslips/${id}/pdf`, filename ?? `slip-gaji-${id}.pdf`),
+
+  viewPayslipPdf: (id: number | string, title?: string) =>
+    apiViewFile(`/dashboard/payroll/payslips/${id}/pdf`, title ?? 'Slip Gaji'),
+
+  // ── Kasbon / pinjaman karyawan (cicilan otomatis dipotong saat mark-paid) ──
+  listLoans: (filters?: { user_id?: number | string; status?: string }) =>
+    apiGet<{ data: any[] }>('/dashboard/payroll/loans', filters as Record<string, string | number>, { cache: false }),
+
+  createLoan: (payload: {
+    user_id: number;
+    title: string;
+    principal: number;
+    installment_amount: number;
+    tenor_months: number;
+    start_period_month: number;
+    start_period_year: number;
+    notes?: string;
+  }) => apiPost<{ message: string; data: any }>('/dashboard/payroll/loans', payload),
+
+  approveLoan: (id: number | string) =>
+    apiPost<{ message: string; data: any }>(`/dashboard/payroll/loans/${id}/approve`),
+
+  cancelLoan: (id: number | string) =>
+    apiPost<{ message: string; data: any }>(`/dashboard/payroll/loans/${id}/cancel`),
+
+  // ── Disbursement Bank (Fase 4, Spec §21) ──────────────────────────────────
+  listPaymentBatches: (payrollId: number | string) =>
+    apiGet<PaymentBatchesResponse>(
+      `/dashboard/payroll/runs/${payrollId}/payment-batches`,
+      undefined,
+      { cache: false }
+    ),
+
+  getPaymentBatch: (batchId: number | string) =>
+    apiGet<{ data: PayrollPaymentBatch }>(
+      `/dashboard/payroll/payment-batches/${batchId}`,
+      undefined,
+      { cache: false }
+    ),
+
+  generatePaymentBatch: (payrollId: number | string, payload: PaymentBatchGeneratePayload) =>
+    apiPost<{ message: string; skipped_no_bank: number; data: PayrollPaymentBatch }>(
+      `/dashboard/payroll/runs/${payrollId}/payment-batches`,
+      payload
+    ),
+
+  downloadPaymentBatchFile: (batchId: number | string, filename?: string) =>
+    apiDownload(
+      `/dashboard/payroll/payment-batches/${batchId}/download`,
+      filename ?? `transfer-batch-${batchId}.txt`
+    ),
+
+  reconcilePaymentBatch: (batchId: number | string, payload: PaymentBatchReconcilePayload) =>
+    apiPost<{ message: string; data?: PayrollPaymentBatch }>(
+      `/dashboard/payroll/payment-batches/${batchId}/reconcile`,
+      payload
+    ),
+
+  // ── General Ledger / Jurnal Akuntansi (Fase 4 lanjutan, Spec §22.1 - 22.2) ──
+  listGlAccounts: () =>
+    apiGet<GlAccountsResponse>('/dashboard/payroll/gl-accounts', undefined, { cache: false }),
+
+  saveGlAccounts: (accounts: Array<{ key: string; account_code: string; account_name: string }>) =>
+    apiPut<{ message: string; data: GlAccount[] }>('/dashboard/payroll/gl-accounts', { accounts }),
+
+  resetGlAccounts: () =>
+    apiPost<{ message: string; data: GlAccount[] }>('/dashboard/payroll/gl-accounts/reset'),
+
+  previewGlJournal: (payrollId: number | string, groupBy?: 'none' | 'division' | 'branch') =>
+    apiGet<{ data: GlJournalResponse } | GlJournalResponse>(
+      `/dashboard/payroll/runs/${payrollId}/gl-preview`,
+      groupBy && groupBy !== 'none' ? { group_by: groupBy } : undefined,
+      { cache: false }
+    ),
+
+  exportGlJournal: (
+    payrollId: number | string,
+    format: 'csv' | 'json' = 'csv',
+    groupBy?: 'none' | 'division' | 'branch'
+  ) =>
+    apiDownload(
+      `/dashboard/payroll/runs/${payrollId}/gl-export`,
+      `jurnal-payroll-${payrollId}.${format}`,
+      { format, ...(groupBy && groupBy !== 'none' ? { group_by: groupBy } : {}) }
+    ),
+
+  // ── Pajak 1721-A1 & Coretax (Fase 4 lanjutan, Spec §22.3) ───────────────────
+  listTax1721A1: (taxYear?: number) =>
+    apiGet<{ tax_year: number; data: TaxCertificate1721A1[] }>(
+      '/dashboard/payroll/tax/1721a1',
+      taxYear ? { tax_year: taxYear } : undefined,
+      { cache: false }
+    ),
+
+  getTax1721A1: (userId: number | string, taxYear?: number) =>
+    apiGet<{ tax_year: number; data: TaxCertificate1721A1Detail }>(
+      `/dashboard/payroll/tax/1721a1/${userId}`,
+      taxYear ? { tax_year: taxYear } : undefined,
+      { cache: false }
+    ),
+
+  downloadTax1721A1Pdf: (userId: number | string, taxYear?: number, filename?: string) =>
+    apiDownload(
+      `/dashboard/payroll/tax/1721a1/${userId}/pdf`,
+      filename ?? `1721A1-${userId}-${taxYear ?? new Date().getFullYear()}.pdf`,
+      taxYear ? { tax_year: taxYear } : undefined
+    ),
+
+  exportTax1721A1: (taxYear?: number, format: 'csv' | 'json' = 'csv') =>
+    apiDownload(
+      '/dashboard/payroll/tax/1721a1/export',
+      `1721A1-rekap-${taxYear ?? new Date().getFullYear()}.${format}`,
+      { format, ...(taxYear ? { tax_year: taxYear } : {}) }
+    ),
+
+  // Fase 4+: e-Bupot 21/26 DRAF XML (non-resmi, belum tervalidasi XSD DJP)
+  exportEbupotDraft: (taxYear?: number) =>
+    apiDownload(
+      '/dashboard/payroll/tax/ebupot/export',
+      `ebupot-draf-${taxYear ?? new Date().getFullYear()}.xml`,
+      taxYear ? { tax_year: taxYear } : undefined
+    ),
+
+  // ── Fase 6: e-Bupot XML Tervalidasi Skema XSD ──
+  getEbupotSchemaStatus: () =>
+    apiGet<{ data: EbupotSchemaStatus }>('/dashboard/payroll/tax/ebupot/schema', undefined, { cache: false }),
+
+  exportEbupotXml: (taxYear?: number) =>
+    apiDownload(
+      '/dashboard/payroll/tax/ebupot/export',
+      `ebupot-${taxYear ?? new Date().getFullYear()}.xml`,
+      taxYear ? { tax_year: taxYear } : undefined
+    ),
+
+  // ── Calculation Trace (Fase 4 lanjutan, Spec §22.3) ─────────────────────────
+  getPayslipTrace: (payslipId: number | string) =>
+    apiGet<PayslipTraceResponse>(
+      `/dashboard/payroll/payslips/${payslipId}/calculation-trace`,
+      undefined,
+      { cache: false }
+    ),
+
+  // ── Fase 6: Struktur & Skala Upah (Jenjang Jabatan & Golongan Upah) ──
+  listJobLevels: () =>
+    apiGet<{ data: JobLevel[] }>('/dashboard/payroll/job-levels', undefined, { cache: false }),
+
+  createJobLevel: (payload: {
+    name: string;
+    code?: string;
+    rank?: number;
+    description?: string;
+    is_active?: boolean;
+  }) => apiPost<{ message: string; data: JobLevel }>('/dashboard/payroll/job-levels', payload),
+
+  updateJobLevel: (
+    id: number | string,
+    payload: {
+      name: string;
+      code?: string;
+      rank?: number;
+      description?: string;
+      is_active?: boolean;
+    }
+  ) => apiPut<{ message: string; data: JobLevel }>(`/dashboard/payroll/job-levels/${id}`, payload),
+
+  deleteJobLevel: (id: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/job-levels/${id}`),
+
+  listSalaryGrades: (params?: { job_level_id?: number | string }) =>
+    apiGet<{ data: SalaryGrade[] }>('/dashboard/payroll/salary-grades', params as Record<string, string | number>, { cache: false }),
+
+  createSalaryGrade: (payload: {
+    name: string;
+    code?: string;
+    job_level_id?: number | null;
+    min_salary: number;
+    mid_salary?: number | null;
+    max_salary: number;
+    currency?: string;
+    description?: string;
+    is_active?: boolean;
+  }) => apiPost<{ message: string; data: SalaryGrade }>('/dashboard/payroll/salary-grades', payload),
+
+  updateSalaryGrade: (
+    id: number | string,
+    payload: {
+      name: string;
+      code?: string;
+      job_level_id?: number | null;
+      min_salary: number;
+      mid_salary?: number | null;
+      max_salary: number;
+      currency?: string;
+      description?: string;
+      is_active?: boolean;
+    }
+  ) => apiPut<{ message: string; data: SalaryGrade }>(`/dashboard/payroll/salary-grades/${id}`, payload),
+
+  deleteSalaryGrade: (id: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/salary-grades/${id}`),
+
+  // ── Fase 6: Master Kurs Valuta Asing (Effective-Dated) ──
+  listCurrencyRates: (params?: { currency?: string }) =>
+    apiGet<{ data: CurrencyRate[] }>('/dashboard/payroll/currency-rates', params as Record<string, string>, { cache: false }),
+
+  createCurrencyRate: (payload: {
+    currency: string;
+    rate_to_idr: number | string;
+    effective_date: string;
+    source?: string;
+  }) => apiPost<{ message: string; data: CurrencyRate }>('/dashboard/payroll/currency-rates', payload),
+
+  updateCurrencyRate: (
+    id: number | string,
+    payload: {
+      rate_to_idr: number | string;
+      source?: string;
+    }
+  ) => apiPut<{ message: string; data: CurrencyRate }>(`/dashboard/payroll/currency-rates/${id}`, payload),
+
+  deleteCurrencyRate: (id: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/currency-rates/${id}`),
+
+  // ── Fase 6: Exit Settlement / Berkas Pesangon (PP 35/2021) ──
+  listSeveranceCases: (params?: { payroll_id?: number | string; status?: string; termination_type?: string }) =>
+    apiGet<{ data: SeveranceCase[] }>('/dashboard/payroll/severance-cases', params as Record<string, string | number>, { cache: false }),
+
+  getSeveranceCase: (id: number | string) =>
+    apiGet<{ data: SeveranceCase }>(`/dashboard/payroll/severance-cases/${id}`, undefined, { cache: false }),
+
+  previewSeveranceCase: (id: number | string) =>
+    apiGet<{ data: SeverancePreview }>(`/dashboard/payroll/severance-cases/${id}/preview`, undefined, { cache: false }),
+
+  createSeveranceCase: (payload: Partial<SeveranceCase>) =>
+    apiPost<{ message: string; data: SeveranceCase }>('/dashboard/payroll/severance-cases', payload),
+
+  updateSeveranceCase: (id: number | string, payload: Partial<SeveranceCase>) =>
+    apiPut<{ message: string; data: SeveranceCase }>(`/dashboard/payroll/severance-cases/${id}`, payload),
+
+  deleteSeveranceCase: (id: number | string) =>
+    apiDelete<{ message: string }>(`/dashboard/payroll/severance-cases/${id}`),
+};
+
 
 
 

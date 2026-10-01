@@ -574,16 +574,21 @@ class ApiService {
   }
 
   // Preview hitungan hari EFEKTIF pengajuan (backend skip libur/off-day/bentrok/wfh).
+  // Mendukung rentang tanggal (startDate & endDate) atau tanggal acak/tidak berurutan (dates).
   // Response: { total_days, calendar_days, effective_dates[], skipped_dates[] }
   static Future<Map<String, dynamic>> leavePreview({
-    required String startDate,
-    required String endDate,
+    String? startDate,
+    String? endDate,
+    List<String>? dates,
     String? leaveType,
   }) async {
-    final query = <String, String>{
-      'start_date': startDate,
-      'end_date': endDate,
-    };
+    final query = <String, String>{};
+    if (dates != null && dates.isNotEmpty) {
+      query['dates'] = dates.join(',');
+    } else {
+      if (startDate != null) query['start_date'] = startDate;
+      if (endDate != null) query['end_date'] = endDate;
+    }
     if (leaveType != null && leaveType.isNotEmpty) {
       query['leave_type'] = leaveType;
     }
@@ -592,20 +597,30 @@ class ApiService {
 
   static Future<Map<String, dynamic>> requestLeave({
     required String leaveType,
-    required String startDate,
-    required String endDate,
+    String? startDate,
+    String? endDate,
+    List<String>? dates,
     required String reason,
     Uint8List? documentBytes,
     String? documentFileName,
+    String? halfDaySession,
   }) async {
     // Tanpa lampiran → JSON biasa.
     if (documentBytes == null) {
-      return _request('POST', '/attendance/leave-request', body: {
+      final body = <String, dynamic>{
         'leave_type': leaveType,
-        'start_date': startDate,
-        'end_date': endDate,
         'reason': reason,
-      });
+      };
+      if (dates != null && dates.isNotEmpty) {
+        body['dates'] = dates;
+      } else {
+        if (startDate != null) body['start_date'] = startDate;
+        if (endDate != null) body['end_date'] = endDate;
+      }
+      if (halfDaySession != null && halfDaySession.isNotEmpty) {
+        body['half_day_session'] = halfDaySession;
+      }
+      return _request('POST', '/attendance/leave-request', body: body);
     }
 
     // Dengan lampiran surat dokter → multipart.
@@ -618,9 +633,16 @@ class ApiService {
       req.headers['Authorization'] = 'Bearer $token';
     }
     req.fields['leave_type'] = leaveType;
-    req.fields['start_date'] = startDate;
-    req.fields['end_date']   = endDate;
+    if (dates != null && dates.isNotEmpty) {
+      req.fields['dates'] = dates.join(',');
+    } else {
+      if (startDate != null) req.fields['start_date'] = startDate;
+      if (endDate != null) req.fields['end_date'] = endDate;
+    }
     req.fields['reason']     = reason;
+    if (halfDaySession != null && halfDaySession.isNotEmpty) {
+      req.fields['half_day_session'] = halfDaySession;
+    }
     req.files.add(http.MultipartFile.fromBytes(
       'document',
       documentBytes,
@@ -795,5 +817,66 @@ class ApiService {
   }) async {
     return _request('POST', '/attendance/spv/leave-approvals/$id/reject',
         body: {'notes': reason, 'rejection_reason': reason});
+  }
+
+  // ─── Payroll / Slip Gaji (karyawan) ───────────────────────
+  /// Ambil daftar slip gaji milik karyawan yang sedang login.
+  /// Hanya mengembalikan slip pada batch payroll berstatus approved/paid.
+  static Future<Map<String, dynamic>> getMyPayslips({
+    bool forceRefresh = false,
+  }) async {
+    return _request('GET', '/employee/payslips', forceRefresh: forceRefresh);
+  }
+
+  /// Ambil rincian satu slip gaji milik karyawan (earnings, deductions, ringkasan).
+  static Future<Map<String, dynamic>> getPayslipDetail(
+    int id, {
+    bool forceRefresh = false,
+  }) async {
+    return _request('GET', '/employee/payslips/$id',
+        forceRefresh: forceRefresh);
+  }
+
+  /// Unduh berkas PDF slip gaji sebagai bytes mentah.
+  ///
+  /// Tidak lewat [_request] karena responsnya bukan JSON melainkan berkas biner
+  /// (`$pdf->download()` dari backend). Bila gagal, coba baca pesan error JSON.
+  static Future<Uint8List> downloadPayslipPdf(int id) async {
+    final headers = await _headers();
+    // Endpoint mengembalikan berkas PDF, bukan JSON.
+    headers['Accept'] = 'application/pdf';
+    headers.remove('Content-Type');
+
+    final uri = Uri.parse('${ApiConfig.baseUrl}/employee/payslips/$id/pdf');
+
+    http.Response res;
+    try {
+      res = await http.get(uri, headers: headers);
+    } catch (e) {
+      throw ApiException('Gagal mengunduh slip gaji: periksa koneksi Anda.');
+    }
+
+    if (res.statusCode >= 200 && res.statusCode < 300) {
+      return res.bodyBytes;
+    }
+
+    // Coba ambil pesan error dari body JSON (mis. 401/403/404/429).
+    String message = 'Gagal mengunduh slip gaji (${res.statusCode}).';
+    int? retryAfter;
+    Map<String, dynamic>? data;
+    try {
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map<String, dynamic>) {
+        data = decoded;
+        if (decoded['message'] is String &&
+            (decoded['message'] as String).isNotEmpty) {
+          message = decoded['message'] as String;
+        }
+        retryAfter = (decoded['retry_after'] as num?)?.toInt();
+      }
+    } catch (_) {
+      // Body bukan JSON — pertahankan pesan default.
+    }
+    throw ApiException(message, res.statusCode, data, retryAfter);
   }
 }

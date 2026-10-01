@@ -19,6 +19,7 @@ class LeaveBalanceHistory extends Model
         'cuti_used',
         'cuti_remaining',
         'izin_sakit_used',
+        'leave_types_snapshot',
         'notes',
     ];
 
@@ -32,6 +33,7 @@ class LeaveBalanceHistory extends Model
             'cuti_used'       => 'integer',
             'cuti_remaining'  => 'integer',
             'izin_sakit_used' => 'integer',
+            'leave_types_snapshot' => 'array',
         ];
     }
 

@@ -17,6 +17,8 @@ export interface AuthUser {
   can_read_settings?: boolean;
   can_manage_receipt?: boolean;
   can_read_receipt?: boolean;
+  can_manage_payroll?: boolean;
+  can_read_payroll?: boolean;
   [key: string]: unknown;
 }
 

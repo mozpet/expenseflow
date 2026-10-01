@@ -3389,7 +3389,7 @@ class ShiftController extends Controller
         // Resolve kondisi jadwal & status spesifik HARI INI ($today) untuk Card Jadwal Shift di Beranda:
         $todayLeave = \App\Models\LeaveRequest::where('user_id', $user->id)
             ->whereNull('holiday_id')
-            ->whereIn('leave_type', ['cuti', 'izin', 'sakit'])
+            ->whereNotIn('leave_type', ['wfh'])
             ->where('status', 'approved')
             ->where('start_date', '<=', $today)
             ->where('end_date', '>=', $today)
@@ -3434,21 +3434,41 @@ class ShiftController extends Controller
         $todayIsOff = false;
 
         if ($todayLeave) {
-            $todayType = 'leave';
-            $todayIsOff = true;
             $leaveType = $todayLeave->leave_type;
-            if ($leaveType === 'izin') {
-                $todayTitle = 'Izin';
-                $todaySubTitle = 'Libur';
-                $todayColor = '#A855F7';
-            } elseif ($leaveType === 'sakit') {
-                $todayTitle = 'Sakit';
-                $todaySubTitle = 'Libur';
-                $todayColor = '#EA580C';
+            if ($leaveType === 'cuti_setengah_hari') {
+                $session = $todayLeave->half_day_session;
+                $todayType = 'work';
+                $todayIsOff = false;
+                $todayColor = '#0284C7';
+                $origStart = $resolvedToday['work_start_time'] ? substr((string) $resolvedToday['work_start_time'], 0, 5) : '08:00';
+                $origEnd   = $resolvedToday['work_end_time'] ? substr((string) $resolvedToday['work_end_time'], 0, 5) : '17:00';
+                $midpoint  = $this->calculateHalfDayMidpoint($origStart, $origEnd, $today);
+
+                if ($session === 'morning') {
+                    $todayTitle = 'Cuti Setengah Hari (Sesi 1)';
+                    $todaySubTitle = "Masuk {$midpoint} — {$origEnd} WIB";
+                    $resolvedToday['work_start_time'] = $midpoint;
+                } else {
+                    $todayTitle = 'Cuti Setengah Hari (Sesi 2)';
+                    $todaySubTitle = "Masuk {$origStart} — Pulang {$midpoint} WIB";
+                    $resolvedToday['work_end_time'] = $midpoint;
+                }
             } else {
-                $todayTitle = 'Cuti Tahunan';
-                $todaySubTitle = 'Libur';
-                $todayColor = '#D97706';
+                $todayType = 'leave';
+                $todayIsOff = true;
+                if ($leaveType === 'izin') {
+                    $todayTitle = 'Izin';
+                    $todaySubTitle = 'Libur';
+                    $todayColor = '#A855F7';
+                } elseif ($leaveType === 'sakit') {
+                    $todayTitle = 'Sakit';
+                    $todaySubTitle = 'Libur';
+                    $todayColor = '#EA580C';
+                } else {
+                    $todayTitle = config("leave_types.catalog.{$leaveType}.label", 'Cuti Tahunan');
+                    $todaySubTitle = 'Libur';
+                    $todayColor = '#D97706';
+                }
             }
         } elseif ($todayHoliday) {
             $todayType = 'holiday';
@@ -3741,37 +3761,37 @@ class ShiftController extends Controller
             ->map(fn ($d) => \Carbon\Carbon::parse($d)->toDateString())
             ->flip();
 
-        // CUTI MANDIRI / IZIN / SAKIT (pribadi) yang sudah di-approve & memotong bulan ini.
-        // Ditandai per-tanggal agar kalender mobile bisa membedakan jenis pengajuan (cuti, izin, sakit)
-        // dengan warna & label yang sesuai (izin = ungu, sakit = orange, cuti = kuning/amber).
+        // CUTI MANDIRI / IZIN / SAKIT (pribadi) yang HANYA sudah di-approve oleh HRD/SPV.
+        // Sesuai permintaan: tanggal cuti/izin/wfh HANYA tampil di jadwal kerja jika sudah disetujui (status = approved).
         $personalLeaveDates = [];
         $personalLeaves = \App\Models\LeaveRequest::where('user_id', $user->id)
             ->whereNull('holiday_id')          // bukan cuti bersama
-            ->whereIn('leave_type', ['cuti', 'izin', 'sakit'])
-            ->where('status', 'approved')      // hanya yang sudah disetujui HRD
+            ->whereNotIn('leave_type', ['wfh'])
+            ->where('status', 'approved')      // HANYA yang sudah disetujui
             ->where('start_date', '<=', $endOfMonth->toDateString())
             ->where('end_date', '>=', $startOfMonth->toDateString())
-            ->get(['start_date', 'end_date', 'leave_type', 'reason']);
+            ->get(['start_date', 'end_date', 'leave_type', 'half_day_session', 'reason']);
         foreach ($personalLeaves as $pl) {
             for ($d = \Carbon\Carbon::parse($pl->start_date); $d->lte(\Carbon\Carbon::parse($pl->end_date)); $d->addDay()) {
                 $ds = $d->toDateString();
                 if ($ds >= $startOfMonth->toDateString() && $ds <= $endOfMonth->toDateString()) {
                     $personalLeaveDates[$ds] = [
-                        'leave_type' => $pl->leave_type,
-                        'reason'     => $pl->reason,
+                        'leave_type'       => $pl->leave_type,
+                        'half_day_session' => $pl->half_day_session,
+                        'reason'           => $pl->reason,
                     ];
                 }
             }
         }
 
-        // WFH LEAVE yang sudah di-approve oleh HRD bulan ini.
+        // WFH LEAVE yang sudah disetujui (approved) oleh karyawan bulan ini.
         $wfhApprovedDates = [];
         $wfhLeaves = \App\Models\LeaveRequest::where('user_id', $user->id)
             ->where('leave_type', 'wfh')
-            ->where('status', 'approved')
+            ->where('status', 'approved')      // HANYA yang sudah disetujui
             ->where('start_date', '<=', $endOfMonth->toDateString())
             ->where('end_date', '>=', $startOfMonth->toDateString())
-            ->get(['start_date', 'end_date']);
+            ->get(['start_date', 'end_date', 'reason']);
         foreach ($wfhLeaves as $wl) {
             for ($d = \Carbon\Carbon::parse($wl->start_date); $d->lte(\Carbon\Carbon::parse($wl->end_date)); $d->addDay()) {
                 $ds = $d->toDateString();
@@ -3795,12 +3815,16 @@ class ShiftController extends Controller
             $isPersonalLeave   = ! $isCollectiveLeave && isset($personalLeaveDates[$dateStr]);
             $isWfhApprovedDay  = isset($wfhApprovedDates[$dateStr]);
 
-            $leaveType   = $isPersonalLeave ? ($personalLeaveDates[$dateStr]['leave_type'] ?? 'cuti') : null;
-            $leaveReason = $isPersonalLeave ? ($personalLeaveDates[$dateStr]['reason'] ?? null) : null;
+            $leaveType       = $isPersonalLeave ? ($personalLeaveDates[$dateStr]['leave_type'] ?? 'cuti') : null;
+            $halfDaySession  = $isPersonalLeave ? ($personalLeaveDates[$dateStr]['half_day_session'] ?? null) : null;
+            $leaveReason     = $isPersonalLeave ? ($personalLeaveDates[$dateStr]['reason'] ?? null) : null;
+            $isHalfDayLeave  = $isPersonalLeave && ($leaveType === 'cuti_setengah_hari');
+
             $personalLeaveColor = match ($leaveType) {
-                'izin'  => '#A855F7', // ungu
-                'sakit' => '#EA580C', // orange
-                default => '#FACC15', // kuning (cuti)
+                'izin'               => '#A855F7', // ungu
+                'sakit'              => '#EA580C', // orange
+                'cuti_setengah_hari' => '#0284C7', // sky blue
+                default              => '#FACC15', // kuning / amber (cuti)
             };
 
             // Cek apakah tanggal ini merupakan hari libur yang BERLAKU untuk user ini.
@@ -3875,7 +3899,7 @@ class ShiftController extends Controller
                     }
 
                     $isPatternOff = (bool) $patternItem->is_off || ! $startTime;
-                    $forceOff     = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
+                    $forceOff     = $isCollectiveLeave || $isHoliday || ($isPersonalLeave && ! $isHalfDayLeave);
                     $isOff        = $forceOff || $isPatternOff;
 
                     $shiftName = $isPatternOff
@@ -3885,9 +3909,20 @@ class ShiftController extends Controller
                     $shiftColor = $isPatternOff ? '#64748b' : ($patternItem->color ?: ($pattern->color ?: (optional($patternItem->shift)->color ?? '#6366f1')));
                     $dayColor = $forceOff
                         ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
-                        : $shiftColor;
+                        : ($isHalfDayLeave ? $personalLeaveColor : $shiftColor);
 
                     $isWfh = $isOff ? false : ((bool) $patternItem->is_wfh || $isWfhApprovedDay);
+
+                    $adjustedStart = $startTime ? substr((string) $startTime, 0, 5) : null;
+                    $adjustedEnd   = $endTime ? substr((string) $endTime, 0, 5) : null;
+                    if ($isHalfDayLeave && ! $isOff && $adjustedStart && $adjustedEnd) {
+                        $mid = $this->calculateHalfDayMidpoint($adjustedStart, $adjustedEnd, $dateStr);
+                        if ($halfDaySession === 'morning') {
+                            $adjustedStart = $mid;
+                        } elseif ($halfDaySession === 'afternoon') {
+                            $adjustedEnd = $mid;
+                        }
+                    }
 
                     $days[$dateStr] = [
                         'source'          => 'shift',
@@ -3900,8 +3935,8 @@ class ShiftController extends Controller
                         'color'           => $dayColor,
                         'start_date'      => $active->start_date->toDateString(),
                         'end_date'        => $active->end_date?->toDateString(),
-                        'work_start_time' => $isOff ? null : ($startTime ? substr((string) $startTime, 0, 5) : null),
-                        'work_end_time'   => $isOff ? null : ($endTime ? substr((string) $endTime, 0, 5) : null),
+                        'work_start_time' => $isOff ? null : $adjustedStart,
+                        'work_end_time'   => $isOff ? null : $adjustedEnd,
                         'is_off'          => $isOff,
                         'is_wfh'          => $isWfh,
                         'is_field'        => ($isOff || ! $isWfh || $isWfhApprovedDay) ? false : (bool) $patternItem->is_field,
@@ -3909,6 +3944,7 @@ class ShiftController extends Controller
                         'holiday'         => $holidayInfo,
                         'personal_leave'  => $isPersonalLeave,
                         'leave_type'      => $leaveType,
+                        'half_day_session'=> $halfDaySession,
                         'leave_reason'    => $leaveReason,
                         'wfh_approved'    => $isWfhApprovedDay,
                     ];
@@ -3933,10 +3969,22 @@ class ShiftController extends Controller
                     $isWfh = $isOff ? false : ((bool) $shiftSchedule->is_wfh || $isWfhApprovedDay);
                     $isField = ($isOff || ! $isWfh || $isWfhApprovedDay) ? false : (bool) $shiftSchedule->is_field;
                     // Cuti mandiri / izin / sakit approved juga memaksa hari tsb libur (sama seperti cuti bersama)
-                    $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
+                    $forceOff = $isCollectiveLeave || $isHoliday || ($isPersonalLeave && ! $isHalfDayLeave);
                     $dayColor = $forceOff
                         ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
-                        : ($active->shift->color ?? '#6366f1');
+                        : ($isHalfDayLeave ? $personalLeaveColor : ($active->shift->color ?? '#6366f1'));
+
+                    $adjustedStart = $shiftSchedule->work_start_time;
+                    $adjustedEnd   = $shiftSchedule->work_end_time;
+                    if ($isHalfDayLeave && ! $isOff && ! $forceOff && $adjustedStart && $adjustedEnd) {
+                        $mid = $this->calculateHalfDayMidpoint($adjustedStart, $adjustedEnd, $dateStr);
+                        if ($halfDaySession === 'morning') {
+                            $adjustedStart = $mid;
+                        } elseif ($halfDaySession === 'afternoon') {
+                            $adjustedEnd = $mid;
+                        }
+                    }
+
                     $days[$dateStr] = [
                         'source'          => 'shift',
                         'shift_id'        => $active->shift_id,
@@ -3944,8 +3992,8 @@ class ShiftController extends Controller
                         'color'           => $dayColor,
                         'start_date'      => $active->start_date->toDateString(),
                         'end_date'        => $active->end_date?->toDateString(),
-                        'work_start_time' => ($isOff || $forceOff) ? null : $shiftSchedule->work_start_time,
-                        'work_end_time'   => ($isOff || $forceOff) ? null : $shiftSchedule->work_end_time,
+                        'work_start_time' => ($isOff || $forceOff) ? null : $adjustedStart,
+                        'work_end_time'   => ($isOff || $forceOff) ? null : $adjustedEnd,
                         'is_off'          => $forceOff ? true : $isOff,
                         'is_wfh'          => $forceOff ? false : $isWfh,
                         'is_field'        => $forceOff ? false : $isField,
@@ -3953,6 +4001,7 @@ class ShiftController extends Controller
                         'holiday'         => $holidayInfo,
                         'personal_leave'  => $isPersonalLeave,
                         'leave_type'      => $leaveType,
+                        'half_day_session'=> $halfDaySession,
                         'leave_reason'    => $leaveReason,
                         'wfh_approved'    => $isWfhApprovedDay,
                     ];
@@ -3973,17 +4022,28 @@ class ShiftController extends Controller
                     $customEnd = $office->custom_schedules[$dayOfWeek]['end'] ?? null;
                 }
 
-                // Cuti mandiri / izin / sakit approved juga memaksa hari tsb libur (sama seperti cuti bersama)
-                $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
+                // Cuti mandiri / izin / sakit approved juga memaksa hari tsb libur (kecuali setengah hari)
+                $forceOff = $isCollectiveLeave || $isHoliday || ($isPersonalLeave && ! $isHalfDayLeave);
+                $adjustedStart = $customStart ?? $office->work_start_time;
+                $adjustedEnd   = $customEnd ?? $office->work_end_time;
+                if ($isHalfDayLeave && ! $isOff && ! $forceOff && $adjustedStart && $adjustedEnd) {
+                    $mid = $this->calculateHalfDayMidpoint($adjustedStart, $adjustedEnd, $dateStr);
+                    if ($halfDaySession === 'morning') {
+                        $adjustedStart = $mid;
+                    } elseif ($halfDaySession === 'afternoon') {
+                        $adjustedEnd = $mid;
+                    }
+                }
+
                 $days[$dateStr] = [
                     'source'          => 'office',
                     'shift_id'        => null,
                     'shift_name'      => null,
                     'color'           => $forceOff
                         ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
-                        : $overrideColor,
-                    'work_start_time' => ($isOff || $forceOff) ? null : ($customStart ?? $office->work_start_time),
-                    'work_end_time'   => ($isOff || $forceOff) ? null : ($customEnd ?? $office->work_end_time),
+                        : ($isHalfDayLeave ? $personalLeaveColor : $overrideColor),
+                    'work_start_time' => ($isOff || $forceOff) ? null : $adjustedStart,
+                    'work_end_time'   => ($isOff || $forceOff) ? null : $adjustedEnd,
                     'is_off'          => $forceOff ? true : $isOff,
                     'is_wfh'          => $forceOff ? false : $isWfhApprovedDay,
                     'is_field'        => false,
@@ -3991,16 +4051,18 @@ class ShiftController extends Controller
                     'holiday'         => $holidayInfo,
                     'personal_leave'  => $isPersonalLeave,
                     'leave_type'      => $leaveType,
+                    'half_day_session'=> $halfDaySession,
                     'leave_reason'    => $leaveReason,
                     'wfh_approved'    => $isWfhApprovedDay,
                 ];
             } else {
                 // Tidak ada pengaturan kantor sama sekali
-                $forceOff = $isCollectiveLeave || $isHoliday || $isPersonalLeave;
+                $forceOff = $isCollectiveLeave || $isHoliday || ($isPersonalLeave && ! $isHalfDayLeave);
                 $personalLeaveName = match ($leaveType) {
-                    'izin'  => 'Izin',
-                    'sakit' => 'Sakit',
-                    default => 'Cuti Mandiri',
+                    'izin'               => 'Izin',
+                    'sakit'              => 'Sakit',
+                    'cuti_setengah_hari' => 'Cuti Setengah Hari',
+                    default              => 'Cuti Mandiri',
                 };
                 $days[$dateStr] = [
                     'source'          => 'none',
@@ -4010,7 +4072,7 @@ class ShiftController extends Controller
                             : ($isHoliday ? $holidayInfo['name'] : null)),
                     'color'           => $forceOff
                         ? ($isPersonalLeave ? $personalLeaveColor : ($overrideColor ?? '#EF4444'))
-                        : $overrideColor,
+                        : ($isHalfDayLeave ? $personalLeaveColor : $overrideColor),
                     'work_start_time' => null,
                     'work_end_time'   => null,
                     'is_off'          => $forceOff,
@@ -4020,6 +4082,7 @@ class ShiftController extends Controller
                     'holiday'         => $holidayInfo,
                     'personal_leave'  => $isPersonalLeave,
                     'leave_type'      => $leaveType,
+                    'half_day_session'=> $halfDaySession,
                     'leave_reason'    => $leaveReason,
                     'wfh_approved'    => $isWfhApprovedDay,
                 ];
@@ -4837,5 +4900,35 @@ class ShiftController extends Controller
             'total'        => $rows->count(),
             'data'         => $rows,
         ]);
+    }
+
+    /**
+     * Hitung titik tengah shift untuk cuti setengah hari.
+     *
+     * Mendukung cross-day shift (misal 22:00–06:00): jika endTime <= startTime
+     * berarti shift melewati tengah malam, durasi dihitung dengan +24 jam.
+     * Hasilnya selalu berupa string H:i (mod 24).
+     *
+     * Contoh:
+     *   08:00–17:00 → 12:30  (9 jam / 2 = 4.5 jam dari 08:00)
+     *   13:00–22:00 → 17:30  (9 jam / 2 = 4.5 jam dari 13:00)
+     *   22:00–06:00 → 02:00  (8 jam / 2 = 4 jam dari 22:00)
+     */
+    private function calculateHalfDayMidpoint(string $startTime, string $endTime, ?string $date = null): string
+    {
+        $baseDate = $date ? Carbon::parse($date)->startOfDay() : Carbon::today();
+
+        $start = $baseDate->copy()->setTimeFromTimeString(substr($startTime, 0, 5));
+        $end   = $baseDate->copy()->setTimeFromTimeString(substr($endTime, 0, 5));
+
+        // Cross-day shift: end <= start berarti melewati tengah malam
+        if ($end->lte($start)) {
+            $end->addDay();
+        }
+
+        $halfMinutes = (int) floor($start->diffInMinutes($end) / 2);
+        $midpoint    = $start->copy()->addMinutes($halfMinutes);
+
+        return $midpoint->format('H:i');
     }
 }
