@@ -24,7 +24,7 @@
 
 ---
 
-## ✅ STATUS IMPLEMENTASI (Diperbarui: 2026-09-29)
+## ✅ STATUS IMPLEMENTASI (Diperbarui: 2026-10-02)
 
 > Dokumen ini adalah **spesifikasi visi enterprise lengkap**. Implementasi nyata dikerjakan bertahap dengan pendekatan **MVP fungsional dulu**. Bagian ini menandai mana yang **sudah selesai** dan mana yang **belum**, agar mudah dibedakan. Rincian per-item ada di setiap fase (lihat [Bagian 16](#16-fase-implementasi--prioritas-roadmap-p0-p1-p2)) dan pada penanda ✅/🟡/⬜ yang tersebar di dokumen.
 
@@ -33,12 +33,11 @@
 | Fase | Cakupan | Status | Keterangan Singkat |
 |---|---|:---:|---|
 | **Fase 1** | Master Data, Migrasi DB, Enkripsi PII | ✅ | Migrasi MVP + enkripsi NPWP + masking + seeder TER/PTKP/Pasal 17 + CRUD komponen gaji. *(`payroll_groups` + CRUD-nya kini SELESAI di [Fase 4+ / Bagian 23](#23-enam-fitur-lanjutan-pasca-mvp--kontrak-api--tugas-frontend); keanggotaan grup memakai kolom `users.payroll_group_id`, bukan tabel `employee_assignments` terpisah)* |
-| **Fase 2** | Core Calculation Engine | ✅ | **Backend & Frontend Web SELESAI.** Backend: `PayrollCalculator`, PPh21 TER + Pasal 17, integrasi Presensi/Lembur/Struk/Kasbon, `BpjsCalculatorService`, jejak calculation steps. **Frontend Web (`PayrollManagement.tsx`):** sub-tab profil BPJS karyawan (toggles Kes/TK/JKP, kelas risiko JKK 1–5, masked number), opsi kalkulasi BPJS, ringkasan iuran perusahaan vs karyawan, badge statutori BPJS, kartu beban BPJS perusahaan terpisah, & akordeon calculation steps di slip gaji. *(Lihat [Bagian 19](#19-tugas-frontend-yang-harus-dikerjakan-fase-2))* |
+| **Fase 2** | Core Calculation Engine | ✅ | **Backend & Frontend Web SELESAI.** Backend: `PayrollCalculator`, PPh21 TER + Pasal 17, integrasi Presensi/Lembur/Struk/Kasbon, `BpjsCalculatorService`, jejak calculation steps. **Penyempurnaan Integrasi Struk (2026-10-02):** Poin 1+2 SELESAI (write-back pelunasan saat `markPaid()`, 1 baris slip per struk dgn `ref_type`/`ref_id`, calculation step `REIMBURSEMENT`, teruji `PayrollReceiptSettlementTest`); Poin 3+4 BELUM (filter periode `approved_at` & guard 422 pencairan ganda di `ReceiptController` — lihat [Bagian 25](#25-integrasi-struk-reimbursement--payroll-write-back-settlement--anti-dobel-bayar)). **Frontend Web (`PayrollManagement.tsx`):** sub-tab profil BPJS karyawan (toggles Kes/TK/JKP, kelas risiko JKK 1–5, masked number), opsi kalkulasi BPJS, ringkasan iuran perusahaan vs karyawan, badge statutori BPJS, kartu beban BPJS perusahaan terpisah, & akordeon calculation steps di slip gaji. *(Lihat [Bagian 19](#19-tugas-frontend-yang-harus-dikerjakan-fase-2))* |
 | **Fase 3** | Workflow Approval & Anti-Fraud | ✅ | **Backend & Frontend Web SELESAI.** Backend: Alur approval bertingkat, maker-checker, adjustments retroaktif, proteksi rekening bank, hash-chain audit log SHA-256, step-up PIN. **Frontend Web (`PayrollManagement.tsx`):** sub-tab Penyesuaian (filter status, form buat, maker-checker approve, modal void ber-alasan), sub-tab Rekening Bank (maker-checker verifikasi/tolak, masked account), panel Jejak Audit & Integritas Hash-Chain SHA-256 (`ok`/`broken_at`), dialog otorisasi PIN approve/mark-paid & modal PIN Keamanan. *(Lihat [Bagian 20](#20-fase-3--kontrak-api-baru--tugas-frontend))* |
 | **Fase 4** | Bank, PDF, Pajak, GL | ✅ | **Backend SELESAI seluruhnya.** PDF Slip Gaji (dompdf) + inti disbursement: ekspor berkas transfer bank (5 format via driver, disk privat + checksum SHA-256) & rekonsiliasi per-item (`payroll_payment_batches`/`payroll_payment_items`) — teruji (`PayrollPhase4Test`, 14 uji hijau). **+ Lanjutan (baru):** Bukti Potong PPh 21 **1721-A1** (PDF dompdf) + **draf CSV/JSON siap-Coretax** (bukan e-Bupot XML), **ekspor Jurnal Akuntansi/GL** (pemetaan akun per-perusahaan editable `payroll_gl_accounts` + `config/payroll_gl.php`, jurnal seimbang), dan **endpoint calculation-trace** — teruji (`PayrollPhase4TaxGlTraceTest`, 16 uji hijau). Frontend Fase 4 → lihat [Bagian 21](#21-fase-4-disbursement--kontrak-api-baru--tugas-frontend) & [Bagian 22](#22-fase-4-lanjutan--pajak-1721-a1-ekspor-gl--calculation-trace--kontrak-api--tugas-frontend). |
 | **Fase 4+** | Enam Fitur Lanjutan Pasca-MVP | ✅ | **Backend & Frontend Web SELESAI seluruhnya.** Backend teruji (`PayrollThrRunTest`, `CompanyNpwpTest`, `PayslipBpjsBlockTest`, `EbupotXsdXmlTest` — menggantikan `EbupotDraftXmlTest` sejak Fase 6, `PayrollGlGroupedTest`, `PayrollGroupScopingTest`). Enam item: (1) **Run THR terpisah** (Permenaker 6/2016 + PPh21 TER marginal PMK 168/2023), (2) **Grup Payroll & scoping** (`payroll_groups` + CRUD + keanggotaan `users.payroll_group_id`), (3) **NPWP Perusahaan** (terenkripsi + masking), (4) **Rincian BPJS di PDF slip** (blok informasional), (5) **e-Bupot 21/26 XML** (semula `resmi="false"` & belum tervalidasi XSD DJP; **disempurnakan di Fase 6** menjadi wajib tervalidasi XSD), (6) **Alokasi Cost Center GL** (`?group_by=none\|division\|branch`). Frontend web SELESAI (tab Pengaturan Payroll: CRUD Grup & Profil Pajak NPWP, opsi Run THR & dropdown Grup di modal run, tombol Ekspor e-Bupot XML di 1721-A1, GL berdimensi). *(Lihat [Bagian 23](#23-enam-fitur-lanjutan-pasca-mvp--kontrak-api--tugas-frontend))* |
-| **Fase 5** | Mobile Flutter & Notifikasi | ✅ | Menu Slip Gaji, rincian penghasilan/potongan, **Unduh PDF**, **Share PDF** (`share_plus`), dan **push notif FCM saat `paid`** (in-app + FCM, mengikuti pola `notifyDisbursement()`) — SELESAI. |
-| **Fase 6** | Enterprise Lanjutan | 🟡 | **SELURUH BACKEND SELESAI & teruji; sisa = UI Web.** (1) **Mesin Formula DSL custom** (Stage 1 & 2 — `FormulaLexer/Parser/Evaluator/Engine`, tanpa `eval()`/raw SQL). (2) **Exit Settlement** pesangon PHK & kompensasi PKWT (PP 35/2021 UP/UPMK/UPH + **PPh 21 Final** PP 68/2009, run `run_type='severance'`) — `PayrollSeveranceRunTest` 10 uji. (3) **Struktur & Skala Upah** (`job_levels` + `salary_grades` min–mid–maks, gaji di luar rentang → 422) — `SalaryGradeStructureTest` 7 uji. (4) **Multi-Mata Uang & PPh 26** (master `currency_rates` + **rate lock** per batch, kurs absen → 422, ekspatriat 20%/tarif P3B) — `PayrollMultiCurrencyPph26Test` 14 uji. (5) **e-Bupot XML tervalidasi XSD** (naik dari status *draf*: `DOMDocument::schemaValidate()` wajib lolos, gagal → 422; XSD resmi DJP → `resmi="true"`, internal → `resmi="false"`; `GET /tax/ebupot/schema`) — `EbupotXsdXmlTest` 6 uji. Kontrak API & tugas frontend → [Bagian 24](#24-fase-6-enterprise-lanjutan--kontrak-api--tugas-frontend). |
+| **Fase 6** | Enterprise Lanjutan | ✅ | **Backend & Frontend Web SELESAI seluruhnya.** (1) **Mesin Formula DSL custom & Editor Web** (Stage 1 & 2 — `FormulaEngine` tanpa `eval()`/raw SQL + `FormulaDslEditor.tsx` interaktif dengan palet variabel/fungsi, template cepat, validasi real-time, & sandbox uji hitung). (2) **Exit Settlement** pesangon PHK & kompensasi PKWT (`ExitSettlement.tsx` + `SeveranceCaseController`). (3) **Struktur & Skala Upah** (`StrukturSkalaUpah.tsx` + `job_levels`/`salary_grades`). (4) **Multi-Mata Uang & PPh 26** (`MasterKursValas.tsx` + master `currency_rates`). (5) **e-Bupot XML tervalidasi XSD** (`PayrollTax1721A1.tsx` + validasi XSD wajib). Kontrak API & panduan UI → [Bagian 24](#24-fase-6-enterprise-lanjutan--kontrak-api--tugas-frontend). |
 
 ### Ringkasan yang SUDAH bisa dipakai (MVP end-to-end)
 - **Backend:** master komponen gaji, gaji pokok effective-dated, profil pajak (NPWP terenkripsi), batch payroll (buat → kalkulasi → submit → approve → tandai dibayar), PPh21 TER 2024, integrasi otomatis Presensi (potongan absen) + Lembur (PP 35/2021) + Struk (reimburse non-pajak) + Kasbon/cicilan, PDF slip di disk privat, uji fungsional (`tests/Feature/PayrollTest.php`), workflow approval Fase 3, dan disbursement & tax GL Fase 4.
@@ -75,6 +74,8 @@
 21. [Fase 4 (Disbursement) — Kontrak API Baru & Tugas Frontend](#21-fase-4-disbursement--kontrak-api-baru--tugas-frontend)
 22. [Fase 4 (Lanjutan) — Pajak 1721-A1, Ekspor GL & Calculation-Trace — Kontrak API & Tugas Frontend](#22-fase-4-lanjutan--pajak-1721-a1-ekspor-gl--calculation-trace--kontrak-api--tugas-frontend)
 23. [Enam Fitur Lanjutan (Pasca-MVP) — Kontrak API & Tugas Frontend](#23-enam-fitur-lanjutan-pasca-mvp--kontrak-api--tugas-frontend)
+24. [Fase 6 (Enterprise Lanjutan) — Kontrak API & Tugas Frontend](#24-fase-6-enterprise-lanjutan--kontrak-api--tugas-frontend)
+25. [Integrasi Struk Reimbursement ↔ Payroll (Write-back Settlement & Anti-Dobel Bayar)](#25-integrasi-struk-reimbursement--payroll-write-back-settlement--anti-dobel-bayar)
 
 ---
 
@@ -928,7 +929,9 @@ Alur eksekusi saat HRD memanggil `POST /api/v1/dashboard/payroll/generate`:
    │      - Hitung Variable Allowances (Uang Makan/Transport = present_days * tarif).
    │      - Hitung Overtime Pay menggunakan formula PP 35/2021.
    │      - Evaluasi Formula DSL untuk komponen khusus.
-   │      - Tarik Approved Reimbursements dari tabel receipts.
+   │      - Tarik Approved Reimbursements dari tabel receipts:
+   │        * 1 baris slip per struk (`payslip_items`: `source='receipt'`, `ref_type=Receipt::class`, `ref_id`, `is_taxable=false`).
+   │        * Catat langkah jejak perhitungan `REIMBURSEMENT` lengkap dengan daftar struk (ID, no struk, nominal).
    │      - Tarik Approved Adjustments (payroll_adjustments) tipe earning.
    │
    ├── D. Evaluasi Potongan & Pinjaman:
@@ -1141,7 +1144,11 @@ Untuk memenuhi **UU No. 27 Tahun 2022 (Pelindungan Data Pribadi)** dan standar a
 - [x] `PayrollCalculationService` (`app/Services/Payroll/PayrollCalculator.php`): engine batch utama
 - [x] `Pph21TerCalculator`: TER bulanan (Kategori A/B/C) + Pasal 17 masa terakhir
 - [x] Integrasi Lembur PP 35/2021 (dari `OvertimeApproval` yang sudah disetujui)
-- [x] Integrasi Presensi (potongan absen) & Struk (reimburse non-pajak) & Kasbon (cicilan)
+- [x] Integrasi Presensi (potongan absen) & Struk (reimburse non-pajak) & Kasbon (cicilan):
+  - [x] **Poin 1 (SELESAI):** Write-back pelunasan struk pada `markPaid()` — saat payroll ditandai bayar, seluruh struk yang dibayarkan otomatis ditandai `status='paid'`, `paid_at=now()`, `paid_by=$actor->id`, `payment_method='payroll'`, `payment_ref_no='PAYROLL-{payroll_id}'`, dicatat ke `activity_logs` (`receipt_paid`), dan notifikasi in-app + FCM dikirim ke karyawan. Anti-dobel bayar dijamin via skip-guard aman.
+  - [x] **Poin 2 (SELESAI):** Simpan referensi per-struk — satu baris slip (`payslip_items`) per struk (`source='receipt'`, `ref_type=Receipt::class`, `ref_id`, `is_taxable=false`, `notes` vendor & tanggal) serta jejak perhitungan langkah `REIMBURSEMENT` (`PayslipCalculationStep::STEP_REIMBURSEMENT`) lengkap dengan ID, nomor struk, dan nominal. Teruji menyeluruh di `tests/Feature/PayrollReceiptSettlementTest.php` (5 uji hijau). *(Lihat rincian di [Bagian 25](#25-integrasi-struk-reimbursement--payroll-write-back-settlement--anti-dobel-bayar))*
+  - [ ] **Poin 3 (BELUM / BACKLOG):** Ubah filter penarikan struk di `PayrollCalculator::approvedReimbursements()` dari rentang `receipt_date` menjadi berbasis `approved_at` / `submitted_at` (dengan fallback `receipt_date`) agar struk bulan lampau yang baru disetujui tidak tertinggal.
+  - [ ] **Poin 4 (BELUM / BACKLOG):** Tambahkan guard HTTP 422 pada `ReceiptController::disburse()` jika struk sudah lunas dengan metode `payment_method='payroll'`, guna mencegah Finance melakukan transfer bank ulang di luar penggajian.
 - [x] Snapshot `payrolls`, `payslips`, `payslip_items`
 - [x] Unit testing matematis (`tests/Feature/PayrollTest.php` — 9 uji, termasuk BPJS + cap)
 - [x] **`BpjsCalculatorService`** (`app/Services/Payroll/BpjsCalculatorService.php`) — Kesehatan (4% perusahaan / 1% karyawan, cap upah Rp 12jt); Ketenagakerjaan: **JKK** per kelas risiko (0,24%–1,74%), **JKM** 0,3%, **JHT** 3,7%/2% (upah riil), **JP** 2%/1% (cap Rp 10.042.300), **JKP** rekomposisi (tanpa potongan/beban baru). Semua tarif effective-dated via `statutory_rule_versions` (di-seed `PayrollStatutorySeeder`), tanpa eval/raw SQL.
@@ -1192,8 +1199,8 @@ Untuk memenuhi **UU No. 27 Tahun 2022 (Pelindungan Data Pribadi)** dan standar a
 - [x] Fitur Share PDF slip gaji (`share_plus`, tombol di `AppBar` layar rincian slip)
 - [x] Push Notification (FCM) otomatis saat gaji berstatus `paid` (`PayrollController::notifyPayrollPaid()`, meniru pola `notifyDisbursement()`: insert `notifications` in-app + kirim FCM per-payslip, dibungkus try/catch; teruji di `tests/Feature/PayrollTest.php`)
 
-**FASE 6 (P2 — Fleksibilitas Lanjutan & Enterprise Modules) — 🟡 Sebagian (seluruh item BACKEND selesai; sisa = UI Web)**
-- [x] **Mesin Formula DSL custom (Stage 1 & Stage 2 Backend SELESAI & teruji):** `FormulaLexer` → `FormulaParser` → `FormulaEvaluator` → `FormulaEngine` di `app/Services/Payroll/Formula/`. Tanpa `eval()`/raw SQL, whitelist variabel sistem & fungsi matematika/logika, deteksi siklus (DFS coloring), dan topological sort (`dependencyOrder`). Persistensi migrasi `100028` (`salary_components.formula_dsl`, `calc_type='formula'`), endpoint validasi `POST /components/validate-formula`, dan integrasi evaluasi otomatis di `PayrollCalculator::applyFormulaComponents()`. Teruji (`FormulaEngineTest` 46 unit test + `PayrollFormulaComponentTest` 11 feature test hijau). *(UI Editor Web belum)*
+**FASE 6 (P2 — Fleksibilitas Lanjutan & Enterprise Modules) — ✅ Selesai (Backend & Frontend Web)**
+- [x] **Mesin Formula DSL custom & UI Editor Web (Backend & Frontend Web SELESAI):** `FormulaLexer` → `FormulaParser` → `FormulaEvaluator` → `FormulaEngine` di `app/Services/Payroll/Formula/`. Tanpa `eval()`/raw SQL, whitelist variabel sistem & fungsi matematika/logika, deteksi siklus (DFS coloring), dan topological sort (`dependencyOrder`). Persistensi migrasi `100028` (`salary_components.formula_dsl`, `calc_type='formula'`), endpoint validasi `POST /components/validate-formula`, dan integrasi evaluasi otomatis di `PayrollCalculator::applyFormulaComponents()`. Teruji (`FormulaEngineTest` 46 unit test + `PayrollFormulaComponentTest` 13 feature test hijau). **Frontend Web SELESAI:** `FormulaDslEditor.tsx` terintegrasi di modal komponen gaji (`PayrollManagement.tsx`), dilengkapi palet variabel sistem, komponen lain, fungsi matematika/logika, template populer, validasi sintaks real-time, dan sandbox simulasi uji hitung dengan angka dinamis.
 - [x] `GET|POST /api/v1/dashboard/payroll/job-levels` (+ `PUT/DELETE /{jobLevel}`) $\rightarrow$ CRUD jenjang jabatan *(Fase 6 / Bagian 24 — SELESAI)*
 - [x] `GET|POST /api/v1/dashboard/payroll/salary-grades` (+ `PUT/DELETE /{salaryGrade}`) $\rightarrow$ CRUD golongan upah (rentang min–mid–maks) *(Fase 6 / Bagian 24 — SELESAI)*
 - [x] `GET|POST /api/v1/dashboard/payroll/currency-rates` (+ `PUT/DELETE /{currencyRate}`) $\rightarrow$ Master kurs valas bertanggal-efektif *(Fase 6 / Bagian 24 — SELESAI)*
@@ -2482,7 +2489,7 @@ Batch menyimpan snapshot seluruh kurs yang dipakai di `payrolls.exchange_rates` 
 - **Kurs terkunci per batch, bukan per slip.** Hitung ulang batch yang sama **selalu** memakai kurs di `payrolls.exchange_rates`. Untuk memakai kurs baru, buat batch baru — ini mencegah nominal historis bergeser diam-diam setelah disetujui.
 - **PPh 26 tidak mengenal PTKP maupun TER.** Cabang PPh 26 mendahului seluruh logika PPh 21; karyawan bersubjek luar negeri **tidak** memunculkan step `PPH21_TER`/`PPH21_PASAL17`. Tarif P3B hanya berlaku bila `treaty_country` terisi — tarif tanpa negara mitra ditolak di muka (**422**), bukan diturunkan diam-diam ke 20%.
 - **`resmi="false"` bukan berarti "belum divalidasi".** Dokumen selalu lolos sebuah XSD; atribut `resmi` hanya menyatakan **XSD siapa** yang meloloskannya. Selama XSD resmi DJP belum dipasang administrator, berkas tetap wajib diverifikasi sebelum dilaporkan.
-- **Di luar lingkup Fase 6:** penyetoran/transmisi langsung ke sistem DJP (e-Bupot *submission*), pembayaran valas ke bank luar negeri (ekspor bank tetap format lokal dalam Rupiah), dan **UI Editor Formula DSL** (backend mesin formula sudah selesai).
+- **Di luar lingkup Fase 6:** penyetoran/transmisi langsung ke sistem DJP (e-Bupot *submission*) dan pembayaran valas ke bank luar negeri (ekspor bank tetap format lokal dalam Rupiah). *(Catatan: UI Editor Formula DSL kini telah SELESAI via FormulaDslEditor.tsx).*
 
 ### 24.5. Checklist Penerimaan (Definition of Done Frontend)
 
@@ -2498,3 +2505,185 @@ Batch menyimpan snapshot seluruh kurs yang dipakai di `payrolls.exchange_rates` 
 - [ ] Kalkulasi batch yang gagal karena **kurs tidak tersedia (422)** ditampilkan sebagai galat yang dapat ditindaklanjuti — bukan kegagalan senyap.
 - [ ] Menu 1721-A1 menampilkan **status skema XSD dinamis** (bukan banner DRAF statis) dan menangani **422 galat skema** dalam modal tanpa memicu unduhan.
 - [ ] Seluruh aksi tulis disembunyikan/dinonaktifkan untuk pengguna tanpa izin `manage`; **403** lintas-company ditampilkan sebagai "tidak ditemukan".
+
+---
+
+## 25. Integrasi Struk Reimbursement ↔ Payroll (Write-back Settlement & Anti-Dobel Bayar)
+
+Integrasi ini menghubungkan modul **Struk Reimbursement** dengan modul **Payroll**. Ketika opsi `receipt_reimbursement: true` diaktifkan pada kalkulasi batch penggajian, seluruh struk yang telah disetujui (*approved*) ditarik ke dalam slip gaji karyawan sebagai pendapatan non-pajak, dan saat batch ditandai dibayar (*mark-paid*), struk otomatis ditandai lunas untuk mencegah pencairan ganda.
+
+```
+┌──────────────────────────────────────────────────────────────────────────────────┐
+│                         ALUR PEMBAYARAN STRUK VIA GAJI                           │
+├──────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                  │
+│   1. PENARIKAN (PayrollCalculator::calculate):                                  │
+│      Tabel receipts (status='approved', paid_at IS NULL)                         │
+│             │                                                                    │
+│             ▼                                                                    │
+│      1 Baris payslip_items PER STRUK:                                            │
+│      • label: 'Reimburse Struk RCP-20260610-0001'                                │
+│      • source: 'receipt', is_taxable: false, type: 'earning'                    │
+│      • ref_type: App\Models\Receipt, ref_id: [id]                                │
+│      • notes: [vendor_name] · [receipt_date]                                     │
+│             │                                                                    │
+│             ▼                                                                    │
+│      Jejak Perhitungan (Calculation Trace):                                      │
+│      • step_code: 'REIMBURSEMENT' (input: receipt_count, list receipts)          │
+│                                                                                  │
+│   2. PELUNASAN (PayrollController::markPaid):                                    │
+│      Finance menekan 'Tandai Dibayar' (POST /runs/{id}/mark-paid)                │
+│             │                                                                    │
+│             ▼                                                                    │
+│      DB::transaction:                                                            │
+│      • payrolls.status = 'paid', payslips.status = 'paid'                        │
+│      • advanceLoans() (cicilan kasbon maju 1 bulan)                              │
+│      • settleReimbursedReceipts():                                               │
+│        - Lock pessimistic (lockForUpdate) pada struk terkait                     │
+│        - Skip jika paid_at !== null atau status !== 'approved'                   │
+│        - receipts.status = 'paid', paid_at = now()                               │
+│        - receipts.payment_method = 'payroll', payment_ref_no = 'PAYROLL-{id}'    │
+│        - activity_logs (action: 'receipt_paid', entity: 'receipt')               │
+│             │                                                                    │
+│             ▼                                                                    │
+│      Notifikasi & Audit:                                                         │
+│      • payrollChainLog('PAYROLL_PAID', receipts_settled: N)                      │
+│      • In-App & FCM Push Notification: 'Reimbursement Dicairkan via Gaji'        │
+│                                                                                  │
+└──────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 25.1. Latar Belakang & Masalah Bisnis
+
+Sebelum penyempurnaan ini, integrasi struk ke payroll hanya bersifat satu arah dan teragregasi:
+1. **Celah Pencairan Ganda (*Double Payment Hole*):** Struk yang ditarik ke dalam slip gaji tidak pernah diperbarui statusnya di tabel `receipts` (`paid_at` tetap `NULL` dan status tetap `approved`). Akibatnya, kasir atau finance masih dapat mencairkan kembali struk yang sama melalui alur transfer bank mandiri di modul Struk (`POST /api/v1/dashboard/receipts/{id}/pay`).
+2. **Ketiadaan Rujukan Data (*Per-Receipt Back-References*):** Seluruh struk digabungkan menjadi satu baris slip agregat tanpa menyimpan `ref_id` dan `ref_type`. Karyawan maupun HRD tidak dapat melihat rincian struk mana saja yang dibayarkan di slip gaji, dan sistem tidak memiliki jejak relasi untuk melakukan pelunasan otomatis.
+
+---
+
+### 25.2. Poin 1 (SELESAI): Write-back Pelunasan Otomatis saat `markPaid()`
+
+- **Lokasi Kode:** `app/Http/Controllers/API/PayrollController.php` (fungsi `markPaid()`, `settleReimbursedReceipts()`, `notifyReceiptsSettledViaPayroll()`).
+- **Status:** ✅ **SELESAI & Teruji** (`tests/Feature/PayrollReceiptSettlementTest.php`).
+- **Implementasi:**
+  1. **Transaksi Terpadu:** Dipanggil di dalam `DB::transaction` yang sama dengan pembaruan status `payrolls` dan `payslips`. Jika pembayaran payroll gagal atau di-rollback, status struk tidak akan pernah terpisah (atomik).
+  2. **Pencarian Relasi Slip:** Mengambil seluruh `payslip_items` pada batch terkait yang memiliki `source = 'receipt'`, `ref_type = App\Models\Receipt`, dan `ref_id IS NOT NULL`.
+  3. **Pessimistic Locking & Skip Guard Aman:**
+     - Menggunakan `Receipt::where('id', $id)->where('company_id', $payroll->company_id)->lockForUpdate()->first()`.
+     - **Guard:** Melewati (*skip*) struk jika `paid_at !== null` (sudah dicairkan lewat alur lain) atau `status !== 'approved'` (misal ditolak/dibatalkan setelah batch dihitung). Struk yang bermasalah tidak dipaksa menjadi `paid`.
+  4. **Pembaruan Status Struk:**
+     ```php
+     $receipt->update([
+         'status'         => 'paid',
+         'paid_at'        => now(),
+         'paid_by'        => $actor->id,
+         'payment_method' => 'payroll',
+         'payment_ref_no' => 'PAYROLL-' . $payroll->id,
+     ]);
+     ```
+  5. **Audit Trail Standar:** Mencatat entri ke tabel `activity_logs`:
+     - `action = 'receipt_paid'`
+     - `entity_type = 'receipt'`, `entity_id = $receipt->id`
+     - `subject_type = 'receipt'`, `subject_id = $receipt->id`
+     - `description = 'Pencairan dana struk [nomor] via slip gaji [periode] (Metode: payroll, Ref: PAYROLL-[id])'`
+  6. **Hash-Chain & API Response:**
+     - Parameter `receipts_settled` dicatat ke dalam log kriptografi SHA-256 (`payrollChainLog('PAYROLL_PAID')`).
+     - JSON response `POST /runs/{id}/mark-paid` mengembalikan `meta.receipts_settled` dan pesan informatif yang menyebutkan jumlah struk yang ikut ditandai lunas.
+  7. **Notifikasi Karyawan:** Mengirimkan notifikasi in-app (`notifications` tabel, tipe `receipt_paid`) dan push notification FCM ke masing-masing karyawan yang struknya dicairkan lewat gaji.
+
+---
+
+### 25.3. Poin 2 (SELESAI): Baris Slip Per-Struk & Jejak Perhitungan Calculation Trace
+
+- **Lokasi Kode:**
+  - `app/Services/Payroll/PayrollCalculator.php` (fungsi `calculate()`, `approvedReimbursements()`)
+  - `app/Models/PayslipCalculationStep.php` (konstanta `STEP_REIMBURSEMENT`)
+- **Status:** ✅ **SELESAI & Teruji** (`tests/Feature/PayrollReceiptSettlementTest.php`).
+- **Implementasi:**
+  1. **Collection Row Query di `approvedReimbursements()`:**
+     Query diubah dari agregasi nominal `sum()` menjadi pengembalian baris koleksi struk:
+     ```php
+     return DB::table('receipts')
+         ->where('user_id', $user->id)
+         ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
+         ->whereNull('deleted_at')
+         ->where('status', 'approved')
+         ->whereNull('paid_at') // cegah dobel bayar: struk yg sudah lunas di-skip
+         ->whereBetween('receipt_date', [$start->toDateString(), $end->toDateString()])
+         ->orderBy('id')
+         ->get(['id', 'receipt_number', 'vendor_name', 'receipt_date', 'approved_amount as reimburse_amount']);
+     ```
+  2. **Satu Baris Slip Per-Struk (`payslip_items`):**
+     Setiap struk menghasilkan 1 baris item pendapatan dengan properti:
+     - `label`: `'Reimburse Struk ' . $receipt->receipt_number`
+     - `type`: `PayslipItem::TYPE_EARNING`
+     - `amount`: nominal yang disetujui (`reimburse_amount`)
+     - `is_taxable`: `false` (reimbursement operasional bukan objek PPh 21)
+     - `is_statutory`: `false`
+     - `source`: `'receipt'`
+     - `ref_type`: `App\Models\Receipt::class`
+     - `ref_id`: `(int) $receipt->id`
+     - `notes`: `mb_substr(trim(($receipt->vendor_name ?: '—') . ' · ' . $receipt->receipt_date), 0, 255)` (dipotong aman agar tidak melebihi kolom `varchar(255)`).
+  3. **Langkah Jejak Perhitungan (`PayslipCalculationStep`):**
+     - Konstanta baru: `public const STEP_REIMBURSEMENT = 'REIMBURSEMENT';`
+     - Dicatat pada setiap slip yang memiliki klaim reimbursement dengan payload terstruktur:
+       ```json
+       {
+         "receipt_count": 2,
+         "receipts": [
+           {"receipt_id": 101, "receipt_number": "RCP-20260610-0001", "amount": 250000},
+           {"receipt_id": 102, "receipt_number": "RCP-20260612-0002", "amount": 400000}
+         ]
+       }
+       ```
+     - `final_result` = total nominal reimbursement yang ditambahkan ke slip.
+     - `rule_reference` = `'Reimburse struk approved (non-objek PPh 21)'`.
+  4. **Integritas Matematis & Pengujian:**
+     - Penghitungan penghasilan bruto (`gross`) dan neto (`net`) bertambah tepat sebesar total struk, sedangkan penghasilan kena pajak (`taxable_income`) dan PPh 21 **tidak berubah sama sekali**.
+     - Teruji secara otomatis di `tests/Feature/PayrollReceiptSettlementTest.php`:
+       - `test_calculate_creates_one_payslip_item_per_receipt_with_refs`: Memvalidasi pembuatan per-item slip, non-taxable, kenaikan bruto/neto, dan jejak langkah `REIMBURSEMENT`.
+       - `test_mark_paid_settles_reimbursed_receipts`: Memvalidasi perubahan status struk menjadi `paid`, `payment_method='payroll'`, log aktivitas, dan notifikasi.
+       - `test_already_disbursed_receipt_is_not_pulled_into_payslip`: Memvalidasi bahwa struk yang sudah dicairkan di luar alur gaji tidak ikut ditarik ke slip gaji.
+       - `test_receipt_rejected_after_calculation_is_skipped_on_settlement`: Memvalidasi bahwa struk yang di-reject setelah batch dihitung tidak dipaksa menjadi `paid`.
+       - `test_receipt_settled_via_payroll_is_not_pulled_again`: Memvalidasi batch berikutnya tidak menarik ulang struk yang sudah lunas.
+
+---
+
+### 25.4. Poin 3 (BELUM / BACKLOG): Filter Penarikan Struk Berbasis Tanggal Approval/Submit
+
+- **Status:** ⬜ **BELUM DIKERJAKAN (Backlog Prioritas P1)**
+- **Analisis Masalah:**
+  - Saat ini, `approvedReimbursements()` menyaring struk berdasarkan rentang tanggal struk fisik:
+    `whereBetween('receipt_date', [$start->toDateString(), $end->toDateString()])`.
+  - **Skenario Masalah (Keterlambatan Approval):**
+    Karyawan melakukan pembelian bensin/operasional pada tanggal 28 Mei (`receipt_date = '2026-05-28'`), namun struk baru diunggah atau baru disetujui atasan/HRD pada tanggal 5 Juni.
+    Ketika Finance menjalankan batch penggajian bulan Juni (periode 1 s.d. 30 Juni), struk tersebut **tidak akan pernah ditarik** karena `receipt_date` berada di bulan Mei, sementara batch bulan Mei sudah lewat. Struk ini berisiko menjadi *orphaned* (menggantung selamanya tanpa dibayar via gaji).
+- **Rencana Solusi Masa Depan:**
+  1. Ubah logika filter periode pada `approvedReimbursements()` agar memprioritaskan tanggal approval atau pengajuan:
+     - Gunakan kolom `submitted_at` atau tanggal persetujuan pada `receipt_approvals`.
+     - Alternatif kueri: `COALESCE(submitted_at, receipt_date) <= $periodEnd` dengan kondisi `status = 'approved'` dan `paid_at IS NULL`.
+     - Dengan demikian, semua struk yang sudah disetujui dan belum dibayar hingga tanggal akhir periode batch akan otomatis terangkut ke dalam slip gaji periode aktif, tanpa memandang tanggal transaksi fisik struk.
+
+---
+
+### 25.5. Poin 4 (BELUM / BACKLOG): Guard Validasi Pencairan Terpisah di `ReceiptController::disburse()`
+
+- **Status:** ⬜ **BELUM DIKERJAKAN (Backlog Prioritas P1)**
+- **Analisis Masalah:**
+  - Di sistem ExpenseFlow, Finance dapat mencairkan struk secara mandiri (transfer bank/kas kecil langsung) melalui endpoint `POST /api/v1/dashboard/receipts/{id}/pay` (`ReceiptController::disburse()`).
+  - Meskipun `markPaid()` pada payroll sudah menandai struk dengan `status = 'paid'`, `ReceiptController::disburse()` saat ini belum memiliki pengecekan guard eksplisit untuk mengidentifikasi apakah struk sudah dibayarkan melalui alur payroll (`payment_method === 'payroll'`).
+- **Rencana Solusi Masa Depan:**
+  1. Pada awal fungsi `ReceiptController::disburse()`, tambahkan validasi penolakan HTTP 422:
+     ```php
+     if ($receipt->status === 'paid' || $receipt->paid_at !== null) {
+         $metode = $receipt->payment_method === 'payroll' 
+             ? "slip gaji Payroll (Ref: {$receipt->payment_ref_no})" 
+             : "alur pencairan {$receipt->payment_method}";
+
+         return response()->json([
+             'message' => "Struk {$receipt->receipt_number} sudah dicairkan melalui {$metode} pada " . $receipt->paid_at?->format('d/m/Y H:i') . ' dan tidak dapat dicairkan kembali.',
+         ], 422);
+     }
+     ```
+  2. Guard ini menutup celah dari sisi modul Struk sehingga staf kasir yang mencoba mencairkan ulang secara manual akan langsung ditolak sistem dengan pesan yang jelas.
+

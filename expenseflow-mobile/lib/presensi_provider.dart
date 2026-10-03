@@ -161,6 +161,18 @@ class PresensiProvider extends ChangeNotifier {
   bool get loadingLeaves => _loadingLeaves;
   bool get loadingCollectiveLeaves => _loadingCollectiveLeaves;
 
+  /// Memeriksa apakah karyawan sudah melakukan presensi masuk (check-in) pada hari ini secara valid.
+  bool get hasCheckedInToday {
+    if (_todayMasuk == null) return false;
+    if (_todayCheckInDateTime != null) {
+      final now = DateTime.now();
+      return _todayCheckInDateTime!.year == now.year &&
+          _todayCheckInDateTime!.month == now.month &&
+          _todayCheckInDateTime!.day == now.day;
+    }
+    return true;
+  }
+
   bool get canCheckIn => attendanceEnabled && _todayMasuk == null;
   bool get canCheckOut => attendanceEnabled && _todayMasuk != null && _todayPulang == null;
   String get todayTotalJamKerja =>
@@ -455,6 +467,15 @@ class PresensiProvider extends ChangeNotifier {
           await notifSvc.showAutoCheckoutConfirm(_todayPulang ?? _nowTime());
         }
       }
+    } else {
+      // Jika backend menyatakan belum check-in hari ini (misal record status absent / leave tapi checkedIn = false)
+      if (_todayMasuk != null || _todayCheckInDateTime != null) {
+        _todayMasuk = null;
+        _todayCheckInDateTime = null;
+        _todayPulang = null;
+        _todayWorkMinutes = null;
+        notifyListeners();
+      }
     }
 
     // Cek status overtime approval (approved/rejected oleh HRD)
@@ -575,6 +596,9 @@ class PresensiProvider extends ChangeNotifier {
       if (_dateOnly(m['date']) == todayIso) {
         foundToday = true;
         _todayMasuk = _extractTime(m['check_in_time']);
+        _todayCheckInDateTime = m['check_in_time'] != null
+            ? DateTime.tryParse(m['check_in_time'].toString())?.toLocal()
+            : null;
         _todayPulang = _extractTime(m['check_out_time']);
         _todayStatus = m['status'] as String?;
         final oa = m['overtime_approval'] as Map<String, dynamic>?;
@@ -590,6 +614,7 @@ class PresensiProvider extends ChangeNotifier {
     }
     if (!foundToday) {
       _todayMasuk = null;
+      _todayCheckInDateTime = null;
       _todayPulang = null;
       _todayStatus = null;
       _todayOvertimeMinutes = 0;

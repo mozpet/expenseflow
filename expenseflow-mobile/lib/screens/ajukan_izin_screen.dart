@@ -40,13 +40,25 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
     final today = DateTime(now.year, now.month, now.day);
     final tomorrow = today.add(const Duration(days: 1));
 
-    // Hari H diperbolehkan jika belum check-in hari ini. Jika sudah check-in, minimal besok.
-    final initialDate = (prov.todayMasuk != null) ? tomorrow : today;
+    // Hari H (hari ini) diperbolehkan jika belum check-in hari ini. Jika sudah check-in, minimal besok.
+    final initialDate = prov.hasCheckedInToday ? tomorrow : today;
     _startDate = initialDate;
     _endDate = initialDate;
     _randomDates = [_startDate];
-    // Muat preview awal (rentang default 1 hari)
-    WidgetsBinding.instance.addPostFrameCallback((_) => _fetchPreview());
+
+    // Sinkronkan status presensi hari ini secara aktual dari backend lalu muat preview awal
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      await prov.syncStatusFromBackend();
+      if (!mounted) return;
+      if (prov.hasCheckedInToday && _startDate.isAtSameMomentAs(today)) {
+        setState(() {
+          _startDate = tomorrow;
+          _endDate = tomorrow;
+          _randomDates = [_startDate];
+        });
+      }
+      _fetchPreview();
+    });
   }
 
   // Ambil hitungan efektif dari backend (dengan debounce agar tidak spam API
@@ -179,7 +191,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
 
     // Hari H diperbolehkan HANYA jika belum check-in hari ini.
     // Jika sudah check-in hari ini, tanggal minimal adalah besok.
-    final minDate = (prov.todayMasuk != null) ? tomorrow : today;
+    final minDate = prov.hasCheckedInToday ? tomorrow : today;
     final first = isStart ? minDate : _startDate;
     final initial = isStart ? _startDate : _endDate;
 
@@ -210,7 +222,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final tomorrow = today.add(const Duration(days: 1));
-    final minDate = (prov.todayMasuk != null) ? tomorrow : today;
+    final minDate = prov.hasCheckedInToday ? tomorrow : today;
 
     final picked = await showCustomMultiDatePicker(
       context: context,
@@ -282,7 +294,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
 
       final hasToday = _randomDates.any(
           (d) => d.year == today.year && d.month == today.month && d.day == today.day);
-      if (hasToday && prov.todayMasuk != null) {
+      if (hasToday && prov.hasCheckedInToday) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Anda sudah melakukan check-in hari ini, sehingga tidak dapat mengajukan izin atau cuti untuk hari ini.'),
@@ -302,7 +314,7 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
         return;
       }
 
-      if (_startDate.isAtSameMomentAs(today) && prov.todayMasuk != null) {
+      if (_startDate.isAtSameMomentAs(today) && prov.hasCheckedInToday) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text('Anda sudah melakukan check-in hari ini, sehingga tidak dapat mengajukan izin atau cuti untuk hari ini.'),
@@ -693,7 +705,9 @@ class _AjukanIzinScreenState extends State<AjukanIzinScreen> {
                             : (selectedItem.isUnlimited
                                 ? (selectedItem.key == 'wfh'
                                     ? 'Work From Home fleksibel (tanpa batas kuota).'
-                                    : 'Izin tanpa batas kuota (selalu aktif & fleksibel).')
+                                    : (selectedItem.key == 'izin'
+                                        ? 'Izin tanpa batas kuota (selalu aktif & fleksibel).'
+                                        : '${selectedItem.label} tanpa batas kuota (mode akumulasi).'))
                                 : (selectedItem.remaining > 0
                                     ? 'Sisa kuota ${selectedItem.label}: ${selectedItem.remaining} hari (Terpakai: ${selectedItem.used}/${selectedItem.quota} hari)'
                                     : 'Sisa kuota ${selectedItem.label} Anda adalah 0 hari (Belum aktif / kuota habis).')),

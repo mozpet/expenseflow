@@ -16,6 +16,32 @@ return [
     */
 
     'catalog' => [
+        'izin' => [
+            'label'                 => 'Izin',
+            'default_quota_days'    => 0,
+            'default_enabled'       => true,
+            'gender_restriction'    => null,
+            'marital_restriction'   => null,
+            'pregnancy_restriction' => false,
+            'family_related'        => false,
+            'requires_document'     => false,
+            'legal_basis'           => 'Kebijakan Perusahaan & Kesepakatan Kerja',
+            'description'           => 'Izin tidak masuk kerja karena keperluan pribadi atau mendesak di luar hak cuti tahunan.',
+            'eligibility_notes'     => 'Dapat diajukan oleh seluruh karyawan sesuai izin atasan langsung & HRD.',
+        ],
+        'wfh' => [
+            'label'                 => 'Work From Home (WFH)',
+            'default_quota_days'    => 0,
+            'default_enabled'       => true,
+            'gender_restriction'    => null,
+            'marital_restriction'   => null,
+            'pregnancy_restriction' => false,
+            'family_related'        => false,
+            'requires_document'     => false,
+            'legal_basis'           => 'Kebijakan Fleksibilitas Kerja & Operasional Kantor',
+            'description'           => 'Bekerja jarak jauh / dari rumah (remote) dengan persetujuan atasan langsung.',
+            'eligibility_notes'     => 'Dapat diajukan karyawan jika kantor cabang mengaktifkan opsi presensi WFH.',
+        ],
         'sakit' => [
             'label'                 => 'Cuti Sakit',
             'default_quota_days'    => 14,
@@ -86,13 +112,13 @@ return [
             'default_quota_days'    => 3,
             'default_enabled'       => true,
             'gender_restriction'    => null,
-            'marital_restriction'   => null,
+            'marital_restriction'   => 'single',
             'pregnancy_restriction' => false,
             'family_related'        => false,
             'requires_document'     => false,
             'legal_basis'           => 'UU No. 13/2003 Pasal 93 ayat (4) huruf a',
             'description'           => 'Pernikahan pekerja/buruh yang bersangkutan (3 hari kerja).',
-            'eligibility_notes'     => 'Dapat diajukan oleh seluruh karyawan yang melangsungkan akad atau pemberkatan pernikahan.',
+            'eligibility_notes'     => 'Khusus karyawan lajang/belum menikah yang melangsungkan akad atau pemberkatan pernikahan.',
         ],
         'cuti_menikahkan_anak' => [
             'label'                 => 'Menikahkan Anak',

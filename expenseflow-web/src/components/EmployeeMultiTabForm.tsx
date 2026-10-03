@@ -51,6 +51,7 @@ import { FormTabType, FORM_TABS } from './KaryawanManagement';
 interface Office {
   id: number;
   office_name: string;
+  overtime_enabled?: boolean;
 }
 
 interface EmployeeMultiTabFormProps {
@@ -94,6 +95,22 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
   };
 
   const terInfo = getTerCategory(form.ptkpStatus || 'TK/0');
+
+  // Kantor penempatan terpilih
+  const selectedOffice = React.useMemo(() => {
+    if (!form.officeId) return null;
+    return offices.find((o) => Number(o.id) === Number(form.officeId)) || null;
+  }, [form.officeId, offices]);
+
+  // Cek apakah cabang ini menonaktifkan hitung lembur otomatis
+  const isBranchOvertimeDisabled = selectedOffice ? selectedOffice.overtime_enabled === false : false;
+
+  // Jika kantor cabang yang dipilih menonaktifkan lembur, pastikan form.overtimeEligible otomatis diset false
+  React.useEffect(() => {
+    if (isBranchOvertimeDisabled && form.overtimeEligible) {
+      setForm((prev: any) => ({ ...prev, overtimeEligible: false }));
+    }
+  }, [isBranchOvertimeDisabled, form.overtimeEligible, setForm]);
 
   // Kalkulasi umur otomatis dari tanggal lahir
   const calculatedAge = React.useMemo(() => {
@@ -639,7 +656,7 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                     hasJht: true,
                     hasJp: true,
                     salaryType: 'monthly',
-                    overtimeEligible: true,
+                    overtimeEligible: isBranchOvertimeDisabled ? false : true,
                   })
                 }
                 className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
@@ -677,7 +694,7 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                     hasJht: true,
                     hasJp: true,
                     salaryType: 'monthly',
-                    overtimeEligible: true,
+                    overtimeEligible: isBranchOvertimeDisabled ? false : true,
                   })
                 }
                 className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
@@ -715,7 +732,7 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                     hasJht: true,
                     hasJp: false,
                     salaryType: 'monthly',
-                    overtimeEligible: true,
+                    overtimeEligible: isBranchOvertimeDisabled ? false : true,
                   })
                 }
                 className={`p-4 rounded-2xl border text-left transition duration-150 cursor-pointer flex flex-col justify-between relative overflow-hidden ${
@@ -1309,8 +1326,8 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                       <span className="absolute left-3.5 top-2.5 text-xs text-indigo-500 dark:text-indigo-400 font-bold">Rp</span>
                       <input
                         type="number"
-                        min="10000"
-                        step="50000"
+                        min="0"
+                        step="any"
                         value={form.limit === null || form.limit === '' ? '' : form.limit}
                         onChange={(e) =>
                           setForm({
@@ -1322,6 +1339,11 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                         className="w-full text-xs pl-10 pr-3.5 py-2.5 bg-white dark:bg-slate-800 border border-indigo-200 dark:border-indigo-800/60 rounded-xl focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-600 transition font-mono font-semibold"
                       />
                     </div>
+                    {form.limit !== null && form.limit !== '' && Number(form.limit) > 0 && (
+                      <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-semibold mt-1">
+                        Terbaca: Rp {Number(form.limit).toLocaleString('id-ID')} / bulan
+                      </p>
+                    )}
                     {/* Quick preset chips */}
                     <div className="flex flex-wrap items-center gap-1.5 pt-1">
                       <span className="text-[10px] text-slate-400 font-medium">Preset cepat:</span>
@@ -2062,7 +2084,7 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                   <input
                     type="number"
                     min="0"
-                    step="50000"
+                    step="any"
                     value={form.basicSalary === null || form.basicSalary === '' ? '' : form.basicSalary}
                     onChange={(e) =>
                       setForm({
@@ -2649,16 +2671,63 @@ export const EmployeeMultiTabForm: React.FC<EmployeeMultiTabFormProps> = ({
                   </label>
 
                   {/* Hak Lembur Overtime */}
-                  <label className="flex items-start gap-3 p-3.5 bg-slate-50 dark:bg-slate-800/50 rounded-2xl border border-slate-200 dark:border-slate-700 cursor-pointer">
+                  <label
+                    className={`flex items-start gap-3 p-3.5 rounded-2xl border transition ${
+                      isBranchOvertimeDisabled
+                        ? 'bg-slate-100/70 dark:bg-slate-800/40 border-slate-200 dark:border-slate-800/80 opacity-75 cursor-not-allowed select-none'
+                        : 'bg-slate-50 dark:bg-slate-800/50 border-slate-200 dark:border-slate-700 cursor-pointer'
+                    }`}
+                    title={
+                      isBranchOvertimeDisabled
+                        ? `Cabang "${selectedOffice?.office_name}" menonaktifkan fitur lembur otomatis.`
+                        : undefined
+                    }
+                  >
                     <input
                       type="checkbox"
-                      checked={Boolean(form.overtimeEligible)}
-                      onChange={(e) => setForm({ ...form, overtimeEligible: e.target.checked })}
-                      className="w-4 h-4 rounded text-indigo-600 focus:ring-indigo-500 mt-0.5"
+                      disabled={isBranchOvertimeDisabled}
+                      checked={Boolean(isBranchOvertimeDisabled ? false : form.overtimeEligible)}
+                      onChange={(e) => {
+                        if (!isBranchOvertimeDisabled) {
+                          setForm({ ...form, overtimeEligible: e.target.checked });
+                        }
+                      }}
+                      className={`w-4 h-4 rounded mt-0.5 ${
+                        isBranchOvertimeDisabled
+                          ? 'text-slate-400 cursor-not-allowed accent-slate-400'
+                          : 'text-indigo-600 focus:ring-indigo-500 cursor-pointer accent-indigo-600'
+                      }`}
                     />
-                    <div>
-                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">Berhak Upah Lembur</span>
-                      <span className="text-[10px] text-slate-400">Rumus Depnaker 1/173 x Gaji</span>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`text-xs font-bold block ${
+                            isBranchOvertimeDisabled
+                              ? 'text-slate-500 dark:text-slate-400'
+                              : 'text-slate-800 dark:text-slate-100'
+                          }`}
+                        >
+                          Berhak Upah Lembur
+                        </span>
+                        {isBranchOvertimeDisabled && (
+                          <span className="text-[9px] font-bold px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                            Cabang Nonaktif
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[10px] text-slate-400 block mt-0.5 leading-normal">
+                        {isBranchOvertimeDisabled ? (
+                          <>
+                            Terkunci: Fitur hitung lembur otomatis dinonaktifkan pada pengaturan kantor{' '}
+                            <strong className="text-slate-600 dark:text-slate-300">
+                              {selectedOffice?.office_name ? `"${selectedOffice.office_name}"` : 'ini'}
+                            </strong>
+                            . Karyawan pada cabang ini tidak dapat diberikan hak lembur.
+                          </>
+                        ) : (
+                          'Rumus Depnaker 1/173 x Gaji'
+                        )}
+                      </span>
                     </div>
                   </label>
                 </div>

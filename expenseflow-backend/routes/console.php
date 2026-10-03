@@ -30,7 +30,7 @@ Schedule::command('attendance:auto-decline-collective-leave')
     ->withoutOverlapping()
     ->runInBackground();
 
-// Auto-reject semua jenis permohonan izin/cuti yang belum diproses HRD saat hari H tiba.
+// Auto-reject semua jenis permohonan izin/cuti yang belum diproses HRD saat melewati H+1.
 Schedule::command('attendance:auto-reject-expired-leaves')
     ->hourly()
     ->withoutOverlapping()

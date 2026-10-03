@@ -32,7 +32,7 @@ class SyncShiftWfhStatus extends Command
         $this->info("Starting shift WFH sync for {$today}");
 
         $users = User::where('is_active', true)
-            ->whereIn('role', ['employee', 'admin', 'hrd', 'finance', 'super_admin'])
+            ->where('role', '!=', 'super_admin')
             ->get();
 
         $updatedCount = 0;

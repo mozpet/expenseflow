@@ -1194,31 +1194,43 @@ class _BalanceCard extends StatelessWidget {
                     ),
                   )
                 else if (balance.active && balance.quota > 0)
-                  RichText(
-                    text: TextSpan(
-                      children: [
-                        TextSpan(
-                          text: '${balance.remaining}',
-                          style: TextStyle(
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                            color: color,
-                          ),
+                  // Angka besar (warna biru) = Sisa Alokasi Live Karyawan (berkurang otomatis saat cuti terpakai / berubah saat alokasi HRD diubah)
+                  // Angka kecil (warna merah) = Standar Kantor (dari Pengaturan Jenis Cuti Kantor)
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      RichText(
+                        text: TextSpan(
+                          children: [
+                            TextSpan(
+                              text: '${balance.remaining}',
+                              style: TextStyle(
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
+                                color: color,
+                              ),
+                            ),
+                            const TextSpan(
+                              text: ' / ',
+                              style: TextStyle(fontSize: 14, color: Colors.grey),
+                            ),
+                            TextSpan(
+                              text: '${balance.officeQuota} hari',
+                              style: const TextStyle(
+                                fontSize: 13,
+                                color: Color(0xFF455A64),
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
                         ),
-                        const TextSpan(
-                          text: ' / ',
-                          style: TextStyle(fontSize: 14, color: Colors.grey),
-                        ),
-                        TextSpan(
-                          text: '${balance.quota} hari',
-                          style: const TextStyle(
-                            fontSize: 13,
-                            color: Color(0xFF455A64),
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                    ),
+                      ),
+                      const Text(
+                        'Sisa / Standar kantor',
+                        style: TextStyle(fontSize: 9.5, color: Color(0xFF90A4AE)),
+                      ),
+                    ],
                   )
                 else
                   Container(
@@ -1290,7 +1302,9 @@ class _BalanceCard extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     Text(
-                      'Terpakai: ${balance.used} hari',
+                      balance.quota != balance.officeQuota
+                          ? 'Terpakai: ${balance.used} hr (Alokasi: ${balance.quota} hr)'
+                          : 'Terpakai: ${balance.used} hari',
                       style: const TextStyle(
                         fontSize: 12,
                         color: Color(0xFF546E7A),

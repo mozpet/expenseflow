@@ -259,22 +259,14 @@ class AttendanceController extends Controller
         $now = now();
 
         // ── Seed built-in types yang TIDAK ada di catalog config ──
-        // 'wfh' dan 'cuti' perlu row LeaveTypeSetting agar bisa on/off per kantor
+        // 'cuti' perlu row LeaveTypeSetting agar sinkron per kantor
         $builtInTypes = [
-            'wfh' => [
-                'is_enabled'        => true,
-                'quota_days'        => 0,
-                'requires_document' => false,
-                'notes'             => 'Work From Home',
-            ],
             'cuti' => [
                 'is_enabled'        => true,
                 'quota_days'        => 12,
                 'requires_document' => false,
                 'notes'             => 'Cuti Tahunan',
             ],
-            // 'izin' sengaja TIDAK di-seed di sini karena selalu aktif (unlimited)
-            // dan tidak perlu setting on/off
         ];
 
         foreach ($builtInTypes as $typeKey => $defaults) {
@@ -493,6 +485,13 @@ class AttendanceController extends Controller
                 return [
                     'eligible' => false,
                     'reason'   => "Pengajuan {$label} hanya diperuntukkan bagi karyawan yang sudah berstatus menikah pada data karyawan.",
+                ];
+            }
+
+            if (in_array($expectedMarital, ['single', 'lajang', 'unmarried']) && $isMarried) {
+                return [
+                    'eligible' => false,
+                    'reason'   => "Pengajuan {$label} hanya diperuntukkan bagi karyawan yang belum menikah (lajang). Karyawan yang tercatat sudah menikah tidak berhak mengambil cuti menikah.",
                 ];
             }
         }
@@ -1438,7 +1437,7 @@ class AttendanceController extends Controller
             'spv_notes' => 'nullable|string|max:1000',
         ]);
 
-        // Jalankan autoRejectExpiredLeaves terlebih dahulu agar status ter-update jika sudah hari H
+        // Jalankan autoRejectExpiredLeaves terlebih dahulu agar status ter-update jika sudah melewati H+1
         if ($actor->company_id) {
             LeaveRequest::autoRejectExpiredLeaves($actor->company_id);
         } else {
@@ -1460,12 +1459,12 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
         }
 
-        // Guard: Jika sudah memasuki hari H (start_date <= today), tidak dapat di-approve
+        // Guard: Jika sudah melewati hari pengajuan / H+1 (start_date < today), tidak dapat di-approve
         $today = now('Asia/Jakarta')->toDateString();
         $startDateStr = Carbon::parse($leave->start_date)->toDateString();
-        if ($startDateStr <= $today) {
+        if ($startDateStr < $today) {
             return response()->json([
-                'message' => 'Pengajuan izin tidak dapat disetujui karena sudah memasuki Hari H (otomatis ditolak oleh sistem).',
+                'message' => 'Pengajuan izin tidak dapat disetujui karena sudah melewati tanggal pengajuan (otomatis ditolak oleh sistem pada H+1).',
             ], 422);
         }
 
@@ -1503,16 +1502,30 @@ class AttendanceController extends Controller
             // Otorisasi Atasan Langsung & Divisi
             $targetUser = $leave->user;
             $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
+            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
 
-            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+            // Override darurat Tahap 1 hanya untuk Admin & Super Admin. HRD (Level 2) WAJIB menunggu SPV.
+            $isAdminBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
+            $isHrdLevelOnly = ! $isAdminBypass && (
+                in_array($userRoleCode, ['hrd'], true)
                 || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage')
+            );
 
-            $isSpvOrAbove = $isDirectManager
-                || $hasSpvPermission
-                || ($actor->position && $actor->position->is_supervisor)
-                || $actor->isSupervisor()
-                || $isAdminOrHrdBypass;
+            $isSpvOrAbove = $isHrdLevelOnly
+                ? ($isDirectManager || $hasSupervisorPosition)
+                : ($isDirectManager
+                    || $hasSpvPermission
+                    || $hasSupervisorPosition
+                    || $actor->isSupervisor()
+                    || $isAdminBypass);
+
+            if (! $isSpvOrAbove && $isHrdLevelOnly) {
+                return response()->json([
+                    'message' => 'Pengajuan cuti/izin ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
+                    'code'    => 'WAITING_SPV_APPROVAL',
+                ], 403);
+            }
 
             if (! $isSpvOrAbove) {
                 return response()->json([
@@ -1533,8 +1546,14 @@ class AttendanceController extends Controller
                 }
             }
 
-            // Bypass darurat: Super Admin, Admin, dan HRD selalu berhak override jika Atasan Langsung berhalangan/cuti
-            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+            // Bypass darurat: hanya Super Admin & Admin jika Atasan Langsung berhalangan/cuti
+            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminBypass) {
+                if ($isHrdLevelOnly) {
+                    return response()->json([
+                        'message' => 'Pengajuan cuti/izin ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
+                        'code'    => 'WAITING_SPV_APPROVAL',
+                    ], 403);
+                }
                 if ($targetUser?->manager_id) {
                     $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
                     return response()->json([
@@ -1590,6 +1609,16 @@ class AttendanceController extends Controller
                     'total_days' => $leave->total_days,
                     'spv_name'   => $actor->name,
                 ], 'leave_request', $leave->id);
+
+                $hrdUser = User::find($hrdId);
+                if ($hrdUser && $hrdUser->fcm_token) {
+                    $this->sendFcmPush(
+                        $hrdUser->fcm_token,
+                        '📋 Pengajuan Izin/Cuti Menunggu Persetujuan HRD',
+                        "Pengajuan {$leave->leave_type} {$employee?->name} telah disetujui SPV ({$actor->name}) dan menunggu persetujuan HRD.",
+                        ['type' => 'leave_pending_hrd', 'leave_id' => (string) $leave->id]
+                    );
+                }
             }
 
             // Notifikasi & push ke karyawan bahwa SPV sudah approve
@@ -1696,31 +1725,86 @@ class AttendanceController extends Controller
                     $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
                 } elseif ($leave->leave_type !== 'wfh') {
                     $typeSetting = $this->getLeaveTypeSettingForUser($leave->user_id, $leave->leave_type);
-                    $defaultQuota = $typeSetting ? $typeSetting->quota_days : (config("leave_types.catalog.{$leave->leave_type}.default_quota_days") ?? 0);
+                    $defaultQuota = $typeSetting ? (int) $typeSetting->quota_days : (int) (config("leave_types.catalog.{$leave->leave_type}.default_quota_days") ?? 0);
 
                     $balance = LeaveBalance::firstOrCreate(
                         ['user_id' => $leave->user_id, 'year' => $year, 'leave_type' => $leave->leave_type],
                         ['company_id' => $leave->company_id, 'quota' => $defaultQuota, 'used' => 0]
                     );
                     $balance = LeaveBalance::whereKey($balance->id)->lockForUpdate()->first();
+
+                    if ((int) $balance->quota <= 0 && (int) $balance->used === 0 && $defaultQuota > 0) {
+                        $balance->update(['quota' => $defaultQuota]);
+                        $balance->refresh();
+                    }
+
+                    $isAccumulation = ($defaultQuota <= 0);
                     $remaining = $balance->quota - $balance->used;
-                    if ((int) $leave->total_days > $remaining) {
+                    if (! $isAccumulation && (int) $leave->total_days > $remaining) {
                         $metaLabel = config("leave_types.catalog.{$leave->leave_type}.label") ?? ucfirst($leave->leave_type);
                         abort(422, "Saldo {$metaLabel} tidak cukup. Sisa {$remaining} hari, diminta {$leave->total_days} hari.");
                     }
                 }
 
                 $notes = $validated['notes'] ?? null;
-                $leave->update([
-                    'status'      => 'approved',
-                    'approved_by' => $actor->id,
-                    'approved_at' => now(),
-                    'notes'       => $notes,
-                ]);
+                $balanceBefore = null;
+                $balanceAfter = null;
+                $policySnapshot = null;
 
                 if ($balance) {
+                    if ($leave->leave_type === 'cuti') {
+                        $isUnlimited = false;
+                    } elseif ($leave->leave_type === 'izin') {
+                        $izinSetting = $this->getLeaveTypeSettingForUser($leave->user_id, 'izin');
+                        $refQuota = $izinSetting ? (int) $izinSetting->quota_days : 0;
+                        $isUnlimited = ($refQuota <= 0);
+                    } else {
+                        $typeSetting = $this->getLeaveTypeSettingForUser($leave->user_id, $leave->leave_type);
+                        $refQuota = $typeSetting ? (int) $typeSetting->quota_days : (int) (config("leave_types.catalog.{$leave->leave_type}.default_quota_days") ?? 0);
+                        $isUnlimited = ($refQuota <= 0);
+                    }
+
+                    $balanceBefore = $isUnlimited ? null : ((int) $balance->quota - (int) $balance->used);
                     $balance->increment('used', $leave->total_days);
+                    $balance->refresh();
+                    $balanceAfter = $isUnlimited ? null : ((int) $balance->quota - (int) $balance->used);
+
+                    $catalog = self::leaveTypeCatalog();
+                    $typeLabel = match ($leave->leave_type) {
+                        'cuti'  => 'Cuti Tahunan',
+                        'izin'  => 'Izin',
+                        'sakit' => 'Sakit',
+                        default => $catalog[$leave->leave_type]['label'] ?? ucfirst($leave->leave_type),
+                    };
+
+                    $targetOfficeId = $leave->attendance_setting_id ?? $leave->user?->attendance_setting_id;
+                    $office = $targetOfficeId ? AttendanceSetting::find($targetOfficeId) : null;
+
+                    $policySnapshot = [
+                        'leave_type'        => $leave->leave_type,
+                        'leave_type_label'  => $typeLabel,
+                        'quota'             => (int) $balance->quota,
+                        'used_after'        => (int) $balance->used,
+                        'remaining_after'   => $balanceAfter,
+                        'is_unlimited'      => $isUnlimited,
+                        'office_id'         => $office?->id,
+                        'office_name'       => $office?->office_name,
+                        'approved_by_id'    => $actor->id,
+                        'approved_by_name'  => $actor->name,
+                        'approved_at'       => now()->toDateTimeString(),
+                    ];
                 }
+
+                $leave->update([
+                    'status'                 => 'approved',
+                    'approved_by'            => $actor->id,
+                    'approved_at'            => now(),
+                    'notes'                  => $notes,
+                    'attendance_setting_id'  => $leave->attendance_setting_id ?? $leave->user?->attendance_setting_id,
+                    'balance_before'         => $balanceBefore,
+                    'balance_after'          => $balanceAfter,
+                    'leave_policy_snapshot'  => $policySnapshot,
+                ]);
 
                 return $leave;
             });
@@ -1838,16 +1922,30 @@ class AttendanceController extends Controller
             $hasSpvPermission = $actor->hasPermission(Role::MODULE_LEAVE, 'spv');
             $targetUser = $leave->user;
             $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
+            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
 
-            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
+            // Override darurat Tahap 1 hanya untuk Admin & Super Admin. HRD (Level 2) WAJIB menunggu SPV.
+            $isAdminBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
+            $isHrdLevelOnly = ! $isAdminBypass && (
+                in_array($userRoleCode, ['hrd'], true)
                 || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
+                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage')
+            );
 
-            $isSpvOrAbove = $isDirectManager
-                || $hasSpvPermission
-                || ($actor->position && $actor->position->is_supervisor)
-                || $actor->isSupervisor()
-                || $isAdminOrHrdBypass;
+            $isSpvOrAbove = $isHrdLevelOnly
+                ? ($isDirectManager || $hasSupervisorPosition)
+                : ($isDirectManager
+                    || $hasSpvPermission
+                    || $hasSupervisorPosition
+                    || $actor->isSupervisor()
+                    || $isAdminBypass);
+
+            if (! $isSpvOrAbove && $isHrdLevelOnly) {
+                return response()->json([
+                    'message' => 'Penolakan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan Langsung. HRD baru dapat memproses setelah SPV menyetujui.',
+                    'code'    => 'WAITING_SPV_APPROVAL',
+                ], 403);
+            }
 
             if (! $isSpvOrAbove) {
                 return response()->json([
@@ -1865,7 +1963,13 @@ class AttendanceController extends Controller
                 }
             }
 
-            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminBypass) {
+                if ($isHrdLevelOnly) {
+                    return response()->json([
+                        'message' => 'Penolakan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan Langsung. HRD baru dapat memproses setelah SPV menyetujui.',
+                        'code'    => 'WAITING_SPV_APPROVAL',
+                    ], 403);
+                }
                 if ($targetUser?->manager_id) {
                     $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
                     return response()->json([
@@ -2005,7 +2109,7 @@ class AttendanceController extends Controller
             )
             ->when($validated['status'] ?? null, fn ($q, $s) => $q->where('leave_requests.status', $s))
             ->when($validated['leave_type'] ?? null, fn ($q, $t) => $q->where('leave_requests.leave_type', $t))
-            ->when($validated['step'] ?? null, fn ($q, $st) => $q->where('leave_requests.current_step', $st))
+            ->when($validated['step'] ?? null, fn ($q, $st) => $q->where('leave_requests.current_step', $st)->whereNull('leave_requests.holiday_id'))
             ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('leave_requests.user_id', $u))
             ->when($validated['division_id'] ?? null, fn ($q, $div) => $q->where('users.division_id', $div));
 
@@ -2038,7 +2142,8 @@ class AttendanceController extends Controller
 
         $leaves = $leavesQuery->select([
                 'leave_requests.id', 'leave_requests.user_id', 'users.name as user_name',
-                'users.department', 'users.attendance_setting_id',
+                'users.department',
+                DB::raw('COALESCE(leave_requests.attendance_setting_id, users.attendance_setting_id) as attendance_setting_id'),
                 'users.manager_id', 'mgr_user.name as manager_name',
                 'users.division_id', 'divisions.name as division_name',
                 'positions.name as position_name',
@@ -2051,6 +2156,7 @@ class AttendanceController extends Controller
                 'leave_requests.notes',
                 'leave_requests.rejection_reason',
                 'leave_requests.approved_by', 'leave_requests.approved_at', 'leave_requests.created_at',
+                'leave_requests.balance_before', 'leave_requests.balance_after', 'leave_requests.leave_policy_snapshot',
                 // Kolom pembeda sumber cuti: NULL = cuti mandiri (karyawan via mobile), NOT NULL = cuti bersama (HR via kalender)
                 'leave_requests.holiday_id',
                 'leave_requests.collective_status',
@@ -2058,9 +2164,10 @@ class AttendanceController extends Controller
             ->orderByDesc('leave_requests.created_at')
             ->paginate($limit);
 
-        // Hitung rekap statistik persetujuan berjenjang
+        // Hitung rekap statistik persetujuan berjenjang (hanya cuti mandiri; cuti bersama tidak berjenjang)
         $summaryQuery = LeaveRequest::query()
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
+            ->whereNull('leave_requests.holiday_id')
             ->when(
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('leave_requests.company_id', $actor->company_id)
@@ -2099,7 +2206,7 @@ class AttendanceController extends Controller
             if ($row->status === 'pending') {
                 if ($row->current_step === 'hrd') {
                     $pendingHrd += (int) $row->total;
-                } else {
+                } elseif ($row->current_step === 'spv') {
                     $pendingSpv += (int) $row->total;
                 }
             } elseif ($row->status === 'approved') {
@@ -2124,6 +2231,36 @@ class AttendanceController extends Controller
             'approved'    => $approved,
             'rejected'    => $rejected,
         ];
+
+        if (! empty($validated['user_id'])) {
+            $catalog = self::leaveTypeCatalog();
+            $adjustments = LeaveQuotaAdjustment::with('adjustedBy:id,name')
+                ->where('user_id', $validated['user_id'])
+                ->orderByDesc('created_at')
+                ->get()
+                ->map(function ($a) use ($catalog) {
+                    $label = $catalog[$a->leave_type]['label'] ?? ($a->leave_type === 'cuti' ? 'Cuti Tahunan' : ucwords(str_replace('_', ' ', $a->leave_type)));
+                    return [
+                        'id'               => 'adj_' . $a->id,
+                        'is_adjustment'    => true,
+                        'leave_type'       => $a->leave_type,
+                        'leave_type_label' => $label,
+                        'year'             => $a->year,
+                        'old_quota'        => $a->old_quota,
+                        'new_quota'        => $a->new_quota,
+                        'difference'       => $a->difference,
+                        'reason'           => $a->reason,
+                        'status'           => 'adjustment',
+                        'approved_by'      => $a->adjustedBy?->name ?? 'HRD',
+                        'adjusted_by_name' => $a->adjustedBy?->name ?? 'HRD',
+                        'start_date'       => $a->created_at?->format('Y-m-d') ?? now()->format('Y-m-d'),
+                        'end_date'         => $a->created_at?->format('Y-m-d') ?? now()->format('Y-m-d'),
+                        'total_days'       => abs($a->difference),
+                        'created_at'       => $a->created_at?->toIso8601String() ?? (string) $a->created_at,
+                    ];
+                });
+            $result['adjustments'] = $adjustments;
+        }
 
         return response()->json($result);
     }
@@ -2166,7 +2303,7 @@ class AttendanceController extends Controller
         $employees = User::query()
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
             ->where('is_active', true)
-            ->whereIn('role', ['employee', 'finance', 'hrd', 'admin'])
+            ->where('role', '!=', 'super_admin')
             ->select(['id', 'name', 'department', 'employee_code', 'attendance_setting_id', 'wfh_enabled', 'radius_enabled', 'company_id'])
             ->orderBy('name');
 
@@ -2495,19 +2632,14 @@ class AttendanceController extends Controller
                 }
             }
 
-            // Gabungkan dengan tipe yang SUDAH ADA saldo di DB (untuk preservasi historis)
-            // tapi HANYA tampilkan, bukan otomatis aktif
+            // Gabungkan SEMUA tipe cuti dari katalog dan built-in agar frontend tidak fallback ke default hardcoded
             $existingTypes = $userBalances->pluck('leave_type')->toArray();
-            $allTypes = array_values(array_unique(array_merge($userEnabledTypes, $existingTypes)));
+            $catalogTypes  = array_keys($catalog);
+            $allTypes      = array_values(array_unique(array_merge(['cuti', 'izin'], $catalogTypes, $existingTypes)));
 
             foreach ($allTypes as $type) {
                 // Tentukan apakah tipe ini aktif di kantor saat ini
                 $isEnabledInOffice = in_array($type, $userEnabledTypes);
-
-                // Jika tipe disabled di kantor DAN tidak punya saldo historis, skip (tidak tampilkan)
-                if (! $isEnabledInOffice && ! in_array($type, $existingTypes)) {
-                    continue;
-                }
 
                 $typeLabel = match ($type) {
                     'cuti'  => 'Cuti Tahunan',
@@ -2519,33 +2651,42 @@ class AttendanceController extends Controller
                 $isUserLeaveAllowed = ($user->allow_leave !== false);
 
                 $common = [
-                    'user_id'           => $user->id,
-                    'user_name'         => $user->name,
-                    'employee_code'     => $user->employee_code,
-                    'gender'            => $user->gender,
-                    'marital_status'    => $user->marital_status,
-                    'is_pregnant'       => (bool) $user->is_pregnant,
-                    'department'        => $user->department,
-                    'office_id'         => $user->attendance_setting_id,
-                    'office_name'       => $officeNames[$user->attendance_setting_id] ?? null,
-                    'year'              => $year,
-                    'leave_type'        => $type,
-                    'leave_type_label'  => $typeLabel,
-                    'allow_leave'       => $isUserLeaveAllowed,
-                    'is_disabled'       => ($type === 'izin') ? false : (! $isEnabledInOffice || ! $isUserLeaveAllowed),
+                    'user_id'              => $user->id,
+                    'user_name'            => $user->name,
+                    'employee_code'        => $user->employee_code,
+                    'gender'               => $user->gender,
+                    'marital_status'       => $user->marital_status,
+                    'is_pregnant'          => (bool) $user->is_pregnant,
+                    'department'           => $user->department,
+                    'office_id'            => $user->attendance_setting_id,
+                    'office_name'          => $officeNames[$user->attendance_setting_id] ?? null,
+                    'year'                 => $year,
+                    'leave_type'           => $type,
+                    'leave_type_label'     => $typeLabel,
+                    'allow_leave'          => $isUserLeaveAllowed,
+                    'is_enabled_in_office' => $isEnabledInOffice,
+                    'is_disabled'          => ($type === 'izin' && $isEnabledInOffice) ? false : (! $isEnabledInOffice || ! $isUserLeaveAllowed),
                 ];
 
                 if ($type === 'cuti') {
                     // 'cuti' is_enabled dikontrol oleh LeaveTypeSetting & allow_leave user
                     $isCutiEnabled = $isEnabledInOffice && $isUserLeaveAllowed;
-                    $refQuota = $officeDefaultQuota;
+                    $refQuota = $isEnabledInOffice ? $officeDefaultQuota : 0;
                     if ($existing = $userBalances->firstWhere('leave_type', 'cuti')) {
+                        $used = (int) $existing->used;
+                        $quota = (! $isEnabledInOffice && $used === 0) ? 0 : (int) $existing->quota;
+                        if ($isEnabledInOffice && $refQuota > 0 && $quota > $refQuota) {
+                            $quota = max($used, $refQuota);
+                            if ($quota !== (int) $existing->quota) {
+                                $existing->update(['quota' => $quota]);
+                            }
+                        }
                         $balances->push($common + [
                             'id'                   => $existing->id,
-                            'quota'                => $existing->quota,
-                            'used'                 => $existing->used,
-                            'remaining'            => $existing->quota - $existing->used,
-                            'active'               => $isCutiEnabled && ((int) $existing->quota > 0 || (int) $existing->used > 0),
+                            'quota'                => $quota,
+                            'used'                 => $used,
+                            'remaining'            => max(0, $quota - $used),
+                            'active'               => $isCutiEnabled && ($quota > 0 || $used > 0),
                             'office_default_quota' => $refQuota,
                         ]);
                     } else {
@@ -2559,55 +2700,85 @@ class AttendanceController extends Controller
                         ]);
                     }
                 } elseif ($type === 'izin') {
+                    $officeSetting = $allOfficeSettings->get('izin');
+                    $refQuota = ($isEnabledInOffice && $officeSetting) ? (int) $officeSetting->quota_days : 0;
+                    $isUnlimited = $isEnabledInOffice && ($refQuota <= 0);
+
                     if ($existing = $userBalances->firstWhere('leave_type', 'izin')) {
+                        $userQuota = (int) $existing->quota;
+                        if ($isEnabledInOffice && $refQuota > 0 && $userQuota <= 0) {
+                            $userQuota = $refQuota;
+                        } elseif ($isEnabledInOffice && $refQuota > 0 && $userQuota > $refQuota) {
+                            $userQuota = max((int) $existing->used, $refQuota);
+                            if ($userQuota !== (int) $existing->quota) {
+                                $existing->update(['quota' => $userQuota]);
+                            }
+                        } elseif (! $isEnabledInOffice && (int) $existing->used === 0) {
+                            $userQuota = 0;
+                        }
                         $balances->push($common + [
                             'id'                   => $existing->id,
-                            'quota'                => 0,
-                            'used'                 => $existing->used,
-                            'remaining'            => null,
-                            'active'               => true,
-                            'office_default_quota' => 0,
-                            'is_unlimited'         => true,
-                            'is_disabled'          => false,
+                            'quota'                => $isUnlimited ? 0 : $userQuota,
+                            'used'                 => (int) $existing->used,
+                            'remaining'            => $isUnlimited ? null : max(0, $userQuota - (int) $existing->used),
+                            'active'               => $isEnabledInOffice,
+                            'office_default_quota' => $refQuota,
+                            'is_unlimited'         => $isUnlimited,
+                            'is_disabled'          => ! $isEnabledInOffice,
                         ]);
                     } else {
                         $balances->push($common + [
                             'id'                   => null,
-                            'quota'                => 0,
+                            'quota'                => (! $isEnabledInOffice || $isUnlimited) ? 0 : $refQuota,
                             'used'                 => 0,
-                            'remaining'            => null,
-                            'active'               => true,
-                            'office_default_quota' => 0,
-                            'is_unlimited'         => true,
-                            'is_disabled'          => false,
+                            'remaining'            => $isUnlimited ? null : ($isEnabledInOffice ? $refQuota : 0),
+                            'active'               => $isEnabledInOffice,
+                            'office_default_quota' => $refQuota,
+                            'is_unlimited'         => $isUnlimited,
+                            'is_disabled'          => ! $isEnabledInOffice,
                         ]);
                     }
                 } else {
                     $officeSetting = $allOfficeSettings->get($type);
-                    $refQuota = $officeSetting ? (int) $officeSetting->quota_days : (int) ($catalog[$type]['default_quota_days'] ?? 0);
+                    $refQuota = ($isEnabledInOffice && $officeSetting)
+                        ? (int) $officeSetting->quota_days
+                        : ($isEnabledInOffice ? (int) ($catalog[$type]['default_quota_days'] ?? 0) : 0);
                     $isTypeActive = $isEnabledInOffice && $isUserLeaveAllowed;
+                    $isUnlimited = $isEnabledInOffice && ($refQuota <= 0);
 
                     if ($existing = $userBalances->firstWhere('leave_type', $type)) {
+                        $userQuota = (int) $existing->quota;
+                        if ($isEnabledInOffice && $refQuota > 0 && $userQuota <= 0) {
+                            $userQuota = $refQuota;
+                        } elseif ($isEnabledInOffice && $refQuota > 0 && $userQuota > $refQuota) {
+                            // Alokasi kuota karyawan tidak boleh di atas standar kantor
+                            $userQuota = max((int) $existing->used, $refQuota);
+                            if ($userQuota !== (int) $existing->quota) {
+                                $existing->update(['quota' => $userQuota]);
+                            }
+                        } elseif (! $isEnabledInOffice && (int) $existing->used === 0) {
+                            $userQuota = 0;
+                        }
                         $balances->push($common + [
                             'id'                   => $existing->id,
-                            'quota'                => $existing->quota,
-                            'used'                 => $existing->used,
-                            'remaining'            => $existing->quota - $existing->used,
-                            // AKTIF hanya jika is_enabled, allow_leave=true, DAN ada quota/used
-                            'active'               => $isTypeActive && ((int) $existing->quota > 0 || (int) $existing->used > 0),
+                            'quota'                => $isUnlimited ? 0 : $userQuota,
+                            'used'                 => (int) $existing->used,
+                            'remaining'            => $isUnlimited ? null : max(0, $userQuota - (int) $existing->used),
+                            // AKTIF hanya jika is_enabled_in_office, allow_leave=true, DAN (ada quota/used atau akumulasi)
+                            'active'               => $isTypeActive && ($userQuota > 0 || (int) $existing->used > 0 || $isUnlimited),
                             'office_default_quota' => $refQuota,
+                            'is_unlimited'         => $isUnlimited,
                         ]);
                     } else {
-                        // Tidak ada saldo & disabled → tidak tampil (sudah di-skip di atas)
-                        // Tidak ada saldo & enabled → tampil sebagai non-aktif (quota 0 menunggu HRD isi)
                         $balances->push($common + [
                             'id'                   => null,
-                            'quota'                => $refQuota,
+                            'quota'                => (! $isEnabledInOffice || $isUnlimited) ? 0 : $refQuota,
                             'used'                 => 0,
-                            'remaining'            => $refQuota,
-                            // AKTIF hanya jika enabled di kantor, allow_leave=true DAN quota > 0
-                            'active'               => $isTypeActive && $refQuota > 0,
+                            'remaining'            => $isUnlimited ? null : ($isEnabledInOffice ? $refQuota : 0),
+                            // AKTIF hanya jika enabled di kantor, allow_leave=true DAN (quota > 0 atau akumulasi)
+                            'active'               => $isTypeActive && ($refQuota > 0 || $isUnlimited),
                             'office_default_quota' => $refQuota,
+                            'is_unlimited'         => $isUnlimited,
                         ]);
                     }
                 }
@@ -2628,12 +2799,14 @@ class AttendanceController extends Controller
             'user_id'               => 'required|integer',
             'leave_type'            => ['nullable', 'string', Rule::in($allowedTypes)],
             'quota'                 => 'nullable|integer|min:0',
+            'remaining'             => 'nullable|integer|min:0',
             'allow_leave'           => 'nullable|boolean',
             'year'                  => 'nullable|integer',
             'reason'                => 'nullable|string|max:500',
             'balances'              => 'nullable|array',
             'balances.*.leave_type' => ['required', 'string', Rule::in($allowedTypes)],
-            'balances.*.quota'      => 'required|integer|min:0',
+            'balances.*.quota'      => 'nullable|integer|min:0',
+            'balances.*.remaining'  => 'nullable|integer|min:0',
             'balances.*.reason'     => 'nullable|string|max:500',
         ]);
         $year = $validated['year'] ?? now()->year;
@@ -2660,7 +2833,7 @@ class AttendanceController extends Controller
             }
         } elseif (! empty($validated['leave_type']) && $validated['leave_type'] === 'cuti') {
             // Jika tidak eksplisit kirim allow_leave, sinkronkan dengan kuota cuti tahunan
-            $newAllowLeave = ((int) ($validated['quota'] ?? 0)) > 0;
+            $newAllowLeave = ((int) ($validated['remaining'] ?? $validated['quota'] ?? 0)) > 0;
             if ($oldAllowLeave !== $newAllowLeave) {
                 $target->allow_leave = $newAllowLeave;
                 $target->save();
@@ -2668,23 +2841,37 @@ class AttendanceController extends Controller
             }
         }
 
+        $officeSettingForIzin = $target->attendance_setting_id
+            ? LeaveTypeSetting::where('attendance_setting_id', $target->attendance_setting_id)
+                ->where('leave_type', 'izin')
+                ->first()
+            : null;
+        $isIzinAccumulation = $officeSettingForIzin ? ((int) $officeSettingForIzin->quota_days <= 0) : true;
+
         if (! empty($validated['leave_type']) && $validated['leave_type'] === 'izin') {
-            return response()->json([
-                'message' => 'Izin tidak memiliki batasan kuota (unlimited) sehingga kuotanya tidak dapat diubah.',
-            ], 422);
+            if ($isIzinAccumulation) {
+                return response()->json([
+                    'message' => 'Izin tidak memiliki batasan kuota (unlimited) sehingga kuotanya tidak dapat diubah.',
+                ], 422);
+            }
         }
 
         $items = [];
         if (! empty($validated['balances'])) {
             $items = $validated['balances'];
         } elseif (! empty($validated['leave_type'])) {
-            $items = [
-                [
-                    'leave_type' => $validated['leave_type'],
-                    'quota'      => $validated['quota'] ?? 0,
-                    'reason'     => $validated['reason'] ?? null,
-                ],
+            $singleItem = [
+                'leave_type' => $validated['leave_type'],
+                'reason'     => $validated['reason'] ?? null,
             ];
+            if (isset($validated['remaining'])) {
+                $singleItem['remaining'] = $validated['remaining'];
+            } elseif (isset($validated['quota'])) {
+                $singleItem['quota'] = $validated['quota'];
+            } else {
+                $singleItem['quota'] = 0;
+            }
+            $items = [$singleItem];
         }
 
         if (empty($items) && ! $allowLeaveChanged) {
@@ -2696,19 +2883,63 @@ class AttendanceController extends Controller
 
         foreach ($items as $item) {
             $type = $item['leave_type'];
-            // Khusus 'izin' tidak memiliki batasan kuota (unlimited) sehingga kuotanya tidak dapat diubah
-            if ($type === 'izin') {
+            // Jika 'izin' berada dalam mode akumulasi (tanpa batasan kuota), abaikan
+            if ($type === 'izin' && $isIzinAccumulation) {
                 continue;
             }
-            $quota = (int) $item['quota'];
-            $itemReason = $item['reason'] ?? $validated['reason'] ?? 'Penyesuaian kuota oleh HRD';
 
+            // Mendukung dua mode input:
+            // 1. `remaining` (baru): HRD mengatur sisa saldo, backend hitung quota = remaining + used
+            // 2. `quota` (lama): HRD mengatur kuota langsung (backward compatible)
             $existing = LeaveBalance::where('user_id', $target->id)
                 ->where('year', $year)
                 ->where('leave_type', $type)
                 ->first();
+            $usedCount = $existing ? (int) $existing->used : 0;
 
-            $oldQuota = $existing ? (int) $existing->quota : 0;
+            $officeSetting = $this->getLeaveTypeSettingForUser($target, $type);
+            $targetOffice = $target->attendance_setting_id ? AttendanceSetting::find($target->attendance_setting_id) : null;
+            $officeLimit = $type === 'cuti'
+                ? (int) ($targetOffice?->default_leave_quota ?? self::DEFAULT_LEAVE_QUOTA['cuti'])
+                : ($officeSetting ? (int) $officeSetting->quota_days : (int) ($catalog[$type]['default_quota_days'] ?? 0));
+
+            $oldQuota = $existing ? (int) $existing->quota : $officeLimit;
+            $oldRemaining = max(0, $oldQuota - $usedCount);
+
+            if (isset($item['remaining'])) {
+                // Mode baru: HRD mengatur sisa saldo langsung
+                $remaining = (int) $item['remaining'];
+                $quota = $remaining + $usedCount;
+            } else {
+                $quota = (int) ($item['quota'] ?? 0);
+                $remaining = max(0, $quota - $usedCount);
+            }
+
+            $typeLabel = $catalog[$type]['label'] ?? ($type === 'cuti' ? 'Cuti Tahunan' : ucwords(str_replace('_', ' ', $type)));
+            $defaultReason = "Penyesuaian sisa saldo {$typeLabel} dari {$oldRemaining} menjadi {$remaining} hari oleh HRD";
+            $itemReason = ! empty($item['reason']) ? $item['reason'] : (! empty($validated['reason']) ? $validated['reason'] : $defaultReason);
+
+            // Validasi sisa saldo (remaining) tidak boleh melebihi standar kantor
+            $computedRemaining = $quota - $usedCount;
+            if ($officeLimit > 0 && $computedRemaining > $officeLimit) {
+                return response()->json([
+                    'message' => "Sisa saldo {$typeLabel} untuk {$target->name} ({$computedRemaining} hari) tidak boleh melebihi standar kantor ({$officeLimit} hari).",
+                ], 422);
+            }
+
+            // Cegah HRD menurunkan kuota di bawah jumlah cuti yang sudah sah terpakai (cegah bug saldo minus)
+            if ($existing && $quota < (int) $existing->used) {
+                // Jika aksi ini adalah menonaktifkan hak cuti (allow_leave = false), jangan tolak dengan 422!
+                // Pertahankan kuota existing karyawan (jangan dipaksa 0), sehingga saldo tidak minus
+                // dan hak cuti berhasil dinonaktifkan via allow_leave = false.
+                if ($request->has('allow_leave') && $request->boolean('allow_leave') === false) {
+                    $quota = (int) $existing->quota;
+                } else {
+                    return response()->json([
+                        'message' => "Kuota {$typeLabel} untuk {$target->name} tidak dapat diatur menjadi {$quota} hari karena sudah terpakai {$existing->used} hari pada tahun {$year}.",
+                    ], 422);
+                }
+            }
 
             $balance = LeaveBalance::updateOrCreate(
                 ['user_id' => $target->id, 'year' => $year, 'leave_type' => $type],
@@ -2734,7 +2965,7 @@ class AttendanceController extends Controller
 
                 $diffStr = ($diff > 0 ? "+{$diff}" : "{$diff}") . ' hari';
                 $actionWord = $diff > 0 ? 'menambahkan' : 'mengurangi';
-                $notifBody = "HRD {$actionWord} jatah {$label} Anda dari {$oldQuota} menjadi {$quota} hari ({$diffStr}) untuk tahun {$year}.";
+                $notifBody = "HRD {$actionWord} sisa saldo {$label} Anda dari {$oldRemaining} menjadi {$remaining} hari ({$diffStr}) untuk tahun {$year}.";
 
                 $this->notifyUser(
                     $target->id,
@@ -4531,7 +4762,20 @@ class AttendanceController extends Controller
         // Update kebijakan saldo cuti tahunan & reset kantor
         $officeUpdates = [];
         if (array_key_exists('default_leave_quota', $validated) && $validated['default_leave_quota'] !== null) {
-            $officeUpdates['default_leave_quota'] = (int) $validated['default_leave_quota'];
+            $newDefQuota = (int) $validated['default_leave_quota'];
+            $officeUpdates['default_leave_quota'] = $newDefQuota;
+
+            if ($newDefQuota > 0) {
+                $officeUserIds = User::where('attendance_setting_id', $office->id)->pluck('id');
+                $overBalances = LeaveBalance::whereIn('user_id', $officeUserIds)
+                    ->where('leave_type', 'cuti')
+                    ->where('year', now()->year)
+                    ->where('quota', '>', $newDefQuota)
+                    ->get();
+                foreach ($overBalances as $bal) {
+                    $bal->update(['quota' => max((int) $bal->used, $newDefQuota)]);
+                }
+            }
         }
         if (array_key_exists('leave_reset_date', $validated)) {
             $officeUpdates['leave_reset_date'] = $validated['leave_reset_date'] ?: null;
@@ -4563,6 +4807,29 @@ class AttendanceController extends Controller
                     'notes'                => $item['notes'] ?? null,
                 ]
             );
+
+            $newQuota = (int) $item['quota_days'];
+            $officeUserIds = User::where('attendance_setting_id', $office->id)->pluck('id');
+
+            // Jika jenis cuti dinonaktifkan di kantor ini, nolkan saldo kuota yang belum terpakai untuk seluruh karyawan di kantor ini
+            if (! (bool) $item['is_enabled']) {
+                LeaveBalance::whereIn('user_id', $officeUserIds)
+                    ->where('leave_type', $typeKey)
+                    ->where('year', now()->year)
+                    ->where('used', 0)
+                    ->update(['quota' => 0]);
+            } elseif ($newQuota > 0) {
+                // Alokasi kuota karyawan tidak boleh di atas standar kantor:
+                // Jika standar kantor diturunkan, pangkas kuota karyawan yang melebihi standar baru
+                $overBalances = LeaveBalance::whereIn('user_id', $officeUserIds)
+                    ->where('leave_type', $typeKey)
+                    ->where('year', now()->year)
+                    ->where('quota', '>', $newQuota)
+                    ->get();
+                foreach ($overBalances as $bal) {
+                    $bal->update(['quota' => max((int) $bal->used, $newQuota)]);
+                }
+            }
         }
 
         $this->logActivity(
@@ -5924,6 +6191,7 @@ class AttendanceController extends Controller
                     'reason'            => "Cuti bersama: {$holiday->name}",
                     'status'            => 'pending',
                     'collective_status' => 'pending',
+                    'current_step'      => null,
                 ]);
             }
 
@@ -5962,18 +6230,39 @@ class AttendanceController extends Controller
                 // Jika sebelumnya sudah accepted (ganti dari declined → accepted), jangan double potong
                 $wasPreviouslyAccepted = $leave->collective_status === 'accepted';
 
-                $leave->update([
-                    'collective_status' => 'accepted',
-                    'status'            => 'approved',
-                    'approved_by'       => null,
-                    'approved_at'       => now(),
-                ]);
+                $balanceBefore = (int) $balance->quota - (int) $balance->used;
 
                 // Potong saldo cuti (selalu potong kecuali sudah pernah dipotong sebelumnya)
                 if (! $wasPreviouslyAccepted) {
                     $balance->increment('used', $leave->total_days);
                     $balance->refresh();
                 }
+
+                $balanceAfter = (int) $balance->quota - (int) $balance->used;
+                $targetOfficeId = $leave->attendance_setting_id ?? $user->attendance_setting_id ?? $holiday->attendance_setting_id;
+                $office = $targetOfficeId ? AttendanceSetting::find($targetOfficeId) : null;
+
+                $leave->update([
+                    'collective_status'      => 'accepted',
+                    'status'                 => 'approved',
+                    'approved_by'            => null,
+                    'approved_at'            => now(),
+                    'attendance_setting_id'  => $targetOfficeId,
+                    'balance_before'         => $balanceBefore,
+                    'balance_after'          => $balanceAfter,
+                    'leave_policy_snapshot'  => [
+                        'leave_type'        => 'cuti',
+                        'leave_type_label'  => 'Cuti Bersama',
+                        'quota'             => (int) $balance->quota,
+                        'used_after'        => (int) $balance->used,
+                        'remaining_after'   => $balanceAfter,
+                        'holiday_name'      => $holiday->name,
+                        'holiday_date'      => $holiday->date->toDateString(),
+                        'office_id'         => $office?->id,
+                        'office_name'       => $office?->office_name,
+                        'accepted_at'       => now()->toDateTimeString(),
+                    ],
+                ]);
 
                 return [
                     'kind'      => 'accepted',
@@ -6176,19 +6465,21 @@ class AttendanceController extends Controller
 
             $isExpired = $date <= now('Asia/Jakarta')->toDateString();
             $rows[] = [
-                'user_id'           => $u->id,
-                'company_id'        => $companyId,
-                'holiday_id'        => $holiday->id,
-                'leave_type'        => 'cuti',
-                'start_date'        => $date,
-                'end_date'          => $date,
-                'total_days'        => $userDays,
-                'reason'            => "Cuti bersama: {$holiday->name}",
-                'status'            => $isExpired ? 'rejected' : 'pending',
-                'collective_status' => $isExpired ? 'declined' : 'pending',
-                'rejection_reason'  => $isExpired ? 'Tidak merespons sebelum batas waktu (hari H tiba) — otomatis ditolak oleh sistem.' : null,
-                'created_at'        => $now,
-                'updated_at'        => $now,
+                'user_id'               => $u->id,
+                'company_id'            => $companyId,
+                'attendance_setting_id' => $u->attendance_setting_id ?? $holiday->attendance_setting_id,
+                'holiday_id'            => $holiday->id,
+                'leave_type'            => 'cuti',
+                'start_date'            => $date,
+                'end_date'              => $date,
+                'total_days'            => $userDays,
+                'reason'                => "Cuti bersama: {$holiday->name}",
+                'status'                => $isExpired ? 'rejected' : 'pending',
+                'collective_status'     => $isExpired ? 'declined' : 'pending',
+                'current_step'          => null,
+                'rejection_reason'      => $isExpired ? 'Tidak merespons sebelum batas waktu (hari H tiba) — otomatis ditolak oleh sistem.' : null,
+                'created_at'            => $now,
+                'updated_at'            => $now,
             ];
         }
 
@@ -6361,6 +6652,7 @@ class AttendanceController extends Controller
                 'reason'            => "Cuti bersama: {$holiday->name}",
                 'status'            => 'pending',
                 'collective_status' => 'pending',
+                'current_step'      => null,
                 'created_at'        => $now,
                 'updated_at'        => $now,
             ];
@@ -7432,10 +7724,12 @@ class AttendanceController extends Controller
             ], 'overtime_approval', $approval->id);
         }
 
-        // Notifikasi ke semua HRD/admin/super_admin perusahaan
+        // Notifikasi ke approver perusahaan. Saat masih Tahap 1 (SPV), HRD TIDAK
+        // diberi tahu — HRD baru menerima 'overtime_pending_hrd' setelah SPV menyetujui.
+        $approverRoles = $multiApprovalEnabled ? ['admin', 'super_admin'] : ['hrd', 'admin', 'super_admin'];
         $approvers = DB::table('users')
             ->where('company_id', $attendance->company_id)
-            ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+            ->whereIn('role', $approverRoles)
             ->where('is_active', true)
             ->pluck('id');
 
@@ -7765,6 +8059,56 @@ class AttendanceController extends Controller
     // BAGIAN C — HRD: manajemen approval lembur
     // ═══════════════════════════════════════════════════════════
 
+    /**
+     * Approver Level 2 (HRD) lembur murni — role hrd atau custom role dengan izin
+     * lembur 'hrd'/'manage'. Admin & Super Admin TIDAK termasuk (tetap punya
+     * override darurat Tahap 1). HRD tidak boleh melihat/memproses Tahap 1 (SPV)
+     * kecuali ia sendiri SPV struktural karyawan tersebut.
+     */
+    private function isOvertimeHrdLevelOnly(User $actor): bool
+    {
+        $code = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
+        if (in_array($code, ['super_admin', 'admin'], true)) {
+            return false;
+        }
+
+        return $code === 'hrd'
+            || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
+            || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+    }
+
+    /**
+     * Wewenang SPV struktural (tanpa bypass role): jabatan supervisor atau punya bawahan langsung.
+     */
+    private function hasStructuralOvertimeSpvAuthority(User $actor): bool
+    {
+        return ($actor->position && $actor->position->is_supervisor)
+            || $actor->subordinates()->exists();
+    }
+
+    /**
+     * Scope query lembur untuk HRD Level 2: sembunyikan pengajuan yang masih di
+     * Tahap 1 (SPV), kecuali milik bawahan struktural HRD itu sendiri.
+     * Query wajib sudah join tabel `users`.
+     */
+    private function scopeOvertimeForHrdLevel($query, User $actor): void
+    {
+        $allowDivisionFallback = $actor->division_id && $this->hasStructuralOvertimeSpvAuthority($actor);
+
+        $query->where(function ($q) use ($actor, $allowDivisionFallback) {
+            $q->where('overtime_approvals.status', '!=', 'pending')
+                ->orWhere('overtime_approvals.current_step', 'hrd')
+                ->orWhere('users.manager_id', $actor->id);
+            if ($allowDivisionFallback) {
+                $q->orWhere(function ($sub) use ($actor) {
+                    $sub->where('users.division_id', $actor->division_id)
+                        ->whereNull('users.manager_id')
+                        ->where('users.id', '!=', $actor->id);
+                });
+            }
+        });
+    }
+
 // listOvertimeApprovals() — daftar pengajuan lembur untuk SPV & HRD (filter status/user/tanggal/step)
     public function listOvertimeApprovals(Request $request): JsonResponse
     {
@@ -7813,6 +8157,12 @@ class AttendanceController extends Controller
         $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
             || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
             || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+
+        // HRD Level 2 tidak melihat pengajuan yang masih menunggu SPV (Tahap 1).
+        $isHrdLevelOnly = $this->isOvertimeHrdLevelOnly($actor);
+        if ($isHrdLevelOnly) {
+            $this->scopeOvertimeForHrdLevel($approvalsQuery, $actor);
+        }
 
         if (! $isHrdOrAdmin) {
             $approvalsQuery->where(function ($q) use ($actor) {
@@ -7888,6 +8238,10 @@ class AttendanceController extends Controller
             }
         }
 
+        if ($isHrdLevelOnly) {
+            $this->scopeOvertimeForHrdLevel($summaryQuery, $actor);
+        }
+
         if (! $isHrdOrAdmin) {
             $summaryQuery->where(function ($q) use ($actor) {
                 $q->where('users.manager_id', $actor->id);
@@ -7935,6 +8289,8 @@ class AttendanceController extends Controller
             'approved'    => $approved,
             'rejected'    => $rejected,
         ];
+        // Klien web menyembunyikan kartu/tab "Menunggu SPV (Tahap 1)" bila false.
+        $result['show_spv_step'] = ! $isHrdLevelOnly || $this->hasStructuralOvertimeSpvAuthority($actor);
 
         return response()->json($result);
     }
@@ -7986,18 +8342,28 @@ class AttendanceController extends Controller
         if ($step === 'spv') {
             $hasSpvPermission = $actor->hasPermission(Role::MODULE_OVERTIME, 'spv');
             $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
-            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+            // Override darurat Tahap 1 hanya untuk Admin/Super Admin. HRD (Level 2) WAJIB
+            // menunggu SPV (Level 1) — kecuali HRD sendiri SPV struktural karyawan tsb.
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
+            $isHrdLevelOnly = $this->isOvertimeHrdLevelOnly($actor);
 
             $targetUser = $approval->user;
             $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
 
-            $isSpvOrAbove = $isDirectManager
-                || $hasSupervisorPosition
-                || $hasSpvPermission
-                || $actor->isSupervisor()
-                || $isAdminOrHrdBypass;
+            $isSpvOrAbove = $isHrdLevelOnly
+                ? ($isDirectManager || $hasSupervisorPosition)
+                : ($isDirectManager
+                    || $hasSupervisorPosition
+                    || $hasSpvPermission
+                    || $actor->isSupervisor()
+                    || $isAdminOrHrdBypass);
+
+            if (! $isSpvOrAbove && $isHrdLevelOnly) {
+                return response()->json([
+                    'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
+                    'code'    => 'WAITING_SPV_APPROVAL',
+                ], 403);
+            }
 
             if (! $isSpvOrAbove) {
                 return response()->json([
@@ -8019,8 +8385,15 @@ class AttendanceController extends Controller
                 }
             }
 
-            // Bypass darurat: Super Admin, Admin, dan HRD selalu berhak override jika Atasan Langsung berhalangan/cuti
+            // Bypass darurat: hanya Super Admin & Admin yang berhak override jika Atasan Langsung berhalangan/cuti
             if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+                if ($isHrdLevelOnly) {
+                    return response()->json([
+                        'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
+                        'code'    => 'WAITING_SPV_APPROVAL',
+                    ], 403);
+                }
+
                 if ($targetUser?->manager_id) {
                     $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
                     return response()->json([
@@ -8198,18 +8571,27 @@ class AttendanceController extends Controller
         if ($step === 'spv') {
             $hasSpvPermission = $actor->hasPermission(Role::MODULE_OVERTIME, 'spv');
             $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
-            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+            // Override darurat Tahap 1 hanya untuk Admin/Super Admin (HRD wajib menunggu SPV).
+            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
+            $isHrdLevelOnly = $this->isOvertimeHrdLevelOnly($actor);
 
             $targetUser = $approval->user;
             $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
 
-            $isSpvOrAbove = $isDirectManager
-                || $hasSupervisorPosition
-                || $hasSpvPermission
-                || $actor->isSupervisor()
-                || $isAdminOrHrdBypass;
+            $isSpvOrAbove = $isHrdLevelOnly
+                ? ($isDirectManager || $hasSupervisorPosition)
+                : ($isDirectManager
+                    || $hasSupervisorPosition
+                    || $hasSpvPermission
+                    || $actor->isSupervisor()
+                    || $isAdminOrHrdBypass);
+
+            if (! $isSpvOrAbove && $isHrdLevelOnly) {
+                return response()->json([
+                    'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
+                    'code'    => 'WAITING_SPV_APPROVAL',
+                ], 403);
+            }
 
             if (! $isSpvOrAbove) {
                 return response()->json([
@@ -8231,6 +8613,13 @@ class AttendanceController extends Controller
             }
 
             if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
+                if ($isHrdLevelOnly) {
+                    return response()->json([
+                        'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
+                        'code'    => 'WAITING_SPV_APPROVAL',
+                    ], 403);
+                }
+
                 if ($targetUser?->manager_id) {
                     $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
                     return response()->json([
@@ -8696,7 +9085,18 @@ class AttendanceController extends Controller
         }
 
         if ($status && in_array($status, ['pending', 'approved', 'rejected'])) {
-            $query->where('overtime_approvals.status', $status);
+            if ($status === 'pending') {
+                $query->where('overtime_approvals.status', 'pending')
+                    ->where('overtime_approvals.current_step', 'spv');
+            } elseif ($status === 'approved') {
+                $query->where(function ($q) {
+                    $q->whereNotNull('overtime_approvals.spv_approved_at')
+                      ->orWhere('overtime_approvals.current_step', 'hrd')
+                      ->orWhere('overtime_approvals.status', 'approved');
+                });
+            } elseif ($status === 'rejected') {
+                $query->where('overtime_approvals.status', 'rejected');
+            }
         }
 
         $approvals = $query->select([
@@ -8856,7 +9256,8 @@ class AttendanceController extends Controller
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
             ->leftJoin('divisions', 'users.division_id', '=', 'divisions.id')
             ->leftJoin('positions', 'users.position_id', '=', 'positions.id')
-            ->where('leave_requests.company_id', $actor->company_id);
+            ->where('leave_requests.company_id', $actor->company_id)
+            ->whereNull('leave_requests.holiday_id');
 
         // Hanya bawahan langsung atau staf satu divisi tanpa manager (bukan dirinya sendiri)
         $query->where(function ($q) use ($actor) {
@@ -8877,7 +9278,18 @@ class AttendanceController extends Controller
         }
 
         if ($status && in_array($status, ['pending', 'approved', 'rejected'])) {
-            $query->where('leave_requests.status', $status);
+            if ($status === 'pending') {
+                $query->where('leave_requests.status', 'pending')
+                    ->where('leave_requests.current_step', 'spv');
+            } elseif ($status === 'approved') {
+                $query->where(function ($q) {
+                    $q->whereNotNull('leave_requests.spv_approved_at')
+                      ->orWhere('leave_requests.current_step', 'hrd')
+                      ->orWhere('leave_requests.status', 'approved');
+                });
+            } elseif ($status === 'rejected') {
+                $query->where('leave_requests.status', 'rejected');
+            }
         }
 
         $leaves = $query->select([
@@ -8933,10 +9345,11 @@ class AttendanceController extends Controller
             ];
         });
 
-        // Hitung total pending tahap SPV
+        // Hitung total pending tahap SPV (hanya cuti mandiri; cuti bersama tidak memerlukan approval SPV)
         $pendingCountQuery = LeaveRequest::query()
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
             ->where('leave_requests.company_id', $actor->company_id)
+            ->whereNull('leave_requests.holiday_id')
             ->where('leave_requests.status', 'pending')
             ->where('leave_requests.current_step', 'spv')
             ->where(function ($q) use ($actor) {
@@ -8983,6 +9396,7 @@ class AttendanceController extends Controller
         $pendingCountQuery2 = LeaveRequest::query()
             ->join('users', 'leave_requests.user_id', '=', 'users.id')
             ->where('leave_requests.company_id', $actor->company_id)
+            ->whereNull('leave_requests.holiday_id')
             ->where('leave_requests.status', 'pending')
             ->where('leave_requests.current_step', 'spv')
             ->where(function ($q) use ($actor) {
@@ -9086,10 +9500,13 @@ class AttendanceController extends Controller
             $notifiedIds[] = $user->manager_id;
         }
 
-        // Sertakan HRD & Admin untuk visibilitas monitoring
+        // Sertakan Admin untuk visibilitas monitoring. HRD hanya disertakan bila langsung
+        // Tahap HRD (multi-approval off); bila Tahap 1 (SPV), HRD menunggu notifikasi
+        // 'overtime_pending_hrd' setelah SPV menyetujui.
+        $approverRoles = $multiApprovalEnabled ? ['admin', 'super_admin'] : ['hrd', 'admin', 'super_admin'];
         $hrdAdminIds = DB::table('users')
             ->where('company_id', $attendance->company_id)
-            ->whereIn('role', ['hrd', 'admin', 'super_admin'])
+            ->whereIn('role', $approverRoles)
             ->where('is_active', true)
             ->pluck('id')->toArray();
 
@@ -9212,12 +9629,31 @@ class AttendanceController extends Controller
             ['company_id' => $user->company_id, 'quota' => 0, 'used' => 0]
         );
 
+        $office = null;
+        if ($user->company_id) {
+            $office = AttendanceSetting::where('company_id', $user->company_id)
+                ->where('id', $user->attendance_setting_id)
+                ->first();
+
+            if (! $office) {
+                $office = AttendanceSetting::where('company_id', $user->company_id)->orderBy('id')->first();
+            }
+        }
+
         $sakitSetting = $this->getLeaveTypeSettingForUser($user, 'sakit');
         $sakitQuota = $sakitSetting ? (int) $sakitSetting->quota_days : 14;
-        LeaveBalance::firstOrCreate(
+        $sakitLb = LeaveBalance::firstOrCreate(
             ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'sakit'],
             ['company_id' => $user->company_id, 'quota' => $sakitQuota, 'used' => 0]
         );
+        if ((int) $sakitLb->quota <= 0 && (int) $sakitLb->used === 0 && $sakitQuota > 0) {
+            $sakitLb->update(['quota' => $sakitQuota]);
+        } elseif ($sakitQuota > 0 && (int) $sakitLb->quota > $sakitQuota) {
+            $clamped = max((int) $sakitLb->used, $sakitQuota);
+            if ($clamped !== (int) $sakitLb->quota) {
+                $sakitLb->update(['quota' => $clamped]);
+            }
+        }
 
         // Auto-provision saldo jenis cuti tambahan dari katalog yang aktif
         foreach ($catalog as $type => $meta) {
@@ -9233,10 +9669,18 @@ class AttendanceController extends Controller
 
             // Jika aktif di kantor atau pernah ada saldo sebelumnya, pastikan row ada
             if (in_array($type, $enabledTypes)) {
-                LeaveBalance::firstOrCreate(
+                $lb = LeaveBalance::firstOrCreate(
                     ['user_id' => $user->id, 'year' => $year, 'leave_type' => $type],
                     ['company_id' => $user->company_id, 'quota' => $quota, 'used' => 0]
                 );
+                if ((int) $lb->quota <= 0 && (int) $lb->used === 0 && $quota > 0) {
+                    $lb->update(['quota' => $quota]);
+                } elseif ($quota > 0 && (int) $lb->quota > $quota) {
+                    $clamped = max((int) $lb->used, $quota);
+                    if ($clamped !== (int) $lb->quota) {
+                        $lb->update(['quota' => $clamped]);
+                    }
+                }
             }
         }
 
@@ -9277,21 +9721,44 @@ class AttendanceController extends Controller
             };
 
             if ($type === 'izin') {
+                $refQuota = $typeSetting ? (int) $typeSetting->quota_days : 0;
+                $isUnlimited = ($refQuota <= 0);
+                $userQuota = ($b && (int) $b->quota > 0) ? (int) $b->quota : $refQuota;
+
+                if (! $isUnlimited && $refQuota > 0 && $userQuota > $refQuota) {
+                    $userQuota = max($used, $refQuota);
+                    if ($b && $userQuota !== (int) $b->quota) {
+                        $b->update(['quota' => $userQuota]);
+                    }
+                }
+
                 $balances[] = [
                     'leave_type'       => 'izin',
                     'leave_type_label' => 'Izin',
-                    'quota'            => 0,
+                    'quota'            => $isUnlimited ? 0 : $userQuota,
+                    // Standar kantor (dari Pengaturan Jenis Cuti) — terpisah dari alokasi karyawan
+                    'office_quota'     => $isUnlimited ? 0 : $refQuota,
                     'used'             => $used,
-                    'remaining'        => null,
+                    'remaining'        => $isUnlimited ? null : max(0, $userQuota - $used),
                     'active'           => true,
-                    'is_unlimited'     => true,
+                    'is_unlimited'     => $isUnlimited,
                     'is_disabled'      => false,
                 ];
             } elseif ($type === 'cuti') {
+                $refOfficeQuota = $office ? (int) ($office->default_leave_quota ?? self::DEFAULT_LEAVE_QUOTA['cuti']) : self::DEFAULT_LEAVE_QUOTA['cuti'];
+                if ($refOfficeQuota > 0 && $quota > $refOfficeQuota) {
+                    $quota = max($used, $refOfficeQuota);
+                    if ($b && $quota !== (int) $b->quota) {
+                        $b->update(['quota' => $quota]);
+                    }
+                }
+
                 $balances[] = [
                     'leave_type'       => 'cuti',
                     'leave_type_label' => $typeLabel,
                     'quota'            => $quota,
+                    // Standar kantor (kuota cuti tahunan default kantor)
+                    'office_quota'     => $refOfficeQuota,
                     'used'             => $used,
                     'remaining'        => max(0, $quota - $used),
                     'active'           => $isUserLeaveAllowed && $isEnabledInOffice && ($quota > 0 || $used > 0),
@@ -9299,27 +9766,37 @@ class AttendanceController extends Controller
                     'is_disabled'      => ! $isUserLeaveAllowed || ! $isEnabledInOffice,
                 ];
             } else {
+                $refQuota = $typeSetting
+                    ? (int) $typeSetting->quota_days
+                    : (int) ($catalog[$type]['default_quota_days'] ?? 0);
+                $isUnlimited = ($refQuota <= 0);
+
+                if ($isUnlimited) {
+                    $userQuota = 0;
+                } else {
+                    $userQuota = $b ? (int) $b->quota : $refQuota;
+                    if ($refQuota > 0 && $userQuota <= 0 && (! $b || (int) $b->used === 0)) {
+                        $userQuota = $refQuota;
+                    } elseif ($refQuota > 0 && $userQuota > $refQuota) {
+                        $userQuota = max($used, $refQuota);
+                        if ($b && $userQuota !== (int) $b->quota) {
+                            $b->update(['quota' => $userQuota]);
+                        }
+                    }
+                }
+
                 $balances[] = [
                     'leave_type'       => $type,
                     'leave_type_label' => $typeLabel,
-                    'quota'            => $quota,
+                    'quota'            => $isUnlimited ? 0 : $userQuota,
+                    // Standar kantor (dari Pengaturan Jenis Cuti) — terpisah dari alokasi karyawan
+                    'office_quota'     => $isUnlimited ? 0 : $refQuota,
                     'used'             => $used,
-                    'remaining'        => max(0, $quota - $used),
-                    'active'           => $isUserLeaveAllowed && $isEnabledInOffice && ($quota > 0 || $used > 0),
-                    'is_unlimited'     => false,
+                    'remaining'        => $isUnlimited ? null : max(0, $userQuota - $used),
+                    'active'           => $isUserLeaveAllowed && $isEnabledInOffice,
+                    'is_unlimited'     => $isUnlimited,
                     'is_disabled'      => ! $isUserLeaveAllowed || ! $isEnabledInOffice,
                 ];
-            }
-        }
-
-        $office = null;
-        if ($user->company_id) {
-            $office = AttendanceSetting::where('company_id', $user->company_id)
-                ->where('id', $user->attendance_setting_id)
-                ->first();
-
-            if (! $office) {
-                $office = AttendanceSetting::where('company_id', $user->company_id)->orderBy('id')->first();
             }
         }
 
@@ -9352,17 +9829,20 @@ class AttendanceController extends Controller
             ->orderByDesc('created_at')
             ->get()
             ->map(fn ($l) => [
-                'id'               => $l->id,
-                'leave_type'       => $l->leave_type,
-                'half_day_session' => $l->half_day_session,
-                'start_date'       => $l->start_date,
-                'end_date'         => $l->end_date,
-                'total_days'       => $l->total_days,
-                'reason'           => $l->reason,
-                'status'           => $l->status,
-                'rejection_reason' => $l->rejection_reason,
-                'has_document'     => ! empty($l->document_path),
-                'created_at'       => $l->created_at?->toIso8601String() ?? (string) $l->created_at,
+                'id'                    => $l->id,
+                'leave_type'            => $l->leave_type,
+                'half_day_session'      => $l->half_day_session,
+                'start_date'            => $l->start_date,
+                'end_date'              => $l->end_date,
+                'total_days'            => $l->total_days,
+                'reason'                => $l->reason,
+                'status'                => $l->status,
+                'rejection_reason'      => $l->rejection_reason,
+                'has_document'          => ! empty($l->document_path),
+                'balance_before'        => $l->balance_before,
+                'balance_after'         => $l->balance_after,
+                'leave_policy_snapshot' => $l->leave_policy_snapshot,
+                'created_at'            => $l->created_at?->toIso8601String() ?? (string) $l->created_at,
             ]);
 
         $catalog = self::leaveTypeCatalog();
@@ -9814,25 +10294,25 @@ class AttendanceController extends Controller
                     'remaining_quota'  => max(0, $remaining),
                 ], 422);
             }
-        } elseif (! in_array($validated['leave_type'], ['wfh', 'izin', 'sakit'])) {
+        } elseif ($validated['leave_type'] !== 'wfh') {
             $year = $start->year;
             $typeSetting = $this->getLeaveTypeSettingForUser($user, $validated['leave_type']);
-            $defaultQuota = $typeSetting ? $typeSetting->quota_days : ($typeMeta['default_quota_days'] ?? 0);
+            $defaultQuota = $typeSetting ? (int) $typeSetting->quota_days : (int) ($typeMeta['default_quota_days'] ?? 0);
 
             $balance = LeaveBalance::firstOrCreate(
                 ['user_id' => $user->id, 'year' => $year, 'leave_type' => $validated['leave_type']],
                 ['company_id' => $user->company_id, 'quota' => $defaultQuota, 'used' => 0]
             );
 
-            $remaining = $balance->quota - $balance->used;
-            if ((int) $balance->quota <= 0) {
-                return response()->json([
-                    'message'         => "Kuota {$leaveLabel} Anda adalah 0 atau belum diaktifkan oleh HRD.",
-                    'remaining_quota' => 0,
-                ], 422);
+            if ((int) $balance->quota <= 0 && (int) $balance->used === 0 && $defaultQuota > 0) {
+                $balance->update(['quota' => $defaultQuota]);
+                $balance->refresh();
             }
 
-            if ($totalDays > $remaining) {
+            $remaining = $balance->quota - $balance->used;
+            $isAccumulation = ($defaultQuota <= 0);
+
+            if (! $isAccumulation && $totalDays > $remaining) {
                 return response()->json([
                     'message'         => "Sisa kuota {$leaveLabel} Anda tidak mencukupi (sisa {$remaining} hari, dibutuhkan {$totalDays} hari).",
                     'remaining_quota' => max(0, $remaining),
@@ -9848,7 +10328,7 @@ class AttendanceController extends Controller
 
         $office = $user->attendance_setting_id ? AttendanceSetting::find($user->attendance_setting_id) : null;
         $multiApprovalEnabled = $office ? ($office->leave_multi_approval_enabled ?? true) : true;
-        $initialStep = $multiApprovalEnabled ? 'spv' : 'hrd';
+        $initialStep = ($multiApprovalEnabled && ! empty($user->manager_id)) ? 'spv' : 'hrd';
 
         $halfDaySession = $validated['half_day_session'] ?? null;
         if (in_array($halfDaySession, ['pagi', 'sesi_1', 'sesi1'], true)) $halfDaySession = 'morning';
@@ -9874,32 +10354,34 @@ class AttendanceController extends Controller
             if (! empty($discreteDates)) {
                 foreach ($finalDates as $d) {
                     $createdLeaves[] = LeaveRequest::create([
-                        'user_id'          => $user->id,
-                        'company_id'       => $user->company_id,
-                        'leave_type'       => $validated['leave_type'],
-                        'half_day_session' => $halfDaySession,
-                        'start_date'       => $d,
-                        'end_date'         => $d,
-                        'total_days'       => ($validated['leave_type'] === 'cuti_setengah_hari') ? 1 : 1,
-                        'reason'           => $validated['reason'],
-                        'document_path'    => $documentPath,
-                        'status'           => 'pending',
-                        'current_step'     => $initialStep,
+                        'user_id'               => $user->id,
+                        'company_id'            => $user->company_id,
+                        'attendance_setting_id' => $user->attendance_setting_id,
+                        'leave_type'            => $validated['leave_type'],
+                        'half_day_session'      => $halfDaySession,
+                        'start_date'            => $d,
+                        'end_date'              => $d,
+                        'total_days'            => ($validated['leave_type'] === 'cuti_setengah_hari') ? 1 : 1,
+                        'reason'                => $validated['reason'],
+                        'document_path'         => $documentPath,
+                        'status'                => 'pending',
+                        'current_step'          => $initialStep,
                     ]);
                 }
             } else {
                 $createdLeaves[] = LeaveRequest::create([
-                    'user_id'          => $user->id,
-                    'company_id'       => $user->company_id,
-                    'leave_type'       => $validated['leave_type'],
-                    'half_day_session' => $halfDaySession,
-                    'start_date'       => $start->toDateString(),
-                    'end_date'         => $end->toDateString(),
-                    'total_days'       => $totalDays,
-                    'reason'           => $validated['reason'],
-                    'document_path'    => $documentPath,
-                    'status'           => 'pending',
-                    'current_step'     => $initialStep,
+                    'user_id'               => $user->id,
+                    'company_id'            => $user->company_id,
+                    'attendance_setting_id' => $user->attendance_setting_id,
+                    'leave_type'            => $validated['leave_type'],
+                    'half_day_session'      => $halfDaySession,
+                    'start_date'            => $start->toDateString(),
+                    'end_date'              => $end->toDateString(),
+                    'total_days'            => $totalDays,
+                    'reason'                => $validated['reason'],
+                    'document_path'         => $documentPath,
+                    'status'                => 'pending',
+                    'current_step'          => $initialStep,
                 ]);
             }
         });
@@ -9919,8 +10401,9 @@ class AttendanceController extends Controller
             $leave->id
         );
 
-        if ($multiApprovalEnabled) {
-            // Notifikasi ke Atasan Langsung (SPV) terlebih dahulu jika ada
+        if ($initialStep === 'spv') {
+            // Notifikasi HANYA ke Atasan Langsung (SPV) terlebih dahulu.
+            // Cuti LV 1 belum tampil di dashboard HRD dan belum memerlukan approval HRD.
             if ($user->manager_id) {
                 $this->notifyUser($user->manager_id, 'leave_requested_spv', [
                     'message'    => "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) dan memerlukan persetujuan Anda sebagai Atasan Langsung.",
@@ -9940,26 +10423,8 @@ class AttendanceController extends Controller
                     );
                 }
             }
-
-            // Notifikasi ke HRD / admin perusahaan yang sama
-            $approvers = DB::table('users')
-                ->where('company_id', $user->company_id)
-                ->whereIn('role', ['hrd', 'admin', 'super_admin'])
-                ->where('is_active', true)
-                ->when($user->manager_id, fn ($q) => $q->where('id', '!=', $user->manager_id))
-                ->pluck('id');
-
-            foreach ($approvers as $approverId) {
-                $this->notifyUser($approverId, 'leave_requested', [
-                    'message'      => "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) (Menunggu persetujuan SPV).",
-                    'leave_id'     => $leave->id,
-                    'leave_type'   => $leave->leave_type,
-                    'user_name'    => $user->name,
-                    'current_step' => 'spv',
-                ], 'leave_request', $leave->id);
-            }
         } else {
-            // Multi-approval nonaktif: langsung notifikasi ke HRD / Admin
+            // Multi-approval nonaktif atau karyawan tanpa atasan: langsung notifikasi ke HRD / Admin
             $approvers = DB::table('users')
                 ->where('company_id', $user->company_id)
                 ->whereIn('role', ['hrd', 'admin', 'super_admin'])

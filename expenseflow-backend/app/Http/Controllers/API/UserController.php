@@ -59,7 +59,7 @@ class UserController extends Controller
         $limit = $request->query('per_page') ? (int) $request->query('per_page') : 2000;
 
         $users = $query->with([
-            'office:id,office_name',
+            'office:id,office_name,overtime_enabled',
             'roleRelation:id,name,slug,platform,branch_scope',
             'division:id,name,code',
             'position:id,name,is_supervisor',
@@ -279,7 +279,17 @@ class UserController extends Controller
             'birth_date'            => $validated['birth_date'] ?? null,
             'is_pregnant'           => $gender === 'Perempuan' ? (bool) ($validated['is_pregnant'] ?? false) : false,
             'attendance_setting_id' => $validated['attendance_setting_id'] ?? null,
-            'overtime_enabled'      => $validated['overtime_enabled'] ?? true,
+            'overtime_enabled'      => (function () use ($validated) {
+                $attSettingId = $validated['attendance_setting_id'] ?? null;
+                $ovEnabled = (bool) ($validated['overtime_enabled'] ?? true);
+                if ($attSettingId) {
+                    $officeSetting = AttendanceSetting::find($attSettingId);
+                    if ($officeSetting && ! $officeSetting->overtime_enabled) {
+                        return false;
+                    }
+                }
+                return $ovEnabled;
+            })(),
             'allow_attendance'      => $allowAttendance,
             'allow_wfh'             => $allowWfh,
             'allow_radius'          => $allowRadius,
@@ -623,6 +633,20 @@ class UserController extends Controller
             }
             $validated['allow_radius'] = $allowRadius;
             $validated['radius_enabled'] = $allowRadius;
+        }
+
+        // Jika kantor penempatan menonaktifkan hitung lembur, paksa overtime_enabled karyawan bernilai false
+        if (array_key_exists('overtime_enabled', $validated) || array_key_exists('attendance_setting_id', $validated)) {
+            $targetOfficeId = array_key_exists('attendance_setting_id', $validated)
+                ? $validated['attendance_setting_id']
+                : $user->attendance_setting_id;
+
+            if ($targetOfficeId) {
+                $officeSetting = AttendanceSetting::find($targetOfficeId);
+                if ($officeSetting && ! $officeSetting->overtime_enabled) {
+                    $validated['overtime_enabled'] = false;
+                }
+            }
         }
 
         $original = $user->only([

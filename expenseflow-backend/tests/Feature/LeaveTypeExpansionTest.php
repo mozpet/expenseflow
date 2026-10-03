@@ -113,6 +113,12 @@ class LeaveTypeExpansionTest extends TestCase
         $this->assertTrue($types->has('cuti_setengah_hari'));
         $this->assertFalse($types['cuti_setengah_hari']['is_enabled']);
         $this->assertEquals(10, $types['cuti_setengah_hari']['quota_days']);
+
+        // Izin and WFH must also be in catalog and enabled by default
+        $this->assertTrue($types->has('izin'));
+        $this->assertTrue($types['izin']['is_enabled']);
+        $this->assertTrue($types->has('wfh'));
+        $this->assertTrue($types['wfh']['is_enabled']);
     }
 
     public function test_update_leave_type_settings_allows_toggling_and_custom_quota(): void
@@ -140,6 +146,13 @@ class LeaveTypeExpansionTest extends TestCase
                     'quota_days'        => 30,
                     'requires_document' => false,
                     'notes'             => 'SOP Cabang: Sakit > 2 hari wajib surat dokter',
+                ],
+                [
+                    'leave_type'        => 'wfh',
+                    'is_enabled'        => false,
+                    'quota_days'        => 5,
+                    'requires_document' => true,
+                    'notes'             => 'WFH dinonaktifkan sementara',
                 ],
             ],
         ];
@@ -169,6 +182,14 @@ class LeaveTypeExpansionTest extends TestCase
             'quota_days'            => 30,
             'requires_document'     => false,
             'notes'                 => 'SOP Cabang: Sakit > 2 hari wajib surat dokter',
+        ]);
+
+        $this->assertDatabaseHas('leave_type_settings', [
+            'attendance_setting_id' => $this->office->id,
+            'leave_type'            => 'wfh',
+            'is_enabled'            => false,
+            'quota_days'            => 5,
+            'requires_document'     => true,
         ]);
     }
 
@@ -380,14 +401,54 @@ class LeaveTypeExpansionTest extends TestCase
         $this->assertStringContainsString('hanya diperuntukkan bagi karyawan yang sudah berstatus menikah', $res->json('message'));
     }
 
+    public function test_married_employee_cannot_request_cuti_menikah(): void
+    {
+        $marriedEmp = $this->makeUser('employee', 'Laki-laki', [
+            'marital_status' => 'married',
+        ]);
+
+        $start = Carbon::now('Asia/Jakarta')->addDays(1)->toDateString();
+        $end   = Carbon::now('Asia/Jakarta')->addDays(3)->toDateString();
+
+        $res = $this->actingAs($marriedEmp, 'sanctum')->postJson('/api/v1/attendance/leave-request', [
+            'leave_type' => 'cuti_menikah',
+            'start_date' => $start,
+            'end_date'   => $end,
+            'reason'     => 'Cuti menikah padahal status sudah menikah',
+        ]);
+
+        $res->assertStatus(422);
+        $this->assertStringContainsString('hanya diperuntukkan bagi karyawan yang belum menikah', $res->json('message'));
+    }
+
+    public function test_single_employee_can_request_cuti_menikah(): void
+    {
+        $singleEmp = $this->makeUser('employee', 'Laki-laki', [
+            'marital_status' => 'single',
+        ]);
+
+        $start = Carbon::now('Asia/Jakarta')->addDays(1)->toDateString();
+        $end   = Carbon::now('Asia/Jakarta')->addDays(3)->toDateString();
+
+        $res = $this->actingAs($singleEmp, 'sanctum')->postJson('/api/v1/attendance/leave-request', [
+            'leave_type' => 'cuti_menikah',
+            'start_date' => $start,
+            'end_date'   => $end,
+            'reason'     => 'Melangsungkan pernikahan',
+        ]);
+
+        $res->assertStatus(201);
+        $res->assertJsonFragment(['leave_type' => 'cuti_menikah']);
+    }
+
     public function test_male_employee_can_request_cuti_ayah_without_document(): void
     {
         $maleEmp = $this->makeUser('employee', 'Laki-laki', [
             'marital_status' => 'married',
         ]);
 
-        $start = Carbon::now('Asia/Jakarta')->addDays(1)->toDateString();
-        $end   = Carbon::now('Asia/Jakarta')->addDays(2)->toDateString();
+        $start = Carbon::now('Asia/Jakarta')->next(Carbon::MONDAY)->toDateString();
+        $end   = Carbon::now('Asia/Jakarta')->next(Carbon::MONDAY)->addDay()->toDateString();
 
         $res = $this->actingAs($maleEmp, 'sanctum')->postJson('/api/v1/attendance/leave-request', [
             'leave_type' => 'cuti_ayah',
@@ -598,6 +659,7 @@ class LeaveTypeExpansionTest extends TestCase
         $this->assertStringContainsString('Izin tidak memiliki batasan kuota', $resSingle->json('message'));
 
         // 2. Batch update containing 'izin' and 'cuti' must update 'cuti' but ignore 'izin'
+        $this->office->update(['default_leave_quota' => 15]);
         $resBatch = $this->actingAs($hrd, 'sanctum')->postJson('/api/v1/dashboard/attendance/leave-balances', [
             'user_id'  => $employee->id,
             'year'     => $year,
@@ -805,10 +867,12 @@ class LeaveTypeExpansionTest extends TestCase
             ['company_id' => $this->company->id, 'quota' => 0, 'used' => 0]
         );
 
+        $nextWorkDay = Carbon::now('Asia/Jakarta')->next(Carbon::MONDAY)->toDateString();
+
         $response = $this->actingAs($employee, 'sanctum')->postJson('/api/v1/attendance/leave-request', [
             'leave_type'  => 'izin',
-            'start_date'  => now()->addDays(1)->toDateString(),
-            'end_date'    => now()->addDays(1)->toDateString(),
+            'start_date'  => $nextWorkDay,
+            'end_date'    => $nextWorkDay,
             'reason'      => 'Izin pribadi urusan penting',
         ]);
 
@@ -914,6 +978,11 @@ class LeaveTypeExpansionTest extends TestCase
             'quota'      => 14,
             'used'       => 0,
         ]);
+
+        LeaveTypeSetting::updateOrCreate(
+            ['attendance_setting_id' => $this->office->id, 'leave_type' => 'sakit'],
+            ['is_enabled' => true, 'quota_days' => 20]
+        );
 
         // HRD increases sick leave quota from 14 to 18
         $res = $this->actingAs($hrd, 'sanctum')->postJson('/api/v1/dashboard/attendance/leave-balances', [
@@ -1082,6 +1151,191 @@ class LeaveTypeExpansionTest extends TestCase
 
         $employee->refresh();
         $this->assertTrue($employee->allow_leave);
+    }
+
+    public function test_accumulation_leave_type_with_zero_quota_allows_requests_without_quota_limit(): void
+    {
+        // 1. Office sets cuti_ayah to Akumulasi mode (quota_days = 0)
+        LeaveTypeSetting::updateOrCreate(
+            ['attendance_setting_id' => $this->office->id, 'leave_type' => 'cuti_ayah'],
+            ['is_enabled' => true, 'quota_days' => 0, 'requires_document' => false]
+        );
+
+        $maleEmp = $this->makeUser('employee', 'Laki-laki', [
+            'marital_status' => 'married',
+        ]);
+
+        $start = Carbon::now('Asia/Jakarta')->next(Carbon::MONDAY)->toDateString();
+        $end   = Carbon::now('Asia/Jakarta')->next(Carbon::MONDAY)->addDays(2)->toDateString();
+
+        $res = $this->actingAs($maleEmp, 'sanctum')->postJson('/api/v1/attendance/leave-request', [
+            'leave_type' => 'cuti_ayah',
+            'start_date' => $start,
+            'end_date'   => $end,
+            'reason'     => 'Cuti ayah mode akumulasi',
+        ]);
+
+        // Must succeed (201 Created) without being blocked by quota <= 0
+        $res->assertStatus(201);
+        $res->assertJsonFragment(['leave_type' => 'cuti_ayah']);
+    }
+
+    public function test_izin_with_yearly_quota_mode_is_enforced_and_editable(): void
+    {
+        $hrd = $this->makeUser('hrd');
+        $employee = $this->makeUser('employee');
+        $year = Carbon::now('Asia/Jakarta')->year;
+
+        // 1. Kantor atur izin dengan mode Jatah Per Tahun (quota_days = 5)
+        LeaveTypeSetting::updateOrCreate(
+            ['attendance_setting_id' => $this->office->id, 'leave_type' => 'izin'],
+            ['is_enabled' => true, 'quota_days' => 5, 'requires_document' => false]
+        );
+
+        // 2. listLeaveBalances harus mengembalikan office_default_quota = 5 dan is_unlimited = false
+        $resBalances = $this->actingAs($hrd, 'sanctum')->getJson("/api/v1/dashboard/attendance/leave-balances?user_id={$employee->id}&year={$year}");
+        $resBalances->assertOk();
+        $balances = collect($resBalances->json('balances'))->keyBy('leave_type');
+        $this->assertTrue($balances->has('izin'));
+        $this->assertEquals(5, $balances['izin']['office_default_quota']);
+        $this->assertEquals(5, $balances['izin']['quota']);
+        $this->assertFalse($balances['izin']['is_unlimited']);
+        $this->assertEquals(5, $balances['izin']['remaining']);
+
+        // 3a. HRD TIDAK dapat mengatur kuota melebihi standar kantor (misal 6 hari saat standar kantor 5)
+        $resExceed = $this->actingAs($hrd, 'sanctum')->postJson('/api/v1/dashboard/attendance/leave-balances', [
+            'user_id'    => $employee->id,
+            'leave_type' => 'izin',
+            'quota'      => 6,
+            'year'       => $year,
+        ]);
+        $resExceed->assertStatus(422);
+        $this->assertStringContainsString('tidak boleh melebihi standar kantor', $resExceed->json('message'));
+
+        // 3b. HRD dapat mengubah kuota izin karyawan sesuai standar kantor (5 hari)
+        $resSet = $this->actingAs($hrd, 'sanctum')->postJson('/api/v1/dashboard/attendance/leave-balances', [
+            'user_id'    => $employee->id,
+            'leave_type' => 'izin',
+            'quota'      => 5,
+            'year'       => $year,
+        ]);
+        $resSet->assertOk();
+
+        // 4. Saldo di DB terupdate menjadi 5 hari
+        $izinDb = LeaveBalance::where('user_id', $employee->id)->where('year', $year)->where('leave_type', 'izin')->first();
+        $this->assertNotNull($izinDb);
+        $this->assertEquals(5, $izinDb->quota);
+
+        // 5. myLeaveBalance mobile mengembalikan quota 5 hari dan is_unlimited = false
+        $resMobile = $this->actingAs($employee, 'sanctum')->getJson('/api/v1/attendance/leave-balance');
+        $resMobile->assertOk();
+        $myIzin = collect($resMobile->json('balances'))->firstWhere('leave_type', 'izin');
+        $this->assertNotNull($myIzin);
+        $this->assertEquals(5, $myIzin['quota']);
+        $this->assertFalse($myIzin['is_unlimited']);
+    }
+
+    public function test_myleavebalance_auto_heals_uninitialized_sakit_quota_and_reports_yearly_quota_instead_of_unlimited(): void
+    {
+        $employee = $this->makeUser('employee', 'Laki-laki');
+        $year = now()->year;
+
+        // Simulasikan legacy data: baris sakit sudah ada di DB dengan quota 0 dan used 0
+        LeaveBalance::create([
+            'company_id' => $this->company->id,
+            'user_id'    => $employee->id,
+            'year'       => $year,
+            'leave_type' => 'sakit',
+            'quota'      => 0,
+            'used'       => 0,
+        ]);
+
+        // Pengaturan kantor menetapkan sakit dengan kuota 14 hari
+        LeaveTypeSetting::where('attendance_setting_id', $this->office->id)
+            ->where('leave_type', 'sakit')
+            ->update(['is_enabled' => true, 'quota_days' => 14]);
+
+        // Panggil endpoint myLeaveBalance mobile
+        $res = $this->actingAs($employee, 'sanctum')->getJson('/api/v1/attendance/leave-balance');
+        $res->assertOk();
+
+        $sakitBal = collect($res->json('balances'))->firstWhere('leave_type', 'sakit');
+        $this->assertNotNull($sakitBal);
+        $this->assertEquals(14, $sakitBal['quota']);
+        $this->assertEquals(14, $sakitBal['remaining']);
+        $this->assertEquals(0, $sakitBal['used']);
+        $this->assertFalse($sakitBal['is_unlimited'], 'Sakit dengan kuota kantor 14 hari tidak boleh dilaporkan is_unlimited=true');
+        $this->assertTrue($sakitBal['active']);
+        $this->assertFalse($sakitBal['is_disabled']);
+
+        // Pastikan di database juga sudah ter-update menjadi 14
+        $dbSakit = LeaveBalance::where('user_id', $employee->id)->where('year', $year)->where('leave_type', 'sakit')->first();
+        $this->assertEquals(14, $dbSakit->quota);
+    }
+
+    public function test_employee_leave_quota_cannot_exceed_office_standard_and_is_clamped(): void
+    {
+        $hrd = $this->makeUser('hrd');
+        $employee = $this->makeUser('employee', 'Laki-laki');
+        $year = now()->year;
+
+        // 1. Standar kantor untuk sakit diatur menjadi 10 hari
+        LeaveTypeSetting::updateOrCreate(
+            ['attendance_setting_id' => $this->office->id, 'leave_type' => 'sakit'],
+            ['is_enabled' => true, 'quota_days' => 10]
+        );
+
+        // 2. Misalkan data lama karyawan memiliki kuota 14 hari
+        LeaveBalance::updateOrCreate(
+            ['user_id' => $employee->id, 'year' => $year, 'leave_type' => 'sakit'],
+            ['company_id' => $this->company->id, 'quota' => 14, 'used' => 0]
+        );
+
+        // 3. Saat listLeaveBalances dipanggil, kuota karyawan otomatis dipangkas ke standar kantor (10 hari)
+        $resBalances = $this->actingAs($hrd, 'sanctum')->getJson("/api/v1/dashboard/attendance/leave-balances?user_id={$employee->id}&year={$year}");
+        $resBalances->assertOk();
+        $balances = collect($resBalances->json('balances'))->keyBy('leave_type');
+        $this->assertEquals(10, $balances['sakit']['office_default_quota']);
+        $this->assertEquals(10, $balances['sakit']['quota'], 'Alokasi karyawan tidak boleh di atas standar kantor');
+        $this->assertEquals(10, $balances['sakit']['remaining']);
+
+        // Pastikan di database juga sudah ter-clamp ke 10
+        $dbSakit = LeaveBalance::where('user_id', $employee->id)->where('year', $year)->where('leave_type', 'sakit')->first();
+        $this->assertEquals(10, $dbSakit->quota);
+
+        // 4. HRD mencoba mengatur kuota menjadi 14 hari (di atas standar kantor 10 hari) -> Ditolak 422
+        $resFail = $this->actingAs($hrd, 'sanctum')->postJson('/api/v1/dashboard/attendance/leave-balances', [
+            'user_id'    => $employee->id,
+            'leave_type' => 'sakit',
+            'quota'      => 14,
+            'year'       => $year,
+        ]);
+        $resFail->assertStatus(422);
+        $this->assertStringContainsString('tidak boleh melebihi standar kantor', $resFail->json('message'));
+
+        // 5. myLeaveBalance mobile juga harus mengembalikan 10 hari
+        $resMobile = $this->actingAs($employee, 'sanctum')->getJson('/api/v1/attendance/leave-balance');
+        $resMobile->assertOk();
+        $mySakit = collect($resMobile->json('balances'))->firstWhere('leave_type', 'sakit');
+        $this->assertEquals(10, $mySakit['quota']);
+        $this->assertEquals(10, $mySakit['remaining']);
+
+        // 6. Jika HRD menurunkan standar kantor menjadi 8 hari via updateLeaveTypeSettings, kuota karyawan otomatis terpotong ke 8 hari
+        $resUpdateSetting = $this->actingAs($hrd, 'sanctum')->putJson('/api/v1/dashboard/attendance/leave-types', [
+            'attendance_setting_id' => $this->office->id,
+            'settings' => [
+                [
+                    'leave_type'        => 'sakit',
+                    'is_enabled'        => true,
+                    'quota_days'        => 8,
+                    'requires_document' => false,
+                ],
+            ],
+        ]);
+        $resUpdateSetting->assertOk();
+
+        $dbSakitAfterLowering = LeaveBalance::where('user_id', $employee->id)->where('year', $year)->where('leave_type', 'sakit')->first();
+        $this->assertEquals(8, $dbSakitAfterLowering->quota, 'Kuota karyawan otomatis terpotong ke standar kantor yang baru');
     }
 }
 

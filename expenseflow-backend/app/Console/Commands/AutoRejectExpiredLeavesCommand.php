@@ -8,7 +8,7 @@ use Illuminate\Console\Command;
 class AutoRejectExpiredLeavesCommand extends Command
 {
     protected $signature   = 'attendance:auto-reject-expired-leaves';
-    protected $description = 'Otomatis menolak semua jenis permohonan izin/cuti yang belum diproses HRD saat hari H tiba.';
+    protected $description = 'Otomatis menolak semua jenis permohonan izin/cuti yang belum diproses hingga H+1.';
 
     public function handle(): void
     {
@@ -19,6 +19,6 @@ class AutoRejectExpiredLeavesCommand extends Command
             return;
         }
 
-        $this->info("[auto-reject-leaves] {$count} pengajuan izin otomatis ditolak karena sudah memasuki hari H.");
+        $this->info("[auto-reject-leaves] {$count} pengajuan izin otomatis ditolak karena sudah melewati batas waktu approval (H+1).");
     }
 }

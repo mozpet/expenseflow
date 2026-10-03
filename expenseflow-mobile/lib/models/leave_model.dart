@@ -35,7 +35,8 @@ class LeaveRequestRecord {
 class LeaveBalanceRecord {
   final String leaveType;
   final String leaveTypeLabel;
-  final int quota;
+  final int quota; // Alokasi karyawan (bisa diubah HRD per karyawan)
+  final int officeQuota; // Standar kantor (dari Pengaturan Jenis Cuti kantor)
   final int used;
   final int? remainingQuota;
   final bool active;
@@ -46,6 +47,7 @@ class LeaveBalanceRecord {
     required this.leaveType,
     String? leaveTypeLabel,
     required this.quota,
+    int? officeQuota,
     required this.used,
     int? remaining,
     this.active = true,
@@ -54,6 +56,7 @@ class LeaveBalanceRecord {
   })  : leaveTypeLabel = (leaveTypeLabel != null && leaveTypeLabel.isNotEmpty)
             ? leaveTypeLabel
             : leaveType,
+        officeQuota = officeQuota ?? quota,
         remainingQuota = remaining;
 
   int get remaining => isUnlimited ? 0 : (remainingQuota ?? (quota - used));
@@ -75,6 +78,7 @@ class LeaveBalanceRecord {
               '')
           .toString(),
       quota: quotaVal,
+      officeQuota: (json['office_quota'] as num?)?.toInt(),
       used: usedVal,
       remaining: isUnlimited ? null : (remainingVal ?? (quotaVal - usedVal)),
       active: json['active'] == true || json['active'] == 1,

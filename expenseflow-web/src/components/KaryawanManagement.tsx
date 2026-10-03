@@ -194,6 +194,7 @@ interface Employee {
 interface Office {
   id: number;
   office_name: string;
+  overtime_enabled?: boolean;
 }
 
 const AVATAR_PALETTE = [
@@ -402,7 +403,11 @@ export const KaryawanManagement: React.FC<{
       const list: Office[] = Array.isArray(res?.settings) ? res.settings
         : Array.isArray(res?.data) ? res.data
           : Array.isArray(res) ? res : [];
-      const mapped = list.map((o: any) => ({ id: o.id, office_name: o.office_name }));
+      const mapped: Office[] = list.map((o: any) => ({
+        id: o.id,
+        office_name: o.office_name,
+        overtime_enabled: o.overtime_enabled !== false && o.overtime_enabled !== 0 && o.overtime_enabled !== '0',
+      }));
       setOffices(mapped);
     } catch { /* diam — kantor opsional, tidak kritis */ }
   };

@@ -180,9 +180,14 @@ class _SpvOvertimeApprovalScreenState extends State<SpvOvertimeApprovalScreen>
                                   final success = await prov.approve(item.id, notes: notesController.text.trim());
                                   if (!mounted) return;
                                   if (success) {
+                                    if (_tabController.index == 1) {
+                                      _loadData();
+                                    } else {
+                                      _tabController.animateTo(1);
+                                    }
                                     ScaffoldMessenger.of(context).showSnackBar(
                                       SnackBar(
-                                        content: Text('Lembur ${item.userName} berhasil disetujui (Tahap 1: SPV).'),
+                                        content: Text('Lembur ${item.userName} berhasil disetujui (Tahap 1: SPV). Masuk ke riwayat disetujui.'),
                                         backgroundColor: const Color(0xFF059669),
                                       ),
                                     );
@@ -336,9 +341,14 @@ class _SpvOvertimeApprovalScreenState extends State<SpvOvertimeApprovalScreen>
                                       final success = await prov.reject(item.id, reason: reason);
                                       if (!mounted) return;
                                       if (success) {
+                                        if (_tabController.index == 2) {
+                                          _loadData();
+                                        } else {
+                                          _tabController.animateTo(2);
+                                        }
                                         ScaffoldMessenger.of(context).showSnackBar(
                                           SnackBar(
-                                            content: Text('Lembur ${item.userName} telah ditolak.'),
+                                            content: Text('Pengajuan lembur ${item.userName} telah ditolak. Masuk ke riwayat ditolak.'),
                                             backgroundColor: const Color(0xFFDC2626),
                                           ),
                                         );
@@ -533,14 +543,21 @@ class _SpvOvertimeApprovalScreenState extends State<SpvOvertimeApprovalScreen>
     Color statusBadgeText;
     String statusBadgeLabel;
 
+    final bool isApprovedBySpv = item.spvApprovedAt != null || item.currentStep == 'hrd';
+    final bool isPendingForSpv = item.status == 'pending' && !isApprovedBySpv && item.currentStep == 'spv';
+
     if (item.status == 'approved') {
       statusBadgeBg = const Color(0xFFECFDF5);
       statusBadgeText = const Color(0xFF059669);
-      statusBadgeLabel = (item.currentStep == 'hrd') ? 'Disetujui SPV (Ke HRD)' : 'Disetujui Final';
+      statusBadgeLabel = 'Disetujui Final';
     } else if (item.status == 'rejected') {
       statusBadgeBg = const Color(0xFFFEF2F2);
       statusBadgeText = const Color(0xFFDC2626);
       statusBadgeLabel = 'Ditolak';
+    } else if (isApprovedBySpv) {
+      statusBadgeBg = const Color(0xFFECFDF5);
+      statusBadgeText = const Color(0xFF059669);
+      statusBadgeLabel = 'Disetujui SPV (Ke HRD)';
     } else {
       statusBadgeBg = const Color(0xFFFFFBEB);
       statusBadgeText = const Color(0xFFD97706);
@@ -717,7 +734,7 @@ class _SpvOvertimeApprovalScreenState extends State<SpvOvertimeApprovalScreen>
           ],
 
           // Tombol Tindakan jika Pending
-          if (item.status == 'pending') ...[
+          if (isPendingForSpv) ...[
             const SizedBox(height: 16),
             Row(
               children: [

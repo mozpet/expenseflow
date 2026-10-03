@@ -394,6 +394,7 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
   const [countPendingHrd, setCountPendingHrd] = useState(0);
   const [countApproved, setCountApproved] = useState(0);
   const [countRejected, setCountRejected] = useState(0);
+  const [showSpvStep, setShowSpvStep] = useState(true);
 
   // Modal state
   const [modal, setModal] = useState<{ mode: 'approve' | 'reject'; record: OvertimeRecord } | null>(null);
@@ -412,6 +413,9 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       const res = await overtimeApi.list(params as Parameters<typeof overtimeApi.list>[0], forceRefresh);
       const data: OvertimeRecord[] = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
       setRecords(data);
+      if (typeof res?.show_spv_step === 'boolean') {
+        setShowSpvStep(res.show_spv_step);
+      }
       if (res?.summary) {
         setCountPending(res.summary.pending ?? 0);
         setCountPendingSpv(res.summary.pending_spv ?? 0);
@@ -517,19 +521,21 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       </div>
 
       {/* ── Summary cards ── */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
-        <button
-          onClick={() => handleTabChange('spv')}
-          className="text-left transition hover:scale-[1.01] cursor-pointer"
-        >
-          <SummaryCard
-            label="Menunggu SPV (Tahap 1)"
-            value={countPendingSpv}
-            sub="Rekomendasi lembur dari SPV"
-            icon={<Hourglass className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
-            color="bg-amber-50 dark:bg-amber-950/40"
-          />
-        </button>
+      <div className={`grid grid-cols-1 sm:grid-cols-2 ${showSpvStep ? 'lg:grid-cols-4' : 'lg:grid-cols-3'} gap-3`}>
+        {showSpvStep && (
+          <button
+            onClick={() => handleTabChange('spv')}
+            className="text-left transition hover:scale-[1.01] cursor-pointer"
+          >
+            <SummaryCard
+              label="Menunggu SPV (Tahap 1)"
+              value={countPendingSpv}
+              sub="Rekomendasi lembur dari SPV"
+              icon={<Hourglass className="w-5 h-5 text-amber-600 dark:text-amber-400" />}
+              color="bg-amber-50 dark:bg-amber-950/40"
+            />
+          </button>
+        )}
         <button
           onClick={() => handleTabChange('hrd')}
           className="text-left transition hover:scale-[1.01] cursor-pointer"
@@ -572,7 +578,7 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       <div className="flex flex-wrap items-center gap-1 border-b border-slate-200 dark:border-slate-800">
         {[
           { key: 'all' as const, label: 'Semua Lembur', count: countPending + countApproved + countRejected, icon: <Clock className="w-3.5 h-3.5" /> },
-          { key: 'spv' as const, label: 'Menunggu SPV (Tahap 1)', count: countPendingSpv, icon: <Hourglass className="w-3.5 h-3.5 text-amber-500" /> },
+          ...(showSpvStep ? [{ key: 'spv' as const, label: 'Menunggu SPV (Tahap 1)', count: countPendingSpv, icon: <Hourglass className="w-3.5 h-3.5 text-amber-500" /> }] : []),
           { key: 'hrd' as const, label: 'Menunggu HRD (Tahap 2)', count: countPendingHrd, icon: <BadgeCheck className="w-3.5 h-3.5 text-blue-500" /> },
           { key: 'approved' as const, label: 'Disetujui', count: countApproved, icon: <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" /> },
           { key: 'rejected' as const, label: 'Ditolak', count: countRejected, icon: <XCircle className="w-3.5 h-3.5 text-rose-500" /> },
@@ -624,7 +630,7 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
               className="w-full text-xs p-2.5 border border-slate-200 dark:border-slate-700 rounded-lg focus:ring-1 focus:ring-indigo-400 focus:outline-none bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100"
             >
               <option value="all">Semua Tahap</option>
-              <option value="spv">Tahap 1 (SPV)</option>
+              {showSpvStep && <option value="spv">Tahap 1 (SPV)</option>}
               <option value="hrd">Tahap 2 (HRD Final)</option>
             </select>
           </div>
@@ -833,20 +839,28 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
                     {/* Aksi */}
                     <td className="py-3 px-3">
                       {isPending ? (
-                        <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            onClick={() => setModal({ mode: 'approve', record: r })}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition cursor-pointer"
-                          >
-                            <CheckCircle2 className="w-3 h-3" /> Setujui
-                          </button>
-                          <button
-                            onClick={() => setModal({ mode: 'reject', record: r })}
-                            className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-rose-500 hover:bg-rose-600 text-white rounded-lg transition cursor-pointer"
-                          >
-                            <XCircle className="w-3 h-3" /> Tolak
-                          </button>
-                        </div>
+                        r.current_step === 'spv' && !showSpvStep ? (
+                          <div className="text-center">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 px-2 py-0.5 rounded-full">
+                              Menunggu SPV
+                            </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center justify-center gap-1.5">
+                            <button
+                              onClick={() => setModal({ mode: 'approve', record: r })}
+                              className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg transition cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3 h-3" /> Setujui
+                            </button>
+                            <button
+                              onClick={() => setModal({ mode: 'reject', record: r })}
+                              className="flex items-center gap-1 px-2.5 py-1.5 text-[11px] font-bold bg-rose-500 hover:bg-rose-600 text-white rounded-lg transition cursor-pointer"
+                            >
+                              <XCircle className="w-3 h-3" /> Tolak
+                            </button>
+                          </div>
+                        )
                       ) : (
                         <div className="text-center">
                           {r.notes ? (

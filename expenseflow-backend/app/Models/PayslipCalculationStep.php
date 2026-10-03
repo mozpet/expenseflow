@@ -19,6 +19,7 @@ class PayslipCalculationStep extends Model
     public const STEP_ADJUSTMENT     = 'ADJUSTMENT';
     public const STEP_OVERTIME       = 'OVERTIME';
     public const STEP_ATTENDANCE     = 'ATTENDANCE';
+    public const STEP_REIMBURSEMENT  = 'REIMBURSEMENT'; // reimburse struk approved (non-objek PPh 21)
     public const STEP_BPJS_KES       = 'BPJS_KES';
     public const STEP_BPJS_JKK       = 'BPJS_JKK';
     public const STEP_BPJS_JKM       = 'BPJS_JKM';

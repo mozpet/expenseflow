@@ -82,7 +82,7 @@ class AutoRejectExpiredLeavesTest extends TestCase
             'status'     => 'pending',
         ]);
 
-        // Lewat Hari H (masa lalu)
+        // Lewat Hari H (sudah lewat H+1, start_date = 2026-09-20)
         $leavePast = LeaveRequest::create([
             'user_id'    => $this->employee->id,
             'company_id' => $this->company->id,
@@ -120,19 +120,30 @@ class AutoRejectExpiredLeavesTest extends TestCase
             'updated_at'      => now(),
         ]);
 
+        // Pada Hari H (2026-09-22): Hanya leavePast yang di-reject, leaveHariH tetap pending
         $rejectedCount = LeaveRequest::autoRejectExpiredLeaves($this->company->id);
 
-        $this->assertEquals(2, $rejectedCount);
+        $this->assertEquals(1, $rejectedCount);
 
         $leaveHariH->refresh();
-        $this->assertEquals('rejected', $leaveHariH->status);
-        $this->assertStringContainsString('hingga hari H', $leaveHariH->rejection_reason);
+        $this->assertEquals('pending', $leaveHariH->status, 'Pada Hari H, cuti harus tetap berstatus pending agar bisa di-approve.');
 
         $leavePast->refresh();
         $this->assertEquals('rejected', $leavePast->status);
+        $this->assertStringContainsString('hingga H+1', $leavePast->rejection_reason);
 
         $leaveFuture->refresh();
         $this->assertEquals('pending', $leaveFuture->status);
+
+        // Majukan waktu ke keesokan harinya (H+1: 2026-09-23)
+        Carbon::setTestNow('2026-09-23 09:00:00');
+
+        $rejectedCountHPlus1 = LeaveRequest::autoRejectExpiredLeaves($this->company->id);
+        $this->assertEquals(1, $rejectedCountHPlus1);
+
+        $leaveHariH->refresh();
+        $this->assertEquals('rejected', $leaveHariH->status, 'Pada H+1, cuti yang belum di-approve harus otomatis rejected.');
+        $this->assertStringContainsString('hingga H+1', $leaveHariH->rejection_reason);
 
         // Notifikasi pending approver harus dihapus
         $pendingNotif = DB::table('notifications')
@@ -156,13 +167,14 @@ class AutoRejectExpiredLeavesTest extends TestCase
     {
         $types = ['cuti', 'izin', 'sakit', 'wfh'];
 
+        // Cuti dibuat dengan start_date kemarin (2026-09-21), saat ini 2026-09-22 (H+1)
         foreach ($types as $t) {
             LeaveRequest::create([
                 'user_id'    => $this->employee->id,
                 'company_id' => $this->company->id,
                 'leave_type' => $t,
-                'start_date' => '2026-09-22',
-                'end_date'   => '2026-09-22',
+                'start_date' => '2026-09-21',
+                'end_date'   => '2026-09-21',
                 'total_days' => 1,
                 'reason'     => "Test $t",
                 'status'     => 'pending',
@@ -181,8 +193,20 @@ class AutoRejectExpiredLeavesTest extends TestCase
 
     public function test_list_leaves_endpoint_auto_rejects_expired_leaves_on_access(): void
     {
-        // Buat pengajuan cuti hari ini (22 Sep 2026) dengan status pending
-        $leave = LeaveRequest::create([
+        // Buat pengajuan cuti kemarin (21 Sep 2026) yang belum diproses -> saat ini 22 Sep (H+1)
+        $leaveExpired = LeaveRequest::create([
+            'user_id'    => $this->employee->id,
+            'company_id' => $this->company->id,
+            'leave_type' => 'cuti',
+            'start_date' => '2026-09-21',
+            'end_date'   => '2026-09-21',
+            'total_days' => 1,
+            'reason'     => 'Cuti Kemarin',
+            'status'     => 'pending',
+        ]);
+
+        // Buat pengajuan cuti hari ini (22 Sep 2026) -> Hari H masih valid
+        $leaveToday = LeaveRequest::create([
             'user_id'    => $this->employee->id,
             'company_id' => $this->company->id,
             'leave_type' => 'cuti',
@@ -197,22 +221,28 @@ class AutoRejectExpiredLeavesTest extends TestCase
 
         $response->assertStatus(200);
 
-        // Di database harus sudah otomatis berubah jadi rejected
-        $leave->refresh();
-        $this->assertEquals('rejected', $leave->status);
-        $this->assertStringContainsString('hingga hari H', $leave->rejection_reason);
+        // $leaveExpired harus sudah otomatis berubah jadi rejected
+        $leaveExpired->refresh();
+        $this->assertEquals('rejected', $leaveExpired->status);
+        $this->assertStringContainsString('hingga H+1', $leaveExpired->rejection_reason);
 
-        // Jika filter status=pending, data ini tidak boleh muncul
+        // $leaveToday tetap pending
+        $leaveToday->refresh();
+        $this->assertEquals('pending', $leaveToday->status);
+
+        // Jika filter status=pending, data $leaveToday harus muncul, $leaveExpired tidak boleh
         $pendingResponse = $this->actingAs($this->admin)->getJson('/api/v1/dashboard/attendance/leaves?status=pending');
         $pendingResponse->assertStatus(200);
         $pendingLeaves = $pendingResponse->json('data.leaves') ?? $pendingResponse->json('data') ?? [];
         $ids = array_column($pendingLeaves, 'id');
-        $this->assertNotContains($leave->id, $ids);
+        $this->assertNotContains($leaveExpired->id, $ids);
+        $this->assertContains($leaveToday->id, $ids);
     }
 
     public function test_approve_leave_on_hari_h_fails_and_auto_rejects(): void
     {
-        $leave = LeaveRequest::create([
+        // 1. Pengajuan pada Hari H (2026-09-22) BISA di-approve
+        $leaveHariH = LeaveRequest::create([
             'user_id'    => $this->employee->id,
             'company_id' => $this->company->id,
             'leave_type' => 'izin',
@@ -223,17 +253,54 @@ class AutoRejectExpiredLeavesTest extends TestCase
             'status'     => 'pending',
         ]);
 
-        $response = $this->actingAs($this->admin)->postJson("/api/v1/dashboard/attendance/leaves/{$leave->id}/approve");
+        $responseHariH = $this->actingAs($this->admin)->postJson("/api/v1/dashboard/attendance/leaves/{$leaveHariH->id}/approve");
+        $responseHariH->assertStatus(200);
 
-        $response->assertStatus(422);
+        $leaveHariH->refresh();
+        $this->assertEquals('hrd', $leaveHariH->current_step);
 
-        $leave->refresh();
-        $this->assertEquals('rejected', $leave->status);
+        // Tahap 2: HRD approval pada Hari H juga berhasil
+        $responseHariHHrd = $this->actingAs($this->admin)->postJson("/api/v1/dashboard/attendance/leaves/{$leaveHariH->id}/approve");
+        $responseHariHHrd->assertStatus(200);
+
+        $leaveHariH->refresh();
+        $this->assertEquals('approved', $leaveHariH->status);
+
+        // 2. Pengajuan lampau yang sudah lewat H+1 (start_date = 2026-09-20) ditolak saat diapprove
+        $leaveExpired = LeaveRequest::create([
+            'user_id'    => $this->employee->id,
+            'company_id' => $this->company->id,
+            'leave_type' => 'izin',
+            'start_date' => '2026-09-20',
+            'end_date'   => '2026-09-20',
+            'total_days' => 1,
+            'reason'     => 'Izin Lampau',
+            'status'     => 'pending',
+        ]);
+
+        $responseExpired = $this->actingAs($this->admin)->postJson("/api/v1/dashboard/attendance/leaves/{$leaveExpired->id}/approve");
+        $responseExpired->assertStatus(422);
+
+        $leaveExpired->refresh();
+        $this->assertEquals('rejected', $leaveExpired->status);
     }
 
     public function test_artisan_command_auto_rejects_expired_leaves(): void
     {
+        // Cuti kemarin (2026-09-21) yang belum diapprove (sudah masuk H+1 pada 2026-09-22)
         LeaveRequest::create([
+            'user_id'    => $this->employee->id,
+            'company_id' => $this->company->id,
+            'leave_type' => 'wfh',
+            'start_date' => '2026-09-21',
+            'end_date'   => '2026-09-21',
+            'total_days' => 1,
+            'reason'     => 'WFH Kemarin',
+            'status'     => 'pending',
+        ]);
+
+        // Cuti Hari H (2026-09-22)
+        $leaveToday = LeaveRequest::create([
             'user_id'    => $this->employee->id,
             'company_id' => $this->company->id,
             'leave_type' => 'wfh',
@@ -247,11 +314,15 @@ class AutoRejectExpiredLeavesTest extends TestCase
         $exitCode = Artisan::call('attendance:auto-reject-expired-leaves');
         $this->assertEquals(0, $exitCode);
 
+        // Hanya cuti hari ini yang tersisa pending
         $pendingCount = LeaveRequest::where('status', 'pending')->count();
-        $this->assertEquals(0, $pendingCount);
+        $this->assertEquals(1, $pendingCount);
+
+        $leaveToday->refresh();
+        $this->assertEquals('pending', $leaveToday->status);
 
         $rejected = LeaveRequest::where('status', 'rejected')->first();
         $this->assertNotNull($rejected);
-        $this->assertEquals('wfh', $rejected->leave_type);
+        $this->assertEquals('2026-09-21', Carbon::parse($rejected->start_date)->toDateString());
     }
 }

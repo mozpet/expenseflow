@@ -903,5 +903,17 @@ export interface TaxProfile {
   foreign_tax_id?: string | null;
 }
 
+export interface FormulaValidationResult {
+  ok: boolean;
+  error: string | null;
+  position: number | null;
+  variables: string[];
+  functions: string[];
+  system_variables: Record<string, string>;
+  component_codes: string[];
+  available_functions: string[];
+  sample_result?: number | null;
+}
+
 
 

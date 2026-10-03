@@ -30,6 +30,10 @@ class LeaveRequest extends Model
         'spv_notes',
         'approved_by',
         'approved_at',
+        'attendance_setting_id',
+        'balance_before',
+        'balance_after',
+        'leave_policy_snapshot',
         'notes',
         'rejection_reason',
         'holiday_id',
@@ -43,6 +47,9 @@ class LeaveRequest extends Model
             'end_date'                 => 'date:Y-m-d',
             'total_days'               => 'integer',
             'holiday_compensated_days' => 'integer',
+            'balance_before'           => 'integer',
+            'balance_after'            => 'integer',
+            'leave_policy_snapshot'    => 'array',
             'spv_approved_at'          => 'datetime',
             'approved_at'              => 'datetime',
         ];
@@ -51,6 +58,11 @@ class LeaveRequest extends Model
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
+    }
+
+    public function attendanceSetting(): BelongsTo
+    {
+        return $this->belongsTo(AttendanceSetting::class, 'attendance_setting_id');
     }
 
     public function company(): BelongsTo
@@ -75,7 +87,7 @@ class LeaveRequest extends Model
 
     /**
      * Otomatis menolak (auto-reject) semua jenis permohonan izin/cuti/sakit/wfh yang masih berstatus 'pending'
-     * jika HRD tidak melakukan aksi approval hingga tanggal hari H tiba atau telah lewat (start_date <= today).
+     * jika HRD tidak melakukan aksi approval hingga H+1 / melewati tanggal pengajuan (start_date < today).
      * Berlaku untuk pengajuan mandiri maupun cuti bersama.
      *
      * @param int|null $companyId
@@ -86,7 +98,7 @@ class LeaveRequest extends Model
         $today = now('Asia/Jakarta')->toDateString();
 
         $query = static::where('status', 'pending')
-            ->whereDate('start_date', '<=', $today);
+            ->whereDate('start_date', '<', $today);
 
         if ($companyId) {
             $query->where('company_id', $companyId);
@@ -101,8 +113,8 @@ class LeaveRequest extends Model
         foreach ($pending as $leave) {
             $isCollective = $leave->holiday_id !== null;
             $reason = $isCollective
-                ? 'Tidak merespons sebelum batas waktu (hari H tiba) — otomatis ditolak oleh sistem.'
-                : 'Tidak ada aksi approval dari HRD hingga hari H (otomatis ditolak oleh sistem).';
+                ? 'Tidak merespons sebelum batas waktu (melewati tanggal cuti) — otomatis ditolak oleh sistem.'
+                : 'Tidak ada aksi approval dari atasan/HRD hingga H+1 (otomatis ditolak oleh sistem).';
 
             $updateData = [
                 'status'           => 'rejected',
@@ -139,7 +151,7 @@ class LeaveRequest extends Model
                 'name'             => $leaveTypeLabel,
                 'date'             => (string) $leave->start_date,
                 'date_label'       => $dateFormatted,
-                'message'          => "Pengajuan {$leaveTypeLabel} Anda pada {$dateFormatted} otomatis ditolak oleh sistem karena tidak ada aksi approval dari HRD hingga hari H.",
+                'message'          => "Pengajuan {$leaveTypeLabel} Anda pada {$dateFormatted} otomatis ditolak oleh sistem karena tidak ada aksi approval dari atasan/HRD hingga H+1.",
                 'leave_id'         => $leave->id,
                 'leave_type'       => $leave->leave_type,
                 'status'           => 'rejected',

@@ -9,6 +9,7 @@ use App\Models\PayrollAdjustment;
 use App\Models\Payslip;
 use App\Models\PayslipCalculationStep;
 use App\Models\PayslipItem;
+use App\Models\Receipt;
 use App\Models\SalaryComponent;
 use App\Models\User;
 use App\Services\Payroll\Currency\CurrencyConverter;
@@ -237,18 +238,44 @@ class PayrollCalculator
             }
 
             // 4) Reimburse struk approved (opsional, non-taxable)
+            //    Satu baris slip PER STRUK (ref_type/ref_id terisi) agar:
+            //      a) markPaid() tahu struk mana saja yang dibayar lewat gaji dan bisa
+            //         menandainya lunas (cegah dobel bayar lewat pencairan terpisah);
+            //      b) Calculation Trace & slip PDF dapat menampilkan rinciannya.
             if ($opt['receipt_reimbursement']) {
-                $reimburse = $this->approvedReimbursements($user, $payroll->company_id, $periodStart, $periodEnd);
-                if ($reimburse > 0) {
+                $receipts = $this->approvedReimbursements($user, $payroll->company_id, $periodStart, $periodEnd);
+                $reimburseTotal = 0.0;
+                $reimburseRefs = [];
+                foreach ($receipts as $receipt) {
+                    $amount = (float) $receipt->reimburse_amount;
+                    if ($amount <= 0) {
+                        continue;
+                    }
                     $items[] = $this->item(
-                        'Reimburse Struk',
+                        'Reimburse Struk ' . $receipt->receipt_number,
                         PayslipItem::TYPE_EARNING,
-                        $reimburse,
+                        $amount,
                         false, // non-taxable
                         false,
                         'receipt',
                         $sort++,
+                        refType: Receipt::class,
+                        refId: (int) $receipt->id,
+                        // notes dibatasi agar tidak melampaui kolom varchar(255).
+                        notes: mb_substr(trim(($receipt->vendor_name ?: '—') . ' · ' . $receipt->receipt_date), 0, 255),
                     );
+                    $reimburseTotal += $amount;
+                    $reimburseRefs[] = [
+                        'receipt_id'     => (int) $receipt->id,
+                        'receipt_number' => $receipt->receipt_number,
+                        'amount'         => round($amount, 2),
+                    ];
+                }
+                if ($reimburseTotal > 0) {
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_REIMBURSEMENT, [
+                        'receipt_count' => count($reimburseRefs),
+                        'receipts'      => $reimburseRefs,
+                    ], $reimburseTotal, 'Reimburse struk approved (non-objek PPh 21)');
                 }
             }
 
@@ -855,17 +882,31 @@ class PayrollCalculator
         return [$absent, $present];
     }
 
-    /** Total reimburse struk approved (belum dibayar) dalam periode. */
-    private function approvedReimbursements(User $user, ?int $companyId, Carbon $start, Carbon $end): float
+    /**
+     * Struk approved (belum dibayar) dalam periode — satu baris per struk.
+     *
+     * Dikembalikan sebagai daftar (bukan total) agar tiap struk dapat dirujuk
+     * dari baris slip (`ref_id`) sehingga markPaid() bisa menandainya lunas.
+     *
+     * @return \Illuminate\Support\Collection<int, object>
+     */
+    private function approvedReimbursements(User $user, ?int $companyId, Carbon $start, Carbon $end)
     {
-        return (float) DB::table('receipts')
+        return DB::table('receipts')
             ->where('user_id', $user->id)
             ->when($companyId, fn ($q) => $q->where('company_id', $companyId))
             ->whereNull('deleted_at')
             ->where('status', 'approved')
             ->whereNull('paid_at') // cegah dobel bayar: struk yg sudah dicairkan via alur sendiri di-skip
             ->whereBetween('receipt_date', [$start->toDateString(), $end->toDateString()])
-            ->sum('approved_amount');
+            ->orderBy('id')
+            ->get([
+                'id',
+                'receipt_number',
+                'vendor_name',
+                'receipt_date',
+                'approved_amount as reimburse_amount',
+            ]);
     }
 
     /**

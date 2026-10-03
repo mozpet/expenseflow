@@ -7,6 +7,7 @@ use App\Models\EmployeeLoan;
 use App\Models\Payroll;
 use App\Models\PayrollAdjustment;
 use App\Models\PayslipItem;
+use App\Models\Receipt;
 use App\Models\Role;
 use App\Models\User;
 use App\Services\AuditLogger;
@@ -504,7 +505,9 @@ class PayrollController extends Controller
             return $resp;
         }
 
-        DB::transaction(function () use ($payroll, $user) {
+        $paidReceipts = [];
+
+        DB::transaction(function () use ($payroll, $user, &$paidReceipts) {
             $payroll->update([
                 'status'  => Payroll::STATUS_PAID,
                 'paid_by' => $user->id,
@@ -514,10 +517,17 @@ class PayrollController extends Controller
 
             // Majukan cicilan kasbon SATU KALI (saat pembayaran final).
             $this->advanceLoans($payroll);
+
+            // Tandai struk reimbursement yang dibayar lewat slip gaji ini sebagai lunas,
+            // agar tidak bisa dicairkan ulang lewat alur transfer bank (anti dobel bayar).
+            $paidReceipts = $this->settleReimbursedReceipts($payroll, $user);
         });
 
         // Notifikasi (in-app + FCM terjaga) ke tiap karyawan bahwa gajinya sudah dibayar.
         $this->notifyPayrollPaid($payroll);
+
+        // Notifikasi pencairan struk via gaji (di luar transaksi, konsisten dgn notifikasi lain).
+        $this->notifyReceiptsSettledViaPayroll($payroll, $paidReceipts);
 
         AuditLogger::log(
             action: 'PAYROLL_PAID',
@@ -529,12 +539,22 @@ class PayrollController extends Controller
         );
 
         $this->payrollChainLog($payroll, 'PAYROLL_PAID', [
-            'status'    => $payroll->status,
-            'paid_by'   => (int) $payroll->paid_by,
-            'total_net' => (string) $payroll->total_net,
+            'status'            => $payroll->status,
+            'paid_by'           => (int) $payroll->paid_by,
+            'total_net'         => (string) $payroll->total_net,
+            'receipts_settled'  => count($paidReceipts),
         ]);
 
-        return response()->json(['message' => 'Payroll ditandai sudah dibayar.', 'data' => $payroll]);
+        $message = 'Payroll ditandai sudah dibayar.';
+        if ($paidReceipts !== []) {
+            $message .= ' ' . count($paidReceipts) . ' struk reimbursement ikut ditandai lunas (dibayar via gaji).';
+        }
+
+        return response()->json([
+            'message' => $message,
+            'data'    => $payroll,
+            'meta'    => ['receipts_settled' => count($paidReceipts)],
+        ]);
     }
 
     /** DELETE /dashboard/payroll/runs/{payroll} */
@@ -655,6 +675,137 @@ class PayrollController extends Controller
                 $loan->status = EmployeeLoan::STATUS_PAID;
             }
             $loan->save();
+        }
+    }
+
+    /**
+     * Tandai struk reimbursement yang ikut dibayarkan lewat slip gaji batch ini
+     * sebagai LUNAS (`status=paid`, `payment_method='payroll'`).
+     *
+     * Dipanggil hanya saat markPaid (transisi approved → paid), di dalam transaksi
+     * yang sama agar status payroll & struk tidak pernah terpisah. Struk yang
+     * sudah lunas lewat alur lain (`paid_at` terisi) dilewati — pencairan ganda
+     * dicegah di dua arah: di sini dan di `PayrollCalculator` (filter `paid_at` null).
+     *
+     * @return array<int, array{id: int, receipt_number: string, user_id: int, amount: float}>
+     */
+    private function settleReimbursedReceipts(Payroll $payroll, User $actor): array
+    {
+        $receiptItems = PayslipItem::query()
+            ->join('payslips', 'payslips.id', '=', 'payslip_items.payslip_id')
+            ->where('payslips.payroll_id', $payroll->id)
+            ->where('payslip_items.source', 'receipt')
+            ->where('payslip_items.ref_type', Receipt::class)
+            ->whereNotNull('payslip_items.ref_id')
+            ->get(['payslip_items.ref_id as receipt_id', 'payslip_items.amount as amount']);
+
+        if ($receiptItems->isEmpty()) {
+            return [];
+        }
+
+        // Gabungkan per struk (normalnya 1 baris slip per struk per batch).
+        $byReceipt = [];
+        foreach ($receiptItems as $it) {
+            $id = (int) $it->receipt_id;
+            $byReceipt[$id] = ($byReceipt[$id] ?? 0) + (float) $it->amount;
+        }
+
+        $settled = [];
+        $refNo = 'PAYROLL-' . $payroll->id;
+
+        foreach ($byReceipt as $receiptId => $amount) {
+            $receipt = Receipt::where('id', $receiptId)
+                ->where('company_id', $payroll->company_id)
+                ->lockForUpdate()
+                ->first();
+
+            // Lewati struk yang hilang, sudah lunas, atau statusnya sudah bergeser
+            // (mis. di-reject setelah batch dihitung) — jangan paksa jadi paid.
+            if (! $receipt || $receipt->paid_at !== null || $receipt->status !== 'approved') {
+                continue;
+            }
+
+            $receipt->update([
+                'status'         => 'paid',
+                'paid_at'        => now(),
+                'paid_by'        => $actor->id,
+                'payment_method' => 'payroll',
+                'payment_ref_no' => $refNo,
+            ]);
+
+            DB::table('activity_logs')->insert([
+                'company_id'   => $payroll->company_id,
+                'user_id'      => $actor->id,
+                'action'       => 'receipt_paid',
+                'description'  => 'Pencairan dana struk ' . $receipt->receipt_number
+                    . ' via slip gaji ' . $payroll->period_label . ' (Metode: payroll, Ref: ' . $refNo . ')',
+                'subject_type' => 'receipt',
+                'subject_id'   => $receipt->id,
+                'entity_type'  => 'receipt',
+                'entity_id'    => $receipt->id,
+                'created_at'   => now(),
+                'updated_at'   => now(),
+            ]);
+
+            $settled[] = [
+                'id'             => (int) $receipt->id,
+                'receipt_number' => (string) $receipt->receipt_number,
+                'user_id'        => (int) $receipt->user_id,
+                'amount'         => $amount,
+            ];
+        }
+
+        return $settled;
+    }
+
+    /**
+     * Notifikasi ke karyawan bahwa struknya dicairkan lewat gaji (in-app + FCM terjaga).
+     * Pola sama dengan notifyPayrollPaid(): per-struk & dibungkus try/catch agar
+     * kegagalan kirim tidak menggagalkan respons markPaid (uang sudah tercatat lunas).
+     *
+     * @param array<int, array{id: int, receipt_number: string, user_id: int, amount: float}> $settled
+     */
+    private function notifyReceiptsSettledViaPayroll(Payroll $payroll, array $settled): void
+    {
+        foreach ($settled as $row) {
+            try {
+                $amount = 'Rp ' . number_format($row['amount'], 0, ',', '.');
+                $message = 'Dana reimbursement struk ' . $row['receipt_number'] . ' sebesar ' . $amount
+                    . ' telah dicairkan melalui slip gaji ' . $payroll->period_label . '.';
+
+                DB::table('notifications')->insert([
+                    'id'              => Str::uuid()->toString(),
+                    'type'            => 'receipt_paid',
+                    'notifiable_type' => 'App\\Models\\User',
+                    'notifiable_id'   => $row['user_id'],
+                    'user_id'         => $row['user_id'],
+                    'data'            => json_encode([
+                        'title'          => 'Reimbursement Dicairkan via Gaji',
+                        'message'        => $message,
+                        'receipt_id'     => $row['id'],
+                        'receipt_number' => $row['receipt_number'],
+                        'status'         => 'paid',
+                        'payment_method' => 'payroll',
+                        'payroll_id'     => $payroll->id,
+                    ]),
+                    'entity_type'     => 'receipt',
+                    'entity_id'       => $row['id'],
+                    'created_at'      => now(),
+                    'updated_at'      => now(),
+                ]);
+
+                $target = User::find($row['user_id']);
+                if ($target && $target->fcm_token) {
+                    app(FcmService::class)->send(
+                        $target->fcm_token,
+                        'Reimbursement Dicairkan via Gaji',
+                        $message,
+                        ['type' => 'receipt_paid', 'entity_type' => 'receipt', 'entity_id' => (string) $row['id']],
+                    );
+                }
+            } catch (\Throwable $e) {
+                Log::warning("Gagal kirim notif receipt_paid (via payroll) ke user #{$row['user_id']}: {$e->getMessage()}");
+            }
         }
     }
 }

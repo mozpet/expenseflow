@@ -96,6 +96,10 @@ export const LEAVE_TYPE_ELIGIBILITY_MAP: Record<string, { gender?: string; marit
     gender: 'Perempuan',
     note: 'Khusus pekerja perempuan yang merasakan sakit fisik hari pertama & kedua masa haid.',
   },
+  cuti_menikah: {
+    marital: 'Belum Menikah',
+    note: 'Khusus karyawan lajang / belum menikah yang akan melangsungkan akad atau pemberkatan pernikahan.',
+  },
   cuti_menikahkan_anak: {
     marital: 'Sudah Menikah',
     note: 'Khusus karyawan yang sudah menikah/berkeluarga untuk keperluan menikahkan anak.',
@@ -135,8 +139,16 @@ export const checkLeaveEligibility = (
   // Periksa status pernikahan
   if (rule.marital) {
     const isSingle = marital.includes('belum') || marital.includes('lajang') || marital.includes('single') || marital.includes('tidak');
-    if (isSingle) {
-      return { isEligible: false, note: 'Khusus pekerja yang sudah berstatus menikah' };
+    const isMarried = marital.includes('menikah') || marital.includes('kawin') || marital.includes('married');
+
+    if (rule.marital === 'Sudah Menikah') {
+      if (isSingle || (!isMarried && !marital)) {
+        return { isEligible: false, note: 'Khusus pekerja yang sudah berstatus menikah' };
+      }
+    } else if (rule.marital === 'Belum Menikah') {
+      if (isMarried && !isSingle) {
+        return { isEligible: false, note: 'Khusus pekerja lajang / belum menikah (karyawan berstatus menikah tidak berhak mengambil cuti menikah)' };
+      }
     }
   }
 
@@ -161,6 +173,28 @@ export const LEAVE_REGULATIONS_GUIDE = [
     document: 'Tidak Wajib',
     legal: 'UU No. 13/2003 Ps. 79 (2)c',
     description: 'Hak istirahat tahunan bagi pekerja dengan masa kerja 12 bulan terus menerus. Kuota dasar dan tanggal reset tahunan dapat dikonfigurasi per kantor cabang.',
+  },
+  {
+    type: 'izin',
+    label: 'Izin',
+    quota: 'Fleksibel / Akumulasi',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Opsional (SOP Kantor)',
+    legal: 'Kebijakan Perusahaan & PP/PKB',
+    description: 'Izin tidak masuk kerja karena urusan keluarga, keperluan mendesak, atau keperluan pribadi di luar cuti tahunan.',
+  },
+  {
+    type: 'wfh',
+    label: 'Work From Home (WFH)',
+    quota: 'Fleksibel / Sesuai Pengajuan',
+    gender: 'Semua Gender',
+    marital: 'Bebas',
+    pregnant: '-',
+    document: 'Opsional (Surat Tugas / Rencana Kerja)',
+    legal: 'Kebijakan Fleksibilitas Kerja',
+    description: 'Mode bekerja jarak jauh dari rumah atau luar kantor sesuai persetujuan atasan langsung dan SOP kantor cabang.',
   },
   {
     type: 'cuti_hamil',
@@ -211,11 +245,11 @@ export const LEAVE_REGULATIONS_GUIDE = [
     label: 'Cuti Menikah Karyawan',
     quota: '3 hari kerja',
     gender: 'Semua Gender',
-    marital: 'Bebas (Melangsungkan Nikah)',
+    marital: 'Belum Menikah / Lajang',
     pregnant: '-',
     document: 'Opsional (Undangan/Akad)',
     legal: 'UU No. 13/2003 Pasal 93 ayat (4) huruf a',
-    description: 'Pekerja/buruh melangsungkan akad atau pemberkatan pernikahan dirinya sendiri.',
+    description: 'Pekerja/buruh lajang yang melangsungkan akad atau pemberkatan pernikahan dirinya sendiri.',
   },
   {
     type: 'cuti_menikahkan_anak',
@@ -296,7 +330,7 @@ export const LEAVE_REGULATIONS_GUIDE = [
   },
   {
     type: 'izin',
-    label: 'Izin Tidak Masuk Kerja',
+    label: 'Izin',
     quota: 'SOP Perusahaan',
     gender: 'Semua Gender',
     marital: 'Bebas',
@@ -850,7 +884,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const [today, setToday] = useState<any | null>(null);
   const [leaves, setLeaves] = useState<any[]>([]);
   const [leaveStatus, setLeaveStatus] = useState<'pending' | 'approved' | 'rejected' | ''>('pending');
-  const [leaveStepFilter, setLeaveStepFilter] = useState<'all' | 'spv' | 'hrd'>('all');
+  const [leaveStepFilter, setLeaveStepFilter] = useState<'all' | 'spv' | 'hrd'>('hrd');
   const [leaveTypeFilter, setLeaveTypeFilter] = useState<string>('');
   const [leaveSourceFilter, setLeaveSourceFilter] = useState<'all' | 'mandiri' | 'collective'>('all');
   const [leaveOfficeFilter, setLeaveOfficeFilter] = useState(''); // '' = semua cabang
@@ -925,6 +959,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       used: number;
       remaining: number;
       officeDefault: number;
+      isOfficeDisabled?: boolean;
+      isUnlimited?: boolean;
     }>;
     originalBalancesMap: Record<string, number>;
     leavesHistory: any[];
@@ -932,7 +968,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     historyFilterStatus: string;
     historyFilterType: string;
     historySearch: string;
-    historySummary: { approved: number; pending: number; rejected: number; totalDays: number };
+    historySummary: { approved: number; pending: number; rejected: number; adjustments: number; totalDays: number };
   } | null>(null);
   const [isSavingUserDetailBalances, setIsSavingUserDetailBalances] = useState(false);
 
@@ -1129,7 +1165,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       // per_page: 500 — cukup untuk perusahaan UKM. Tidak bisa server-side pagination
       // karena conflict detection (deteksi bentrok cuti) butuh semua data leaves (semua status).
       if (forceRefresh) invalidateCache('/dashboard/attendance/leaves');
-      const res: any = await attendanceApi.leaves({ per_page: 500 }, forceRefresh);
+      const res: any = await attendanceApi.leaves({ per_page: 1000 }, forceRefresh);
       setLeaves(rows(res));
     } catch (e) {
       reportApiError(e, 'Gagal memuat pengajuan izin/cuti.');
@@ -1234,8 +1270,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
       const edited: Record<string, any> = {};
       list.forEach((item: any) => {
+        const isAlwaysEnabled = item.leave_type === 'izin' || item.leave_type === 'wfh';
         edited[item.leave_type] = {
-          is_enabled: Boolean(item.is_enabled),
+          is_enabled: isAlwaysEnabled ? true : Boolean(item.is_enabled),
           quota_days: Number(item.quota_days ?? 0),
           requires_document: Boolean(item.requires_document),
           notes: item.notes || '',
@@ -1264,7 +1301,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
       const settings = Object.entries(leaveTypeSettingsEdited).map(([leave_type, val]: [string, any]) => ({
         leave_type,
-        is_enabled: val.is_enabled,
+        is_enabled: (leave_type === 'izin' || leave_type === 'wfh') ? true : val.is_enabled,
         quota_days: Number(val.quota_days),
         requires_document: val.requires_document,
         notes: val.notes || null,
@@ -1320,8 +1357,26 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   const handleSaveUserBalance = async () => {
     if (!editUserBalanceModal) return;
-    if (editUserBalanceModal.leave_type === 'izin') {
-      onAddNotification('warning', 'Tidak Dapat Diubah', 'Izin pribadi tidak memiliki batasan kuota (unlimited) dan akan terakumulasi otomatis.');
+    const currentBalance = balances.find(b => b.user_id === editUserBalanceModal.user_id && b.leave_type === editUserBalanceModal.leave_type);
+    const officeLimit = currentBalance?.office_default_quota ?? 0;
+    const requestedRemaining = Number(editUserBalanceModal.remaining ?? Math.max(0, editUserBalanceModal.quota - editUserBalanceModal.used));
+
+    if (officeLimit > 0 && requestedRemaining > officeLimit) {
+      onAddNotification('error', 'Validasi Gagal', `Sisa saldo (${requestedRemaining} hari) tidak boleh melebihi standar kantor (${officeLimit} hari).`);
+      return;
+    }
+
+    const isOfficeDisabled = currentBalance ? (currentBalance.is_enabled_in_office === false || currentBalance.is_disabled === true) : false;
+    if (isOfficeDisabled) {
+      onAddNotification('error', 'Jenis Cuti Dinonaktifkan', `Jenis cuti ${getLeaveTypeLabel(editUserBalanceModal.leave_type)} sedang dinonaktifkan di pengaturan kantor ini.`);
+      setEditUserBalanceModal(null);
+      return;
+    }
+
+    const isIzinAccumulation = editUserBalanceModal.leave_type === 'izin' && 
+      (currentBalance?.office_default_quota ?? 0) <= 0;
+    if (isIzinAccumulation) {
+      onAddNotification('warning', 'Tidak Dapat Diubah', 'Izin pribadi kantor ini diatur dalam mode akumulasi (tanpa batasan kuota).');
       setEditUserBalanceModal(null);
       return;
     }
@@ -1330,17 +1385,17 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       await attendanceApi.setLeaveBalance({
         user_id: editUserBalanceModal.user_id,
         leave_type: editUserBalanceModal.leave_type,
-        quota: Number(editUserBalanceModal.quota),
+        remaining: requestedRemaining,
       });
       onAddAuditLog(
         'Saldo Cuti Karyawan Disesuaikan',
-        `${editUserBalanceModal.user_name}: kuota ${getLeaveTypeLabel(editUserBalanceModal.leave_type)} diatur menjadi ${editUserBalanceModal.quota} hari`,
+        `${editUserBalanceModal.user_name}: sisa saldo ${getLeaveTypeLabel(editUserBalanceModal.leave_type)} diatur menjadi ${requestedRemaining} hari`,
         'bg-indigo-600'
       );
       onAddNotification(
         'success',
         'Saldo Cuti Disimpan',
-        `Kuota ${getLeaveTypeLabel(editUserBalanceModal.leave_type)} untuk ${editUserBalanceModal.user_name} berhasil disimpan.`
+        `Sisa saldo ${getLeaveTypeLabel(editUserBalanceModal.leave_type)} untuk ${editUserBalanceModal.user_name} berhasil disimpan.`
       );
       setEditUserBalanceModal(null);
       await loadBalances(true);
@@ -1358,27 +1413,48 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     initialTab: 'matrix' | 'history' = 'matrix'
   ) => {
     const userBalances = balances.filter(b => b.user_id === userId);
-    const balanceMap: Record<string, { quota: number; used: number; remaining: number; officeDefault: number }> = {};
+    const balanceMap: Record<string, { quota: number; used: number; remaining: number; officeDefault: number; isOfficeDisabled: boolean; isUnlimited: boolean }> = {};
     const originalMap: Record<string, number> = {};
+
+    const userProfileForEligibility = {
+      gender: data.gender || '',
+      maritalStatus: data.maritalStatus || '',
+      isPregnant: data.isPregnant,
+    };
 
     Object.keys(LEAVE_TYPE_LABELS).forEach(type => {
       if (type === 'wfh') return; // WFH adalah mode presensi, bukan jenis saldo hak cuti
       const isIzin = type === 'izin';
+      const elig = isIzin ? { isEligible: true } : checkLeaveEligibility(type, userProfileForEligibility);
       const found = userBalances.find(b => b.leave_type === type);
-      const officeDefault = isIzin ? 0 : (found?.office_default_quota 
+
+      // Cek apakah tipe cuti ini di-disable di level kantor
+      const isOfficeDisabled = found ? (found.is_enabled_in_office === false || found.is_disabled === true) : false;
+
+      const officeDefault = isOfficeDisabled ? 0 : (found?.office_default_quota 
         ?? (type === 'cuti' ? 12 : type === 'cuti_setengah_hari' ? 10 : type === 'cuti_hamil' ? 90 : type === 'cuti_keguguran' ? 45 : type === 'cuti_menikah' ? 3 : type === 'cuti_ayah' || type === 'cuti_haid' || type === 'cuti_menikahkan_anak' || type === 'cuti_khitan_baptis_anak' || type === 'cuti_duka_keluarga_inti' ? 2 : type === 'cuti_duka_serumah' ? 1 : type === 'cuti_ibadah_haji_umrah' ? 40 : type === 'sakit' ? 14 : 0));
       
-      const currentQuota = isIzin ? 0 : (found ? Number(found.quota ?? 0) : (type === 'cuti' ? 12 : 0));
+      // PENTING: isUnlimited HANYA berlaku kalau tipe cuti ENABLED di kantor.
+      // Kalau disabled → bukan akumulasi, tapi OFF.
+      const isUnlimited = !isOfficeDisabled && Boolean(found?.is_unlimited || (isIzin && officeDefault <= 0));
+      let rawQuota = (isUnlimited || isOfficeDisabled) ? 0 : (found && Number(found.quota ?? 0) > 0 ? Number(found.quota) : officeDefault);
+      // Alokasi kuota karyawan tidak boleh di atas standar kantor:
+      if (!isUnlimited && !isOfficeDisabled && officeDefault > 0 && rawQuota > officeDefault) {
+        rawQuota = officeDefault;
+      }
+      const currentQuota = (!elig.isEligible || isOfficeDisabled) ? 0 : rawQuota;
       const used = found ? Number(found.used ?? 0) : 0;
-      const remaining = isIzin ? 0 : (found ? Number(found.remaining ?? Math.max(0, currentQuota - used)) : Math.max(0, currentQuota - used));
+      const remaining = (isUnlimited || isOfficeDisabled) ? 0 : (!elig.isEligible ? 0 : (found && found.remaining !== null && found.remaining !== undefined ? Math.min(Number(found.remaining), Math.max(0, currentQuota - used)) : Math.max(0, currentQuota - used)));
 
       balanceMap[type] = {
         quota: currentQuota,
         used,
         remaining,
         officeDefault,
+        isOfficeDisabled,
+        isUnlimited,
       };
-      originalMap[type] = currentQuota;
+      originalMap[type] = remaining;
     });
 
     setUserLeaveDetailModal({
@@ -1398,12 +1474,20 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       historyFilterStatus: 'all',
       historyFilterType: 'all',
       historySearch: '',
-      historySummary: { approved: 0, pending: 0, rejected: 0, totalDays: 0 },
+      historySummary: { approved: 0, pending: 0, rejected: 0, adjustments: 0, totalDays: 0 },
     });
 
     try {
-      const res = await attendanceApi.leaves({ user_id: userId, per_page: 500 }, true);
-      const list = res?.data?.data || res?.data?.leaves?.data || res?.data?.leaves || (Array.isArray(res?.data) ? res.data : []);
+      const res: any = await attendanceApi.leaves({ user_id: userId, per_page: 500 }, true);
+      const list = rows(res);
+      const adjustments: any[] = Array.isArray(res?.adjustments)
+        ? res.adjustments
+        : (Array.isArray(res?.data?.adjustments) ? res.data.adjustments : []);
+      const combinedHistory = [
+        ...list.map((l: any) => ({ ...l, is_adjustment: false })),
+        ...adjustments.map((a: any) => ({ ...a, is_adjustment: true, status: 'adjustment' })),
+      ].sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+
       const approvedList = list.filter((l: any) => l.status === 'approved');
       const totalDaysApproved = approvedList.reduce((acc: number, l: any) => acc + (Number(l.total_days) || 0), 0);
 
@@ -1411,12 +1495,13 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         if (!prev || prev.userId !== userId) return prev;
         return {
           ...prev,
-          leavesHistory: list,
+          leavesHistory: combinedHistory,
           loadingHistory: false,
           historySummary: {
-            approved: res?.data?.summary?.approved ?? approvedList.length,
-            pending: res?.data?.summary?.pending ?? list.filter((l: any) => l.status === 'pending').length,
-            rejected: res?.data?.summary?.rejected ?? list.filter((l: any) => l.status === 'rejected').length,
+            approved: res?.summary?.approved ?? res?.data?.summary?.approved ?? approvedList.length,
+            pending: res?.summary?.pending ?? res?.data?.summary?.pending ?? list.filter((l: any) => l.status === 'pending').length,
+            rejected: res?.summary?.rejected ?? res?.data?.summary?.rejected ?? list.filter((l: any) => l.status === 'rejected').length,
+            adjustments: adjustments.length,
             totalDays: totalDaysApproved,
           }
         };
@@ -1429,16 +1514,24 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   const handleResetUserDetailToOfficeDefaults = () => {
     if (!userLeaveDetailModal) return;
+    const userProfile = {
+      gender: userLeaveDetailModal.gender,
+      maritalStatus: userLeaveDetailModal.maritalStatus,
+      isPregnant: userLeaveDetailModal.isPregnant,
+    };
     setUserLeaveDetailModal(prev => {
       if (!prev) return null;
       const updatedMap = { ...prev.balancesMap };
       Object.keys(updatedMap).forEach(key => {
-        if (key === 'izin') return; // Izin tanpa batas kuota (unlimited), abaikan
-        const def = updatedMap[key].officeDefault;
+        if (updatedMap[key].isOfficeDisabled) return; // Skip tipe yang disabled di kantor
+        if (key === 'izin' && updatedMap[key].officeDefault <= 0) return; // Mode akumulasi tanpa limit kuota
+        const elig = key === 'izin' ? { isEligible: true } : checkLeaveEligibility(key, userProfile);
+        const def = elig.isEligible ? updatedMap[key].officeDefault : 0;
+        const newRemaining = Math.max(0, def - updatedMap[key].used);
         updatedMap[key] = {
           ...updatedMap[key],
           quota: def,
-          remaining: Math.max(0, def - updatedMap[key].used),
+          remaining: newRemaining,
         };
       });
       return {
@@ -1446,28 +1539,40 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         balancesMap: updatedMap,
       };
     });
-    onAddNotification('info', 'Diisi Sesuai Standar Kantor', 'Nilai kuota seluruh jenis cuti telah disesuaikan ke standar cabang kantor karyawan.');
+    onAddNotification('info', 'Diisi Sesuai Standar Kantor', 'Sisa saldo jenis cuti telah disesuaikan ke standar kantor cabang (dikurangi yang sudah terpakai).');
   };
 
   const handleSaveUserDetailBalances = async () => {
     if (!userLeaveDetailModal) return;
     setIsSavingUserDetailBalances(true);
     try {
-      const balancesToUpdate: Array<{ leave_type: string; quota: number }> = [];
+      const balancesToUpdate: Array<{ leave_type: string; remaining: number }> = [];
       Object.entries(userLeaveDetailModal.balancesMap).forEach(([leaveType, data]: [string, any]) => {
-        if (leaveType === 'izin') return; // Izin tidak memiliki limit kuota (unlimited)
-        if (data.quota !== userLeaveDetailModal.originalBalancesMap[leaveType]) {
+        if (data.isOfficeDisabled) return; // Skip tipe yang disabled di kantor
+        if (leaveType === 'izin' && data.officeDefault <= 0) return; // Mode akumulasi tanpa batasan kuota
+        if (data.remaining !== userLeaveDetailModal.originalBalancesMap[leaveType]) {
           balancesToUpdate.push({
             leave_type: leaveType,
-            quota: Number(data.quota),
+            remaining: Number(data.remaining),
           });
         }
       });
 
       if (balancesToUpdate.length === 0) {
-        onAddNotification('info', 'Tidak Ada Perubahan', 'Tidak ada kuota cuti yang diubah.');
+        onAddNotification('info', 'Tidak Ada Perubahan', 'Tidak ada sisa saldo cuti yang diubah.');
         setIsSavingUserDetailBalances(false);
         return;
+      }
+
+      // Validasi: sisa saldo tidak boleh melebihi standar kantor
+      for (const b of balancesToUpdate) {
+        const itemData = userLeaveDetailModal.balancesMap[b.leave_type];
+        const officeLimit = itemData?.officeDefault ?? 0;
+        if (officeLimit > 0 && b.remaining > officeLimit) {
+          onAddNotification('error', 'Validasi Gagal', `Sisa saldo ${getLeaveTypeLabel(b.leave_type)} (${b.remaining} hari) tidak boleh melebihi standar kantor (${officeLimit} hari).`);
+          setIsSavingUserDetailBalances(false);
+          return;
+        }
       }
 
       await attendanceApi.setLeaveBalance({
@@ -1477,28 +1582,64 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
       onAddAuditLog(
         'Saldo Cuti Karyawan Diperbarui (Batch)',
-        `${userLeaveDetailModal.userName}: kuota ${balancesToUpdate.length} jenis cuti diperbarui`,
+        `${userLeaveDetailModal.userName}: sisa saldo ${balancesToUpdate.length} jenis cuti diperbarui`,
         'bg-indigo-600'
       );
       onAddNotification(
         'success',
         'Saldo Cuti Disimpan',
-        `Berhasil menyimpan pembaruan kuota cuti untuk ${userLeaveDetailModal.userName}.`
+        `Berhasil menyimpan pembaruan sisa saldo cuti untuk ${userLeaveDetailModal.userName}.`
       );
 
       await loadBalances(true);
 
-      setUserLeaveDetailModal(prev => {
-        if (!prev) return null;
-        const newOriginal = { ...prev.originalBalancesMap };
-        balancesToUpdate.forEach(b => {
-          newOriginal[b.leave_type] = b.quota;
+      // Muat ulang riwayat pengajuan & penyesuaian saldo agar penyesuaian yang baru tersimpan langsung muncul di tab riwayat
+      try {
+        const historyRes: any = await attendanceApi.leaves({ user_id: userLeaveDetailModal.userId, per_page: 500 }, true);
+        const freshList = rows(historyRes);
+        const freshAdjustments: any[] = Array.isArray(historyRes?.adjustments)
+          ? historyRes.adjustments
+          : (Array.isArray(historyRes?.data?.adjustments) ? historyRes.data.adjustments : []);
+        const freshCombined = [
+          ...freshList.map((l: any) => ({ ...l, is_adjustment: false })),
+          ...freshAdjustments.map((a: any) => ({ ...a, is_adjustment: true, status: 'adjustment' })),
+        ].sort((a: any, b: any) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+
+        const freshApproved = freshList.filter((l: any) => l.status === 'approved');
+        const freshTotalDays = freshApproved.reduce((acc: number, l: any) => acc + (Number(l.total_days) || 0), 0);
+
+        setUserLeaveDetailModal(prev => {
+          if (!prev) return null;
+          const newOriginal = { ...prev.originalBalancesMap };
+          balancesToUpdate.forEach(b => {
+            newOriginal[b.leave_type] = b.remaining;
+          });
+          return {
+            ...prev,
+            originalBalancesMap: newOriginal,
+            leavesHistory: freshCombined,
+            historySummary: {
+              approved: historyRes?.summary?.approved ?? historyRes?.data?.summary?.approved ?? freshApproved.length,
+              pending: historyRes?.summary?.pending ?? historyRes?.data?.summary?.pending ?? freshList.filter((l: any) => l.status === 'pending').length,
+              rejected: historyRes?.summary?.rejected ?? historyRes?.data?.summary?.rejected ?? freshList.filter((l: any) => l.status === 'rejected').length,
+              adjustments: freshAdjustments.length,
+              totalDays: freshTotalDays,
+            }
+          };
         });
-        return {
-          ...prev,
-          originalBalancesMap: newOriginal,
-        };
-      });
+      } catch {
+        setUserLeaveDetailModal(prev => {
+          if (!prev) return null;
+          const newOriginal = { ...prev.originalBalancesMap };
+          balancesToUpdate.forEach(b => {
+            newOriginal[b.leave_type] = b.remaining;
+          });
+          return {
+            ...prev,
+            originalBalancesMap: newOriginal,
+          };
+        });
+      }
     } catch (e) {
       reportApiError(e, 'Gagal menyimpan saldo cuti karyawan.');
     } finally {
@@ -1570,6 +1711,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     else if (tab === 'report') loadReport(reportPage);
     else if (tab === 'holidays') {
       loadHolidays();
+      loadLeaves();
       if (users.length === 0) {
         attendanceApi.users({ per_page: 300 }).then(res => setUsers(rows(res))).catch(() => {});
       }
@@ -1807,25 +1949,99 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     refQuota = 12,
     isCurrentlyActive = true
   ) => {
+    if (togglingUserId === userId) return;
     const willBeActive = !isCurrentlyActive;
-    const newQuota = willBeActive ? (refQuota > 0 ? refQuota : 12) : 0;
+    const targetQuota = currentQuota > 0 ? currentQuota : (refQuota > 0 ? refQuota : 12);
     setTogglingUserId(userId);
-    try {
-      await attendanceApi.setLeaveBalance({
-        user_id: userId,
-        leave_type: 'cuti',
-        quota: newQuota,
-        allow_leave: willBeActive,
+
+    // Simpan snapshot untuk rollback jika terjadi kesalahan
+    const previousBalances = [...balances];
+
+    // Optimistic update: langsung mutasi state balances secara halus di memori tanpa memicu loading skeleton / refresh
+    setBalances(prev => {
+      let hasCuti = false;
+      let userRef: any = null;
+      const updated = prev.map(b => {
+        if (b.user_id === userId) {
+          userRef = b;
+          if (b.leave_type === 'cuti') {
+            hasCuti = true;
+            const newQuota = willBeActive ? (b.quota > 0 ? b.quota : targetQuota) : (b.quota > 0 ? b.quota : 0);
+            return {
+              ...b,
+              allow_leave: willBeActive,
+              quota: newQuota,
+              remaining: Math.max(0, newQuota - (b.used ?? 0)),
+              active: willBeActive,
+            };
+          }
+          return {
+            ...b,
+            allow_leave: willBeActive,
+          };
+        }
+        return b;
       });
+
+      if (!hasCuti && willBeActive && userRef) {
+        updated.push({
+          ...userRef,
+          id: -Date.now(),
+          leave_type: 'cuti',
+          quota: targetQuota,
+          used: 0,
+          remaining: targetQuota,
+          active: true,
+          allow_leave: true,
+        });
+      }
+
+      return updated;
+    });
+
+    try {
+      if (!willBeActive) {
+        // Menonaktifkan hak cuti:
+        // Set allow_leave: false. Kuota lama dipertahankan agar tidak terjadi saldo negatif/rusak.
+        await attendanceApi.setLeaveBalance({
+          user_id: userId,
+          leave_type: 'cuti',
+          quota: currentQuota > 0 ? currentQuota : 0,
+          allow_leave: false,
+        });
+      } else {
+        // Mengaktifkan kembali hak cuti:
+        await attendanceApi.setLeaveBalance({
+          user_id: userId,
+          leave_type: 'cuti',
+          quota: targetQuota,
+          allow_leave: true,
+        });
+      }
+
+      // Invalidate cache
+      invalidateCache('/dashboard/attendance/leave-balances');
+      invalidateCache('/admin/users');
+      invalidateCache('/dashboard/attendance/users');
+
       onAddAuditLog(
         'Hak Cuti Diubah',
-        `${userName}: seluruh hak cuti ${willBeActive ? `diaktifkan (${newQuota} hari cuti tahunan)` : 'dinonaktifkan (karyawan hanya dapat mengajukan Izin & WFH)'}`,
+        `${userName}: seluruh hak cuti ${willBeActive ? 'diaktifkan kembali' : 'dinonaktifkan (karyawan hanya dapat mengajukan Izin & WFH)'}`,
         willBeActive ? 'bg-teal-600' : 'bg-slate-600'
       );
-      await loadBalances();
+
+      // Sinkronisasi data di latar belakang tanpa memicu loading skeleton / flicker (smooth seperti switch WFH)
+      attendanceApi.leaveBalances(undefined, true).then(res => {
+        if (res?.balances) {
+          setBalances(res.balances);
+        }
+      }).catch(() => {});
+
       // Perbarui juga data allUsers agar status leave_active userOptions langsung sinkron
-      attendanceApi.allUsers(true).catch(() => {}); // forceRefresh=true agar cache tidak stale
+      attendanceApi.allUsers(true).catch(() => {});
     } catch (e) {
+      // Rollback ke state sebelumnya jika API gagal
+      setBalances(previousBalances);
       reportApiError(e, 'Gagal mengubah status hak cuti.');
     } finally {
       setTogglingUserId(null);
@@ -1892,6 +2108,16 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     };
   }, [today, todayOfficeFilter]);
 
+  const pendingHrdCount = useMemo(() => {
+    const todayStr = new Date().toLocaleDateString('en-CA');
+    return leaves.filter((l: any) =>
+      l.status === 'pending' &&
+      l.current_step === 'hrd' &&
+      l.holiday_id == null &&
+      ((l.start_date ?? '').slice(0, 10) > todayStr)
+    ).length;
+  }, [leaves]);
+
   return (
     <div className="space-y-5 font-sans">
       {/* Tabs & Refresh */}
@@ -1908,6 +2134,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             >
               <Icon className="w-3.5 h-3.5" />
               {label}
+              {key === 'leaves' && pendingHrdCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-500 text-white leading-none">
+                  {pendingHrdCount}
+                </span>
+              )}
             </button>
           ))}
         </div>
@@ -1952,7 +2183,10 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 else if (balanceSubTab === 'leave_types') loadLeaveTypeSettings(leaveTypeOfficeId, true);
               }
               else if (tab === 'report') loadReport(reportPage, true);
-              else if (tab === 'holidays') loadHolidays(true);
+              else if (tab === 'holidays') {
+                loadHolidays(true);
+                loadLeaves(true);
+              }
             }}
             disabled={loading || balanceHistoryLoading || rateLimitCountdown > 0}
             className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-50 dark:bg-indigo-900/30 border border-indigo-100 dark:border-indigo-800 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 rounded-xl text-xs font-bold transition shrink-0 disabled:opacity-50"
@@ -2324,16 +2558,25 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               if (leaveStatus === 'pending') {
                 // Hanya pengajuan yang masih pending dan belum memasuki hari H
                 result = result.filter((l: any) => l.status === 'pending' && ((l.start_date ?? '').slice(0, 10) > todayStr));
+                if (leaveStepFilter !== 'all') {
+                  result = result.filter((l: any) => (l.current_step || 'spv') === leaveStepFilter);
+                }
               } else if (leaveStatus === 'rejected') {
                 // Pengajuan yang ditolak atau pending yang sudah hari H
                 result = result.filter((l: any) => l.status === 'rejected' || (l.status === 'pending' && (l.start_date ?? '').slice(0, 10) <= todayStr));
+                if (leaveStepFilter !== 'all') {
+                  result = result.filter((l: any) => (l.current_step || 'spv') === leaveStepFilter);
+                }
+              } else if (leaveStatus === 'approved') {
+                result = result.filter((l: any) => l.status === 'approved');
               } else if (leaveStatus) {
                 result = result.filter((l: any) => l.status === leaveStatus);
+              } else {
+                if (leaveStepFilter !== 'all') {
+                  result = result.filter((l: any) => (l.current_step || 'spv') === leaveStepFilter);
+                }
               }
               if (leaveTypeFilter) result = result.filter((l: any) => l.leave_type === leaveTypeFilter);
-              if (leaveStepFilter !== 'all') {
-                result = result.filter((l: any) => (l.current_step || 'spv') === leaveStepFilter);
-              }
             }
             // Filter sumber cuti — berlaku di semua mode (normal maupun mendatang)
             if (leaveSourceFilter === 'mandiri') result = result.filter((l: any) => l.holiday_id == null);
@@ -2441,14 +2684,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                   {/* Dropdown tahap persetujuan */}
                   <select
-                    value={showUpcoming ? 'all' : leaveStepFilter}
-                    disabled={showUpcoming}
+                    value={showUpcoming || leaveStatus === 'approved' ? 'all' : leaveStepFilter}
+                    disabled={showUpcoming || leaveStatus === 'approved'}
                     onChange={(e) => setLeaveStepFilter(e.target.value as any)}
                     className="px-3 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 disabled:cursor-not-allowed"
+                    title={leaveStatus === 'approved' ? 'Semua cuti disetujui telah selesai tahap persetujuan' : 'Filter tahap persetujuan cuti'}
                   >
+                    <option value="hrd" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tahap 2: Menunggu HRD (Siap Diproses)</option>
+                    <option value="spv" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tahap 1: Menunggu SPV (Pantau)</option>
                     <option value="all" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Semua Tahap</option>
-                    <option value="spv" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tahap 1 (SPV)</option>
-                    <option value="hrd" className="bg-white dark:bg-slate-800 text-slate-900 dark:text-slate-100">Tahap 2 (HRD Final)</option>
                   </select>
 
                   {/* Dropdown sumber cuti */}
@@ -2644,7 +2888,22 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                               )}
                             </td>
                             <td className="py-2.5 px-2 text-center">
-                              {l.status === 'pending' && ((l.start_date ?? '').slice(0, 10) <= todayStr) ? (
+                              {l.holiday_id != null ? (
+                                // Cuti Bersama: murni keputusan staf biasa (tidak ada approval berjenjang Lv 1 SPV maupun Lv 2 HRD)
+                                l.collective_status === 'accepted' || l.status === 'approved' ? (
+                                  <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                                    Ikut (Disetujui)
+                                  </span>
+                                ) : l.collective_status === 'declined' || l.status === 'rejected' ? (
+                                  <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400 border border-rose-200 dark:border-rose-800">
+                                    Tidak Ikut
+                                  </span>
+                                ) : (
+                                  <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-blue-50 dark:bg-blue-950/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800" title="Menunggu staf menentukan pilihan ikut atau tidak via aplikasi mobile">
+                                    Menunggu Pilihan Staf
+                                  </span>
+                                )
+                              ) : l.status === 'pending' && ((l.start_date ?? '').slice(0, 10) <= todayStr) ? (
                                 <span className="text-[9px] font-bold px-2 py-0.5 rounded bg-rose-50 dark:bg-rose-950/30 text-rose-600 dark:text-rose-400" title="Tidak ada aksi approval dari HRD hingga hari H — otomatis ditolak sistem">
                                   Ditolak (Hari H)
                                 </span>
@@ -2677,23 +2936,33 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   Otomatis ditolak (Hari H)
                                 </span>
                               ) : l.status === 'pending' && l.holiday_id == null ? (
-                                // Cuti mandiri pending: tampilkan tombol approve/tolak
-                                <div className="flex justify-end gap-1.5">
-                                  <button
-                                    onClick={() => handleApproveLeave(l.id, l.user_name)}
-                                    className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer"
-                                    title={l.current_step === 'hrd' ? 'Setujui Final (HRD)' : 'Setujui Tahap 1 (SPV)'}
+                                l.current_step === 'hrd' ? (
+                                  // Cuti mandiri pending Tahap 2: siap disetujui / ditolak oleh HRD
+                                  <div className="flex justify-end gap-1.5">
+                                    <button
+                                      onClick={() => handleApproveLeave(l.id, l.user_name)}
+                                      className="p-1.5 rounded-lg bg-emerald-50 text-emerald-600 hover:bg-emerald-100 cursor-pointer transition"
+                                      title="Setujui Final (HRD)"
+                                    >
+                                      <Check className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      onClick={() => handleRejectLeave(l.id, l.user_name)}
+                                      className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer transition"
+                                      title="Tolak (HRD)"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  // Cuti mandiri pending Tahap 1: masih menunggu persetujuan SPV
+                                  <span
+                                    className="text-[10px] text-amber-600 dark:text-amber-400 font-medium italic"
+                                    title="Pengajuan ini masih menunggu persetujuan Atasan Langsung (SPV). Setelah disetujui SPV, tombol persetujuan HRD akan aktif."
                                   >
-                                    <Check className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    onClick={() => handleRejectLeave(l.id, l.user_name)}
-                                    className="p-1.5 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-100 cursor-pointer"
-                                    title={l.current_step === 'hrd' ? 'Tolak (HRD)' : 'Tolak (SPV)'}
-                                  >
-                                    <X className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
+                                    Menunggu SPV
+                                  </span>
+                                )
                               ) : l.status === 'pending' && l.holiday_id != null ? (
                                 // Cuti bersama pending: karyawan memilih sendiri via mobile
                                 <span
@@ -3278,6 +3547,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           const userId = cuti?.user_id ?? izin?.user_id;
                           const isLeaveAllowed = data.allowLeave !== false && cuti?.allow_leave !== false;
                           const isActive = isLeaveAllowed && (cuti?.quota ?? 0) > 0;
+                          const isIzinOfficeDisabled = izin ? (izin.is_enabled_in_office === false || izin.is_disabled === true) : false;
                           const isToggling = togglingUserId === userId;
 
                           return (
@@ -3318,17 +3588,20 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                     <span className="sm:hidden">Kelola</span>
                                   </button>
 
-                                  <span className={`text-[9px] font-semibold hidden md:inline ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
+                                  <span className={`text-[9px] font-semibold hidden md:inline transition-colors duration-200 ${isActive ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
                                     {isActive ? `Cuti ${cuti?.quota ?? 12}hr/thn` : 'Hak Cuti Nonaktif'}
                                   </span>
                                   <button
-                                    disabled={isToggling || !userId}
-                                    onClick={() => handleToggleCutiQuota(userId, name, cuti?.quota ?? 0, cuti?.office_default_quota ?? 12, isActive)}
+                                    type="button"
+                                    onClick={() => {
+                                      if (isToggling || !userId) return;
+                                      handleToggleCutiQuota(userId, name, cuti?.quota ?? 0, cuti?.office_default_quota ?? 12, isActive);
+                                    }}
                                     title={isActive ? 'Nonaktifkan seluruh jenis cuti karyawan (hanya izin dan WFH yang bisa diajukan)' : 'Aktifkan kembali seluruh jenis cuti karyawan'}
-                                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors disabled:opacity-50 disabled:cursor-wait ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
+                                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors duration-200 cursor-pointer ${isActive ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
                                       }`}
                                   >
-                                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${isActive ? 'translate-x-4' : 'translate-x-1'
+                                    <span className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow-xs transition-transform duration-200 ${isActive ? 'translate-x-4' : 'translate-x-1'
                                       }`} />
                                   </button>
                                 </div>
@@ -3380,32 +3653,76 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   )}
                                 </div>
 
-                                {/* Blok Izin Pribadi (Tanpa Batas Kuota) */}
-                                <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
-                                  <div className="flex items-center justify-between">
-                                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin (Pribadi)</p>
-                                    <span className="text-[9px] font-semibold text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-700/60 px-1.5 py-0.5 rounded">
-                                      Tanpa Limit
-                                    </span>
-                                  </div>
-                                  <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
-                                    {izin ? izin.used : 0}
-                                    <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
-                                  </p>
-                                  <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
-                                    <div className="h-full w-full rounded-full bg-indigo-500/30" />
-                                  </div>
-                                  <div className="flex items-center justify-between pt-0.5 text-[10px]">
-                                    <p className="text-slate-400">Direset ke 0 saat tanggal reset</p>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenUserDetailModal(userId, name, data, 'history')}
-                                      className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium cursor-pointer"
-                                    >
-                                      Laporan &rarr;
-                                    </button>
-                                  </div>
-                                </div>
+                                 {/* Blok Izin Pribadi (Jatah Per Tahun atau Akumulasi) */}
+                                 <div className="space-y-1.5 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800/60">
+                                   <div className="flex items-center justify-between">
+                                     <p className="text-[9px] font-bold text-slate-400 uppercase tracking-wider">Izin (Pribadi)</p>
+                                     <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded ${
+                                       isIzinOfficeDisabled
+                                         ? 'text-rose-600 bg-rose-50 dark:bg-rose-950/40 border border-rose-200/60 dark:border-rose-900/40'
+                                         : (izin?.quota ?? 0) > 0 || (izin?.office_default_quota ?? 0) > 0
+                                         ? 'text-teal-700 dark:text-teal-300 bg-teal-100/60 dark:bg-teal-950/60'
+                                         : 'text-slate-500 dark:text-slate-400 bg-slate-200/60 dark:bg-slate-700/60'
+                                     }`}>
+                                       {isIzinOfficeDisabled
+                                         ? 'Off Kantor'
+                                         : (izin?.quota ?? 0) > 0 ? `${izin.quota} hr/thn` : ((izin?.office_default_quota ?? 0) > 0 ? `${izin.office_default_quota} hr/thn` : 'Tanpa Limit')}
+                                     </span>
+                                   </div>
+                                   {isIzinOfficeDisabled ? (
+                                     <div className="flex items-center justify-between pt-1 text-[10px]">
+                                       <span className="text-slate-400 italic">Dinonaktifkan di kantor</span>
+                                       {izin && (izin.used ?? 0) > 0 && (
+                                         <span className="text-slate-500 font-mono font-medium">Terpakai: {izin.used} hr</span>
+                                       )}
+                                     </div>
+                                   ) : (izin?.quota ?? 0) > 0 || (izin?.office_default_quota ?? 0) > 0 ? (
+                                     <>
+                                       <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                         {izin ? izin.used : 0}
+                                         <span className="text-[10px] font-normal text-slate-400 ml-1">/ {izin?.quota || izin?.office_default_quota} hr</span>
+                                       </p>
+                                       <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                         <div
+                                           className="h-full rounded-full bg-teal-500"
+                                           style={{ width: `${Math.min(100, Math.round(((izin?.used ?? 0) / (izin?.quota || izin?.office_default_quota || 1)) * 100))}%` }}
+                                         />
+                                       </div>
+                                       <div className="flex items-center justify-between pt-0.5 text-[10px]">
+                                         <p className="text-teal-600 dark:text-teal-400 font-semibold">
+                                           Sisa {Math.max(0, (izin?.quota || izin?.office_default_quota) - (izin?.used ?? 0))} hari
+                                         </p>
+                                         <button
+                                           type="button"
+                                           onClick={() => handleOpenUserDetailModal(userId, name, data, 'history')}
+                                           className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium cursor-pointer"
+                                         >
+                                           Laporan &rarr;
+                                         </button>
+                                       </div>
+                                     </>
+                                   ) : (
+                                     <>
+                                       <p className="text-base font-bold text-slate-800 dark:text-slate-100 leading-none">
+                                         {izin ? izin.used : 0}
+                                         <span className="text-[10px] font-normal text-slate-400 ml-1">hari terpakai</span>
+                                       </p>
+                                       <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
+                                         <div className="h-full w-full rounded-full bg-indigo-500/30" />
+                                       </div>
+                                       <div className="flex items-center justify-between pt-0.5 text-[10px]">
+                                         <p className="text-slate-400">Akumulasi tanpa batas</p>
+                                         <button
+                                           type="button"
+                                           onClick={() => handleOpenUserDetailModal(userId, name, data, 'history')}
+                                           className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium cursor-pointer"
+                                         >
+                                           Laporan &rarr;
+                                         </button>
+                                       </div>
+                                     </>
+                                   )}
+                                 </div>
                               </div>
 
                               {/* Accordion / Bagian Jenis Cuti Tambahan */}
@@ -3824,16 +4141,6 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                   <button
                     type="button"
-                    onClick={handleResetLeaveTypeSettingsToDefault}
-                    disabled={leaveTypeSettingsLoading || leaveTypeSettingsSaving}
-                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-xl transition cursor-pointer disabled:opacity-50"
-                  >
-                    <RotateCcw className="w-3.5 h-3.5" />
-                    <span>Standar Regulasi UU</span>
-                  </button>
-
-                  <button
-                    type="button"
                     onClick={handleSaveLeaveTypeSettings}
                     disabled={leaveTypeSettingsLoading || leaveTypeSettingsSaving}
                     className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-bold text-white bg-teal-600 hover:bg-teal-700 rounded-xl shadow-sm transition disabled:opacity-50 cursor-pointer"
@@ -3849,34 +4156,6 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         <span>Simpan Pengaturan Kantor</span>
                       </>
                     )}
-                  </button>
-                </div>
-              </div>
-
-              {/* Banner Penjelasan Regulasi UU Ketenagakerjaan */}
-              <div className="bg-indigo-50/70 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 rounded-2xl p-4 space-y-2">
-                <div className="flex items-start justify-between gap-3 flex-wrap sm:flex-nowrap">
-                  <div className="flex items-start gap-2.5">
-                    <div className="p-2 rounded-xl bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 shrink-0">
-                      <ShieldCheck className="w-4 h-4" />
-                    </div>
-                    <div className="space-y-1">
-                      <h4 className="text-xs font-bold text-indigo-950 dark:text-indigo-200">
-                        Harmonisasi Regulasi Ketenagakerjaan &amp; Validasi Profil Karyawan (UU Ketenagakerjaan &amp; UU KIA)
-                      </h4>
-                      <p className="text-[11px] text-indigo-800/80 dark:text-indigo-300/80 leading-relaxed">
-                        Sistem ExpenseFlow mendukung <strong>15 jenis cuti resmi</strong> dengan validasi kelayakan otomatis (memeriksa <strong>Gender</strong>, <strong>Status Pernikahan</strong>, dan <strong>Status Kehamilan</strong> karyawan pada profil data master karyawan). 3 jenis dasar (<em>Cuti Tahunan, Izin, WFH</em>) selalu aktif permanen, sedangkan <strong>Cuti Sakit</strong> dan <strong>11 jenis cuti khusus regulasi</strong> dapat Anda atur langsung di bawah ini (kebijakan kuota standar, wajib bukti surat dokter, serta catatan SOP kantor).
-                      </p>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setShowLeaveInfoModal(true)}
-                    className="shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-indigo-700 dark:text-indigo-200 bg-white dark:bg-indigo-900/60 hover:bg-indigo-50 dark:hover:bg-indigo-900 rounded-xl border border-indigo-200 dark:border-indigo-700/60 shadow-2xs transition cursor-pointer"
-                  >
-                    <BookOpen className="w-3.5 h-3.5 text-indigo-600 dark:text-indigo-400" />
-                    <span>Panduan Halaman Ini</span>
                   </button>
                 </div>
               </div>
@@ -4056,13 +4335,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               ) : (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {leaveTypeSettingsList.map((item) => {
+                    const isAlwaysEnabled = item.leave_type === 'izin' || item.leave_type === 'wfh';
                     const edited = leaveTypeSettingsEdited[item.leave_type] ?? {
-                      is_enabled: Boolean(item.is_enabled),
+                      is_enabled: isAlwaysEnabled ? true : Boolean(item.is_enabled),
                       quota_days: Number(item.quota_days ?? item.default_quota_days ?? 0),
                       requires_document: Boolean(item.requires_document),
                       notes: item.notes || '',
                     };
-                    const isEnabled = edited.is_enabled;
+                    const isEnabled = isAlwaysEnabled ? true : edited.is_enabled;
 
                     return (
                       <div
@@ -4074,78 +4354,176 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         }`}
                       >
                         {/* Header Item Cuti */}
-                        <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <h5 className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.label}</h5>
-                              <span className="font-mono text-[9px] px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400">
-                                {item.leave_type}
-                              </span>
-                              {item.leave_type === 'sakit' && (
-                                <span className="text-[9px] font-semibold text-rose-700 dark:text-rose-300 bg-rose-50 dark:bg-rose-950/40 px-1.5 py-0.5 rounded border border-rose-200 dark:border-rose-800">
-                                  Hak Normatif UU
-                                </span>
-                              )}
+                        <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-100 dark:border-slate-800">
+                          <div className="flex items-center gap-2.5 flex-wrap">
+                            <h5 className="text-xs font-bold text-slate-800 dark:text-slate-100">{item.leave_type === 'izin' ? 'Izin' : item.label}</h5>
+
+                            {/* Pilihan Model: Jatah Per Tahun vs Akumulasi (Pindah ke samping judul) */}
+                            <div className="inline-flex p-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 shrink-0">
+                              <button
+                                type="button"
+                                disabled={!isEnabled}
+                                onClick={() => {
+                                  setLeaveTypeSettingsEdited(prev => ({
+                                    ...prev,
+                                    [item.leave_type]: {
+                                      ...edited,
+                                      quota_days: edited.quota_days > 0
+                                        ? edited.quota_days
+                                        : (item.default_quota_days > 0 ? item.default_quota_days : 1),
+                                    },
+                                  }));
+                                }}
+                                className={`px-2 py-0.5 text-[9px] font-bold rounded-md transition cursor-pointer disabled:opacity-50 ${
+                                  edited.quota_days > 0
+                                    ? 'bg-teal-600 text-white shadow-2xs'
+                                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                                }`}
+                                title="Ada batasan jatah hari per tahun"
+                              >
+                                Jatah Per Tahun
+                              </button>
+                              <button
+                                type="button"
+                                disabled={!isEnabled}
+                                onClick={() => {
+                                  setLeaveTypeSettingsEdited(prev => ({
+                                    ...prev,
+                                    [item.leave_type]: {
+                                      ...edited,
+                                      quota_days: 0,
+                                    },
+                                  }));
+                                }}
+                                className={`px-2 py-0.5 text-[9px] font-bold rounded-md transition cursor-pointer disabled:opacity-50 ${
+                                  edited.quota_days <= 0
+                                    ? 'bg-amber-500 text-white shadow-2xs'
+                                    : 'text-slate-500 dark:text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                                }`}
+                                title="Tanpa batasan kuota (pemakaian diakumulasikan)"
+                              >
+                                Akumulasi
+                              </button>
                             </div>
                           </div>
 
-                          {/* Toggle Aktif / Nonaktif per kantor */}
-                          <div className="flex flex-col items-end gap-1 shrink-0">
-                            <span className={`text-[9px] font-bold ${isEnabled ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`}>
-                              {isEnabled ? 'Diizinkan' : 'Dinonaktifkan'}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setLeaveTypeSettingsEdited(prev => ({
-                                  ...prev,
-                                  [item.leave_type]: {
-                                    ...edited,
-                                    is_enabled: !isEnabled,
-                                  },
-                                }));
-                              }}
-                              className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${
-                                isEnabled ? 'bg-teal-500' : 'bg-slate-300 dark:bg-slate-700'
-                              }`}
+                          {/* Checkbox Aktif / Nonaktif per kantor (Izin & WFH adalah fitur standar sistem yang selalu aktif) */}
+                          {isAlwaysEnabled ? (
+                            <span
+                              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-[10px] font-bold bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border border-teal-200/80 dark:border-teal-800/60 shadow-2xs"
+                              title="Fitur standar sistem yang selalu aktif dan dapat diatur kuota maupun mode akumulasinya"
                             >
-                              <span
-                                className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                                  isEnabled ? 'translate-x-4' : 'translate-x-1'
+                              <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                              <span>Aktif</span>
+                            </span>
+                          ) : (
+                            <label className={`flex items-center gap-2 cursor-pointer select-none shrink-0 py-1.5 px-3 rounded-xl border transition-all ${
+                              isEnabled
+                                ? 'border-teal-200/90 dark:border-teal-800/80 bg-teal-50/70 dark:bg-teal-950/40 hover:bg-teal-100/70 dark:hover:bg-teal-900/50'
+                                : 'border-rose-300 dark:border-rose-800 bg-rose-50/90 dark:bg-rose-950/50 hover:bg-rose-100/80 dark:hover:bg-rose-900/60 shadow-2xs'
+                            }`}>
+                              <input
+                                type="checkbox"
+                                checked={isEnabled}
+                                onChange={(e) => {
+                                  setLeaveTypeSettingsEdited(prev => ({
+                                    ...prev,
+                                    [item.leave_type]: {
+                                      ...edited,
+                                      is_enabled: e.target.checked,
+                                    },
+                                  }));
+                                }}
+                                className={`w-4 h-4 rounded cursor-pointer transition-colors ${
+                                  isEnabled
+                                    ? 'border-teal-400 text-teal-600 focus:ring-teal-500 accent-teal-600'
+                                    : 'border-rose-400 text-rose-600 focus:ring-rose-500 accent-rose-600'
                                 }`}
                               />
-                            </button>
-                          </div>
+                              <span className={`text-xs font-black tracking-wide ${
+                                isEnabled
+                                  ? 'text-teal-700 dark:text-teal-300'
+                                  : 'text-rose-600 dark:text-rose-400 font-black'
+                              }`}>
+                                {isEnabled ? 'Diizinkan' : 'Dinonaktifkan'}
+                              </span>
+                            </label>
+                          )}
                         </div>
 
                         {/* Pengaturan Input Form */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                          {/* Input Kuota Hari */}
+                          {/* Standar Kuota / Status Akumulasi */}
                           <div className="space-y-1">
                             <label className="text-[10px] font-semibold text-slate-600 dark:text-slate-300 flex items-center justify-between">
                               <span>Standar Kuota (Hari):</span>
-                              <span className="text-[9px] text-slate-400 font-normal">
-                                {item.leave_type === 'sakit' ? 'Rujukan Medis / UU' : `UU: ${item.default_quota_days} hari`}
-                              </span>
+                              {item.default_quota_days > 0 && (
+                                <span className="text-[9px] text-slate-400 font-normal">UU: {item.default_quota_days} hari</span>
+                              )}
                             </label>
-                            <input
-                              type="number"
-                              min={0}
-                              max={365}
-                              disabled={!isEnabled}
-                              value={edited.quota_days}
-                              onChange={(e) => {
-                                const val = Number(e.target.value);
-                                setLeaveTypeSettingsEdited(prev => ({
-                                  ...prev,
-                                  [item.leave_type]: {
-                                    ...edited,
-                                    quota_days: isNaN(val) ? 0 : val,
-                                  },
-                                }));
-                              }}
-                              className="w-full px-2.5 py-1.5 text-xs font-mono font-bold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50"
-                            />
+
+                            {/* Tampilan Input Jatah Per Tahun ATAU Tampilan Akumulasi Tanpa Limit */}
+                            {edited.quota_days > 0 ? (
+                              <div className="relative">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={365}
+                                  disabled={!isEnabled}
+                                  value={edited.quota_days}
+                                  onChange={(e) => {
+                                    const val = Number(e.target.value);
+                                    setLeaveTypeSettingsEdited(prev => ({
+                                      ...prev,
+                                      [item.leave_type]: {
+                                        ...edited,
+                                        quota_days: isNaN(val) ? 1 : Math.max(1, val),
+                                      },
+                                    }));
+                                  }}
+                                  className="w-full px-2.5 py-1.5 text-xs font-mono font-bold border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 disabled:opacity-50 pr-18"
+                                  placeholder="Jumlah hari"
+                                />
+                                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 pointer-events-none">
+                                  hari/tahun
+                                </span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center justify-between px-2.5 py-1.5 bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/40 rounded-xl text-amber-800 dark:text-amber-300">
+                                <span className="text-[11px] font-bold flex items-center gap-1.5">
+                                  <span className="text-sm font-black leading-none text-amber-600 dark:text-amber-400">∞</span>
+                                  <span>Akumulasi (Tanpa Limit)</span>
+                                </span>
+                                <span className="text-[9px] font-semibold bg-amber-100 dark:bg-amber-900/60 px-1.5 py-0.5 rounded text-amber-700 dark:text-amber-300">
+                                  Berjalan
+                                </span>
+                              </div>
+                            )}
+
+                            {/* Keterangan Referensi Regulasi UU */}
+                            {item.default_quota_days > 0 && (
+                              <div className="flex items-center justify-between text-[9px] text-slate-400">
+                                <span>Rujukan UU: {item.default_quota_days} hari</span>
+                                {edited.quota_days > 0 && edited.quota_days !== item.default_quota_days && (
+                                  <button
+                                    type="button"
+                                    disabled={!isEnabled}
+                                    onClick={() => {
+                                      setLeaveTypeSettingsEdited(prev => ({
+                                        ...prev,
+                                        [item.leave_type]: {
+                                          ...edited,
+                                          quota_days: item.default_quota_days,
+                                        },
+                                      }));
+                                    }}
+                                    className="text-indigo-600 dark:text-indigo-400 hover:underline cursor-pointer"
+                                  >
+                                    Kembalikan ke standar UU
+                                  </button>
+                                )}
+                              </div>
+                            )}
                           </div>
 
                           {/* Toggle Dokumen Pendukung */}
@@ -4173,7 +4551,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                             >
                               <span>
                                 {edited.requires_document
-                                  ? (item.leave_type === 'sakit' ? 'Wajib Surat Dokter' : 'Wajib Lampirkan Dokumen')
+                                  ? (item.leave_type === 'sakit'
+                                      ? 'Wajib Surat Dokter'
+                                      : item.leave_type === 'wfh'
+                                        ? 'Wajib Surat Tugas / Rencana'
+                                        : 'Wajib Lampirkan Dokumen')
                                   : 'Tidak Wajib'}
                               </span>
                               {edited.requires_document ? (
@@ -4862,7 +5244,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
             holidays={holidays}
             offices={offices}
             users={users}
-            reload={() => loadHolidays(true)}
+            leaves={leaves}
+            reload={() => Promise.all([loadHolidays(true), loadLeaves(true)])}
             onAddAuditLog={onAddAuditLog}
             onError={reportApiError}
             year={holidayYear}
@@ -5120,12 +5503,33 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
       {/* ── Modal 360°: Kelola Saldo Seluruh Jenis Cuti & Laporan Pemakaian Karyawan ── */}
       {userLeaveDetailModal && (() => {
+        const userProfile = {
+          gender: userLeaveDetailModal.gender,
+          maritalStatus: userLeaveDetailModal.maritalStatus,
+          isPregnant: userLeaveDetailModal.isPregnant,
+        };
+
         const balancesEntries = Object.entries(userLeaveDetailModal.balancesMap) as [string, any][];
-        const totalDistributedQuota = balancesEntries.filter(([type]) => type !== 'izin').reduce((sum, [, d]) => sum + (Number(d.quota) || 0), 0);
+        const isEntryUnlimited = (d: any) => (d.officeDefault <= 0 && (Number(d.quota) || 0) <= 0);
+
+        const totalDistributedQuota = balancesEntries
+          .filter(([type, d]) => !isEntryUnlimited(d) && (type === 'izin' || checkLeaveEligibility(type, userProfile).isEligible))
+          .reduce((sum, [, d]) => sum + ((Number(d.remaining) || 0) + (Number(d.used) || 0)), 0);
         const totalUsedQuota = balancesEntries.reduce((sum, [, d]) => sum + (Number(d.used) || 0), 0);
-        const totalRemainingQuota = balancesEntries.filter(([type]) => type !== 'izin').reduce((sum, [, d]) => sum + (Number(d.remaining) || 0), 0);
-        const totalActiveLeaveTypes = balancesEntries.filter(([type, d]) => type === 'izin' || (Number(d.quota) || 0) > 0).length;
-        const modifiedCount = balancesEntries.filter(([type, d]) => type !== 'izin' && d.quota !== userLeaveDetailModal.originalBalancesMap[type]).length;
+        const totalRemainingQuota = balancesEntries
+          .filter(([type, d]) => !isEntryUnlimited(d) && (type === 'izin' || checkLeaveEligibility(type, userProfile).isEligible))
+          .reduce((sum, [, d]) => sum + (Number(d.remaining) || 0), 0);
+        const totalActiveLeaveTypes = balancesEntries.filter(([type, d]) => {
+          if (isEntryUnlimited(d)) return true;
+          const elig = type === 'izin' ? { isEligible: true } : checkLeaveEligibility(type, userProfile);
+          return elig.isEligible && ((Number(d.remaining) || 0) + (Number(d.used) || 0)) > 0;
+        }).length;
+        const modifiedCount = balancesEntries.filter(([type, d]) => {
+          if (isEntryUnlimited(d)) return false;
+          const elig = type === 'izin' ? { isEligible: true } : checkLeaveEligibility(type, userProfile);
+          if (!elig.isEligible) return false;
+          return d.remaining !== userLeaveDetailModal.originalBalancesMap[type];
+        }).length;
 
         const filteredLeavesHistory = userLeaveDetailModal.leavesHistory.filter((item) => {
           if (userLeaveDetailModal.historyFilterStatus !== 'all' && item.status !== userLeaveDetailModal.historyFilterStatus) {
@@ -5137,20 +5541,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           if (userLeaveDetailModal.historySearch) {
             const q = userLeaveDetailModal.historySearch.toLowerCase();
             const reason = (item.reason || '').toLowerCase();
-            const dateStr = `${item.start_date || ''} ${item.end_date || ''}`.toLowerCase();
-            const leaveTypeStr = getLeaveTypeLabel(item.leave_type).toLowerCase();
-            if (!reason.includes(q) && !dateStr.includes(q) && !leaveTypeStr.includes(q)) {
+            const dateStr = `${item.start_date || ''} ${item.end_date || ''} ${item.created_at || ''}`.toLowerCase();
+            const leaveTypeStr = (item.leave_type_label || getLeaveTypeLabel(item.leave_type)).toLowerCase();
+            const actorStr = (item.adjusted_by_name || item.approved_by || '').toLowerCase();
+            if (!reason.includes(q) && !dateStr.includes(q) && !leaveTypeStr.includes(q) && !actorStr.includes(q)) {
               return false;
             }
           }
           return true;
         });
-
-        const userProfile = {
-          gender: userLeaveDetailModal.gender,
-          maritalStatus: userLeaveDetailModal.maritalStatus,
-          isPregnant: userLeaveDetailModal.isPregnant,
-        };
 
         return (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-950/70 backdrop-blur-xs">
@@ -5222,7 +5621,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     }`}
                   >
                     <SlidersHorizontal className="w-3.5 h-3.5" />
-                    <span>Matriks Saldo &amp; Alokasi Kuota</span>
+                    <span>Matriks Saldo Cuti</span>
                     <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 font-bold">
                       {totalActiveLeaveTypes} Aktif
                     </span>
@@ -5238,7 +5637,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     }`}
                   >
                     <History className="w-3.5 h-3.5" />
-                    <span>Laporan Riwayat Cuti Terpakai</span>
+                    <span>Laporan Riwayat Cuti &amp; Penyesuaian</span>
                     <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 font-bold">
                       {userLeaveDetailModal.leavesHistory.length}
                     </span>
@@ -5261,7 +5660,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               {/* ── 3. BODY TAB KONTEN ── */}
               <div className="flex-1 overflow-y-auto p-6 space-y-5">
                 
-                {/* ════ TAB 1: MATRIKS SALDO & ALOKASI KUOTA ════ */}
+                {/* ════ TAB 1: MATRIKS SALDO CUTI ════ */}
                 {userLeaveDetailModal.activeTab === 'matrix' && (
                   <div className="space-y-4">
                     {/* Stat Cards Ringkasan */}
@@ -5305,9 +5704,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     <div className="flex items-start gap-2.5 p-3.5 bg-indigo-50/60 dark:bg-indigo-950/40 border border-indigo-100/90 dark:border-indigo-900/50 rounded-2xl text-xs text-indigo-800 dark:text-indigo-200">
                       <Info className="w-4 h-4 shrink-0 mt-0.5 text-indigo-600 dark:text-indigo-400" />
                       <div className="space-y-1 text-[11px] leading-relaxed">
-                        <p><strong>Tips Pengelolaan Kuota:</strong> Alokasi kuota 0 hari berarti hak jenis cuti tersebut dinonaktifkan untuk karyawan ini.</p>
+                        <p><strong>Tips Pengelolaan Saldo:</strong> Anda dapat langsung mengatur <strong>sisa saldo</strong> cuti karyawan. Nilai sisa saldo 0 hari berarti hak jenis cuti tersebut sudah habis.</p>
                         <p className="text-indigo-600 dark:text-indigo-300">
-                          Khusus <strong>Izin (Pribadi)</strong> tidak memiliki batasan kuota tahunan (<em>unlimited</em>) sehingga tidak dapat diedit kuotanya. Pemakaian hari akan terus bertambah setiap kali permohonan disetujui dan otomatis tereset kembali ke 0 saat tanggal reset tahunan kantor atau reset manual oleh HRD.
+                          Sisa saldo tidak boleh melebihi <strong>Standar Kantor</strong>. Jenis cuti dengan mode <strong>Akumulasi</strong> berjalan tanpa batasan (<em>unlimited</em>).
                         </p>
                       </div>
                     </div>
@@ -5321,9 +5720,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                               <th className="py-3 px-3.5">Jenis Cuti</th>
                               <th className="py-3 px-3">Kelayakan Profil</th>
                               <th className="py-3 px-3 text-center">Standar Kantor</th>
-                              <th className="py-3 px-3 text-center">Alokasi Karyawan</th>
                               <th className="py-3 px-3 text-center">Terpakai</th>
-                              <th className="py-3 px-3 text-center">Sisa</th>
+                              <th className="py-3 px-3 text-center">Sisa Saldo</th>
                               <th className="py-3 px-3.5 text-center">Status</th>
                             </tr>
                           </thead>
@@ -5331,31 +5729,44 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                             {Object.entries(LEAVE_TYPE_LABELS).map(([leaveType, label]) => {
                               if (leaveType === 'wfh') return null; // WFH adalah mode presensi, bukan jenis hak cuti
 
-                              const isIzin = leaveType === 'izin';
                               const item = userLeaveDetailModal.balancesMap[leaveType] || {
                                 quota: 0,
                                 used: 0,
                                 remaining: 0,
                                 officeDefault: 0,
                               };
-                              const isModified = !isIzin && item.quota !== userLeaveDetailModal.originalBalancesMap[leaveType];
+                              const isIzin = leaveType === 'izin';
+                              const isOfficeDisabled = Boolean(item.isOfficeDisabled);
+                              // isUnlimited dibaca langsung dari perhitungan modal (berdasarkan setting kantor yang aktif)
+                              const isUnlimited = Boolean(item.isUnlimited);
                               const eligibility = isIzin
-                                ? { isEligible: true, note: 'Berlaku untuk seluruh karyawan tanpa batas kuota' }
+                                ? { isEligible: true, note: 'Berlaku untuk seluruh karyawan' }
                                 : checkLeaveEligibility(leaveType, userProfile);
-                              const isZero = !isIzin && item.quota === 0;
+                              const isEligible = !isOfficeDisabled && eligibility.isEligible;
+                              const isModified = !isUnlimited && !isOfficeDisabled && isEligible && item.remaining !== userLeaveDetailModal.originalBalancesMap[leaveType];
+                              const isZero = !isUnlimited && !isOfficeDisabled && (item.remaining + item.used) === 0;
 
                               return (
                                 <tr
                                   key={leaveType}
-                                  className={`transition-colors hover:bg-slate-50/70 dark:hover:bg-slate-800/40 ${
-                                    isModified ? 'bg-indigo-50/30 dark:bg-indigo-950/20' : ''
+                                  className={`transition-colors ${
+                                    isOfficeDisabled
+                                      ? 'opacity-40 bg-rose-50/40 dark:bg-rose-950/20 select-none'
+                                      : !isEligible
+                                      ? 'opacity-40 bg-slate-50/80 dark:bg-slate-850/40 select-none'
+                                      : isModified
+                                      ? 'bg-indigo-50/30 dark:bg-indigo-950/20 hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
+                                      : 'hover:bg-slate-50/70 dark:hover:bg-slate-800/40'
                                   }`}
+                                  title={isOfficeDisabled ? 'Dinonaktifkan di Pengaturan Kantor' : !isEligible ? `Tidak Aktif: ${eligibility.note}` : undefined}
                                 >
                                   {/* Kolom Jenis Cuti */}
                                   <td className="py-3 px-3.5">
                                     <div className="flex items-center gap-2">
                                       <div className={`p-1.5 rounded-lg shrink-0 ${
-                                        leaveType === 'cuti'
+                                        !isEligible
+                                          ? 'bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500'
+                                          : leaveType === 'cuti'
                                           ? 'bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400'
                                           : leaveType === 'sakit'
                                           ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400'
@@ -5367,14 +5778,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                       </div>
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-1.5">
-                                          <p className="font-bold text-slate-800 dark:text-slate-100 text-xs">
-                                            {isIzin ? 'Izin (Pribadi)' : label}
+                                          <p className={`font-bold text-xs ${!isEligible ? 'text-slate-400 dark:text-slate-500 line-through decoration-slate-300 dark:decoration-slate-600' : 'text-slate-800 dark:text-slate-100'}`}>
+                                            {isIzin ? 'Izin' : label}
                                           </p>
-                                          {isIzin && (
-                                            <span className="text-[9px] font-semibold px-1.5 py-0.2 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                                          {isOfficeDisabled ? (
+                                            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">
+                                              Off Kantor
+                                            </span>
+                                          ) : isUnlimited ? (
+                                            <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
                                               Tanpa Limit
                                             </span>
-                                          )}
+                                          ) : null}
                                         </div>
                                         <p className="text-[10px] text-slate-400 font-mono">
                                           {leaveType}
@@ -5385,14 +5800,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                                   {/* Kolom Kelayakan Profil */}
                                   <td className="py-3 px-3">
-                                    {eligibility.isEligible ? (
+                                    {isEligible ? (
                                       <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400 border border-emerald-200/80 dark:border-emerald-800">
                                         <CheckCircle2 className="w-3 h-3 text-emerald-600 dark:text-emerald-400" />
                                         <span>Eligible</span>
                                       </span>
                                     ) : (
                                       <span
-                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 dark:bg-amber-950/50 dark:text-amber-400 border border-amber-200/80 dark:border-amber-800 cursor-help"
+                                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 cursor-help"
                                         title={eligibility.note}
                                       >
                                         <AlertCircle className="w-3 h-3 text-amber-600 dark:text-amber-400" />
@@ -5402,83 +5817,111 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   </td>
 
                                   {/* Kolom Standar Kantor */}
-                                  <td className="py-3 px-3 text-center text-xs font-mono text-slate-500 dark:text-slate-400">
-                                    {isIzin ? (
-                                      <span className="text-slate-400 italic text-[11px]" title="Tidak dibatasi standar kuota kantor">—</span>
+                                  <td className="py-3 px-3 text-center text-xs font-mono text-slate-400 dark:text-slate-500">
+                                    {isOfficeDisabled ? (
+                                      <span className="text-rose-500 dark:text-rose-400 font-semibold italic text-[11px]" title="Dinonaktifkan di Pengaturan Kantor">Off</span>
+                                    ) : isUnlimited ? (
+                                      <span className="text-amber-600 dark:text-amber-400 font-semibold italic text-[11px]" title="Mode Akumulasi (tanpa limit standar kantor)">Akumulasi</span>
                                     ) : (
                                       `${item.officeDefault} hr`
                                     )}
                                   </td>
 
-                                  {/* Kolom Alokasi Kuota Karyawan */}
+                                  {/* Kolom Terpakai */}
+                                  <td className="py-3 px-3 text-center text-xs font-mono font-semibold text-slate-500 dark:text-slate-400">
+                                    {item.used} hr
+                                  </td>
+
+                                  {/* Kolom Sisa Saldo (Editable) */}
                                   <td className="py-2 px-3 text-center">
-                                    {isIzin ? (
+                                    {isOfficeDisabled ? (
+                                      <div className="inline-flex items-center gap-1" title="Dinonaktifkan di Pengaturan Kantor">
+                                        <input
+                                          type="text"
+                                          disabled
+                                          value="—"
+                                          className="w-16 py-1 px-2 text-center text-xs font-bold font-mono rounded-xl border border-dashed border-rose-200 dark:border-rose-700 bg-rose-50 dark:bg-rose-950/30 text-rose-400 dark:text-rose-500 cursor-not-allowed select-none"
+                                        />
+                                      </div>
+                                    ) : isUnlimited ? (
                                       <span
                                         className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 text-xs font-bold border border-amber-200/80 dark:border-amber-800/60 select-none cursor-default shadow-2xs"
-                                        title="Izin pribadi tidak memiliki batasan kuota (unlimited). Kuota tidak dapat diedit dan akan terakumulasi otomatis."
+                                        title="Mode akumulasi berjalan tanpa batasan (unlimited)."
                                       >
                                         <Infinity className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                                         <span>Tanpa Limit</span>
                                       </span>
-                                    ) : (
-                                      <div className="inline-flex items-center gap-1">
+                                    ) : !isEligible ? (
+                                      <div className="inline-flex items-center gap-1" title={`Dinonaktifkan: ${eligibility.note}`}>
                                         <input
-                                          type="number"
-                                          min={0}
-                                          max={365}
-                                          value={item.quota}
-                                          onChange={(e) => {
-                                            const val = Math.max(0, parseInt(e.target.value) || 0);
-                                            setUserLeaveDetailModal(prev => {
-                                              if (!prev) return null;
-                                              return {
-                                                ...prev,
-                                                balancesMap: {
-                                                  ...prev.balancesMap,
-                                                  [leaveType]: {
-                                                    ...prev.balancesMap[leaveType],
-                                                    quota: val,
-                                                    remaining: Math.max(0, val - item.used),
-                                                  }
-                                                }
-                                              };
-                                            });
-                                          }}
-                                          className={`w-16 py-1 px-2 text-center text-xs font-bold font-mono rounded-xl border transition-all ${
-                                            isModified
-                                              ? 'border-indigo-500 ring-2 ring-indigo-400/20 bg-indigo-50/50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300'
-                                              : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100'
-                                          }`}
+                                          type="text"
+                                          disabled
+                                          value="—"
+                                          className="w-16 py-1 px-2 text-center text-xs font-bold font-mono rounded-xl border border-dashed border-slate-200 dark:border-slate-700 bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 cursor-not-allowed select-none"
                                         />
-                                        <span className="text-[10px] text-slate-400">hr</span>
+                                      </div>
+                                    ) : (
+                                      <div className="inline-flex flex-col items-center gap-0.5">
+                                        <div className="inline-flex items-center gap-1">
+                                          <input
+                                            type="number"
+                                            min={0}
+                                            max={item.officeDefault > 0 ? item.officeDefault : 365}
+                                            value={item.remaining}
+                                            onChange={(e) => {
+                                              const parsed = parseInt(e.target.value) || 0;
+                                              const maxAllowed = item.officeDefault > 0 ? item.officeDefault : 365;
+                                              const val = Math.min(maxAllowed, Math.max(0, parsed));
+                                              setUserLeaveDetailModal(prev => {
+                                                if (!prev) return null;
+                                                return {
+                                                  ...prev,
+                                                  balancesMap: {
+                                                    ...prev.balancesMap,
+                                                    [leaveType]: {
+                                                      ...prev.balancesMap[leaveType],
+                                                      remaining: val,
+                                                      quota: val + item.used,
+                                                    }
+                                                  }
+                                                };
+                                              });
+                                            }}
+                                            title={item.officeDefault > 0 ? `Maksimal sesuai standar kantor: ${item.officeDefault} hr` : undefined}
+                                            className={`w-16 py-1 px-2 text-center text-xs font-bold font-mono rounded-xl border transition-all ${
+                                              isModified
+                                                ? 'border-teal-500 ring-2 ring-teal-400/20 bg-teal-50/50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300'
+                                                : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100'
+                                            }`}
+                                          />
+                                          <span className="text-[10px] text-slate-400">hr</span>
+                                        </div>
+                                        {item.officeDefault > 0 && (
+                                          <span className="text-[9px] text-slate-400">
+                                            maks {item.officeDefault} hr
+                                          </span>
+                                        )}
                                       </div>
                                     )}
                                   </td>
 
-                                  {/* Kolom Terpakai */}
-                                  <td className="py-3 px-3 text-center text-xs font-mono font-semibold text-slate-700 dark:text-slate-200">
-                                    {item.used} hr
-                                  </td>
-
-                                  {/* Kolom Sisa */}
-                                  <td className="py-3 px-3 text-center text-xs font-mono font-bold">
-                                    {isIzin ? (
-                                      <span className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 text-xs font-bold" title="Tidak dibatasi kuota tahunan">
-                                        <Infinity className="w-3.5 h-3.5" />
-                                        <span>Tanpa Batas</span>
-                                      </span>
-                                    ) : (
-                                      <span className="text-teal-600 dark:text-teal-400">
-                                        {isZero ? '0' : Math.max(0, item.quota - item.used)} hr
-                                      </span>
-                                    )}
-                                  </td>
 
                                   {/* Kolom Status */}
                                   <td className="py-3 px-3.5 text-center">
-                                    {isIzin ? (
+                                    {isOfficeDisabled ? (
+                                      <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300 font-semibold border border-rose-200/80 dark:border-rose-800/60">
+                                        Off Kantor
+                                      </span>
+                                    ) : isUnlimited ? (
                                       <span className="text-[10px] px-2.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300 font-semibold border border-indigo-200/80 dark:border-indigo-800/60">
                                         Akumulasi Aktif
+                                      </span>
+                                    ) : !isEligible ? (
+                                      <span
+                                        className="text-[10px] px-2.5 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-500 font-semibold border border-slate-200 dark:border-slate-700 select-none"
+                                        title={eligibility.note}
+                                      >
+                                        Tidak Aktif
                                       </span>
                                     ) : isZero ? (
                                       <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-400 font-medium">
@@ -5508,11 +5951,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 {userLeaveDetailModal.activeTab === 'history' && (
                   <div className="space-y-4">
                     {/* Ringkasan Stat Cuti Karyawan */}
-                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
                       <div className="p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
                         <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wider">Total Pengajuan Cuti</p>
                         <p className="text-xl font-bold font-mono text-slate-800 dark:text-slate-100 leading-tight">
-                          {userLeaveDetailModal.leavesHistory.length} <span className="text-xs font-normal text-slate-400 font-sans">kali</span>
+                          {userLeaveDetailModal.leavesHistory.filter((l: any) => !l.is_adjustment).length} <span className="text-xs font-normal text-slate-400 font-sans">kali</span>
                         </p>
                         <p className="text-[10px] text-slate-400">Seluruh riwayat pengajuan</p>
                       </div>
@@ -5540,6 +5983,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         </p>
                         <p className="text-[10px] text-slate-400">Tidak memotong saldo</p>
                       </div>
+
+                      <div className="p-3 bg-indigo-50/50 dark:bg-indigo-950/20 rounded-2xl border border-indigo-100 dark:border-indigo-900/40 space-y-1">
+                        <p className="text-[10px] font-semibold text-indigo-500 uppercase tracking-wider">Penyesuaian HRD</p>
+                        <p className="text-xl font-bold font-mono text-indigo-600 dark:text-indigo-400 leading-tight">
+                          {userLeaveDetailModal.historySummary.adjustments || 0} <span className="text-xs font-normal text-slate-400 font-sans">kali</span>
+                        </p>
+                        <p className="text-[10px] text-indigo-500/80 font-medium">Penyesuaian sisa saldo</p>
+                      </div>
                     </div>
 
                     {/* Filter & Search Bar */}
@@ -5551,10 +6002,11 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           onChange={(e) => setUserLeaveDetailModal(prev => prev ? { ...prev, historyFilterStatus: e.target.value } : null)}
                           className="py-1.5 px-3 text-xs border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:outline-none focus:ring-1 focus:ring-indigo-400"
                         >
-                          <option value="all">Semua Status</option>
+                          <option value="all">Semua Status &amp; Riwayat</option>
                           <option value="approved">Disetujui</option>
                           <option value="pending">Menunggu Persetujuan</option>
                           <option value="rejected">Ditolak</option>
+                          <option value="adjustment">Penyesuaian Sisa Saldo (HRD)</option>
                         </select>
 
                         {/* Filter Jenis Cuti */}
@@ -5601,6 +6053,69 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                     ) : (
                       <div className="space-y-2.5">
                         {filteredLeavesHistory.map((item: any) => {
+                          if (item.is_adjustment || item.status === 'adjustment') {
+                            const diff = Number(item.difference) || 0;
+                            const diffStr = diff > 0 ? `+${diff}` : `${diff}`;
+                            return (
+                              <div
+                                key={item.id}
+                                className="p-3.5 rounded-2xl border border-indigo-100 dark:border-indigo-900/50 bg-gradient-to-r from-indigo-50/40 via-white to-purple-50/20 dark:from-indigo-950/20 dark:via-slate-900 dark:to-purple-950/10 hover:shadow-xs transition space-y-2.5"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="space-y-1">
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="px-2 py-0.5 rounded-md text-[11px] font-bold bg-indigo-100 text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-800">
+                                        {item.leave_type_label || getLeaveTypeLabel(item.leave_type)}
+                                      </span>
+                                      <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                                        <SlidersHorizontal className="w-3.5 h-3.5 text-indigo-500" />
+                                        <span>Penyesuaian Sisa Saldo oleh HRD</span>
+                                      </span>
+                                      <span className={`font-mono text-xs px-2 py-0.5 rounded-full font-bold ${
+                                        diff > 0
+                                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                          : diff < 0
+                                          ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                          : 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300'
+                                      }`}>
+                                        {diffStr} hari
+                                      </span>
+                                    </div>
+
+                                    {item.reason && (
+                                      <p className="text-xs text-slate-600 dark:text-slate-300 bg-white/80 dark:bg-slate-800/60 p-2 rounded-xl border border-indigo-100/60 dark:border-indigo-900/40 leading-relaxed">
+                                        "{item.reason}"
+                                      </p>
+                                    )}
+                                  </div>
+
+                                  <div className="shrink-0 text-right space-y-1">
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/40 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800">
+                                      <SlidersHorizontal className="w-3.5 h-3.5" />
+                                      Penyesuaian HRD
+                                    </span>
+                                    {item.created_at && (
+                                      <p className="text-[10px] text-slate-400">
+                                        Waktu: {new Date(item.created_at).toLocaleString('id-ID', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-2 pt-2 border-t border-indigo-100/60 dark:border-indigo-900/40 text-[11px] text-slate-500 flex-wrap">
+                                  <div className="flex items-center gap-2">
+                                    <span>Disesuaikan oleh: <strong className="text-slate-700 dark:text-slate-200">{item.adjusted_by_name || item.approved_by || 'HRD'}</strong></span>
+                                    <span>•</span>
+                                    <span>Tahun: <strong className="font-mono text-slate-700 dark:text-slate-200">{item.year}</strong></span>
+                                  </div>
+                                  <div className="font-mono text-xs font-semibold text-slate-600 dark:text-slate-300">
+                                    Perubahan: {item.old_quota} hr &rarr; {item.new_quota} hr ({diffStr} hr)
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+
                           const isApproved = item.status === 'approved';
                           const isPending = item.status === 'pending';
                           const isRejected = item.status === 'rejected';
@@ -5707,13 +6222,13 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   {userLeaveDetailModal.activeTab === 'matrix' ? (
                     modifiedCount > 0 ? (
                       <span className="font-semibold text-indigo-600 dark:text-indigo-400">
-                        {modifiedCount} alokasi kuota jenis cuti telah dimodifikasi (belum disimpan).
+                        {modifiedCount} sisa saldo jenis cuti telah dimodifikasi (belum disimpan).
                       </span>
                     ) : (
                       <span>Seluruh nilai kuota sesuai data tersimpan di sistem.</span>
                     )
                   ) : (
-                    <span>Menampilkan {filteredLeavesHistory.length} dari {userLeaveDetailModal.leavesHistory.length} riwayat pengajuan cuti.</span>
+                    <span>Menampilkan {filteredLeavesHistory.length} dari {userLeaveDetailModal.leavesHistory.length} riwayat pengajuan &amp; penyesuaian saldo.</span>
                   )}
                 </div>
 
@@ -5821,7 +6336,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   className="w-full py-2 px-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400 font-medium cursor-pointer"
                 >
                   {Object.entries(LEAVE_TYPE_LABELS)
-                    .filter(([k]) => k !== 'wfh' && k !== 'izin')
+                    .filter(([k]) => {
+                      if (k === 'wfh') return false;
+                      const foundUserBalance = balances.find(b => b.user_id === editUserBalanceModal.user_id && b.leave_type === k);
+                      // Sembunyikan tipe cuti yang dinonaktifkan di pengaturan kantor
+                      if (foundUserBalance && (foundUserBalance.is_enabled_in_office === false || foundUserBalance.is_disabled === true)) {
+                        return false;
+                      }
+                      if (k === 'izin') {
+                        return (foundUserBalance?.office_default_quota ?? 0) > 0;
+                      }
+                      return true;
+                    })
                     .map(([k, label]) => (
                       <option key={k} value={k}>
                         {label} ({k})
@@ -5840,23 +6366,37 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 )}
               </div>
 
-              {/* Input Kuota Baru */}
+              {/* Input Sisa Saldo */}
               <div className="space-y-1.5">
                 <label className="font-semibold text-slate-700 dark:text-slate-300 flex items-center justify-between">
-                  <span>Alokasi Kuota (Hari):</span>
-                  <span className="text-[10px] text-slate-400">0 = Kuota Nonaktif</span>
+                  <span>Sisa Saldo (Hari):</span>
+                  <span className="text-[10px] text-slate-400">
+                    {(() => {
+                      const found = balances.find(b => b.user_id === editUserBalanceModal.user_id && b.leave_type === editUserBalanceModal.leave_type);
+                      const officeLimit = found?.office_default_quota ?? 0;
+                      return officeLimit > 0 ? `Maks standar kantor: ${officeLimit} hr` : '0 = Habis';
+                    })()}
+                  </span>
                 </label>
                 <div className="relative">
                   <input
                     type="number"
                     min={0}
-                    max={365}
-                    value={editUserBalanceModal.quota}
+                    max={(() => {
+                      const found = balances.find(b => b.user_id === editUserBalanceModal.user_id && b.leave_type === editUserBalanceModal.leave_type);
+                      return found?.office_default_quota && found.office_default_quota > 0 ? found.office_default_quota : 365;
+                    })()}
+                    value={editUserBalanceModal.remaining ?? Math.max(0, editUserBalanceModal.quota - editUserBalanceModal.used)}
                     onChange={(e) => {
                       const val = Number(e.target.value);
+                      const found = balances.find(b => b.user_id === editUserBalanceModal.user_id && b.leave_type === editUserBalanceModal.leave_type);
+                      const officeLimit = found?.office_default_quota ?? 0;
+                      const maxAllowed = officeLimit > 0 ? officeLimit : 365;
+                      const parsed = isNaN(val) ? 0 : Math.min(maxAllowed, Math.max(0, val));
                       setEditUserBalanceModal({
                         ...editUserBalanceModal,
-                        quota: isNaN(val) ? 0 : val,
+                        remaining: parsed,
+                        quota: parsed + editUserBalanceModal.used,
                       });
                     }}
                     className="w-full py-2 px-3 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800 font-mono font-bold text-sm text-slate-800 dark:text-slate-100 focus:outline-none focus:ring-1 focus:ring-indigo-400"
@@ -5867,7 +6407,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 </div>
               </div>
 
-              {/* Status Pemakaian Saat Ini */}
+              {/* Status Pemakaian & Standar Kantor */}
               <div className="grid grid-cols-2 gap-2 text-center pt-1">
                 <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
                   <p className="text-[10px] text-slate-400 uppercase font-semibold">Telah Dipakai</p>
@@ -5876,10 +6416,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </p>
                 </div>
                 <div className="p-2.5 rounded-xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800">
-                  <p className="text-[10px] text-slate-400 uppercase font-semibold">Estimasi Sisa</p>
+                  <p className="text-[10px] text-slate-400 uppercase font-semibold">Standar Kantor</p>
                   <p className="text-sm font-bold text-teal-600 dark:text-teal-400 mt-0.5">
-                    {Math.max(0, editUserBalanceModal.quota - editUserBalanceModal.used)}{' '}
-                    <span className="text-[10px] font-normal text-slate-400">hari</span>
+                    {(() => {
+                      const found = balances.find(b => b.user_id === editUserBalanceModal.user_id && b.leave_type === editUserBalanceModal.leave_type);
+                      return (found?.office_default_quota ?? 0) > 0 ? `${found?.office_default_quota} hari` : 'Akumulasi';
+                    })()}
                   </p>
                 </div>
               </div>
@@ -6371,12 +6913,13 @@ const HolidaysTab: React.FC<{
   holidays: any[];
   offices: any[];
   users: any[];
+  leaves?: any[];
   reload: () => Promise<void>;
   onAddAuditLog: (t: string, d: string, b: string) => void;
   onError: (e: unknown, f: string) => void;
   year: number;
   onYearChange: (y: number) => void;
-}> = ({ holidays, offices, users, reload, onAddAuditLog, onError, year, onYearChange }) => {
+}> = ({ holidays, offices, users, leaves = [], reload, onAddAuditLog, onError, year, onYearChange }) => {
   const { user } = useAuth();
   const isSuperAdmin = user?.role === 'super_admin';
 
@@ -6426,7 +6969,8 @@ const HolidaysTab: React.FC<{
     setForm(f => ({ ...f, attendance_setting_id: newOfficeId }));
   };
 
-  const [detailDate, setDetailDate] = useState<string | null>(null);
+  // Tanggal terpilih di kalender — default ke hari ini
+  const [detailDate, setDetailDate] = useState<string | null>(todayStr);
   // Modal rekap cuti bersama (HRD)
   const [collectiveDetailHoliday, setCollectiveDetailHoliday] = useState<any | null>(null);
   const [collectiveDetailData, setCollectiveDetailData] = useState<any | null>(null);
@@ -6645,6 +7189,107 @@ const HolidaysTab: React.FC<{
     return { nasional, perusahaan, cutiBersama };
   }, [visibleHolidays, year, viewMonth]);
 
+  // Filter hanya cuti & izin yang berstatus 'approved' (fix disetujui HRD)
+  const approvedLeaves = useMemo(() => {
+    return (leaves || []).filter((l: any) => {
+      if (l.status !== 'approved') return false;
+      if (calOfficeFilter) {
+        if (l.attendance_setting_id !== undefined && l.attendance_setting_id !== null) {
+          if (String(l.attendance_setting_id) !== calOfficeFilter) return false;
+        }
+      }
+      return true;
+    });
+  }, [leaves, calOfficeFilter]);
+
+  // Kumpulkan karyawan cuti per tanggal (map: 'YYYY-MM-DD' → leave[])
+  const leavesByDate = useMemo(() => {
+    const map: Record<string, any[]> = {};
+    approvedLeaves.forEach((l: any) => {
+      const startStr = (l.start_date ?? '').slice(0, 10);
+      const endStr = (l.end_date ?? l.start_date ?? '').slice(0, 10);
+      if (!startStr) return;
+
+      const startDate = new Date(startStr + 'T00:00:00');
+      const endDate = new Date(endStr + 'T00:00:00');
+      if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) return;
+
+      const cur = new Date(startDate.getTime());
+      let safetyCounter = 0;
+      while (cur <= endDate && safetyCounter < 366) {
+        const dStr = toDateStr(cur);
+        if (!map[dStr]) map[dStr] = [];
+        if (!map[dStr].some((item: any) => item.id === l.id)) {
+          map[dStr].push(l);
+        }
+        cur.setDate(cur.getDate() + 1);
+        safetyCounter++;
+      }
+    });
+    return map;
+  }, [approvedLeaves]);
+
+  // Total karyawan unik yang cuti/izin di bulan aktif
+  const monthApprovedLeavesSummary = useMemo(() => {
+    const prefix = `${year}-${pad2(viewMonth + 1)}-`;
+    const userSet = new Set<string>();
+    let totalDays = 0;
+    Object.entries(leavesByDate).forEach(([dStr, list]) => {
+      if (dStr.startsWith(prefix)) {
+        ((list as any[]) || []).forEach((l: any) => {
+          userSet.add(String(l.user_id || l.user_name));
+          totalDays++;
+        });
+      }
+    });
+    return {
+      uniqueUsers: userSet.size,
+      totalDays,
+    };
+  }, [leavesByDate, year, viewMonth]);
+
+  const getLeaveTypeBadge = (type: string) => {
+    switch (type) {
+      case 'cuti':
+        return {
+          bg: 'bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 border-teal-200 dark:border-teal-800',
+          dot: 'bg-teal-500',
+          label: 'Cuti Tahunan',
+        };
+      case 'izin':
+        return {
+          bg: 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300 border-amber-200 dark:border-amber-800',
+          dot: 'bg-amber-500',
+          label: 'Izin',
+        };
+      case 'sakit':
+        return {
+          bg: 'bg-rose-50 dark:bg-rose-950/40 text-rose-700 dark:text-rose-300 border-rose-200 dark:border-rose-800',
+          dot: 'bg-rose-500',
+          label: 'Cuti Sakit',
+        };
+      case 'wfh':
+        return {
+          bg: 'bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-200 dark:border-sky-800',
+          dot: 'bg-sky-500',
+          label: 'WFH',
+        };
+      case 'cuti_hamil':
+      case 'cuti_keguguran':
+        return {
+          bg: 'bg-pink-50 dark:bg-pink-950/40 text-pink-700 dark:text-pink-300 border-pink-200 dark:border-pink-800',
+          dot: 'bg-pink-500',
+          label: LEAVE_TYPE_LABELS[type] || 'Cuti Khusus',
+        };
+      default:
+        return {
+          bg: 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border-indigo-200 dark:border-indigo-800',
+          dot: 'bg-indigo-500',
+          label: LEAVE_TYPE_LABELS[type] || type,
+        };
+    }
+  };
+
   const resetForm = () => {
     setForm({ date: '', name: '', type: 'perusahaan', attendance_setting_id: calOfficeFilter || '', excluded_users: [] });
     setHolidayAutoExcluded([]);
@@ -6854,8 +7499,9 @@ const HolidaysTab: React.FC<{
     setDetailDate(null);
   };
 
-  // Libur pada tanggal yang dipilih (dari sisi kiri)
+  // Libur & Karyawan cuti pada tanggal yang dipilih (dari sisi kiri)
   const selectedHolidays = detailDate ? (byDate[detailDate] ?? []) : [];
+  const selectedLeaves = detailDate ? (leavesByDate[detailDate] ?? []) : [];
 
   // Tombol "Tambah" status libur hanya diperbolehkan untuk tanggal di masa depan.
   // Tanggal sudah lewat / hari ini → tombol disembunyikan (disabled).
@@ -7176,16 +7822,29 @@ const HolidaysTab: React.FC<{
           <div className="flex items-center justify-between mb-4">
             <button
               onClick={() => changeMonth(-1)}
-              className="flex items-center justify-center p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
+              className="flex items-center justify-center p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
               title="Bulan sebelumnya"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
             <div className="text-center">
               <p className="text-sm font-bold text-slate-800 dark:text-slate-100">{MONTHS[viewMonth]} {year}</p>
-              <p className="text-[10px] text-slate-400">
-                {summary.nasional} nasional · {summary.cutiBersama} cuti bersama · {summary.perusahaan} perusahaan
-              </p>
+              <div className="flex items-center justify-center gap-1.5 text-[10px] text-slate-400 flex-wrap mt-0.5">
+                <span>{summary.nasional} nasional</span>
+                <span>·</span>
+                <span>{summary.cutiBersama} cuti bersama</span>
+                <span>·</span>
+                <span>{summary.perusahaan} perusahaan</span>
+                {monthApprovedLeavesSummary.uniqueUsers > 0 && (
+                  <>
+                    <span>·</span>
+                    <span className="font-bold text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+                      <Users className="w-3 h-3 inline" />
+                      {monthApprovedLeavesSummary.uniqueUsers} karyawan cuti/izin disetujui
+                    </span>
+                  </>
+                )}
+              </div>
               {selectedOffice && (
                 <p className="text-[10px] text-indigo-600 dark:text-indigo-400 font-medium mt-0.5">
                   Libur rutin mingguan ({selectedOffice.office_name}):{' '}
@@ -7195,7 +7854,7 @@ const HolidaysTab: React.FC<{
             </div>
             <button
               onClick={() => changeMonth(1)}
-              className="flex items-center justify-center p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition"
+              className="flex items-center justify-center p-2 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
               title="Bulan berikutnya"
             >
               <ChevronRight className="w-4 h-4" />
@@ -7212,24 +7871,21 @@ const HolidaysTab: React.FC<{
           {/* Sel tanggal */}
           <div className="grid grid-cols-7 gap-1">
             {cells.map((day, idx) => {
-              if (day === null) return <div key={`e-${idx}`} className="h-16 sm:h-20" />;
+              if (day === null) return <div key={`e-${idx}`} className="min-h-[4.75rem] sm:min-h-[5.5rem]" />;
               const dateStr = `${year}-${pad2(viewMonth + 1)}-${pad2(day)}`;
-              // Tanggal yang sudah lewat / hari ini TETAP menampilkan status liburnya
-              // (tanggal merah, libur perusahaan, cuti bersama, libur mingguan).
-              // Hanya tindakan "tambah status" yang disembunyikan untuk tanggal tsb.
               const isPastOrToday = dateStr <= todayStr;
               const dayHolidays = byDate[dateStr] ?? [];
+              const dayLeaves = leavesByDate[dateStr] ?? [];
               const hasNational = dayHolidays.some(h => h.scope === 'nasional');
               const hasCollective = dayHolidays.some(h => h.is_collective);
               const hasCompany = dayHolidays.some(h => (h.scope === 'perusahaan' || h.scope === 'cabang') && !h.is_collective);
               const isToday = dateStr === toDateStr(today);
               const isSelected = detailDate === dateStr;
-              // Cek apakah hari ini adalah libur mingguan kantor yang dipilih
-              // JS getDay(): 0=Minggu, 1=Senin, ..., 6=Sabtu — sama dengan konvensi work_days backend
               const jsDay = new Date(dateStr + 'T00:00:00').getDay();
               const isWeeklyOff = weeklyOffDays.has(jsDay);
-              // Prioritas warna: nasional (merah tua) > libur mingguan kantor (merah muda) > cuti bersama (amber) > perusahaan (biru) > biasa
-              // Tanggal sudah lewat / hari ini tetap menampilkan status libur; hanya tombol tambah yang disembunyikan darinya.
+              const hasLeaves = dayLeaves.length > 0;
+
+              // Prioritas warna background
               const bgClass = hasNational
                 ? 'bg-rose-50 dark:bg-rose-950/30 border-rose-200 dark:border-rose-900/40'
                 : isWeeklyOff
@@ -7238,14 +7894,20 @@ const HolidaysTab: React.FC<{
                     ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-200 dark:border-amber-900/40'
                     : hasCompany
                       ? 'bg-indigo-50 dark:bg-indigo-950/30 border-indigo-200 dark:border-indigo-900/40'
-                      : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800';
-              // Tooltip: nama libur atau libur mingguan kantor
+                      : hasLeaves
+                        ? 'bg-emerald-50/40 dark:bg-emerald-950/20 border-emerald-200/80 dark:border-emerald-800/40 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
+                        : 'bg-slate-50/60 dark:bg-slate-800/40 border-slate-100 dark:border-slate-800 hover:bg-slate-100 dark:hover:bg-slate-800';
+
               const selectedOfficeName = selectedOffice?.office_name ?? '';
-              const tooltip = dayHolidays.length
-                ? dayHolidays.map(h => h.name).join(', ')
-                : isWeeklyOff
-                  ? `Hari libur mingguan ${selectedOfficeName}`
-                  : (isPastOrToday ? '' : 'Klik untuk menambah libur');
+              const holidayTooltip = dayHolidays.length ? dayHolidays.map(h => h.name).join(', ') : '';
+              const leaveTooltip = dayLeaves.map(l => `${l.user_name} (${getLeaveTypeBadge(l.leave_type).label})`).join(', ');
+              const tooltip = [
+                holidayTooltip ? `Libur: ${holidayTooltip}` : '',
+                isWeeklyOff ? `Hari libur mingguan ${selectedOfficeName}` : '',
+                dayLeaves.length ? `Karyawan Cuti/Izin (${dayLeaves.length}): ${leaveTooltip}` : '',
+                isPastOrToday ? '' : 'Klik untuk melihat detail / menambah libur',
+              ].filter(Boolean).join(' | ');
+
               return (
                 <button
                   key={dateStr}
@@ -7253,39 +7915,78 @@ const HolidaysTab: React.FC<{
                     setDetailDate(detailDate === dateStr ? null : dateStr);
                     setShowForm(false);
                   }}
-                  className={`relative flex flex-col items-center justify-start h-16 sm:h-20 rounded-lg border text-xs transition-colors cursor-pointer
+                  className={`relative flex flex-col items-center justify-start min-h-[4.75rem] sm:min-h-[5.5rem] h-auto pb-1.5 rounded-xl border text-xs transition-all cursor-pointer text-left
                     ${bgClass}
-                    ${isSelected ? 'ring-2 ring-indigo-500 border-indigo-400' : ''}`}
+                    ${isSelected ? 'ring-2 ring-indigo-500 border-indigo-400 shadow-sm z-10' : ''}`}
                   title={tooltip}
                 >
-                  <span className={`text-[11px] font-bold mt-1 ${
-                    isToday
-                      ? 'text-indigo-600 dark:text-indigo-400'
-                      : isWeeklyOff && !hasNational
-                        ? 'text-red-500 dark:text-red-400'
-                        : 'text-slate-500 dark:text-slate-400'
-                  }`}>
-                    {day}
-                  </span>
-                  {/* Badge libur mingguan — hanya jika tidak ada event spesifik */}
-                  {isWeeklyOff && !hasNational && !hasCompany && dayHolidays.length === 0 && (
+                  {/* Baris Tanggal & Indikator Cuti */}
+                  <div className="flex items-center justify-between w-full px-1.5 pt-1">
+                    <span className={`text-[11px] font-bold ${
+                      isToday
+                        ? 'w-5 h-5 rounded-full bg-indigo-600 text-white flex items-center justify-center -ml-0.5 shadow-2xs'
+                        : isWeeklyOff && !hasNational
+                          ? 'text-red-500 dark:text-red-400'
+                          : 'text-slate-700 dark:text-slate-300'
+                    }`}>
+                      {day}
+                    </span>
+                    {hasLeaves && (
+                      <span
+                        className="inline-flex items-center gap-0.5 text-[8px] font-bold text-emerald-700 dark:text-emerald-300 bg-emerald-100 dark:bg-emerald-900/60 px-1 py-0.2 rounded-full border border-emerald-300/60 dark:border-emerald-700/60"
+                        title={`${dayLeaves.length} karyawan cuti/izin disetujui`}
+                      >
+                        <Users className="w-2.5 h-2.5" />
+                        <span>{dayLeaves.length}</span>
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Badge libur mingguan */}
+                  {isWeeklyOff && !hasNational && !hasCompany && dayHolidays.length === 0 && !hasLeaves && (
                     <span className="text-[8px] font-semibold text-red-400 dark:text-red-500 mt-0.5 leading-tight">
                       Libur
                     </span>
                   )}
+
+                  {/* Daftar Libur Resmi */}
                   {dayHolidays.length > 0 && (
-                    <span className="flex flex-col items-center gap-0.5 w-full px-1 mt-0.5">
-                      {dayHolidays.slice(0, 2).map(h => (
-                        <span key={h.id} className="w-full truncate text-center text-[8px] leading-tight font-semibold text-slate-700 dark:text-slate-300">
+                    <div className="flex flex-col items-center gap-0.5 w-full px-1 mt-0.5">
+                      {dayHolidays.slice(0, 1).map(h => (
+                        <span key={h.id} className="w-full truncate text-center text-[8px] leading-tight font-semibold text-slate-700 dark:text-slate-300 bg-white/70 dark:bg-slate-800/70 rounded px-0.5">
                           {h.name}
                         </span>
                       ))}
-                      {dayHolidays.length > 2 && (
-                        <span className="w-full text-center text-[8px] font-bold text-slate-400">
-                          +{dayHolidays.length - 2} lagi
+                      {dayHolidays.length > 1 && (
+                        <span className="w-full text-center text-[7.5px] font-bold text-slate-400">
+                          +{dayHolidays.length - 1} libur
                         </span>
                       )}
-                    </span>
+                    </div>
+                  )}
+
+                  {/* Daftar Karyawan Cuti & Izin (Approved) */}
+                  {dayLeaves.length > 0 && (
+                    <div className="flex flex-col gap-0.5 w-full px-1 mt-1">
+                      {dayLeaves.slice(0, dayHolidays.length > 0 ? 1 : 2).map((l: any) => {
+                        const badge = getLeaveTypeBadge(l.leave_type);
+                        return (
+                          <div
+                            key={`cell-leave-${l.id}`}
+                            className={`w-full truncate text-[8px] leading-tight font-semibold px-1 py-0.5 rounded border ${badge.bg} flex items-center gap-1`}
+                            title={`${l.user_name} (${badge.label}) - Disetujui HRD`}
+                          >
+                            <span className={`w-1.5 h-1.5 rounded-full ${badge.dot} shrink-0`} />
+                            <span className="truncate">{l.user_name}</span>
+                          </div>
+                        );
+                      })}
+                      {dayLeaves.length > (dayHolidays.length > 0 ? 1 : 2) && (
+                        <span className="w-full text-center text-[7.5px] font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 rounded px-1">
+                          +{dayLeaves.length - (dayHolidays.length > 0 ? 1 : 2)} cuti lagi
+                        </span>
+                      )}
+                    </div>
                   )}
                 </button>
               );
@@ -7294,151 +7995,264 @@ const HolidaysTab: React.FC<{
         </div>
 
         {/* Panel detail / tambah cepat */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 lg:sticky lg:top-4">
+        <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-5 lg:sticky lg:top-4 space-y-4">
           {detailDate ? (
             <>
-              <div className="flex items-center justify-between mb-3">
-                <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">
-                  {fmtDate(detailDate)}
-                </h4>
+              {/* Header Tanggal Terpilih */}
+              <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
+                <div>
+                  <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                    <span>{fmtDate(detailDate)}</span>
+                    {detailDate === todayStr && (
+                      <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-indigo-100 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300">
+                        Hari Ini
+                      </span>
+                    )}
+                  </h4>
+                  <p className="text-[10px] text-slate-400 mt-0.5">
+                    {selectedLeaves.length} karyawan cuti/izin · {selectedHolidays.length} hari libur
+                  </p>
+                </div>
                 {!isDetailLocked && selectedHolidays.length === 0 && (
                   <button
                     onClick={() => { startCreate(detailDate); }}
-                    className="inline-flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[11px] font-bold shadow-sm shadow-indigo-500/20 transition"
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-[10px] font-bold shadow-xs transition cursor-pointer"
                   >
-                    <Plus className="w-3.5 h-3.5" /> Tambah Libur
+                    <Plus className="w-3 h-3" /> Tambah Libur
                   </button>
                 )}
               </div>
-              {selectedHolidays.length === 0 ? (
-                isDetailLocked ? (
-                  <p className="text-[11px] text-slate-400">
-                    Tidak ada libur pada tanggal ini.
-                  </p>
+
+              {/* ── BAGIAN 1: Karyawan Cuti & Izin (Disetujui HRD) ── */}
+              <div className="space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <h5 className="text-[11px] font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                    <Users className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
+                    <span>Karyawan Cuti &amp; Izin</span>
+                  </h5>
+                  {selectedLeaves.length > 0 && (
+                    <span className="px-2 py-0.5 text-[9px] font-bold rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800">
+                      {selectedLeaves.length} Disetujui HRD
+                    </span>
+                  )}
+                </div>
+
+                {selectedLeaves.length === 0 ? (
+                  <div className="p-3.5 rounded-xl border border-dashed border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-850/30 text-center space-y-1">
+                    <p className="text-xs font-semibold text-slate-600 dark:text-slate-300 flex items-center justify-center gap-1.5">
+                      <UserCheck className="w-4 h-4 text-emerald-500" />
+                      <span>Tidak Ada Karyawan Cuti</span>
+                    </p>
+                    <p className="text-[10px] text-slate-400">
+                      Seluruh karyawan aktif terjadwal bertugas pada tanggal ini.
+                    </p>
+                  </div>
                 ) : (
-                  <p className="text-[11px] text-slate-400">
-                    Tidak ada libur pada tanggal ini. Klik <span className="font-semibold text-indigo-600 dark:text-indigo-400">Tambah</span> untuk membuat libur khusus perusahaan.
-                  </p>
-                )
-              ) : (
-                <div className="space-y-2">
-                  {selectedHolidays.map(h => (
-                    <div key={h.id} className={`border rounded-lg p-2.5 ${h.scope === 'nasional' ? 'border-rose-200 dark:border-rose-900/40 bg-rose-50/40 dark:bg-rose-950/20' : 'border-indigo-200 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20'}`}>
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{h.name}</p>
-                          {h.office_name && (
-                            <p className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
-                              <Building2 className="w-3 h-3 text-slate-400" /> {h.office_name}
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
+                    {selectedLeaves.map((l: any) => {
+                      const badge = getLeaveTypeBadge(l.leave_type);
+                      const officeName = offices.find((o: any) => o.id === l.attendance_setting_id)?.office_name;
+
+                      return (
+                        <div
+                          key={`detail-leave-${l.id}`}
+                          className="p-3 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-850 shadow-2xs space-y-2"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-slate-800 dark:text-slate-100 truncate">
+                                {l.user_name}
+                              </p>
+                              <p className="text-[10px] text-slate-400 truncate">
+                                {l.position_name || l.department || 'Karyawan'}
+                                {officeName ? ` · ${officeName}` : ''}
+                              </p>
+                            </div>
+                            <span className={`inline-flex items-center gap-1 text-[9px] font-bold px-2 py-0.5 rounded-full border ${badge.bg} shrink-0`}>
+                              <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
+                              <span>{badge.label}</span>
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[10px] text-slate-500 dark:text-slate-400 pt-1.5 border-t border-slate-100 dark:border-slate-800">
+                            <span className="font-mono font-medium">
+                              {fmtDate(l.start_date)}
+                              {l.end_date && l.end_date !== l.start_date ? ` – ${fmtDate(l.end_date)}` : ''}
+                            </span>
+                            <span className="font-bold text-slate-700 dark:text-slate-200">
+                              {l.total_days} hari
+                            </span>
+                          </div>
+
+                          {l.reason && (
+                            <p className="text-[10.5px] text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg border border-slate-100 dark:border-slate-800/80 italic leading-relaxed">
+                              "{l.reason}"
                             </p>
                           )}
-                        </div>
-                        <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
-                          h.scope === 'nasional'
-                            ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400'
-                            : h.is_collective
-                              ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
-                              : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400'
-                        }`}>
-                          {h.is_collective
-                            ? (h.office_name ? `Cuti Bersama (${h.office_name})` : 'Cuti Bersama (Semua Cabang)')
-                            : h.scope}
-                        </span>
-                      </div>
-                      {/* Ringkasan opt-in jika cuti bersama */}
-                      {h.is_collective && h.collective_summary && (
-                        <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-1 text-[10px] text-center">
-                          <div className="bg-emerald-50 dark:bg-emerald-950/30 rounded p-1">
-                            <span className="font-bold text-emerald-700 dark:text-emerald-400">{h.collective_summary.accepted}</span>
-                            <span className="block text-[8px] text-emerald-600 dark:text-emerald-500 uppercase font-bold">Ikut</span>
-                          </div>
-                          <div className="bg-rose-50 dark:bg-rose-950/30 rounded p-1">
-                            <span className="font-bold text-rose-700 dark:text-rose-400">{h.collective_summary.declined}</span>
-                            <span className="block text-[8px] text-rose-600 dark:text-rose-500 uppercase font-bold">Tidak</span>
-                          </div>
-                          <div className="bg-slate-100 dark:bg-slate-800 rounded p-1">
-                            <span className="font-bold text-slate-700 dark:text-slate-300">{h.collective_summary.pending}</span>
-                            <span className="block text-[8px] text-slate-500 uppercase font-bold">Pending</span>
-                          </div>
-                        </div>
-                      )}
-                      {/* Pengecualian Karyawan */}
-                      {h.excluded_users && h.excluded_users.length > 0 && (
-                        <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
-                          <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase mb-1 flex items-center justify-between">
-                            <span>Dikecualikan (Kerja)</span>
-                            <span className="text-[8px] font-normal normal-case text-slate-400">{h.excluded_users.length} karyawan</span>
-                          </p>
-                          <div className="flex flex-wrap gap-1">
-                            {h.excluded_users.map((u: any) => {
-                              const isAuto = u.is_manual === false;
-                              return (
-                                <span
-                                  key={u.id}
-                                  className={`text-[9px] px-1.5 py-0.5 rounded border inline-flex items-center gap-1 font-medium ${
-                                    isAuto
-                                      ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/60'
-                                      : 'bg-slate-100 dark:bg-slate-700/50 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600'
-                                  }`}
-                                  title={u.reason_detail || (isAuto ? 'Dikecualikan otomatis oleh sistem' : 'Pengecualian manual HRD')}
-                                >
-                                  <span>{u.name}</span>
-                                  <span className={`text-[8px] font-bold ${isAuto ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'}`}>
-                                    {isAuto ? `(${u.reason_label || 'Auto'})` : '(Manual)'}
-                                  </span>
-                                </span>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      )}
 
-                      <div className="flex items-center justify-between gap-1 mt-2">
-                        {h.is_collective && (
-                          <button
-                            onClick={() => openCollectiveDetail(h)}
-                            className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 dark:hover:bg-amber-900/50 rounded-md text-[10px] font-bold transition"
-                          >
-                            <Users className="w-3 h-3" /> Rekap Opt-in
-                          </button>
+                          <div className="flex items-center justify-between pt-0.5 text-[9px] text-slate-400">
+                            <span className="inline-flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Disetujui HRD
+                              {l.balance_after !== null && l.balance_after !== undefined && (
+                                <span className="font-normal text-slate-500 dark:text-slate-400 ml-1">
+                                  · Sisa: {l.balance_after} hari
+                                </span>
+                              )}
+                            </span>
+                            {l.approved_at && (
+                              <span>Disetujui: {fmtDate(l.approved_at)}</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* ── BAGIAN 2: Hari Libur & Kalender ── */}
+              <div className="space-y-2 pt-3 border-t border-slate-100 dark:border-slate-800">
+                <h5 className="text-[11px] font-bold text-slate-700 dark:text-slate-200 uppercase tracking-wider flex items-center gap-1.5">
+                  <CalendarDays className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>Hari Libur Kantor</span>
+                </h5>
+
+                {selectedHolidays.length === 0 ? (
+                  isDetailLocked ? (
+                    <p className="text-[11px] text-slate-400 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 text-center">
+                      Tidak ada libur nasional / perusahaan pada tanggal ini.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-slate-400 bg-slate-50/50 dark:bg-slate-800/30 p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 text-center">
+                      Tidak ada libur pada tanggal ini. Klik <span className="font-semibold text-indigo-600 dark:text-indigo-400">Tambah</span> untuk membuat libur khusus.
+                    </p>
+                  )
+                ) : (
+                  <div className="space-y-2">
+                    {selectedHolidays.map(h => (
+                      <div key={h.id} className={`border rounded-lg p-2.5 ${h.scope === 'nasional' ? 'border-rose-200 dark:border-rose-900/40 bg-rose-50/40 dark:bg-rose-950/20' : 'border-indigo-200 dark:border-indigo-900/40 bg-indigo-50/40 dark:bg-indigo-950/20'}`}>
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <p className="text-xs font-semibold text-slate-800 dark:text-slate-200">{h.name}</p>
+                            {h.office_name && (
+                              <p className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5">
+                                <Building2 className="w-3 h-3 text-slate-400" /> {h.office_name}
+                              </p>
+                            )}
+                          </div>
+                          <span className={`inline-flex text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider shrink-0 ${
+                            h.scope === 'nasional'
+                              ? 'bg-rose-100 text-rose-700 dark:bg-rose-900/40 dark:text-rose-400'
+                              : h.is_collective
+                                ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300'
+                                : 'bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400'
+                          }`}>
+                            {h.is_collective
+                              ? (h.office_name ? `Cuti Bersama (${h.office_name})` : 'Cuti Bersama (Semua Cabang)')
+                              : h.scope}
+                          </span>
+                        </div>
+                        {/* Ringkasan opt-in jika cuti bersama */}
+                        {h.is_collective && h.collective_summary && (
+                          <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800 grid grid-cols-3 gap-1 text-[10px] text-center">
+                            <div className="bg-emerald-50 dark:bg-emerald-950/30 rounded p-1">
+                              <span className="font-bold text-emerald-700 dark:text-emerald-400">{h.collective_summary.accepted}</span>
+                              <span className="block text-[8px] text-emerald-600 dark:text-emerald-500 uppercase font-bold">Ikut</span>
+                            </div>
+                            <div className="bg-rose-50 dark:bg-rose-950/30 rounded p-1">
+                              <span className="font-bold text-rose-700 dark:text-rose-400">{h.collective_summary.declined}</span>
+                              <span className="block text-[8px] text-rose-600 dark:text-rose-500 uppercase font-bold">Tidak</span>
+                            </div>
+                            <div className="bg-slate-100 dark:bg-slate-800 rounded p-1">
+                              <span className="font-bold text-slate-700 dark:text-slate-300">{h.collective_summary.pending}</span>
+                              <span className="block text-[8px] text-slate-500 uppercase font-bold">Pending</span>
+                            </div>
+                          </div>
                         )}
-                        <div className="flex items-center gap-1 ml-auto">
-                          {/* Tombol Ubah/Hapus hanya untuk tanggal masa depan — status historis tidak diubah/dihapus */}
-                          {!isDetailLocked && (
-                            (h.scope !== 'nasional' && !h.is_national) || isSuperAdmin ? (
-                              <>
-                                <button
-                                  onClick={() => startEdit(h)}
-                                  className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition cursor-pointer"
-                                  title="Ubah hari libur"
-                                >
-                                  <Pencil className="w-3 h-3" /> Ubah
-                                </button>
-                                <button
-                                  onClick={() => remove(h)}
-                                  className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition cursor-pointer"
-                                  title="Hapus hari libur"
-                                >
-                                  <Trash2 className="w-3 h-3" /> Hapus
-                                </button>
-                              </>
-                            ) : (
-                              <span className="text-[10px] text-slate-400 dark:text-slate-500 italic px-1.5 py-0.5" title="Hanya Super Admin yang dapat mengubah atau menghapus libur nasional">
-                                Libur Nasional (Terkunci)
-                              </span>
-                            )
+                        {/* Pengecualian Karyawan */}
+                        {h.excluded_users && h.excluded_users.length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                            <p className="text-[9px] font-bold text-slate-500 dark:text-slate-400 uppercase mb-1 flex items-center justify-between">
+                              <span>Dikecualikan (Kerja)</span>
+                              <span className="text-[8px] font-normal normal-case text-slate-400">{h.excluded_users.length} karyawan</span>
+                            </p>
+                            <div className="flex flex-wrap gap-1">
+                              {h.excluded_users.map((u: any) => {
+                                const isAuto = u.is_manual === false;
+                                return (
+                                  <span
+                                    key={u.id}
+                                    className={`text-[9px] px-1.5 py-0.5 rounded border inline-flex items-center gap-1 font-medium ${
+                                      isAuto
+                                        ? 'bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 border-amber-200 dark:border-amber-800/60'
+                                        : 'bg-slate-100 dark:bg-slate-700/50 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600'
+                                    }`}
+                                    title={u.reason_detail || (isAuto ? 'Dikecualikan otomatis oleh sistem' : 'Pengecualian manual HRD')}
+                                  >
+                                    <span>{u.name}</span>
+                                    <span className={`text-[8px] font-bold ${isAuto ? 'text-amber-600 dark:text-amber-400' : 'text-slate-400'}`}>
+                                      {isAuto ? `(${u.reason_label || 'Auto'})` : '(Manual)'}
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex items-center justify-between gap-1 mt-2">
+                          {h.is_collective && (
+                            <button
+                              onClick={() => openCollectiveDetail(h)}
+                              className="inline-flex items-center gap-1 px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-700 dark:bg-amber-950/30 dark:text-amber-400 dark:hover:bg-amber-900/50 rounded-md text-[10px] font-bold transition cursor-pointer"
+                            >
+                              <Users className="w-3 h-3" /> Rekap Opt-in
+                            </button>
                           )}
+                          <div className="flex items-center gap-1 ml-auto">
+                            {!isDetailLocked && (
+                              (h.scope !== 'nasional' && !h.is_national) || isSuperAdmin ? (
+                                <>
+                                  <button
+                                    onClick={() => startEdit(h)}
+                                    className="inline-flex items-center gap-1 px-1.5 py-1 text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-950/30 rounded-md text-[10px] font-medium transition cursor-pointer"
+                                    title="Ubah hari libur"
+                                  >
+                                    <Pencil className="w-3 h-3" /> Ubah
+                                  </button>
+                                  <button
+                                    onClick={() => remove(h)}
+                                    className="inline-flex items-center gap-1 px-1.5 py-1 text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-950/30 rounded-md text-[10px] font-medium transition cursor-pointer"
+                                    title="Hapus hari libur"
+                                  >
+                                    <Trash2 className="w-3 h-3" /> Hapus
+                                  </button>
+                                </>
+                              ) : (
+                                <span className="text-[10px] text-slate-400 dark:text-slate-500 italic px-1.5 py-0.5" title="Hanya Super Admin yang dapat mengubah atau menghapus libur nasional">
+                                  Libur Nasional (Terkunci)
+                                </span>
+                              )
+                            )}
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                )}
+              </div>
             </>
           ) : (
             <>
-              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 mb-3">Panduan</h4>
-              <ul className="space-y-3 text-[11px] text-slate-600 dark:text-slate-300">
+              <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100 mb-3">Panduan Kalender</h4>
+              <ul className="space-y-2.5 text-[11px] text-slate-600 dark:text-slate-300">
+                <li className="flex items-center gap-2">
+                  <span className="w-4 h-4 rounded-md bg-teal-50 border border-teal-300 dark:bg-teal-950/40 dark:border-teal-700 shrink-0 flex items-center justify-center">
+                    <span className="w-1.5 h-1.5 rounded-full bg-teal-500" />
+                  </span>
+                  <span><span className="font-semibold text-teal-700 dark:text-teal-400">Pill Karyawan</span> — Karyawan yang cuti/izin sudah di-approve HRD</span>
+                </li>
                 <li className="flex items-center gap-2">
                   <span className="w-4 h-4 rounded-md bg-rose-50 border border-rose-200 dark:bg-rose-950/30 dark:border-rose-900/40 shrink-0" />
                   <span><span className="font-semibold text-rose-700 dark:text-rose-400">Merah tua</span> — libur nasional (diberlakukan semua perusahaan)</span>
@@ -7462,9 +8276,11 @@ const HolidaysTab: React.FC<{
                   <span className="w-4 h-4 rounded-md bg-indigo-50 border border-indigo-200 dark:bg-indigo-950/30 dark:border-indigo-900/40 shrink-0" />
                   <span><span className="font-semibold text-indigo-700 dark:text-indigo-400">Biru</span> — libur khusus perusahaan (tanpa potong saldo)</span>
                 </li>
-                <li className="flex items-start gap-2">
-                  <span className="w-4 h-4 rounded-md bg-slate-50 border border-slate-100 dark:bg-slate-800/40 shrink-0" />
-                  <span>Klik tanggal untuk melihat detail libur di tanggal itu, atau tambah libur baru.</span>
+                <li className="flex items-start gap-2 pt-1 border-t border-slate-100 dark:border-slate-800">
+                  <span className="w-4 h-4 rounded-md bg-slate-50 border border-slate-200 dark:bg-slate-800 shrink-0 flex items-center justify-center text-[10px] font-bold text-slate-500">
+                    i
+                  </span>
+                  <span>Klik pada tanggal berapa saja untuk melihat daftar karyawan cuti &amp; detail libur secara lengkap.</span>
                 </li>
               </ul>
             </>

@@ -5,7 +5,7 @@ import {
   Download, Eye, Building2, Banknote, ShieldCheck, ArrowLeft, Info, Save,
   Wallet, Coins, BadgeCheck, Loader2, FileText, Clock, ChevronRight, ChevronDown,
   ShieldAlert, KeyRound, Lock, Unlock, History, SlidersHorizontal, Sparkles, CreditCard, Shield,
-  BookOpen, FileSpreadsheet, Settings, Landmark, Briefcase,
+  BookOpen, FileSpreadsheet, Settings, Landmark, Briefcase, Sigma,
 } from 'lucide-react';
 import { PayrollDisbursement } from './PayrollDisbursement';
 import { PayrollGlJournal } from './PayrollGlJournal';
@@ -13,6 +13,7 @@ import { PayrollTax1721A1 } from './PayrollTax1721A1';
 import { StrukturSkalaUpah } from './StrukturSkalaUpah';
 import { MasterKursValas } from './MasterKursValas';
 import { ExitSettlement } from './ExitSettlement';
+import { FormulaDslEditor } from './FormulaDslEditor';
 import { payrollApi, attendanceApi, userApi, PayrollStatus } from '../services/endpoints';
 import type {
   BpjsProfile,
@@ -2715,13 +2716,41 @@ const KomponenGajiTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
               {rows.map((c) => (
                 <tr key={c.id} className="border-b border-slate-50 dark:border-slate-800/60 hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
                   <td className="px-4 py-2.5 font-mono text-[11px] text-slate-500 dark:text-slate-400">{c.code}</td>
-                  <td className="px-4 py-2.5 font-semibold text-slate-800 dark:text-slate-100">{c.name}{c.category && <span className="block text-[10px] text-slate-400 font-normal">{c.category}</span>}</td>
+                  <td className="px-4 py-2.5 font-semibold text-slate-800 dark:text-slate-100">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span>{c.name}</span>
+                      {c.calc_type === 'formula' && (
+                        <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.2 rounded-md bg-purple-50 text-purple-700 dark:bg-purple-950/60 dark:text-purple-300 border border-purple-200/50 dark:border-purple-800/50">
+                          <Sigma className="w-2.5 h-2.5" /> DSL
+                        </span>
+                      )}
+                    </div>
+                    {c.category && <span className="block text-[10px] text-slate-400 font-normal">{c.category}</span>}
+                    {c.calc_type === 'formula' && c.formula_dsl && (
+                      <div className="mt-1 font-mono text-[10px] text-purple-700 dark:text-purple-300 bg-purple-50/70 dark:bg-purple-950/40 px-2 py-0.5 rounded border border-purple-200/50 dark:border-purple-800/40 max-w-xs sm:max-w-md truncate" title={c.formula_dsl}>
+                        <span className="font-bold mr-1 opacity-70">fx:</span>
+                        {c.formula_dsl}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-center">
                     <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${c.type === 'earning' ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300' : 'bg-rose-50 text-rose-700 dark:bg-rose-950/50 dark:text-rose-300'}`}>
                       {c.type === 'earning' ? 'Pendapatan' : 'Potongan'}
                     </span>
                   </td>
-                  <td className="px-4 py-2.5 text-center text-slate-500 dark:text-slate-400">{c.calc_type === 'fixed' ? 'Tetap' : c.calc_type === 'manual' ? 'Manual' : 'Otomatis'}</td>
+                  <td className="px-4 py-2.5 text-center text-slate-500 dark:text-slate-400">
+                    {c.calc_type === 'formula' ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 dark:bg-purple-950/50 dark:text-purple-300">
+                        Formula
+                      </span>
+                    ) : c.calc_type === 'fixed' ? (
+                      'Tetap'
+                    ) : c.calc_type === 'manual' ? (
+                      'Manual'
+                    ) : (
+                      'Otomatis'
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-center">{c.is_taxable ? <Check className="w-4 h-4 text-emerald-500 inline" /> : <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-2.5 text-center">
                     <span className={`text-[10px] font-bold ${c.is_active ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}`}>{c.is_active ? 'Aktif' : 'Nonaktif'}</span>
@@ -2742,6 +2771,7 @@ const KomponenGajiTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
       {showForm && (
         <ComponentFormModal
           editing={editing}
+          availableComponents={rows}
           onClose={() => setShowForm(false)}
           onSaved={(msg) => { setShowForm(false); show('success', msg); load(); }}
           onError={(m) => show('error', m)}
@@ -2760,12 +2790,17 @@ const KomponenGajiTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
 };
 
 const ComponentFormModal: React.FC<{
-  editing: any | null; onClose: () => void; onSaved: (msg: string) => void; onError: (m: string) => void;
-}> = ({ editing, onClose, onSaved, onError }) => {
+  editing: any | null;
+  availableComponents?: any[];
+  onClose: () => void;
+  onSaved: (msg: string) => void;
+  onError: (m: string) => void;
+}> = ({ editing, availableComponents = [], onClose, onSaved, onError }) => {
   const [code, setCode] = useState(editing?.code ?? '');
   const [name, setName] = useState(editing?.name ?? '');
   const [type, setType] = useState<'earning' | 'deduction'>(editing?.type ?? 'earning');
-  const [calcType, setCalcType] = useState<'fixed' | 'manual' | 'auto'>(editing?.calc_type ?? 'fixed');
+  const [calcType, setCalcType] = useState<'fixed' | 'manual' | 'auto' | 'formula'>(editing?.calc_type ?? 'fixed');
+  const [formulaDsl, setFormulaDsl] = useState<string>(editing?.formula_dsl ?? '');
   const [category, setCategory] = useState(editing?.category ?? '');
   const [isTaxable, setIsTaxable] = useState<boolean>(editing?.is_taxable ?? true);
   const [isActive, setIsActive] = useState<boolean>(editing?.is_active ?? true);
@@ -2774,9 +2809,23 @@ const ComponentFormModal: React.FC<{
 
   const submit = async () => {
     if (!code.trim() || !name.trim()) { onError('Kode dan nama wajib diisi.'); return; }
+    if (calcType === 'formula' && !formulaDsl.trim()) {
+      onError('Rumus formula DSL wajib diisi bila menggunakan metode perhitungan formula.');
+      return;
+    }
     setSaving(true);
     try {
-      const payload = { code: code.trim(), name: name.trim(), type, calc_type: calcType, category: category.trim() || undefined, is_taxable: isTaxable, is_active: isActive, sort_order: sortOrder };
+      const payload: any = {
+        code: code.trim(),
+        name: name.trim(),
+        type,
+        calc_type: calcType,
+        formula_dsl: calcType === 'formula' ? formulaDsl.trim() : null,
+        category: category.trim() || undefined,
+        is_taxable: isTaxable,
+        is_active: isActive,
+        sort_order: sortOrder,
+      };
       if (editing) { await payrollApi.updateComponent(editing.id, payload); onSaved('Komponen diperbarui.'); }
       else { await payrollApi.createComponent(payload); onSaved('Komponen dibuat.'); }
     } catch (e: any) { onError(errMsg(e, 'Gagal menyimpan komponen.')); setSaving(false); }
@@ -2784,48 +2833,64 @@ const ComponentFormModal: React.FC<{
 
   return (
     <Modal
-      open onClose={onClose} title={editing ? 'Ubah Komponen' : 'Komponen Baru'} icon={<Layers className="w-4 h-4 text-indigo-500" />}
+      open onClose={onClose} title={editing ? 'Ubah Komponen Gaji' : 'Komponen Gaji Baru'} icon={<Layers className="w-4 h-4 text-indigo-500" />}
       footer={<>
         <button onClick={onClose} className={btnGhost} disabled={saving}>Batal</button>
         <button onClick={submit} className={btnPrimary} disabled={saving}>{saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Simpan</button>
       </>}
     >
-      <div className="grid sm:grid-cols-2 gap-4">
-        <Field label="Kode" required hint="Otomatis dijadikan huruf besar, unik per perusahaan.">
-          <input value={code} onChange={(e) => setCode(e.target.value)} className={`${inputCls} font-mono`} placeholder="TUNJ_MAKAN" disabled={!!editing} />
-        </Field>
-        <Field label="Nama" required>
-          <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Tunjangan Makan" />
-        </Field>
-        <Field label="Tipe" required>
-          <select value={type} onChange={(e) => setType(e.target.value as any)} className={inputCls}>
-            <option value="earning">Pendapatan</option>
-            <option value="deduction">Potongan</option>
-          </select>
-        </Field>
-        <Field label="Metode perhitungan">
-          <select value={calcType} onChange={(e) => setCalcType(e.target.value as any)} className={inputCls}>
-            <option value="fixed">Tetap (nominal per karyawan)</option>
-            <option value="manual">Manual (diisi saat proses)</option>
-            <option value="auto">Otomatis (dari sistem)</option>
-          </select>
-        </Field>
-        <Field label="Kategori (opsional)">
-          <input value={category} onChange={(e) => setCategory(e.target.value)} className={inputCls} placeholder="Tunjangan" />
-        </Field>
-        <Field label="Urutan tampil">
-          <input type="number" min={0} max={9999} value={sortOrder} onChange={(e) => setSortOrder(Number(e.target.value))} className={inputCls} />
-        </Field>
-      </div>
-      <div className="flex flex-wrap gap-4">
-        <label className="flex items-center gap-2 text-xs cursor-pointer">
-          <input type="checkbox" checked={isTaxable} onChange={(e) => setIsTaxable(e.target.checked)} className="accent-indigo-600 w-4 h-4" />
-          <span className="text-slate-600 dark:text-slate-300">Kena pajak (masuk dasar PPh21)</span>
-        </label>
-        <label className="flex items-center gap-2 text-xs cursor-pointer">
-          <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} className="accent-indigo-600 w-4 h-4" />
-          <span className="text-slate-600 dark:text-slate-300">Aktif</span>
-        </label>
+      <div className="space-y-4">
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Kode" required hint="Otomatis dijadikan huruf besar, unik per perusahaan.">
+            <input value={code} onChange={(e) => setCode(e.target.value)} className={`${inputCls} font-mono`} placeholder="TUNJ_MAKAN" disabled={!!editing} />
+          </Field>
+          <Field label="Nama" required>
+            <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} placeholder="Tunjangan Makan" />
+          </Field>
+          <Field label="Tipe" required>
+            <select value={type} onChange={(e) => setType(e.target.value as any)} className={inputCls}>
+              <option value="earning">Pendapatan (Earning)</option>
+              <option value="deduction">Potongan (Deduction)</option>
+            </select>
+          </Field>
+          <Field label="Metode perhitungan" required>
+            <select value={calcType} onChange={(e) => setCalcType(e.target.value as any)} className={inputCls}>
+              <option value="fixed">Tetap (nominal statis per karyawan)</option>
+              <option value="formula">Rumus Dinamis / Formula DSL (Otomatis dievaluasi)</option>
+              <option value="manual">Manual (diisi dinamis saat proses)</option>
+              <option value="auto">Otomatis (dari sistem presensi/lembur)</option>
+            </select>
+          </Field>
+          <Field label="Kategori (opsional)">
+            <input value={category} onChange={(e) => setCategory(e.target.value)} className={inputCls} placeholder="Tunjangan" />
+          </Field>
+          <Field label="Urutan tampil">
+            <input type="number" min={0} max={9999} value={sortOrder} onChange={(e) => setSortOrder(Number(e.target.value))} className={inputCls} />
+          </Field>
+        </div>
+
+        {/* Editor Formula DSL khusus bila metode perhitungan = formula */}
+        {calcType === 'formula' && (
+          <div className="pt-1">
+            <FormulaDslEditor
+              value={formulaDsl}
+              onChange={setFormulaDsl}
+              componentCode={code}
+              availableComponents={availableComponents}
+            />
+          </div>
+        )}
+
+        <div className="flex flex-wrap gap-4 pt-1 border-t border-slate-100 dark:border-slate-800">
+          <label className="flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" checked={isTaxable} onChange={(e) => setIsTaxable(e.target.checked)} className="accent-indigo-600 w-4 h-4" />
+            <span className="text-slate-600 dark:text-slate-300">Kena pajak (masuk dasar bruto PPh21)</span>
+          </label>
+          <label className="flex items-center gap-2 text-xs cursor-pointer">
+            <input type="checkbox" checked={isActive} onChange={(e) => setIsActive(e.target.checked)} className="accent-indigo-600 w-4 h-4" />
+            <span className="text-slate-600 dark:text-slate-300">Aktif</span>
+          </label>
+        </div>
       </div>
     </Modal>
   );

@@ -760,6 +760,7 @@ class MultiApprovalWorkflowTest extends TestCase
     public function test_overtime_list_filters_by_step_and_summary_counters(): void
     {
         $employee = $this->createUser('employee');
+        $admin    = $this->createUser('admin');
         $hrd      = $this->createUser('hrd');
 
         $att1 = Attendance::create([
@@ -772,7 +773,7 @@ class MultiApprovalWorkflowTest extends TestCase
         ]);
 
         // Overtime 1 at SPV step
-        OvertimeApproval::create([
+        $otSpv = OvertimeApproval::create([
             'attendance_id'    => $att1->id,
             'user_id'          => $employee->id,
             'company_id'       => $this->company->id,
@@ -789,24 +790,40 @@ class MultiApprovalWorkflowTest extends TestCase
             'overtime_minutes' => 60,
             'status'           => 'pending',
             'current_step'     => 'hrd',
-            'spv_id'           => $hrd->id,
+            'spv_id'           => $admin->id,
             'spv_approved_at'  => now(),
         ]);
 
-        // Query step=spv
-        $resSpv = $this->getJson('/api/v1/dashboard/attendance/overtime-approvals?step=spv', $this->token($hrd))
+        // Admin dapat melihat kedua tahap
+        $resSpvAdmin = $this->getJson('/api/v1/dashboard/attendance/overtime-approvals?step=spv', $this->token($admin))
             ->assertOk()
             ->assertJsonPath('summary.pending_spv', 1)
             ->assertJsonPath('summary.pending_hrd', 1);
 
-        $this->assertCount(1, $resSpv->json('data'));
-        $this->assertEquals('spv', $resSpv->json('data.0.current_step'));
+        $this->assertCount(1, $resSpvAdmin->json('data'));
+        $this->assertEquals('spv', $resSpvAdmin->json('data.0.current_step'));
 
-        // Query step=hrd
+        // HRD Level 2 TIDAK BISA melihat pengajuan yang masih di Tahap 1 (SPV)
+        $resSpvHrd = $this->getJson('/api/v1/dashboard/attendance/overtime-approvals?step=spv', $this->token($hrd))
+            ->assertOk()
+            ->assertJsonPath('summary.pending_spv', 0)
+            ->assertJsonPath('summary.pending_hrd', 1)
+            ->assertJsonPath('show_spv_step', false);
+
+        $this->assertCount(0, $resSpvHrd->json('data'));
+
+        // HRD hanya melihat lembur yang sudah masuk Tahap 2 (HRD)
         $resHrd = $this->getJson('/api/v1/dashboard/attendance/overtime-approvals?step=hrd', $this->token($hrd))
             ->assertOk();
 
         $this->assertCount(1, $resHrd->json('data'));
         $this->assertEquals('hrd', $resHrd->json('data.0.current_step'));
+
+        // HRD mencoba approve lembur yang masih di Tahap 1 (SPV) -> Ditolak 403 WAITING_SPV_APPROVAL
+        $this->postJson("/api/v1/dashboard/attendance/overtime-approvals/{$otSpv->id}/approve", [
+            'notes' => 'HRD mencoba approve lembur tahap SPV',
+        ], $this->token($hrd))
+            ->assertStatus(403)
+            ->assertJsonPath('code', 'WAITING_SPV_APPROVAL');
     }
 }

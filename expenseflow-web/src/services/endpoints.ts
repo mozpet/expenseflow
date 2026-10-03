@@ -442,9 +442,10 @@ export const attendanceApi = {
     user_id: number;
     leave_type?: string;
     quota?: number;
+    remaining?: number;
     allow_leave?: boolean;
     year?: number;
-    balances?: Array<{ leave_type: string; quota: number }>;
+    balances?: Array<{ leave_type: string; quota?: number; remaining?: number }>;
   }) => apiPost('/dashboard/attendance/leave-balances', payload),
 
   // Pengaturan jenis cuti per kantor (toggle on/off, kuota default kantor, & reset tahunan)
@@ -1026,6 +1027,7 @@ import type {
   SeverancePreview,
   EbupotSchemaStatus,
   TaxProfile,
+  FormulaValidationResult,
 } from '../types';
 
 export const payrollApi = {
@@ -1037,7 +1039,8 @@ export const payrollApi = {
     code: string;
     name: string;
     type: 'earning' | 'deduction';
-    calc_type?: 'fixed' | 'manual' | 'auto';
+    calc_type?: 'fixed' | 'manual' | 'auto' | 'formula';
+    formula_dsl?: string | null;
     category?: string;
     is_taxable?: boolean;
     is_active?: boolean;
@@ -1049,6 +1052,13 @@ export const payrollApi = {
 
   deleteComponent: (id: number | string) =>
     apiDelete<{ message: string }>(`/dashboard/payroll/components/${id}`),
+
+  validateFormula: (payload: {
+    formula: string;
+    code?: string;
+    sample?: Record<string, number>;
+  }) =>
+    apiPost<{ data: FormulaValidationResult }>('/dashboard/payroll/components/validate-formula', payload),
 
   // ── Gaji karyawan (gaji pokok efektif + tunjangan tetap + profil pajak + BPJS) ──
   listSalaries: () =>
