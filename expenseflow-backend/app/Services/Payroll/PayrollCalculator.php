@@ -65,6 +65,7 @@ class PayrollCalculator
             'bpjs'                  => true,
             'overtime'              => true,
             'attendance_deduction'  => true,
+            'late_penalty'          => true,  // denda keterlambatan dari presensi
             'receipt_reimbursement' => false, // default OFF: cegah dobel bayar dgn modul Struk
             'loan_installment'      => true,
             'adjustments'           => true,  // penyesuaian/koreksi retroaktif approved (Fase 3)
@@ -217,7 +218,11 @@ class PayrollCalculator
             // 3) Tunjangan lembur (PP 35/2021)
             $overtimeHours = 0.0;
             if ($opt['overtime']) {
-                [$overtimePay, $overtimeHours] = $this->overtimePay($user, $year, $month, $monthlyWageBase);
+                $ot = $this->overtimePay($user, $year, $month, $monthlyWageBase);
+                $overtimeHours = $ot['government_hours'];
+
+                // Aturan pemerintah (PP 35/2021) — "Tunjangan Lembur"
+                $overtimePay = $ot['government_pay'];
                 if ($overtimePay > 0) {
                     $items[] = $this->item(
                         'Tunjangan Lembur',
@@ -227,14 +232,41 @@ class PayrollCalculator
                         false,
                         'overtime',
                         $sort++,
-                        notes: number_format($overtimeHours, 1, ',', '.') . ' jam (PP 35/2021)',
+                        notes: number_format($ot['government_hours'], 1, ',', '.') . ' jam (PP 35/2021)',
                     );
                     $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_OVERTIME, [
-                        'overtime_hours'   => $overtimeHours,
+                        'rule'             => 'government',
+                        'overtime_hours'   => $ot['government_hours'],
                         'monthly_wage_base' => $monthlyWageBase,
                         'hourly_divisor'   => self::OVERTIME_HOURS_DIVISOR,
                     ], $overtimePay, 'PP 35/2021');
                 }
+
+                // Aturan sendiri kantor — "Bonus Lembur" (satu baris per status pajak)
+                foreach ($ot['custom'] as $group) {
+                    if ($group['pay'] <= 0) {
+                        continue;
+                    }
+                    $overtimeHours += $group['hours'];
+                    $rateText = implode(', ', $group['rates']);
+                    $items[] = $this->item(
+                        'Bonus Lembur',
+                        PayslipItem::TYPE_EARNING,
+                        $group['pay'],
+                        $group['taxable'],
+                        false,
+                        'overtime',
+                        $sort++,
+                        notes: number_format($group['hours'], 1, ',', '.') . ' jam (aturan kantor: ' . $rateText . ')',
+                    );
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_OVERTIME, [
+                        'rule'           => 'custom',
+                        'overtime_hours' => $group['hours'],
+                        'rates'          => $group['rates'],
+                        'taxable'        => $group['taxable'],
+                    ], $group['pay'], 'Aturan lembur kantor');
+                }
+                $overtimeHours = round($overtimeHours, 2);
             }
 
             // 4) Reimburse struk approved (opsional, non-taxable)
@@ -367,6 +399,33 @@ class PayrollCalculator
                         'divisor'     => $divisor,
                         'daily_wage'  => round($dailyWage, 2),
                     ], $deduction, 'PP 35/2021');
+                }
+            }
+
+            // 5b) Denda keterlambatan — dijumlah dari nilai yang dibekukan per presensi.
+            if ($opt['late_penalty']) {
+                $lateRow = DB::table('attendances')
+                    ->where('user_id', $user->id)
+                    ->whereBetween('date', [$periodStart->toDateString(), $periodEndDate])
+                    ->where('late_fine_amount', '>', 0)
+                    ->selectRaw('COUNT(*) as days, COALESCE(SUM(late_minutes), 0) as minutes, COALESCE(SUM(late_fine_amount), 0) as fine')
+                    ->first();
+                $lateFine = round((float) ($lateRow->fine ?? 0));
+                if ($lateFine > 0) {
+                    $items[] = $this->item(
+                        'Potongan Keterlambatan',
+                        PayslipItem::TYPE_DEDUCTION,
+                        $lateFine,
+                        false,
+                        false,
+                        'attendance',
+                        $sort++,
+                        notes: (int) $lateRow->days . ' hari telat, total ' . (int) $lateRow->minutes . ' menit',
+                    );
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_LATE_PENALTY, [
+                        'late_days'    => (int) $lateRow->days,
+                        'late_minutes' => (int) $lateRow->minutes,
+                    ], $lateFine, 'Kebijakan perusahaan');
                 }
             }
 
@@ -812,10 +871,15 @@ class PayrollCalculator
     }
 
     /**
-     * Monetisasi lembur approved dalam periode (PP 35/2021).
-     * Weekday: jam ke-1 ×1,5; jam berikutnya ×2. Hari libur: MVP ×2 seluruh jam.
+     * Monetisasi lembur approved dalam periode.
      *
-     * @return array{0: float, 1: float} [totalPay, totalHours]
+     * Aturan dibekukan per baris presensi saat check-in (attendances.snap_overtime_*):
+     *  - NULL / 'government' → PP 35/2021. Weekday: jam ke-1 ×1,5; jam berikutnya ×2.
+     *    Hari libur: MVP ×2 seluruh jam.
+     *  - 'custom' → menit disetujui × tarif per menit yang ditetapkan HRD di kantor
+     *    (tarif per jam dibagi 60). Satu tarif untuk hari kerja & libur.
+     *
+     * @return array{government_pay: float, government_hours: float, custom: array<int, array{pay: float, hours: float, taxable: bool, rates: array<int, string>}>}
      */
     private function overtimePay(User $user, int $year, int $month, float $monthlyWageBase): array
     {
@@ -827,34 +891,70 @@ class PayrollCalculator
             ->where('o.user_id', $user->id)
             ->where('o.status', 'approved')
             ->whereBetween('a.date', [$start, $end])
-            ->get(['o.overtime_minutes', 'a.is_holiday']);
+            ->get([
+                'o.overtime_minutes', 'a.is_holiday',
+                'a.snap_overtime_rule', 'a.snap_overtime_rate_amount',
+                'a.snap_overtime_rate_unit', 'a.snap_overtime_rate_taxable',
+            ]);
 
-        if ($rows->isEmpty() || $monthlyWageBase <= 0) {
-            return [0.0, 0.0];
+        $result = ['government_pay' => 0.0, 'government_hours' => 0.0, 'custom' => []];
+        if ($rows->isEmpty()) {
+            return $result;
         }
 
-        $hourly = $monthlyWageBase / self::OVERTIME_HOURS_DIVISOR;
-        $totalPay = 0.0;
-        $totalHours = 0.0;
+        $hourly = $monthlyWageBase > 0 ? $monthlyWageBase / self::OVERTIME_HOURS_DIVISOR : 0.0;
+        $govPay = 0.0;
+        $govHours = 0.0;
+        $custom = []; // key '1' = kena pajak, '0' = tidak
 
         foreach ($rows as $row) {
-            $hours = ((int) $row->overtime_minutes) / 60;
-            if ($hours <= 0) {
+            $minutes = (int) $row->overtime_minutes;
+            if ($minutes <= 0) {
                 continue;
             }
-            $totalHours += $hours;
+            $hours = $minutes / 60;
+
+            if ($row->snap_overtime_rule === 'custom' && (float) $row->snap_overtime_rate_amount > 0) {
+                $amount = (float) $row->snap_overtime_rate_amount;
+                $unit = $row->snap_overtime_rate_unit === 'minute' ? 'minute' : 'hour';
+                $perMinute = $unit === 'minute' ? $amount : $amount / 60;
+                $taxable = $row->snap_overtime_rate_taxable === null ? true : (bool) $row->snap_overtime_rate_taxable;
+                $key = $taxable ? '1' : '0';
+
+                $custom[$key] ??= ['pay' => 0.0, 'hours' => 0.0, 'taxable' => $taxable, 'rates' => []];
+                $custom[$key]['pay'] += $minutes * $perMinute;
+                $custom[$key]['hours'] += $hours;
+                $custom[$key]['rates']['Rp ' . number_format($amount, 0, ',', '.') . '/' . ($unit === 'minute' ? 'menit' : 'jam')] = true;
+                continue;
+            }
+
+            if ($hourly <= 0) {
+                continue;
+            }
+            $govHours += $hours;
 
             if ($row->is_holiday) {
                 // MVP: hari libur seluruh jam ×2 (penyederhanaan PP 35/2021).
-                $totalPay += $hours * 2 * $hourly;
+                $govPay += $hours * 2 * $hourly;
             } else {
                 $first = min($hours, 1) * 1.5;
                 $rest = max(0, $hours - 1) * 2;
-                $totalPay += ($first + $rest) * $hourly;
+                $govPay += ($first + $rest) * $hourly;
             }
         }
 
-        return [round($totalPay), round($totalHours, 2)];
+        $result['government_pay'] = round($govPay);
+        $result['government_hours'] = round($govHours, 2);
+        foreach ($custom as $group) {
+            $result['custom'][] = [
+                'pay'     => round($group['pay']),
+                'hours'   => round($group['hours'], 2),
+                'taxable' => $group['taxable'],
+                'rates'   => array_keys($group['rates']),
+            ];
+        }
+
+        return $result;
     }
 
     /**

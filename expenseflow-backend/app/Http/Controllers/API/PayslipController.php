@@ -8,6 +8,7 @@ use App\Models\Payslip;
 use App\Models\PayslipItem;
 use App\Models\Role;
 use App\Services\Payroll\Bpjs\EmployerBpjsBreakdown;
+use App\Support\Timezone;
 use Barryvdh\DomPDF\Facade\Pdf;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -156,7 +157,7 @@ class PayslipController extends Controller
     /** Render & stream PDF slip gaji dari Blade. */
     private function streamPdf(Payslip $payslip): Response
     {
-        $payslip->load(['items', 'calculationSteps', 'payroll:id,period_label,period_month,period_year']);
+        $payslip->load(['items', 'calculationSteps', 'payroll:id,period_label,period_month,period_year', 'user.office']);
         $company = Company::find($payslip->company_id);
 
         // Rincian iuran BPJS yang DITANGGUNG PERUSAHAAN — informasi tambahan pada
@@ -164,12 +165,20 @@ class PayslipController extends Controller
         // pengurang gaji bersih; blok disembunyikan bila slip tanpa BPJS.
         $bpjsEmployer = EmployerBpjsBreakdown::fromSteps($payslip->calculationSteps);
 
+        // Zona cabang karyawan pemilik slip — cap waktu cetak di footer memakai jam
+        // lokal cabangnya, bukan jam server, agar cocok dengan jam yang dilihat
+        // karyawan Makassar/Jayapura di aplikasinya. Fallback ke zona penyimpanan
+        // bila user sudah dihapus.
+        $slipTz = $payslip->user?->effectiveTimezone() ?? Timezone::storage();
+
         $pdf = Pdf::loadView('payroll.payslip', [
             'payslip'      => $payslip,
             'company'      => $company,
             'earnings'     => $payslip->items->where('type', PayslipItem::TYPE_EARNING)->values(),
             'deductions'   => $payslip->items->where('type', PayslipItem::TYPE_DEDUCTION)->values(),
             'bpjsEmployer' => $bpjsEmployer,
+            'printedAt'    => now($slipTz)->format('d-m-Y H:i'),
+            'printedZone'  => Timezone::label($slipTz),
         ])->setPaper('a4');
 
         $filename = sprintf(

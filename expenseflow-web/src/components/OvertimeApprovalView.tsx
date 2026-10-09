@@ -407,8 +407,12 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
       const params: Record<string, string | number> = { page: pg };
       if (filterStatus !== 'all') params.status = filterStatus;
       if (filterStep !== 'all') params.step = filterStep;
-      if (filterStart) params.start_date = filterStart;
-      if (filterEnd) params.end_date = filterEnd;
+      if (filterStart) {
+        params.start_date = filterStart;
+        params.end_date = filterEnd || filterStart;
+      } else if (filterEnd) {
+        params.end_date = filterEnd;
+      }
 
       const res = await overtimeApi.list(params as Parameters<typeof overtimeApi.list>[0], forceRefresh);
       const data: OvertimeRecord[] = Array.isArray(res?.data) ? res.data : (Array.isArray(res) ? res : []);
@@ -648,11 +652,15 @@ export function OvertimeApprovalView({ onActionSuccess }: OvertimeApprovalViewPr
 
           {/* Tanggal akhir */}
           <div>
-            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">Sampai Tanggal</label>
+            <label className="block text-[10px] font-semibold text-slate-500 dark:text-slate-400 uppercase mb-1">
+              Sampai Tanggal
+              <span className="ml-1 text-[9px] font-normal text-slate-400 dark:text-slate-500 lowercase">(opsional)</span>
+            </label>
             <CustomDatePicker
               value={filterEnd}
+              min={filterStart || undefined}
               onChange={setFilterEnd}
-              placeholder="Sampai tanggal"
+              placeholder={filterStart ? "Sama dg dari tanggal" : "Sampai tanggal"}
               size="sm"
             />
           </div>

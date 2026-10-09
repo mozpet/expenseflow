@@ -57,7 +57,7 @@ String formatDateIndonesianRange(dynamic start, dynamic end) {
 
 /// Mengubah DateTime atau string ISO menjadi format Indonesia dengan jam dan menit.
 /// Contoh: '2026-09-17T12:46:54.000000Z' → '17 September 2026, 19:46 WIB'
-String formatDateTimeIndonesian(dynamic date) {
+String formatDateTimeIndonesian(dynamic date, [String? timezoneLabel]) {
   if (date == null) return '-';
   DateTime? dt;
   if (date is DateTime) {
@@ -90,6 +90,7 @@ String formatDateTimeIndonesian(dynamic date) {
   ];
   final hour = dt.hour.toString().padLeft(2, '0');
   final min = dt.minute.toString().padLeft(2, '0');
-  return '${dt.day} ${months[dt.month]} ${dt.year}, $hour:$min WIB';
+  final tzSuffix = timezoneLabel != null && timezoneLabel.isNotEmpty ? ' $timezoneLabel' : '';
+  return '${dt.day} ${months[dt.month]} ${dt.year}, $hour:$min$tzSuffix';
 }
 

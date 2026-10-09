@@ -79,7 +79,9 @@ class GenerateDummyUsersCommand extends Command
         $this->line("Target Cabang   : <comment>{$branchCount} cabang</comment>");
         $this->line("Mode Pembuatan  : <comment>" . ($mode === 'both' ? 'Komparasi Keduanya (Sequential + Batch)' : ($mode === 'sequential' ? 'Sequential' : 'Batch')) . "</comment>");
         $this->line("Default Password: <comment>{$password}</comment>");
-        $this->line("Waktu Mulai     : " . now('Asia/Jakarta')->toDateTimeString() . " WIB\n");
+        // Banner konsol developer → zona penyimpanan, bukan zona cabang.
+        $this->line("Waktu Mulai     : " . now(\App\Support\Timezone::storage())->toDateTimeString()
+            . ' ' . \App\Support\Timezone::label(\App\Support\Timezone::storage()) . "\n");
 
         // 1. Pastikan Company ada
         $company = Company::first();

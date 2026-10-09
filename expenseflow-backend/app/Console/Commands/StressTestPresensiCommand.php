@@ -43,7 +43,9 @@ class StressTestPresensiCommand extends Command
         $this->info('================================================================');
         $this->line("Target Host    : {$this->baseUrl}");
         $this->line("Virtual Users  : {$numUsers} akun");
-        $this->line("Waktu Mulai    : " . now('Asia/Jakarta')->toDateTimeString() . " WIB\n");
+        // Banner konsol developer → zona penyimpanan, bukan zona cabang.
+        $this->line("Waktu Mulai    : " . now(\App\Support\Timezone::storage())->toDateTimeString()
+            . ' ' . \App\Support\Timezone::label(\App\Support\Timezone::storage()) . "\n");
 
         $this->httpClient = new Client([
             'base_uri'    => $this->baseUrl,
@@ -335,9 +337,10 @@ class StressTestPresensiCommand extends Command
         $results = Utils::unwrap($promises);
         $totalTime = (microtime(true) - $startTime) * 1000;
 
-        // Cek integritas database: harus tepat ada 1 record presensi untuk user ini hari ini
+        // Cek integritas database: harus tepat ada 1 record presensi untuk user ini hari ini.
+        // Tanggal diambil di zona cabang user — sama seperti yang dipakai checkIn().
         $dbRecords = Attendance::where('user_id', $user['id'])
-            ->whereDate('date', now('Asia/Jakarta')->toDateString())
+            ->whereDate('date', now($user['user']->effectiveTimezone())->toDateString())
             ->count();
 
         $metrics = $this->calculateMetrics('Race Condition Collision (1 User 25 Spam)', $results, $totalTime, $spamCount);
@@ -406,7 +409,8 @@ class StressTestPresensiCommand extends Command
             Attendance::create([
                 'user_id'            => $u['id'],
                 'company_id'         => $u['user']->company_id,
-                'date'               => now('Asia/Jakarta')->toDateString(),
+                // Tanggal lokal cabang — konsisten dgn checkIn() sesungguhnya.
+                'date'               => now($u['user']->effectiveTimezone())->toDateString(),
                 'check_in_time'      => now()->subHours(8),
                 'check_in_latitude'  => $lat,
                 'check_in_longitude' => $lng,
@@ -536,7 +540,9 @@ class StressTestPresensiCommand extends Command
 
     private function generateMarkdownReport(string $path): void
     {
-        $nowStr = now('Asia/Jakarta')->translatedFormat('d F Y, H:i:s') . ' WIB';
+        // Cap waktu laporan developer → zona penyimpanan.
+        $storageTz = \App\Support\Timezone::storage();
+        $nowStr = now($storageTz)->translatedFormat('d F Y, H:i:s') . ' ' . \App\Support\Timezone::label($storageTz);
         $md = "# Laporan Hasil Stress & Concurrency Test: Sistem Presensi\n\n";
         $md .= "**Tanggal Eksekusi**: `{$nowStr}`  \n";
         $md .= "**Target Endpoint**: `{$this->baseUrl}/api/v1/attendance/*`  \n";

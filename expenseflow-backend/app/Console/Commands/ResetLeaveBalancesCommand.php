@@ -6,6 +6,7 @@ use App\Models\AttendanceSetting;
 use App\Models\LeaveBalance;
 use App\Models\User;
 use App\Services\FcmService;
+use App\Support\Timezone;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 
@@ -26,12 +27,24 @@ use Illuminate\Support\Carbon;
  * CATCH-UP: pemrosesan memakai last_leave_reset_on — bila server mati beberapa hari,
  * reset tetap dieksekusi sekali saat server menyala kembali (tidak dobel, tidak terlewat).
  *
- * Jadwal: setiap hari jam 00:03 (via routes/console.php scheduler).
+ * Jadwal: setiap jam (via routes/console.php scheduler).
+ *
+ * MULTI-ZONA (2026-10-08): dijadwalkan ->hourly(), bukan ->dailyAt('00:03'), dan
+ * tanggal anniversary tiap kantor dinilai terhadap TANGGAL LOKAL kantor itu
+ * sendiri. Hari lokal cabang WIT dimulai 2 jam lebih awal dari jam dinding server
+ * (00:00 WIT = 22:00 WIB H-1), sehingga jadwal harian WIB membuat reset cabang
+ * timur terlambat 2 jam. Penjagaan anti-dobel tetap last_leave_reset_on (bukan
+ * jadwal), jadi berjalan tiap jam TIDAK menyebabkan reset ganda — mekanismenya
+ * sudah idempoten/catch-up sejak awal.
+ *
+ * Kolom leave_balances.year SENGAJA tetap memakai zona penyimpanan: ia adalah
+ * tahun buku perusahaan yang dipakai sebagai kunci baris bersama oleh approveLeave,
+ * listAllUsers, dan saldo mobile. Hanya tanggal anniversary yang bersifat lokal.
  */
 class ResetLeaveBalancesCommand extends Command
 {
     protected $signature   = 'attendance:reset-leave-balances';
-    protected $description = 'Reset saldo cuti karyawan sesuai tanggal anniversary per kantor (1x per tahun)';
+    protected $description = 'Reset saldo cuti karyawan sesuai tanggal anniversary per kantor (1x per tahun, per zona cabang)';
 
     public function __construct(private FcmService $fcm)
     {
@@ -40,7 +53,9 @@ class ResetLeaveBalancesCommand extends Command
 
     public function handle(): int
     {
-        $today = Carbon::today('Asia/Jakarta');
+        // Tahun buku perusahaan — kunci baris leave_balances. Zona penyimpanan,
+        // bukan zona cabang (lihat docblock kelas).
+        $bookYear = (int) Carbon::today(Timezone::storage())->year;
 
         // Kantor dengan jadwal reset aktif. Bila HRD mengisi jadwal di tengah tahun dan
         // anniversary tahun ini sudah lewat, saldo TAHUN INI langsung ikut di-reset sekali
@@ -56,13 +71,17 @@ class ResetLeaveBalancesCommand extends Command
         $totalUsers   = 0;
 
         foreach ($offices as $office) {
+            // Tanggal "hari ini" menurut jam dinding kantor ini sendiri.
+            $tz    = $office->effectiveTimezone();
+            $today = Carbon::today($tz);
+
             // leave_reset_date berformat 'MM-DD' (anniversary tanpa tahun).
             // Tanggal anniversary yang baru lewat / hari ini: contoh jadwal 01-01,
             // hari ini 25-08-2026 → anniversary = 01-01-2026.
             // Jika MM-DD sama dengan hari ini → anniversary = hari ini juga.
             [$mm, $dd] = explode('-', $office->leave_reset_date);
             $anniversary = Carbon::create(
-                (int) $today->year, (int) $mm, (int) $dd, 0, 0, 0, 'Asia/Jakarta'
+                (int) $today->year, (int) $mm, (int) $dd, 0, 0, 0, $tz
             );
             if ($anniversary->greaterThan($today)) {
                 $anniversary->subYear(); // anniversary tahun ini belum tiba → pakai tahun lalu
@@ -92,8 +111,12 @@ class ResetLeaveBalancesCommand extends Command
                 // KEBIJAKAN 2026-08-25: hanya baris saldo AKTIF (quota > 0) yang di-reset.
                 // Karyawan yang belum pernah diaktifkan HRD (quota 0 / belum ada baris)
                 // dibiarkan non-aktif — reset tidak boleh mengaktifkan saldo otomatis.
+                // $bookYear (zona penyimpanan), BUKAN $today->year: baris saldo
+                // adalah kunci bersama lintas cabang. Memakai tahun lokal cabang
+                // akan membuat cabang WIT mencari baris tahun berikutnya selama
+                // 2 jam terakhir setiap 31 Desember.
                 $existingCuti = LeaveBalance::where('user_id', $userId)
-                    ->where('year', $today->year)
+                    ->where('year', $bookYear)
                     ->where('leave_type', 'cuti')
                     ->first();
 
@@ -102,12 +125,12 @@ class ResetLeaveBalancesCommand extends Command
                 }
 
                 $existingIzin = LeaveBalance::where('user_id', $userId)
-                    ->where('year', $today->year)
+                    ->where('year', $bookYear)
                     ->where('leave_type', 'izin')
                     ->first();
 
                 $otherBalances = LeaveBalance::where('user_id', $userId)
-                    ->where('year', $today->year)
+                    ->where('year', $bookYear)
                     ->whereNotIn('leave_type', ['cuti', 'izin', 'wfh'])
                     ->get()
                     ->keyBy('leave_type');

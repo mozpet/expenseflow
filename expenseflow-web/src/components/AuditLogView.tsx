@@ -83,8 +83,9 @@ export const AuditLogView: React.FC = () => {
       // Date filter
       if (log.created_at) {
         const logDate = log.created_at.substring(0, 10);
+        const effectiveEnd = endDate || (startDate ? startDate : '');
         if (startDate && logDate < startDate) return false;
-        if (endDate && logDate > endDate) return false;
+        if (effectiveEnd && logDate > effectiveEnd) return false;
       }
 
       // Severity filter
@@ -126,7 +127,7 @@ export const AuditLogView: React.FC = () => {
         severity: severityFilter !== 'all' ? severityFilter : undefined,
         category: categoryFilter !== 'all' ? categoryFilter : undefined,
         start_date: startDate || undefined,
-        end_date: endDate || undefined,
+        end_date: (endDate || (startDate ? startDate : undefined)) || undefined,
       });
     } catch (err: any) {
       alert(err?.message || 'Gagal mengekspor audit log.');
@@ -287,7 +288,12 @@ export const AuditLogView: React.FC = () => {
             <div className="w-32">
               <CustomDatePicker
                 value={startDate}
-                onChange={setStartDate}
+                onChange={(val) => {
+                  setStartDate(val);
+                  if (endDate && val && endDate < val) {
+                    setEndDate('');
+                  }
+                }}
                 placeholder="Dari tgl"
                 size="sm"
               />
@@ -296,8 +302,9 @@ export const AuditLogView: React.FC = () => {
             <div className="w-32">
               <CustomDatePicker
                 value={endDate}
+                min={startDate || undefined}
                 onChange={setEndDate}
-                placeholder="Sampai tgl"
+                placeholder={startDate ? "Sama dg tgl" : "Sampai tgl"}
                 size="sm"
               />
             </div>

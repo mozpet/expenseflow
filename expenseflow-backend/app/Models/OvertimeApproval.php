@@ -34,6 +34,27 @@ class OvertimeApproval extends Model
         ];
     }
 
+    /**
+     * Jaring pengaman penyimpanan datetime lintas zona — lihat penjelasan lengkap
+     * di App\Models\Attendance::fromDateTime().
+     *
+     * Ringkas: Laravel menulis datetime sebagai string jam dinding pada zona yang
+     * dibawa instance Carbon-nya, dan membacanya kembali dengan zona default
+     * aplikasi. Carbon bernuansa WITA/WIT yang masuk ke spv_approved_at /
+     * reviewed_at akan tersimpan menjadi instan yang bergeser 1-2 jam. Override
+     * ini memaksa semua penulisan ke jam dinding zona penyimpanan.
+     */
+    public function fromDateTime($value)
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return parent::fromDateTime(
+            $this->asDateTime($value)->copy()->setTimezone(\App\Support\Timezone::storage())
+        );
+    }
+
     public function attendance(): BelongsTo
     {
         return $this->belongsTo(Attendance::class);

@@ -5,8 +5,9 @@ import {
   Download, Eye, Building2, Banknote, ShieldCheck, ArrowLeft, Info, Save,
   Wallet, Coins, BadgeCheck, Loader2, FileText, Clock, ChevronRight, ChevronDown,
   ShieldAlert, KeyRound, Lock, Unlock, History, SlidersHorizontal, Sparkles, CreditCard, Shield,
-  BookOpen, FileSpreadsheet, Settings, Landmark, Briefcase, Sigma,
+  BookOpen, FileSpreadsheet, Settings, Landmark, Briefcase, Sigma, Search,
 } from 'lucide-react';
+import { useDebounce } from '../hooks/useDebounce';
 import { PayrollDisbursement } from './PayrollDisbursement';
 import { PayrollGlJournal } from './PayrollGlJournal';
 import { PayrollTax1721A1 } from './PayrollTax1721A1';
@@ -255,6 +256,35 @@ const ProsesPayrollTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
   const [groups, setGroups] = useState<PayrollGroup[]>([]);
   const [selectedRunId, setSelectedRunId] = useState<number | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  // Debounce 500ms; huruf pertama (1 karakter) tidak melakukan search (minChars = 2)
+  const debouncedSearch = useDebounce(searchQuery, 500, 2);
+
+  const filteredRuns = useMemo(() => {
+    if (!debouncedSearch) return runs;
+    const q = debouncedSearch.toLowerCase();
+    return runs.filter((run) => {
+      const periodLabel = (run.period_label ?? `${monthName(run.period_month)} ${run.period_year}`).toLowerCase();
+      const month = monthName(run.period_month).toLowerCase();
+      const year = String(run.period_year);
+      const branch = (run.branch?.office_name ?? 'Semua Cabang').toLowerCase();
+      const group = (run.payroll_group?.name || run.payrollGroup?.name || '').toLowerCase();
+      const statusLabel = (RUN_STATUS[run.status as PayrollStatus]?.label ?? run.status ?? '').toLowerCase();
+      const runType = (run.run_type === 'thr' ? 'thr' : run.run_type === 'severance' ? 'pesangon' : 'reguler').toLowerCase();
+      const notes = (run.notes ?? '').toLowerCase();
+
+      return (
+        periodLabel.includes(q) ||
+        month.includes(q) ||
+        year.includes(q) ||
+        branch.includes(q) ||
+        group.includes(q) ||
+        statusLabel.includes(q) ||
+        runType.includes(q) ||
+        notes.includes(q)
+      );
+    });
+  }, [runs, debouncedSearch]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -301,15 +331,54 @@ const ProsesPayrollTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
         </div>
       </div>
 
+      {/* Kolom Pencarian Batch Payroll (Debounce 500ms, huruf pertama tidak search) */}
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[260px] max-w-md">
+          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Cari periode, cabang, grup, status (min. 2 huruf)..."
+            className="w-full pl-9 pr-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 py-2 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition shadow-sm"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 rounded-full transition cursor-pointer"
+              title="Hapus pencarian"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+        {searchQuery.trim().length === 1 && (
+          <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+            Ketik minimal 2 huruf untuk mulai mencari
+          </span>
+        )}
+        {debouncedSearch && (
+          <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+            Ditemukan {filteredRuns.length} batch
+          </span>
+        )}
+      </div>
+
       {loading ? <Spinner /> : runs.length === 0 ? (
         <EmptyState
           icon={<Calculator className="w-6 h-6" />}
           title="Belum ada batch payroll"
           subtitle={canManage ? 'Klik "Buat Periode" untuk memulai penggajian periode pertama Anda.' : 'Belum ada periode penggajian yang dibuat.'}
         />
+      ) : filteredRuns.length === 0 ? (
+        <EmptyState
+          icon={<Search className="w-6 h-6" />}
+          title="Tidak ada batch yang cocok"
+          subtitle={`Tidak ditemukan batch payroll dengan kata kunci "${debouncedSearch}".`}
+        />
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-          {runs.map((run) => (
+          {filteredRuns.map((run) => (
             <button
               key={run.id}
               onClick={() => setSelectedRunId(run.id)}
@@ -643,6 +712,19 @@ const RunDetailView: React.FC<{
   const [showReject, setShowReject] = useState(false);
   const [showCalcOptions, setShowCalcOptions] = useState(false);
   const [viewMode, setViewMode] = useState<'payslips' | 'audit_logs'>('payslips');
+  const [payslipSearch, setPayslipSearch] = useState('');
+  // Debounce 500ms; huruf pertama (1 karakter) tidak melakukan search (minChars = 2)
+  const debouncedPayslipSearch = useDebounce(payslipSearch, 500, 2);
+
+  const filteredPayslips = useMemo(() => {
+    const list = run?.payslips ?? [];
+    if (!debouncedPayslipSearch) return list;
+    const q = debouncedPayslipSearch.toLowerCase();
+    return list.filter((p: any) =>
+      p.employee_name?.toLowerCase().includes(q) ||
+      p.employee_code?.toLowerCase().includes(q)
+    );
+  }, [run?.payslips, debouncedPayslipSearch]);
 
   // Jejak audit hash-chain (Modul C)
   const [logsData, setLogsData] = useState<RunLogsResponse | null>(null);
@@ -1003,44 +1085,82 @@ const RunDetailView: React.FC<{
 
           {/* View Mode: DAFTAR SLIP GAJI */}
           {viewMode === 'payslips' && (
-            <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
-              {(run.payslips?.length ?? 0) === 0 ? (
-                <EmptyState icon={<Users className="w-6 h-6" />} title="Belum ada slip" subtitle="Jalankan Kalkulasi untuk membangun slip gaji karyawan pada periode ini." />
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-left text-slate-400 border-b border-slate-100 dark:border-slate-800">
-                        <th className="px-4 py-2.5 font-semibold">Karyawan</th>
-                        <th className="px-4 py-2.5 font-semibold text-right">Bruto</th>
-                        <th className="px-4 py-2.5 font-semibold text-right">Potongan</th>
-                        <th className="px-4 py-2.5 font-semibold text-right">PPh21</th>
-                        <th className="px-4 py-2.5 font-semibold text-right">Neto</th>
-                        <th className="px-4 py-2.5 font-semibold text-right">Slip</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
-                      {run.payslips.map((p: any) => (
-                        <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
-                          <td className="px-4 py-2.5">
-                            <p className="font-semibold text-slate-800 dark:text-slate-100">{p.employee_name}</p>
-                            {p.employee_code && <p className="text-[10px] text-slate-400">{p.employee_code}</p>}
-                          </td>
-                          <td className="px-4 py-2.5 text-right text-slate-700 dark:text-slate-300">{formatCurrency(p.gross)}</td>
-                          <td className="px-4 py-2.5 text-right text-rose-600 dark:text-rose-400">{formatCurrency(p.total_deduction)}</td>
-                          <td className="px-4 py-2.5 text-right text-amber-600 dark:text-amber-400">{formatCurrency(p.pph21)}</td>
-                          <td className="px-4 py-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(p.net)}</td>
-                          <td className="px-4 py-2.5 text-right">
-                            <button onClick={() => setSelectedPayslipId(p.id)} className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-semibold hover:underline cursor-pointer">
-                              <Eye className="w-3.5 h-3.5" /> Lihat
-                            </button>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+            <div className="space-y-3">
+              {(run.payslips?.length ?? 0) > 0 && (
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="relative flex-1 min-w-[240px] max-w-sm">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={payslipSearch}
+                      onChange={(e) => setPayslipSearch(e.target.value)}
+                      placeholder="Cari nama karyawan / NIK (min. 2 huruf)..."
+                      className="w-full pl-8 pr-8 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 py-2 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/20 focus:border-indigo-500 transition shadow-sm"
+                    />
+                    {payslipSearch && (
+                      <button
+                        onClick={() => setPayslipSearch('')}
+                        className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-0.5 rounded-full transition cursor-pointer"
+                        title="Hapus pencarian"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                  </div>
+                  {payslipSearch.trim().length === 1 && (
+                    <span className="text-[11px] text-amber-600 dark:text-amber-400 font-medium">
+                      Ketik minimal 2 huruf untuk mulai mencari
+                    </span>
+                  )}
+                  {debouncedPayslipSearch && (
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400 font-medium">
+                      Ditemukan {filteredPayslips.length} dari {run.payslips?.length ?? 0} karyawan
+                    </span>
+                  )}
                 </div>
               )}
+
+              <div className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden">
+                {(run.payslips?.length ?? 0) === 0 ? (
+                  <EmptyState icon={<Users className="w-6 h-6" />} title="Belum ada slip" subtitle="Jalankan Kalkulasi untuk membangun slip gaji karyawan pada periode ini." />
+                ) : filteredPayslips.length === 0 ? (
+                  <EmptyState icon={<Search className="w-6 h-6" />} title="Tidak ada karyawan yang cocok" subtitle={`Tidak ditemukan karyawan dengan kata kunci "${debouncedPayslipSearch}".`} />
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead>
+                        <tr className="text-left text-slate-400 border-b border-slate-100 dark:border-slate-800">
+                          <th className="px-4 py-2.5 font-semibold">Karyawan</th>
+                          <th className="px-4 py-2.5 font-semibold text-right">Bruto</th>
+                          <th className="px-4 py-2.5 font-semibold text-right">Potongan</th>
+                          <th className="px-4 py-2.5 font-semibold text-right">PPh21</th>
+                          <th className="px-4 py-2.5 font-semibold text-right">Neto</th>
+                          <th className="px-4 py-2.5 font-semibold text-right">Slip</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
+                        {filteredPayslips.map((p: any) => (
+                          <tr key={p.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40 transition">
+                            <td className="px-4 py-2.5">
+                              <p className="font-semibold text-slate-800 dark:text-slate-100">{p.employee_name}</p>
+                              {p.employee_code && <p className="text-[10px] text-slate-400">{p.employee_code}</p>}
+                            </td>
+                            <td className="px-4 py-2.5 text-right text-slate-700 dark:text-slate-300">{formatCurrency(p.gross)}</td>
+                            <td className="px-4 py-2.5 text-right text-rose-600 dark:text-rose-400">{formatCurrency(p.total_deduction)}</td>
+                            <td className="px-4 py-2.5 text-right text-amber-600 dark:text-amber-400">{formatCurrency(p.pph21)}</td>
+                            <td className="px-4 py-2.5 text-right font-bold text-emerald-600 dark:text-emerald-400">{formatCurrency(p.net)}</td>
+                            <td className="px-4 py-2.5 text-right">
+                              <button onClick={() => setSelectedPayslipId(p.id)} className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400 font-semibold hover:underline cursor-pointer">
+                                <Eye className="w-3.5 h-3.5" /> Lihat
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 

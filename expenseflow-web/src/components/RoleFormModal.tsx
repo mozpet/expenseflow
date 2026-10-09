@@ -87,6 +87,40 @@ export const MODULE_GROUPS = [
 
 const MODULES_CONFIG = MODULE_GROUPS.flatMap((g) => g.modules);
 
+/**
+ * Modul yang tetap bisa dikelola bebas saat platform role = 'mobile_only'.
+ * Alasan: hanya Persetujuan Cuti & Persetujuan Lembur yang punya alur approval
+ * via aplikasi mobile. Modul lain (Finance, Data Karyawan, Presensi, Shift,
+ * Pengaturan, Manajemen Role, Audit Log) otomatis dipaksa 'none' karena staff
+ * khusus mobile tidak pernah mengakses web dashboard untuk modul tersebut.
+ */
+const MOBILE_ONLY_ALLOWED_MODULES = ['leave', 'overtime'];
+
+type PermissionLevel = 'none' | 'read' | 'manage' | 'spv' | 'hrd' | 'finance';
+
+/**
+ * Paksa seluruh modul di luar MOBILE_ONLY_ALLOWED_MODULES ke 'none'. Dipanggil
+ * saat platform diset/di-load sebagai 'mobile_only' agar matriks izin selalu
+ * konsisten dengan batasan akses mobile, baik dari interaksi admin maupun saat
+ * memuat data role lama yang mungkin dibuat sebelum guard ini ada.
+ */
+const sanitizePermissionsForMobileOnly = (
+  perms: Record<string, PermissionLevel>
+): Record<string, PermissionLevel> => {
+  const next = { ...perms };
+  MODULES_CONFIG.forEach((m) => {
+    if (!MOBILE_ONLY_ALLOWED_MODULES.includes(m.key)) {
+      next[m.key] = 'none';
+    }
+  });
+  // Persetujuan Lembur adalah satu-satunya modul yang aktif secara default
+  // untuk role khusus mobile.
+  if (next.overtime === 'none') {
+    next.overtime = 'manage';
+  }
+  return next;
+};
+
 export const RoleFormModal: React.FC<RoleFormModalProps> = ({
   isOpen,
   roleToEdit,
@@ -135,7 +169,11 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
         });
       }
 
-      setPermissions(initialPerms);
+      setPermissions(
+        (roleToEdit.platform || 'both') === 'mobile_only'
+          ? sanitizePermissionsForMobileOnly(initialPerms)
+          : initialPerms
+      );
     } else {
       // Default new role
       setName('');
@@ -180,6 +218,11 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
       return;
     }
 
+    // Role khusus mobile: hanya leave & overtime yang boleh diubah dari 'none'
+    if (platform === 'mobile_only' && !MOBILE_ONLY_ALLOWED_MODULES.includes(moduleKey) && level !== 'none') {
+      return;
+    }
+
     setPermissions((prev) => {
       const next = {
         ...prev,
@@ -196,11 +239,14 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
   const setAllPermissions = (level: 'none' | 'read' | 'manage' | 'spv' | 'hrd' | 'finance') => {
     const updated: Record<string, 'none' | 'read' | 'manage' | 'spv' | 'hrd' | 'finance'> = {};
     MODULES_CONFIG.forEach((m) => {
-      if (m.key === 'role_management') {
+      if (platform === 'mobile_only' && !MOBILE_ONLY_ALLOWED_MODULES.includes(m.key)) {
+        // Role khusus mobile: modul di luar leave & overtime tetap terkunci 'none'
+        updated[m.key] = 'none';
+      } else if (m.key === 'role_management') {
         // role_management hanya bisa aktif jika level manage (karena settings juga ikut menjadi manage)
         updated[m.key] = level === 'manage' ? 'manage' : 'none';
-      } else if (m.key === 'overtime' && (level === 'spv' || level === 'hrd')) {
-        // Untuk "Set All", lewati overtime jika level spv/hrd karena tidak relevan secara global
+      } else if ((m.key === 'overtime' || m.key === 'leave') && (level === 'spv' || level === 'hrd')) {
+        // Untuk "Set All", lewati overtime/leave jika level spv/hrd karena tidak relevan secara global
         updated[m.key] = 'none';
       } else if (m.key === 'receipt' && (level === 'finance' || level === 'spv' || level === 'hrd')) {
         // Untuk "Set All", jangan paksa receipt ke level khusus — lewati saja
@@ -219,7 +265,10 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
     setPermissions((prev) => {
       const next = { ...prev };
       targetGroup.modules.forEach((m) => {
-        if (m.key === 'role_management') {
+        if (platform === 'mobile_only' && !MOBILE_ONLY_ALLOWED_MODULES.includes(m.key)) {
+          // Role khusus mobile: modul di luar leave & overtime tetap terkunci 'none'
+          next[m.key] = 'none';
+        } else if (m.key === 'role_management') {
           if (level === 'manage' && (next.settings === 'manage' || level === 'manage')) {
             next[m.key] = 'manage';
           } else {
@@ -253,9 +302,13 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
     }
 
     // Pastikan integritas: jika settings bukan manage, role_management wajib 'none'
-    const finalPermissions = { ...permissions };
+    let finalPermissions = { ...permissions };
     if (finalPermissions.settings !== 'manage') {
       finalPermissions.role_management = 'none';
+    }
+    // Pastikan integritas: role khusus mobile hanya boleh punya leave & overtime aktif
+    if (platform === 'mobile_only') {
+      finalPermissions = sanitizePermissionsForMobileOnly(finalPermissions);
     }
 
     setSaving(true);
@@ -497,7 +550,10 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
 
                   {/* Mobile Only */}
                   <div
-                    onClick={() => setPlatform('mobile_only')}
+                    onClick={() => {
+                      setPlatform('mobile_only');
+                      setPermissions((prev) => sanitizePermissionsForMobileOnly(prev));
+                    }}
                     className={`cursor-pointer rounded-2xl p-4 border transition-all flex flex-col justify-between ${
                       platform === 'mobile_only'
                         ? 'bg-sky-50/70 dark:bg-sky-950/40 border-sky-500 ring-2 ring-sky-500/20 shadow-sm'
@@ -516,6 +572,10 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                       <h4 className="text-xs font-bold text-slate-800 dark:text-slate-100">📱 Khusus Mobile Saja (Staff Pelaksana)</h4>
                       <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1 leading-relaxed">
                         Hanya bisa login via aplikasi Flutter HP untuk presensi online, lembur, dan klaim mandiri. Akses dashboard web otomatis ditolak (HTTP 403).
+                      </p>
+                      <p className="text-[10px] text-sky-700 dark:text-sky-400 mt-1.5 flex items-start gap-1 font-medium">
+                        <Lock className="w-3 h-3 shrink-0 mt-0.5" />
+                        <span>Matriks izin di Langkah 3 otomatis terkunci: hanya <strong>Persetujuan Cuti</strong> & <strong>Persetujuan Lembur</strong> yang bisa diatur, modul lainnya (termasuk Finance) otomatis dinonaktifkan.</span>
                       </p>
                     </div>
                     <span className="mt-3 text-[10px] font-semibold text-sky-600 dark:text-sky-400">
@@ -756,7 +816,9 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                           const currentLevel = permissions[mod.key] || 'none';
                           const Icon = mod.icon;
                           const isRoleMgmt = mod.key === 'role_management';
-                          const isLocked = isRoleMgmt && !isSettingsManage;
+                          const isRoleMgmtLocked = isRoleMgmt && !isSettingsManage;
+                          const isMobileLocked = platform === 'mobile_only' && !MOBILE_ONLY_ALLOWED_MODULES.includes(mod.key);
+                          const isLocked = isRoleMgmtLocked || isMobileLocked;
 
                           return (
                             <div
@@ -783,7 +845,7 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                       {mod.name}
                                     </h4>
                                     {isRoleMgmt && (
-                                      isLocked ? (
+                                      isRoleMgmtLocked ? (
                                         <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-amber-50 dark:bg-amber-950/60 text-amber-600 dark:text-amber-400 border border-amber-200/60 dark:border-amber-900/60">
                                           <Lock className="w-2.5 h-2.5" />
                                           Terkunci
@@ -795,14 +857,55 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                         </span>
                                       )
                                     )}
+                                    {!isRoleMgmt && isMobileLocked && (
+                                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-bold bg-sky-50 dark:bg-sky-950/60 text-sky-600 dark:text-sky-400 border border-sky-200/60 dark:border-sky-900/60">
+                                        <Lock className="w-2.5 h-2.5" />
+                                        Khusus Mobile: Terkunci
+                                      </span>
+                                    )}
                                   </div>
                                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
                                     {mod.desc}
                                   </p>
-                                  {isRoleMgmt && isLocked && (
+                                  {isRoleMgmt && isRoleMgmtLocked && (
                                     <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1 font-medium">
                                       <span>⚠️ Diperlukan wewenang <strong>Kelola Penuh (Manage)</strong> pada modul <strong>Pengaturan Aturan</strong> untuk mengaktifkan pilihan ini.</span>
                                     </p>
+                                  )}
+                                  {!isRoleMgmt && isMobileLocked && (
+                                    <p className="text-[10px] text-sky-600 dark:text-sky-400 mt-1 flex items-center gap-1 font-medium">
+                                      <span>📱 Dikunci otomatis karena platform role ini <strong>Khusus Mobile</strong> — hanya Persetujuan Cuti & Persetujuan Lembur yang dapat diatur untuk akses mobile.</span>
+                                    </p>
+                                  )}
+                                  {/* Keterangan dinamis khusus untuk Persetujuan Cuti */}
+                                  {mod.key === 'leave' && (
+                                    <div className="mt-1.5 text-[10px]">
+                                      {currentLevel === 'none' && (
+                                        <span className="text-slate-400">
+                                          🚫 Menu persetujuan cuti disembunyikan dan diblokir untuk role ini.
+                                        </span>
+                                      )}
+                                      {currentLevel === 'read' && (
+                                        <span className="text-blue-600 dark:text-blue-400 font-medium">
+                                          👁️ Hanya dapat <strong>melihat pengajuan cuti</strong> (tanpa hak menyetujui atau menolak).
+                                        </span>
+                                      )}
+                                      {currentLevel === 'spv' && (
+                                        <span className="text-amber-600 dark:text-amber-400 font-medium">
+                                          ⚡ <strong>Approver Tahap 1 (SPV/Atasan Langsung)</strong>: Memverifikasi & menyetujui cuti untuk diteruskan ke HRD.
+                                        </span>
+                                      )}
+                                      {currentLevel === 'hrd' && (
+                                        <span className="text-sky-600 dark:text-sky-400 font-medium">
+                                          ⭐ <strong>Approver Tahap 2 Final (HRD/Admin)</strong>: Memverifikasi & menyetujui final cuti yang sudah di-ACC SPV, termasuk kelola kuota saldo cuti.
+                                        </span>
+                                      )}
+                                      {currentLevel === 'manage' && (
+                                        <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                                          🛡️ <strong>Wewenang Penuh (Lv 1 & 2)</strong>: Berhak menyetujui Tahap 1 (SPV) maupun Tahap 2 (HRD) serta mengelola kuota saldo cuti.
+                                        </span>
+                                      )}
+                                    </div>
                                   )}
                                   {/* Keterangan dinamis khusus untuk Persetujuan Lembur */}
                                   {mod.key === 'overtime' && (
@@ -951,8 +1054,8 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                     <span>Lv 1 & 2: Penuh</span>
                                   </button>
                                 </div>
-                              ) : mod.key === 'receipt' ? (
-                                /* Khusus Modul Struk: 4 Pilihan Level (None, Read, Finance, SPV Finance, Penuh) */
+                              ) : mod.key === 'leave' ? (
+                                /* Khusus Modul Cuti: 5 Pilihan Level (None, Read, SPV, HRD, Penuh) */
                                 <div className="flex flex-wrap items-center bg-slate-50 dark:bg-slate-900/80 p-1 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0 gap-0.5">
                                   {/* NONE */}
                                   <button
@@ -963,7 +1066,7 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                         ? 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 shadow-xs'
                                         : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                                     }`}
-                                    title="Tidak ada akses ke struk reimbursement"
+                                    title="Tidak ada akses ke cuti"
                                   >
                                     <Ban className="w-3 h-3" />
                                     <span>None</span>
@@ -978,40 +1081,40 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                         ? 'bg-blue-500 text-white shadow-xs'
                                         : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                                     }`}
-                                    title="Hanya melihat daftar struk reimbursement"
+                                    title="Hanya melihat data pengajuan cuti"
                                   >
                                     <Eye className="w-3 h-3" />
                                     <span>Read</span>
                                   </button>
 
-                                  {/* LEVEL 1: FINANCE */}
-                                  <button
-                                    type="button"
-                                    onClick={() => handlePermissionChange(mod.key, 'finance')}
-                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
-                                      currentLevel === 'finance'
-                                        ? 'bg-emerald-600 text-white shadow-xs ring-1 ring-emerald-400/50'
-                                        : 'text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
-                                    }`}
-                                    title="Approver Lv 1 Finance: struk Tier 1, Tier 2, dan tahap pertama Tier 3"
-                                  >
-                                    <CheckCircle2 className="w-3 h-3" />
-                                    <span>Lv 1: Finance</span>
-                                  </button>
-
-                                  {/* LEVEL 2: SPV FINANCE */}
+                                  {/* LEVEL 1: SPV */}
                                   <button
                                     type="button"
                                     onClick={() => handlePermissionChange(mod.key, 'spv')}
                                     className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
                                       currentLevel === 'spv'
-                                        ? 'bg-violet-600 text-white shadow-xs ring-1 ring-violet-400/50'
-                                        : 'text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40'
+                                        ? 'bg-amber-500 text-white shadow-xs ring-1 ring-amber-400/50'
+                                        : 'text-amber-600 dark:text-amber-400 hover:bg-amber-50 dark:hover:bg-amber-950/40'
                                     }`}
-                                    title="Approver Lv 2 SPV Finance: semua tier + tahap final Tier 3 (>Rp 1jt)"
+                                    title="Persetujuan Cuti Tahap 1 (SPV/Atasan Langsung)"
+                                  >
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>Lv 1: SPV</span>
+                                  </button>
+
+                                  {/* LEVEL 2: HRD */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handlePermissionChange(mod.key, 'hrd')}
+                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                                      currentLevel === 'hrd'
+                                        ? 'bg-sky-600 text-white shadow-xs ring-1 ring-sky-400/50'
+                                        : 'text-sky-600 dark:text-sky-400 hover:bg-sky-50 dark:hover:bg-sky-950/40'
+                                    }`}
+                                    title="Persetujuan Cuti Tahap 2 Final (HRD/Admin)"
                                   >
                                     <BadgeCheck className="w-3 h-3" />
-                                    <span>Lv 2: SPV</span>
+                                    <span>Lv 2: HRD</span>
                                   </button>
 
                                   {/* FULL MANAGE */}
@@ -1023,7 +1126,100 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                         ? 'bg-emerald-600 text-white shadow-xs'
                                         : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                                     }`}
-                                    title="Wewenang Penuh: Semua tier approval (Lv 1 & 2) serta akses pengaturan aturan & klaim limit"
+                                    title="Wewenang Penuh (Tahap 1 SPV & Tahap 2 HRD)"
+                                  >
+                                    <Edit3 className="w-3 h-3" />
+                                    <span>Lv 1 & 2: Penuh</span>
+                                  </button>
+                                </div>
+                              ) : mod.key === 'receipt' ? (
+                                /* Khusus Modul Struk: 4 Pilihan Level (None, Read, Finance, SPV Finance, Penuh) */
+                                <div className="flex flex-wrap items-center bg-slate-50 dark:bg-slate-900/80 p-1 rounded-xl border border-slate-200 dark:border-slate-700 shrink-0 gap-0.5">
+                                  {/* NONE */}
+                                  <button
+                                    type="button"
+                                    disabled={isLocked}
+                                    onClick={() => handlePermissionChange(mod.key, 'none')}
+                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                                      isLocked
+                                        ? 'opacity-35 cursor-not-allowed text-slate-400'
+                                        : currentLevel === 'none'
+                                        ? 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 shadow-xs'
+                                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                                    }`}
+                                    title={isMobileLocked ? 'Modul Finance otomatis nonaktif untuk role Khusus Mobile' : 'Tidak ada akses ke struk reimbursement'}
+                                  >
+                                    <Ban className="w-3 h-3" />
+                                    <span>None</span>
+                                  </button>
+
+                                  {/* READ */}
+                                  <button
+                                    type="button"
+                                    disabled={isLocked}
+                                    onClick={() => handlePermissionChange(mod.key, 'read')}
+                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                                      isLocked
+                                        ? 'opacity-35 cursor-not-allowed text-slate-400'
+                                        : currentLevel === 'read'
+                                        ? 'bg-blue-500 text-white shadow-xs'
+                                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                                    }`}
+                                    title={isMobileLocked ? 'Modul Finance otomatis nonaktif untuk role Khusus Mobile' : 'Hanya melihat daftar struk reimbursement'}
+                                  >
+                                    <Eye className="w-3 h-3" />
+                                    <span>Read</span>
+                                  </button>
+
+                                  {/* LEVEL 1: FINANCE */}
+                                  <button
+                                    type="button"
+                                    disabled={isLocked}
+                                    onClick={() => handlePermissionChange(mod.key, 'finance')}
+                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                                      isLocked
+                                        ? 'opacity-35 cursor-not-allowed text-slate-400'
+                                        : currentLevel === 'finance'
+                                        ? 'bg-emerald-600 text-white shadow-xs ring-1 ring-emerald-400/50'
+                                        : 'text-emerald-700 dark:text-emerald-400 hover:bg-emerald-50 dark:hover:bg-emerald-950/40'
+                                    }`}
+                                    title={isMobileLocked ? 'Modul Finance otomatis nonaktif untuk role Khusus Mobile' : 'Approver Lv 1 Finance: struk Tier 1, Tier 2, dan tahap pertama Tier 3'}
+                                  >
+                                    <CheckCircle2 className="w-3 h-3" />
+                                    <span>Lv 1: Finance</span>
+                                  </button>
+
+                                  {/* LEVEL 2: SPV FINANCE */}
+                                  <button
+                                    type="button"
+                                    disabled={isLocked}
+                                    onClick={() => handlePermissionChange(mod.key, 'spv')}
+                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold transition ${
+                                      isLocked
+                                        ? 'opacity-35 cursor-not-allowed text-slate-400'
+                                        : currentLevel === 'spv'
+                                        ? 'bg-violet-600 text-white shadow-xs ring-1 ring-violet-400/50'
+                                        : 'text-violet-600 dark:text-violet-400 hover:bg-violet-50 dark:hover:bg-violet-950/40'
+                                    }`}
+                                    title={isMobileLocked ? 'Modul Finance otomatis nonaktif untuk role Khusus Mobile' : 'Approver Lv 2 SPV Finance: semua tier + tahap final Tier 3 (>Rp 1jt)'}
+                                  >
+                                    <BadgeCheck className="w-3 h-3" />
+                                    <span>Lv 2: SPV</span>
+                                  </button>
+
+                                  {/* FULL MANAGE */}
+                                  <button
+                                    type="button"
+                                    disabled={isLocked}
+                                    onClick={() => handlePermissionChange(mod.key, 'manage')}
+                                    className={`flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition ${
+                                      isLocked
+                                        ? 'opacity-35 cursor-not-allowed text-slate-400'
+                                        : currentLevel === 'manage'
+                                        ? 'bg-emerald-600 text-white shadow-xs'
+                                        : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
+                                    }`}
+                                    title={isMobileLocked ? 'Modul Finance otomatis nonaktif untuk role Khusus Mobile' : 'Wewenang Penuh: Semua tier approval (Lv 1 & 2) serta akses pengaturan aturan & klaim limit'}
                                   >
                                     <Edit3 className="w-3 h-3" />
                                     <span>Penuh</span>
@@ -1035,9 +1231,13 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                   {/* NONE */}
                                   <button
                                     type="button"
+                                    disabled={isLocked}
                                     onClick={() => handlePermissionChange(mod.key, 'none')}
+                                    title={isMobileLocked ? 'Modul ini otomatis nonaktif untuk role Khusus Mobile' : undefined}
                                     className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
-                                      currentLevel === 'none'
+                                      isLocked
+                                        ? 'opacity-35 cursor-not-allowed text-slate-400'
+                                        : currentLevel === 'none'
                                         ? 'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 shadow-xs'
                                         : 'text-slate-400 hover:text-slate-600 dark:hover:text-slate-300'
                                     }`}
@@ -1051,7 +1251,7 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                     type="button"
                                     disabled={isLocked}
                                     onClick={() => handlePermissionChange(mod.key, 'read')}
-                                    title={isLocked ? 'Aktifkan wewenang Kelola Penuh (Manage) pada Pengaturan Aturan terlebih dahulu' : undefined}
+                                    title={isMobileLocked ? 'Modul ini otomatis nonaktif untuk role Khusus Mobile' : isLocked ? 'Aktifkan wewenang Kelola Penuh (Manage) pada Pengaturan Aturan terlebih dahulu' : undefined}
                                     className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                                       isLocked
                                         ? 'opacity-35 cursor-not-allowed text-slate-400'
@@ -1069,7 +1269,7 @@ export const RoleFormModal: React.FC<RoleFormModalProps> = ({
                                     type="button"
                                     disabled={isLocked}
                                     onClick={() => handlePermissionChange(mod.key, 'manage')}
-                                    title={isLocked ? 'Aktifkan wewenang Kelola Penuh (Manage) pada Pengaturan Aturan terlebih dahulu' : undefined}
+                                    title={isMobileLocked ? 'Modul ini otomatis nonaktif untuk role Khusus Mobile' : isLocked ? 'Aktifkan wewenang Kelola Penuh (Manage) pada Pengaturan Aturan terlebih dahulu' : undefined}
                                     className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
                                       isLocked
                                         ? 'opacity-35 cursor-not-allowed text-slate-400'

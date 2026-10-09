@@ -297,6 +297,12 @@ Route::prefix('v1')->group(function () {
             // Daftar kantor / cabang perusahaan (read-only untuk filter struk & fitur bersama)
             Route::get('/attendance/settings', [AttendanceController::class, 'listSettings']);
             Route::get('/offices', [AttendanceController::class, 'listSettings']);
+
+            // Katalog zona waktu (WIB/WITA/WIT) untuk dropdown form kantor cabang.
+            // Read-only & tidak memuat data perusahaan — satu grup dengan daftar
+            // cabang di atas karena dipakai form yang sama. Terima
+            // ?latitude=&longitude= untuk menandai zona yang disarankan.
+            Route::get('/attendance/timezones', [AttendanceController::class, 'listTimezones']);
         });
 
     // ── Payroll / Penggajian (Finance, HRD, Admin, Super Admin) ──────────────────
@@ -523,6 +529,14 @@ Route::prefix('v1')->group(function () {
                 Route::get('/summary', [AttendanceController::class, 'monthlySummary']);
                 Route::get('/report', [AttendanceController::class, 'reportAttendance']);
                 Route::get('/report/export', [AttendanceController::class, 'exportReport'])->middleware('throttle:heavy');
+
+                // Koreksi presensi manual oleh HRD (lihat correctAttendance()).
+                // Satu endpoint untuk dua kasus: mengoreksi baris presensi yang
+                // sudah ada DAN menginput baris baru (backfill alpha / lupa
+                // check-in), karena attendances unique(['user_id','date']).
+                // throttle:heavy — setiap koreksi menghitung ulang jam kerja,
+                // lembur & memeriksa kunci periode payroll.
+                Route::post('/corrections', [AttendanceController::class, 'correctAttendance'])->middleware('throttle:heavy');
 
                 // Saldo / kuota cuti
                 Route::get('/leave-balances', [AttendanceController::class, 'listLeaveBalances']);

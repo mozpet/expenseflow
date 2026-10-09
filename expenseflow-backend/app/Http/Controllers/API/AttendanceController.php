@@ -16,9 +16,14 @@ use App\Models\OvertimeApproval;
 use App\Models\Role;
 use App\Models\ShiftSchedule;
 use App\Models\User;
+use App\Models\Payroll;
 use App\Models\UserShift;
+use App\Services\Attendance\AttendanceRecalculator;
+use App\Services\Attendance\LateFineCalculator;
 use App\Services\FcmService;
 use App\Services\LocationService;
+use App\Support\Timezone;
+use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
@@ -30,13 +35,18 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class AttendanceController extends Controller
 {
+    // Batas usia presensi yang masih boleh dikoreksi HRD (hari).
+    // Lebih tua dari ini = sejarah; mengubahnya akan menggeser laporan
+    // & gaji yang sudah berjalan secara retroaktif. Lihat correctAttendance().
+    private const MAX_CORRECTION_AGE_DAYS = 90;
+
     // ─── Helper: catat aktivitas dengan AuditLogger ───────────
     private function logActivity(int $userId, ?int $companyId, string $action, string $description, ?string $entityType = null, ?int $entityId = null, ?array $oldValues = null, ?array $newValues = null): void
     {
         $severity = \App\Services\AuditLogger::SEVERITY_INFO;
         $category = \App\Services\AuditLogger::CATEGORY_ATTENDANCE;
 
-        if (str_contains($action, 'device') || str_contains($action, 'reset') || str_contains($action, 'setting') || str_contains($action, 'delete')) {
+        if (str_contains($action, 'device') || str_contains($action, 'reset') || str_contains($action, 'setting') || str_contains($action, 'delete') || str_contains($action, 'correct')) {
             $severity = \App\Services\AuditLogger::SEVERITY_WARNING;
         }
 
@@ -96,28 +106,115 @@ class AttendanceController extends Controller
         }
 
         return match ($type) {
-            'collective_leave_announced' => 'Pengumuman Cuti Bersama',
-            'collective_leave_cancelled' => 'Cuti Bersama Dibatalkan',
+            'collective_leave_announced'  => 'Pengumuman Cuti Bersama',
+            'collective_leave_cancelled'  => 'Cuti Bersama Dibatalkan',
+            'collective_leave_h7_reminder' => 'Pilih Cuti Bersama',
             'overtime_pending'           => 'Pengajuan Lembur Masuk',
             'overtime_approved'          => 'Lembur Disetujui',
             'overtime_rejected'          => 'Lembur Ditolak',
             'leave_approved'             => 'Pengajuan Cuti Disetujui',
             'leave_rejected'             => 'Pengajuan Cuti Ditolak',
             'leave_quota_adjusted'       => 'Perubahan Jatah Cuti',
+            'attendance_corrected'       => 'Presensi Dikoreksi HRD',
             'device_change_approved'     => 'Pindah Perangkat Disetujui',
             'device_change_rejected'     => 'Pindah Perangkat Ditolak',
             default                      => 'Pemberitahuan',
         };
     }
 
-    // ─── Helper: tanggal hari ini dalam zona waktu WIB (Asia/Jakarta) ────
+    // ─── Helper: tanggal hari ini dalam zona waktu tertentu ──────────────
     //     Presensi mengacu waktu lokal karyawan, bukan UTC.
     //     Tanpa ini, antara 00:00–06:59 WIB (= 17:00–23:59 UTC hari sebelumnya)
     //     `now()->toDateString()` mengembalikan tanggal kemarin sehingga sistem
     //     menemukan record check-in kemarin dan menolak check-in hari ini.
-    private function todayDate(): string
+    //
+    //     Default = zona penyimpanan, BUKAN zona cabang: dipakai juga oleh laporan &
+    //     dasbor HRD lintas cabang yang butuh satu kalender bersama. Untuk jalur
+    //     presensi karyawan pakai todayDateForUser().
+    private function todayDate(?string $tz = null): string
     {
-        return now('Asia/Jakarta')->toDateString();
+        return now(Timezone::normalize($tz))->toDateString();
+    }
+
+    // ─── Helper: tanggal hari ini menurut zona cabang KARYAWAN ───────────
+    //     WAJIB dipakai di seluruh jalur presensi karyawan (check-in/out, status,
+    //     riwayat, klaim lembur, pengajuan cuti). Karyawan cabang Jayapura yang
+    //     check-in 00:30 WIT harus tercatat pada tanggal WIT itu, bukan tanggal
+    //     WIB yang masih kemarin (22:30).
+    private function todayDateForUser(User $user): string
+    {
+        return $this->todayDate($user->effectiveTimezone());
+    }
+
+    /**
+     * Tanggal "hari ini" untuk SEKUMPULAN karyawan, masing-masing di zona cabangnya.
+     *
+     * Dipakai jalur daftar/laporan yang memuat karyawan dari beberapa cabang
+     * sekaligus. Zona diambil lewat query batch ke attendance_settings — SENGAJA
+     * bukan $user->effectiveTimezone() per baris, karena di jalur-jalur itu relasi
+     * office di-eager-load dengan select terbatas (`office:id,office_name`, tanpa
+     * kolom timezone); accessor-nya akan diam-diam membaca timezone NULL dan jatuh
+     * ke zona penyimpanan tanpa error.
+     *
+     * @param  \Illuminate\Support\Collection<int,User>  $users
+     * @return array<int,string> [user_id => 'Y-m-d']
+     */
+    private function todayDatesForUsers($users): array
+    {
+        $officeIds = $users->pluck('attendance_setting_id')->filter()->unique()->values();
+
+        $tzByOffice = $officeIds->isEmpty()
+            ? []
+            : AttendanceSetting::whereIn('id', $officeIds)
+                ->get(['id', 'timezone'])
+                ->mapWithKeys(fn ($o) => [(int) $o->id => $o->effectiveTimezone()])
+                ->all();
+
+        // Karyawan tanpa kantor penempatan: ikuti rantai fallback
+        // User::effectiveTimezone() — kantor pertama perusahaannya.
+        $tzByCompany = [];
+        foreach ($users->whereNull('attendance_setting_id')->pluck('company_id')->filter()->unique() as $cid) {
+            $first = AttendanceSetting::where('company_id', $cid)->orderBy('id')->first(['id', 'timezone']);
+            $tzByCompany[(int) $cid] = $first?->effectiveTimezone() ?? Timezone::storage();
+        }
+
+        // now() di-cache per zona (maksimal 3 nilai) agar daftar ribuan karyawan
+        // tidak memanggil now() ribuan kali.
+        $dateByTz = [];
+        $out      = [];
+
+        foreach ($users as $u) {
+            $tz = $u->attendance_setting_id
+                ? ($tzByOffice[(int) $u->attendance_setting_id] ?? Timezone::storage())
+                : ($tzByCompany[(int) $u->company_id] ?? Timezone::storage());
+
+            $dateByTz[$tz] ??= now($tz)->toDateString();
+            $out[$u->id] = $dateByTz[$tz];
+        }
+
+        return $out;
+    }
+
+    // ─── Helper: label status presensi dalam Bahasa Indonesia ────────────
+    //     Dipakai pesan koreksi presensi & block_reason baris laporan, agar
+    //     frontend tidak perlu menulis ulang pemetaan label (aturan proyek:
+    //     seluruh pesan untuk pengguna berasal dari payload API).
+    private function statusLabelId(string $status): string
+    {
+        return match ($status) {
+            'present'     => 'Hadir',
+            'late'        => 'Telat',
+            'absent'      => 'Alpha',
+            'alpha'       => 'Alpha',
+            'early_leave' => 'Pulang Awal',
+            'wfh'         => 'WFH',
+            'cuti'        => 'Cuti',
+            'izin'        => 'Izin',
+            'sakit'       => 'Sakit',
+            'libur'       => 'Libur',
+            'belum_hadir' => 'Belum Hadir',
+            default       => ucfirst($status),
+        };
     }
 
     /**
@@ -137,50 +234,144 @@ class AttendanceController extends Controller
         }
     }
 
+    // ─── Helper: resolusi otomatis tipe presensi berdasarkan status karyawan ──
+    //     Dipakai saat HRD memilih "Otomatis" di modal koreksi.
+    //     Prioritas:
+    //       1. Pengajuan WFH approved hari itu → 'wfh'
+    //       2. Shift terjadwal WFH (is_wfh=true) → 'wfh'
+    //       3. Karyawan mode WFH global (canWfh && !hasRadiusEnabled) → 'wfh'
+    //       4. Shift terjadwal lapangan (is_field=true) → 'field'
+    //       5. Default → 'onsite'
+    private function resolveAutoCheckInType(User $user, string $date, ?array $schedule = null): array
+    {
+        // 1. Ada pengajuan WFH yang disetujui (leave_type = 'wfh')
+        $isWfhApproved = LeaveRequest::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->where('leave_type', 'wfh')
+            ->whereDate('start_date', '<=', $date)
+            ->whereDate('end_date', '>=', $date)
+            ->exists();
+
+        if ($isWfhApproved) {
+            return ['type' => 'wfh', 'label' => 'WFH (Pengajuan Disetujui)'];
+        }
+
+        // Resolve jadwal jika belum diberikan
+        $sched = $schedule ?? $this->getWorkSchedule($user, $date);
+
+        // 2. Shift terjadwal WFH
+        if (! empty($sched['is_wfh'])) {
+            return ['type' => 'wfh', 'label' => 'WFH (Jadwal Shift)'];
+        }
+
+        // 3. Karyawan WFH global (wfh_enabled && !radius_enabled)
+        if ($user->canWfh() && ! $user->hasRadiusEnabled()) {
+            return ['type' => 'wfh', 'label' => 'WFH (Mode Karyawan)'];
+        }
+
+        // 4. Shift terjadwal lapangan
+        if (! empty($sched['is_field'])) {
+            return ['type' => 'field', 'label' => 'Lapangan (Jadwal Shift)'];
+        }
+
+        // 5. Default: kantor
+        return ['type' => 'onsite', 'label' => 'Kantor'];
+    }
+
     // ─── Helper: ambil jadwal kerja efektif karyawan pada tanggal tertentu ────
     //     Mempertimbangkan shift khusus jika ada; fallback ke attendance_settings kantor.
     //     Delegasi ke ShiftController::resolveSchedule() agar logika terpusat.
     private function getWorkSchedule(User $user, string $date): array
     {
-        return \App\Http\Controllers\API\ShiftController::resolveSchedule($user, $date);
+        $schedule = \App\Http\Controllers\API\ShiftController::resolveSchedule($user, $date);
+
+        return $this->applyHalfDayLeaveAdjustment($user, $date, $schedule);
     }
 
-    // ─── Helper: tentukan titik awal perhitungan jam kerja ──────────────────
-    //     Jam kerja dihitung mulai dari jam JADWAL masuk (bukan jam check-in).
+    /**
+     * Normalisasi nilai sesi cuti setengah hari menjadi 'morning' atau 'afternoon'.
+     * Menerima input: 'morning', 'pagi', 'sesi_1', 'sesi1', '1' -> 'morning'
+     *                'afternoon', 'siang', 'sesi_2', 'sesi2', '2' -> 'afternoon'
+     */
+    public static function normalizeHalfDaySession(?string $session): string
+    {
+        $raw = strtolower(trim((string) $session));
+        if (in_array($raw, ['afternoon', 'siang', 'sesi_2', 'sesi2', '2'], true)) {
+            return 'afternoon';
+        }
+        return 'morning';
+    }
+
+    public static function halfDayLabel(?string $session): string
+    {
+        return self::normalizeHalfDaySession($session) === 'afternoon'
+            ? 'Cuti ½ Hari (Sesi 2)'
+            : 'Cuti ½ Hari (Sesi 1)';
+    }
+
+    /**
+     * Sesuaikan jadwal kerja jika karyawan memiliki cuti setengah hari yang disetujui.
+     * Sesi 1 (morning)  : Libur pagi, jam masuk kerja bergeser ke midpoint (mis. 12:30).
+     * Sesi 2 (afternoon): Masuk pagi normal, jam pulang kerja bergeser ke midpoint (mis. 12:30).
+     */
+    private function applyHalfDayLeaveAdjustment(User $user, string $date, array $schedule): array
+    {
+        if (! empty($schedule['is_off'])) {
+            return $schedule;
+        }
+
+        $halfDayLeave = LeaveRequest::where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->where('leave_type', 'cuti_setengah_hari')
+            ->whereDate('start_date', '<=', $date)
+            ->whereDate('end_date', '>=', $date)
+            ->first();
+
+        if (! $halfDayLeave) {
+            return $schedule;
+        }
+
+        $startTime = $schedule['work_start_time'] ?? null;
+        $endTime   = $schedule['work_end_time'] ?? null;
+
+        if (! $startTime || ! $endTime) {
+            $office = $schedule['office'] ?? $user->office;
+            $startTime = $startTime ?? $office?->work_start_time ?? '08:00';
+            $endTime   = $endTime ?? $office?->work_end_time ?? '17:00';
+        }
+
+        $midpoint = \App\Http\Controllers\API\ShiftController::calculateHalfDayMidpoint(
+            substr((string) $startTime, 0, 5),
+            substr((string) $endTime, 0, 5),
+            $date
+        );
+
+        $normalizedSession = self::normalizeHalfDaySession($halfDayLeave->half_day_session);
+
+        $schedule['is_half_day']          = true;
+        $schedule['half_day_session']     = $normalizedSession;
+        $schedule['half_day_midpoint']    = $midpoint;
+        $schedule['orig_work_start_time'] = $startTime;
+        $schedule['orig_work_end_time']   = $endTime;
+
+        if ($normalizedSession === 'morning') {
+            // Cuti Sesi 1 (Pagi) -> Masuk kerja di siang hari (midpoint)
+            $schedule['work_start_time'] = $midpoint;
+        } else {
+            // Cuti Sesi 2 (Siang) -> Pulang kerja di siang hari (midpoint)
+            $schedule['work_end_time'] = $midpoint;
+        }
+
+        return $schedule;
+    }
+
     // ─── Helper: tentukan titik awal perhitungan jam kerja ────────────
-    //     Jika karyawan check-in lebih awal dari jadwal → titik awal = jadwal.
-    //     Jika karyawan check-in terlambat → titik awal = jam check-in aktual.
-    //     Khusus flexitime: titik awal = jam check-in aktual (dibatasi paling awal jam jendela kedatangan).
-    //
-    //     Juga mempertimbangkan shift lintas hari (cross-day): jam mulai shift
-    //     malam bisa berada di hari sebelumnya.
+    //     Delegasi ke AttendanceRecalculator agar checkOut(), AutoCheckoutCommand
+    //     dan koreksi manual HRD memakai satu rumus yang sama.
     private function resolveWorkStart(Carbon $checkInTime, array $schedule, string $date, ?User $user = null, ?Attendance $attendance = null): Carbon
     {
-        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
-
-        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) ($user && $user->flexitime_enabled);
-        if ($isFlex) {
-            $office = $schedule['office'] ?? $user?->office;
-            $arrivalStartStr = ! empty($office?->flex_arrival_start) ? substr((string) $office->flex_arrival_start, 0, 5) : '07:00';
-            $arrivalStart = Carbon::parse($date . ' ' . $arrivalStartStr, 'Asia/Jakarta');
-
-            return $checkInWib->lessThan($arrivalStart) ? $arrivalStart : $checkInWib;
-        }
-
-        $workStartStr = $schedule['work_start_time'];
-
-        // Tidak ada jadwal → pakai waktu check-in aktual sebagai titik awal
-        if (! $workStartStr) {
-            return $checkInTime->copy();
-        }
-
-        // Shift lintas hari (cross-day, mis. 22:00 malam): jam mulai ada di hari $date,
-        // bukan hari berikutnya. Gunakan $date langsung.
-        $workStart = Carbon::parse($date . ' ' . $workStartStr, 'Asia/Jakarta');
-
-        // Titik awal = jadwal ATAU check-in aktual — mana yang lebih lambat
-        // (karyawan terlambat → hitung dari check-in; datang awal → hitung dari jadwal)
-        return $checkInWib->greaterThan($workStart) ? $checkInWib : $workStart;
+        return app(AttendanceRecalculator::class)
+            ->resolveWorkStart($checkInTime, $schedule, $date, $user, $attendance);
     }
 
     // ─── Helper: tentukan status hadir/telat berdasarkan jam kerja ────
@@ -198,23 +389,54 @@ class AttendanceController extends Controller
             return 'present';
         }
 
-        $tanggalWib    = $checkInTime->copy()->setTimezone('Asia/Jakarta')->toDateString();
+        // INTI FITUR MULTI-ZONA: status telat/hadir dinilai di jam dinding cabang.
+        // Karyawan yang dinas di Papua & check-in 10:20 WIT dibandingkan sebagai
+        // 08:20 WIB terhadap jam masuk cabang Jakarta → telat, persis seperti kalau
+        // ia berada di kantornya. Zona lokasi fisiknya tidak ikut menentukan.
+        $tz            = Timezone::normalize($schedule['timezone'] ?? null);
+        $checkInLocal  = $checkInTime->copy()->setTimezone($tz);
+        $tanggalLokal  = $checkInLocal->toDateString();
         $lateTolerance = (int) ($schedule['late_tolerance_minutes'] ?? $office->late_tolerance_minutes ?? 15);
 
         // Karyawan dengan jam kerja fleksibel (flexitime):
-        // Bebas datang di jendela fleksibel (default s/d 10:00 WIB).
+        // Bebas datang di jendela fleksibel (default s/d 10:00 jam cabang).
         // Baru dianggap terlambat jika datang lewat batas akhir jendela kedatangan + toleransi.
         if ($user->flexitime_enabled) {
             $arrivalEnd = ! empty($office->flex_arrival_end) ? substr((string) $office->flex_arrival_end, 0, 5) : '10:00';
-            $batasTelat = Carbon::parse($tanggalWib . ' ' . $arrivalEnd, 'Asia/Jakarta')->addMinutes($lateTolerance);
+            $batasTelat = Carbon::parse($tanggalLokal . ' ' . $arrivalEnd, $tz)->addMinutes($lateTolerance);
 
-            return $checkInTime->copy()->setTimezone('Asia/Jakarta')->greaterThan($batasTelat) ? 'late' : 'present';
+            return $checkInLocal->greaterThan($batasTelat) ? 'late' : 'present';
         }
 
-        $batasTelat = Carbon::parse($tanggalWib . ' ' . $workStartTime, 'Asia/Jakarta')
+        $batasTelat = Carbon::parse($tanggalLokal . ' ' . $workStartTime, $tz)
             ->addMinutes($lateTolerance);
 
-        return $checkInTime->copy()->setTimezone('Asia/Jakarta')->greaterThan($batasTelat) ? 'late' : 'present';
+        return $checkInLocal->greaterThan($batasTelat) ? 'late' : 'present';
+    }
+
+    // ─── Helper: menit telat & denda (2026-10-09) ─────────────────────
+    //     Acuan sama dengan determineStatus(): jam masuk jadwal; untuk flexitime
+    //     batas akhir jendela kedatangan. Toleransi & tarif datang dari $config
+    //     (snapshot saat check-in), bukan setting live.
+    private function calculateLateFine(Carbon $checkInTime, array $schedule, bool $flexitime, array $config): array
+    {
+        $office = $schedule['office'] ?? null;
+        if (! $office || ($schedule['is_off'] ?? false)) {
+            return ['late_minutes' => 0, 'late_fine_amount' => 0.0];
+        }
+
+        if ($flexitime) {
+            $reference = ! empty($office->flex_arrival_end) ? substr((string) $office->flex_arrival_end, 0, 5) : '10:00';
+        } else {
+            $reference = $schedule['work_start_time'] ?? null;
+        }
+
+        return LateFineCalculator::calculate(
+            $checkInTime,
+            $reference,
+            Timezone::normalize($schedule['timezone'] ?? null),
+            $config,
+        );
     }
 
     // Hanya cuti yang punya kuota. Izin & sakit tidak terbatas, hanya dihitung.
@@ -774,10 +996,18 @@ class AttendanceController extends Controller
         [$mm, $dd] = explode('-', $office->leave_reset_date);
 
         // Cari anniversary PERTAMA yang jatuh dalam rentang [start, end]
+        //
+        // Zona: tanggal reset saldo (MM-DD) adalah TANGGAL KALENDER, dan hasilnya
+        // dipakai sebagai string 'Y-m-d' di bawah. Yang penting di sini hanyalah
+        // $candidate berada di zona yang SAMA dengan $start/$end agar between()
+        // membandingkan instan yang setara — tengah malam WITA = 23:00 WIB H-1,
+        // jadi mencampur zona akan menggeser pivot satu hari. Karena itu zona
+        // diambil dari rentangnya sendiri, bukan konstanta.
+        $rangeTz = $start->timezone;
         $pivot = null;
         for ($y = $start->year; $y <= $end->year && ! $pivot; $y++) {
             try {
-                $candidate = Carbon::create($y, (int) $mm, (int) $dd, 0, 0, 0, 'Asia/Jakarta');
+                $candidate = Carbon::create($y, (int) $mm, (int) $dd, 0, 0, 0, $rangeTz);
             } catch (\Throwable) {
                 break; // format MM-DD tak valid → perlakukan tanpa pivot
             }
@@ -1302,7 +1532,9 @@ class AttendanceController extends Controller
                 $actor->role !== 'super_admin',
                 fn ($q) => $q->where('company_id', $actor->company_id)
             )
-            ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'attendance_setting_id', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'is_active']);
+            // company_id diperlukan appendActiveShiftInfo(): karyawan tanpa kantor
+            // penempatan menurunkan zonanya dari kantor pertama perusahaannya.
+            ->select(['id', 'name', 'email', 'role', 'department', 'employee_code', 'company_id', 'attendance_setting_id', 'attendance_enabled', 'wfh_enabled', 'radius_enabled', 'dinas_luar_enabled', 'flexitime_enabled', 'is_active']);
 
         // Branch scoping: filter karyawan berdasarkan cabang yang diizinkan role
         $allowedBranches = $actor->allowedBranchIds();
@@ -1338,30 +1570,48 @@ class AttendanceController extends Controller
             return;
         }
 
-        $todayStr = now('Asia/Jakarta')->toDateString();
+        // "Hari ini" berbeda per cabang: pukul 23:30 WIB, cabang Makassar sudah
+        // tanggal berikutnya dan cabang Jayapura sudah 1,5 jam masuk hari baru.
+        // Satu $todayStr global akan menampilkan shift/WFH hari yang salah bagi
+        // karyawan cabang timur selama beberapa jam setiap malam.
+        $todayByUser = $this->todayDatesForUsers($users);
+        $minToday    = min($todayByUser) ?: $this->todayDate();
+        $maxToday    = max($todayByUser) ?: $minToday;
+
+        // Query memakai jendela terluas (selisih antar zona maksimal 1 hari),
+        // penyaringan tepatnya dilakukan per karyawan di PHP di bawah.
         $activeShifts = \App\Models\UserShift::with(['shift:id,name', 'shiftPattern:id,name'])
             ->whereIn('user_id', $users->pluck('id'))
             ->where(function ($q) {
                 $q->whereNotNull('shift_id')->orWhereNotNull('shift_pattern_id');
             })
-            ->whereDate('start_date', '<=', $todayStr)
-            ->where(function ($q) use ($todayStr) {
-                $q->whereNull('end_date')->orWhereDate('end_date', '>=', $todayStr);
+            ->whereDate('start_date', '<=', $maxToday)
+            ->where(function ($q) use ($minToday) {
+                $q->whereNull('end_date')->orWhereDate('end_date', '>=', $minToday);
             })
             ->orderByDesc('start_date')
             ->get()
             ->groupBy('user_id');
 
-        $approvedWfhUsers = LeaveRequest::where('status', 'approved')
+        $wfhLeaves = LeaveRequest::where('status', 'approved')
             ->where('leave_type', 'wfh')
             ->whereIn('user_id', $users->pluck('id'))
-            ->whereDate('start_date', '<=', $todayStr)
-            ->whereDate('end_date', '>=', $todayStr)
-            ->pluck('user_id')
-            ->flip();
+            ->whereDate('start_date', '<=', $maxToday)
+            ->whereDate('end_date', '>=', $minToday)
+            ->get(['user_id', 'start_date', 'end_date'])
+            ->groupBy('user_id');
 
         foreach ($users as $u) {
-            $active = $activeShifts->get($u->id)?->first();
+            $today = $todayByUser[$u->id] ?? $minToday;
+
+            $active = $activeShifts->get($u->id)
+                ?->first(function ($a) use ($today) {
+                    $start = $a->start_date ? Carbon::parse($a->start_date)->toDateString() : null;
+                    $end   = $a->end_date ? Carbon::parse($a->end_date)->toDateString() : null;
+
+                    return ($start === null || $start <= $today)
+                        && ($end === null || $end >= $today);
+                });
             $hasActiveShift = $active !== null;
 
             // Auto-heal: jika karyawan punya shift aktif tapi flexitime_enabled masih true, matikan di DB
@@ -1386,7 +1636,10 @@ class AttendanceController extends Controller
 
             $u->has_active_shift      = $hasActiveShift;
             $u->active_shift_name     = $active ? ($active->shift?->name ?? $active->shiftPattern?->name ?? 'Shift') : null;
-            $u->is_wfh_approved_today = isset($approvedWfhUsers[$u->id]);
+            $u->is_wfh_approved_today = (bool) $wfhLeaves->get($u->id)?->contains(
+                fn ($l) => Carbon::parse($l->start_date)->toDateString() <= $today
+                    && Carbon::parse($l->end_date)->toDateString() >= $today
+            );
         }
     }
 
@@ -1395,7 +1648,11 @@ class AttendanceController extends Controller
     public function listAllUsers(Request $request): JsonResponse
     {
         $actor = $request->user();
-        $year  = (int) now('Asia/Jakarta')->year;
+        // Tahun saldo cuti = KONTEKS KALENDER HRD, bukan keputusan bisnis per karyawan:
+        // tetap zona penyimpanan agar satu perusahaan memakai satu tahun buku cuti.
+        // (Mengikuti zona cabang akan membuat saldo cabang Jayapura berpindah tahun
+        // 2 jam lebih awal setiap 31 Desember.)
+        $year = (int) now(Timezone::storage())->year;
 
         $users = User::query()
             ->with('office:id,office_name')
@@ -1460,7 +1717,16 @@ class AttendanceController extends Controller
         }
 
         // Guard: Jika sudah melewati hari pengajuan / H+1 (start_date < today), tidak dapat di-approve
-        $today = now('Asia/Jakarta')->toDateString();
+        //
+        // "Hari ini" = tanggal lokal cabang KARYAWAN PENGAJU, bukan jam dinding
+        // server: start_date adalah tanggal kalender di cabangnya. Tanpa ini,
+        // pengajuan karyawan cabang Jayapura untuk besok (tanggal lokal yang sudah
+        // berjalan di sana) masih terlihat "besok" bagi server WIB — atau
+        // sebaliknya, atasan di Jakarta tak bisa menyetujui pengajuan yang di
+        // cabang timur baru saja memasuki tanggal mulainya.
+        $today = $leave->user
+            ? $this->todayDateForUser($leave->user)
+            : $this->todayDate();
         $startDateStr = Carbon::parse($leave->start_date)->toDateString();
         if ($startDateStr < $today) {
             return response()->json([
@@ -2347,15 +2613,19 @@ class AttendanceController extends Controller
 
                 if (is_null($att->check_out_time)) return true;
                 
-                $checkoutCarbon = \Carbon\Carbon::parse($att->check_out_time)->timezone('Asia/Jakarta');
+                // Dibandingkan di zona penyimpanan karena $today di sini adalah tanggal
+                // kalender dasbor HRD (satu tanggal bersama untuk seluruh perusahaan),
+                // bukan tanggal lokal karyawan.
+                $checkoutCarbon = \Carbon\Carbon::parse($att->check_out_time)->timezone(Timezone::storage());
                 $checkoutDateLocal = $checkoutCarbon->format('Y-m-d');
-                
+
                 if ($checkoutDateLocal !== $today) return false;
 
-                // Threshold auto-update: jika sudah lewat 4 jam sejak check-out, 
-                // data shift malam ini tidak lagi masuk ke "Sudah Check-In" 
+                // Threshold auto-update: jika sudah lewat 4 jam sejak check-out,
+                // data shift malam ini tidak lagi masuk ke "Sudah Check-In"
                 // agar karyawan bisa masuk ke status jadwal barunya di hari ini (Belum Check-In / Libur).
-                $hoursSinceCheckout = $checkoutCarbon->diffInHours(\Carbon\Carbon::now('Asia/Jakarta'));
+                // Selisih jam antar dua instan absolut — tidak bergantung zona.
+                $hoursSinceCheckout = $checkoutCarbon->diffInHours(\Carbon\Carbon::now(Timezone::storage()));
                 return $hoursSinceCheckout < 4;
             })
             ->keyBy('user_id');
@@ -2364,17 +2634,26 @@ class AttendanceController extends Controller
         $attendances = $attendancesYesterday->replace($attendancesToday);
 
         // Izin/cuti disetujui yang mencakup hari ini, di-index per user_id
-        // CATATAN: leave_type 'wfh' dikecualikan karena WFH adalah mode kerja, bukan izin/cuti tidak masuk.
+        // CATATAN: leave_type 'wfh' dan 'cuti_setengah_hari' dikecualikan dari on_leave
+        // karena WFH adalah mode kerja, dan cuti setengah hari mewajibkan karyawan tetap masuk di setengah hari lainnya.
         $onLeave = LeaveRequest::where('status', 'approved')
             ->where('start_date', '<=', $today)
             ->where('end_date', '>=', $today)
-            ->whereNotIn('leave_type', ['wfh'])
+            ->whereNotIn('leave_type', ['wfh', 'cuti_setengah_hari'])
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
             ->get()->keyBy('user_id');
 
         // Pengajuan WFH yang disetujui untuk hari ini
         $approvedWfhToday = LeaveRequest::where('status', 'approved')
             ->where('leave_type', 'wfh')
+            ->where('start_date', '<=', $today)
+            ->where('end_date', '>=', $today)
+            ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
+            ->get()->keyBy('user_id');
+
+        // Pengajuan cuti setengah hari yang disetujui untuk hari ini
+        $approvedHalfDayToday = LeaveRequest::where('status', 'approved')
+            ->where('leave_type', 'cuti_setengah_hari')
             ->where('start_date', '<=', $today)
             ->where('end_date', '>=', $today)
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
@@ -2413,6 +2692,7 @@ class AttendanceController extends Controller
 
         foreach ($employees as $emp) {
             $att = $attendances[$emp->id] ?? null;
+            $halfDay = $approvedHalfDayToday[$emp->id] ?? null;
 
             if ($att && $att->check_in_time) {
                 // Shift malam kemarin (cross-day)
@@ -2439,6 +2719,9 @@ class AttendanceController extends Controller
                     'checkout_date'         => $isCrossDay ? $today : null,
                     'is_cross_day'          => $isCrossDay,
                     'is_wfh'                => $att->check_in_type === 'wfh' || isset($approvedWfhToday[$emp->id]) || (bool) $emp->canWfh(),
+                    'is_half_day'           => (bool) $halfDay,
+                    'half_day_session'      => $halfDay ? self::normalizeHalfDaySession($halfDay->half_day_session) : null,
+                    'half_day_label'        => $halfDay ? self::halfDayLabel($halfDay->half_day_session) : null,
                 ];
             } elseif (isset($onLeave[$emp->id])) {
                 $leaveList[] = [
@@ -2469,6 +2752,7 @@ class AttendanceController extends Controller
 
                 $isHolidayForUser = $regularHolidayForEmp || in_array($empId, $acceptedCollectiveLeaveUserIds);
                 $workStartTime = null;
+                $workEndTime   = null;
                 $cutoffMinutes = null;
 
                 if ($isHolidayForUser) {
@@ -2477,20 +2761,49 @@ class AttendanceController extends Controller
                     $schedule = $schedulesByUser[$empId] ?? null;
                     $isOff    = (bool) ($schedule['is_off'] ?? false);
                     $workStartTime = $schedule['work_start_time'] ?? null;
+                    $workEndTime   = $schedule['work_end_time'] ?? null;
                     $office = $schedule['office'] ?? null;
                     $cutoffMinutes = $office?->late_checkin_cutoff_minutes;
+                }
+
+                // Jika karyawan memiliki cuti setengah hari yang disetujui hari ini:
+                $halfDayStart = null;
+                $halfDayEnd   = null;
+                if ($halfDay && ! $isOff) {
+                    $session  = self::normalizeHalfDaySession($halfDay->half_day_session);
+                    $startStr = $workStartTime ? substr((string) $workStartTime, 0, 5) : '08:00';
+                    $endStr   = $workEndTime ? substr((string) $workEndTime, 0, 5) : ($office?->work_end_time ? substr((string) $office->work_end_time, 0, 5) : '17:00');
+                    $midpoint = \App\Http\Controllers\API\ShiftController::calculateHalfDayMidpoint($startStr, $endStr, $today);
+
+                    if ($session === 'morning') {
+                        // Cuti Sesi 1 (Pagi) -> Masuk kerja di siang hari (midpoint)
+                        $workStartTime = $midpoint;
+                        $halfDayStart  = $midpoint;
+                        $halfDayEnd    = $endStr;
+                    } else {
+                        // Cuti Sesi 2 (Siang) -> Masuk pagi normal, pulang di midpoint
+                        $halfDayStart  = $startStr;
+                        $halfDayEnd    = $midpoint;
+                    }
                 }
 
                 $isAlpha = false;
                 $cutoffTimeStr = null;
 
+                // Batas alpha adalah KEPUTUSAN BISNIS → dinilai di jam dinding cabang
+                // karyawan. Tanpa ini, karyawan cabang Jayapura dengan jam masuk 08:00
+                // akan ditandai alpha pada 08:00 WIB (= 10:00 WIT) — dua jam terlalu dini.
+                // Dibaca langsung dari $schedulesByUser (bukan $schedule) karena cabang
+                // hari-libur di atas tidak menyetel $schedule.
+                $tzEmp = Timezone::normalize($schedulesByUser[$empId]['timezone'] ?? null);
+
                 if (! $isOff && $workStartTime && $cutoffMinutes !== null) {
-                    $nowWib          = now('Asia/Jakarta');
-                    $workStartCarbon = Carbon::parse("{$today} {$workStartTime}", 'Asia/Jakarta');
+                    $nowLocal        = now($tzEmp);
+                    $workStartCarbon = Carbon::parse("{$today} {$workStartTime}", $tzEmp);
                     $cutoffCarbon    = $workStartCarbon->copy()->addMinutes($cutoffMinutes);
                     $cutoffTimeStr   = $cutoffCarbon->format('H:i');
 
-                    if ($nowWib->gt($cutoffCarbon)) {
+                    if ($nowLocal->gt($cutoffCarbon)) {
                         $isAlpha = true;
                     }
                 }
@@ -2513,6 +2826,11 @@ class AttendanceController extends Controller
                     'work_start_time'       => $workStartTime ? substr($workStartTime, 0, 5) : null,
                     'is_wfh'                => $isWfh,
                     'is_wfh_approved'       => $isWfhApproved,
+                    'is_half_day'           => (bool) $halfDay,
+                    'half_day_session'      => $halfDay ? self::normalizeHalfDaySession($halfDay->half_day_session) : null,
+                    'half_day_label'        => $halfDay ? self::halfDayLabel($halfDay->half_day_session) : null,
+                    'half_day_start'        => $halfDayStart,
+                    'half_day_end'          => $halfDayEnd,
                 ];
             }
         }
@@ -3152,8 +3470,22 @@ class AttendanceController extends Controller
             fn ($q) => $q->where('company_id', $actor->company_id)
         )->findOrFail($id);
 
-        $today = Carbon::today('Asia/Jakarta');
-        $year  = $today->year;
+        // Tanggal reset = TANGGAL LOKAL CABANG ini. Reset saldo adalah peristiwa
+        // milik satu cabang (anniversary-nya diatur per cabang di leave_reset_date),
+        // dan nilai yang ditulis ke last_leave_reset_on di bawah dibaca kembali oleh
+        // ResetLeaveBalancesCommand sebagai penjaga anti-dobel — keduanya WAJIB
+        // memakai jam dinding yang sama, jika tidak reset otomatis bisa berjalan
+        // dua kali (atau terlewat) di cabang WITA/WIT pada hari anniversary.
+        $tz    = $office->effectiveTimezone();
+        $today = Carbon::today($tz);
+
+        // $year TIDAK diturunkan dari $today: leave_balances.year adalah TAHUN BUKU
+        // perusahaan dan dipakai sebagai kunci baris oleh seluruh jalur cuti lain
+        // (approveLeave, listAllUsers, saldo mobile) yang memakai zona penyimpanan.
+        // Pada 1 Januari 00:30 WIT (= 31 Desember 22:30 WIB) $today->year sudah
+        // tahun berikutnya sementara baris saldonya belum ada → reset akan
+        // menemukan quota 0 dan tidak mereset siapa pun.
+        $year  = (int) now(Timezone::storage())->year;
 
         $userIds = User::where('company_id', $office->company_id)
             ->where('attendance_setting_id', $office->id)
@@ -3281,9 +3613,11 @@ class AttendanceController extends Controller
             'month'   => 'nullable|integer|between:1,12',
             'year'    => 'nullable|integer',
         ]);
-        $nowWib = now('Asia/Jakarta');
-        $month  = $validated['month'] ?? (int) $nowWib->month;
-        $year   = $validated['year']  ?? (int) $nowWib->year;
+        // Bulan/tahun default = KONTEKS KALENDER HRD → zona penyimpanan, supaya
+        // dasbor satu perusahaan tidak menampilkan bulan berbeda per cabang.
+        $nowStorage = now(Timezone::storage());
+        $month      = $validated['month'] ?? (int) $nowStorage->month;
+        $year       = $validated['year']  ?? (int) $nowStorage->year;
 
         $target = User::when(
             $actor->role !== 'super_admin',
@@ -3299,15 +3633,16 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Anda tidak memiliki akses ke cabang karyawan ini.'], 403);
         }
 
-        $start      = Carbon::create($year, $month, 1, 0, 0, 0, 'Asia/Jakarta')->startOfMonth();
+        $start      = Carbon::create($year, $month, 1, 0, 0, 0, Timezone::storage())->startOfMonth();
         $end        = (clone $start)->endOfMonth();
         $rangeStart = $start->toDateString();
         $rangeEnd   = $end->toDateString();
 
-        // Hitung hanya sampai hari ini agar hari depan tidak dihitung absen
-        $countUntil = Carbon::parse($rangeEnd, 'Asia/Jakarta')->greaterThan($nowWib)
-            ? $this->todayDate()
-            : $rangeEnd;
+        // Hitung hanya sampai hari ini agar hari depan tidak dihitung absen.
+        // "Hari ini" = tanggal lokal cabang KARYAWAN (keputusan bisnis: menentukan
+        // hari mana yang dihitung alpha), bukan jam dinding server.
+        $todayEmployee = $this->todayDateForUser($target);
+        $countUntil    = $rangeEnd > $todayEmployee ? $todayEmployee : $rangeEnd;
 
         // Hari libur nasional + perusahaan dalam bulan ini
         $holidays = Holiday::where(function ($q) use ($target) {
@@ -3442,7 +3777,15 @@ class AttendanceController extends Controller
             ->groupBy('check_in_type')->pluck('total', 'check_in_type');
 
         return response()->json([
-            'user'   => ['id' => $target->id, 'name' => $target->name, 'department' => $target->department],
+            'user'   => [
+                'id'             => $target->id,
+                'name'           => $target->name,
+                'department'     => $target->department,
+                // Zona cabang karyawan — menjelaskan jam dinding mana yang dipakai
+                // menentukan "hari ini" pada batas hitung absen di atas.
+                'timezone'       => $target->effectiveTimezone(),
+                'timezone_label' => Timezone::label($target->effectiveTimezone()),
+            ],
             'period' => ['month' => (int) $month, 'year' => (int) $year],
             'attendance' => [
                 'present'        => (int) ($attCountsBreakdown['present'] ?? 0),
@@ -3493,7 +3836,12 @@ class AttendanceController extends Controller
             ->where('role', '!=', 'super_admin')
             ->when($allowedBranches !== null, fn ($q) => $q->whereIn('attendance_setting_id', $allowedBranches))
             ->orderBy('name')
-            ->get(['id', 'name', 'department', 'employee_code', 'company_id', 'attendance_setting_id']);
+            ->get([
+                'id', 'name', 'department', 'employee_code', 'company_id', 'attendance_setting_id',
+                // Kolom berikut dibutuhkan resolveAutoCheckInType() → canWfh() / hasRadiusEnabled()
+                'wfh_enabled', 'radius_enabled', 'attendance_enabled', 'dinas_luar_enabled',
+                'allow_wfh', 'allow_radius', 'allow_attendance',
+            ]);
 
         if ($users->isEmpty()) {
             return ($page !== null) ? [
@@ -3538,6 +3886,20 @@ class AttendanceController extends Controller
                 'attendances.work_minutes as working_minutes',
                 'attendances.snap_shift_id', 'attendances.snap_shift_name',
                 'attendances.snap_source', 'attendances.snap_work_start_time',
+                'attendances.snap_work_end_time', 'attendances.snap_is_cross_day',
+                // Zona bisnis saat check-in — dipakai memformat jam di baris laporan
+                // ini agar presensi cabang Makassar/Jayapura tampil pada jam
+                // dindingnya sendiri, bukan jam WIB.
+                'attendances.snap_timezone',
+                // Menit telat & denda tersimpan (2026-10-09); baris lama NULL.
+                'attendances.late_minutes', 'attendances.late_fine_amount',
+                // Jejak koreksi manual HRD (lihat correctAttendance()) + catatan.
+                // updated_at dipakai frontend sebagai token optimistic-concurrency
+                // agar dua HRD tidak saling menimpa koreksi tanpa sadar.
+                'attendances.notes', 'attendances.is_auto_checkout',
+                'attendances.corrected_by', 'attendances.corrected_at',
+                'attendances.correction_reason', 'attendances.is_manual_entry',
+                'attendances.updated_at',
             ])
             ->get();
 
@@ -3546,6 +3908,12 @@ class AttendanceController extends Controller
             $dStr = is_string($a->date) ? substr($a->date, 0, 10) : Carbon::parse($a->date)->format('Y-m-d');
             $attendancesByUserAndDate[$a->user_id][$dStr] = $a;
         }
+
+        // Nama pengoreksi di-resolve SEKALI untuk seluruh halaman (hindari N+1).
+        $correctorIds = $attendances->pluck('corrected_by')->filter()->unique()->values();
+        $correctorNames = $correctorIds->isNotEmpty()
+            ? User::whereIn('id', $correctorIds)->pluck('name', 'id')->all()
+            : [];
 
         // 3. Approved leave dalam range → lookup [user_id][date] = leave_type
         $leaves = LeaveRequest::when($companyId, fn ($q) => $q->where('company_id', $companyId))
@@ -3628,6 +3996,19 @@ class AttendanceController extends Controller
                 'color'     => $cs->color ?? '#6366f1',
                 'is_active' => (bool) $cs->is_active,
             ];
+        }
+
+        // Zona bisnis per cabang — di-precompute supaya resolusi zona setiap baris
+        // laporan hanya berupa array lookup (bisa puluhan ribu baris per request).
+        $officeTimezones = [];
+        foreach ($allOffices as $offId => $off) {
+            $officeTimezones[$offId] = $off->effectiveTimezone();
+        }
+        $fallbackTz = $fallbackOffice ? $fallbackOffice->effectiveTimezone() : Timezone::storage();
+
+        $userTimezones = [];
+        foreach ($users as $u) {
+            $userTimezones[$u->id] = $officeTimezones[$u->attendance_setting_id ?? $fallbackOffId] ?? $fallbackTz;
         }
 
         // Precompute jadwal office per hari (0..6) agar O(1) array lookup tanpa array_map berulang
@@ -3886,12 +4267,24 @@ class AttendanceController extends Controller
                     }
 
                     if (!$isPaginated || ($totalFiltered > $offsetStart && $totalFiltered <= $offsetEnd)) {
-                        $checkoutDate = $att->check_out_time ? Carbon::parse($att->check_out_time)->timezone('Asia/Jakarta')->toDateString() : null;
+                        // Zona baris ini: snapshot saat check-in bila ada (baris lama NULL →
+                        // zona cabang karyawan sekarang). Semua jam di baris ini — termasuk
+                        // selisih telat & deteksi lintas hari — dibaca di zona ini, karena
+                        // dibandingkan dengan work_start_time yang juga jam dinding cabang.
+                        $rowTz = Timezone::normalize(
+                            $att->snap_timezone ?? ($userTimezones[$user->id] ?? $fallbackTz)
+                        );
+                        $checkoutDate = $att->check_out_time ? Carbon::parse($att->check_out_time)->timezone($rowTz)->toDateString() : null;
                         $isCrossDay = $checkoutDate && $checkoutDate > $dateStr;
                         $lateMinutes = null;
                         $effectiveWorkStart = $att->snap_work_start_time ?? $workStartTime;
-                        if ($status === 'late' && $att->check_in_time && $effectiveWorkStart) {
-                            $inCarbon = Carbon::parse($att->check_in_time)->timezone('Asia/Jakarta');
+                        // Nilai tersimpan menang (independen dari status — early_leave
+                        // tetap menyimpan telatnya). Baris lama / koreksi tanpa menit
+                        // jatuh ke hitungan on-the-fly di bawah.
+                        if ($att->late_minutes !== null && (int) $att->late_minutes > 0) {
+                            $lateMinutes = (int) $att->late_minutes;
+                        } elseif ($status === 'late' && $att->check_in_time && $effectiveWorkStart) {
+                            $inCarbon = Carbon::parse($att->check_in_time)->timezone($rowTz);
                             $schedMins = (int) substr($effectiveWorkStart, 0, 2) * 60 + (int) substr($effectiveWorkStart, 3, 2);
                             $inMins    = (int) $inCarbon->format('H') * 60 + (int) $inCarbon->format('i');
                             if ($inMins > $schedMins) {
@@ -3913,6 +4306,15 @@ class AttendanceController extends Controller
                             'is_cross_day'     => $isCrossDay,
                             'check_in_time'    => $att->check_in_time,
                             'check_out_time'   => $att->check_out_time,
+                            // Jam dinding cabang, SUDAH diformat backend. Form & tabel HRD
+                            // wajib memakai dua field ini (bukan new Date(check_in_time)
+                            // .getHours() yang mengikuti zona laptop HRD — utang teknis
+                            // doc/kekurangnAttendance.md #21), lalu menempelkan
+                            // timezone_label di sebelahnya.
+                            'check_in_time_local'  => $att->check_in_time ? Carbon::parse($att->check_in_time)->timezone($rowTz)->format('H:i') : null,
+                            'check_out_time_local' => $att->check_out_time ? Carbon::parse($att->check_out_time)->timezone($rowTz)->format('H:i') : null,
+                            'timezone'             => $rowTz,
+                            'timezone_label'       => Timezone::label($rowTz),
                             'check_in_type'    => $att->check_in_type,
                             'check_in_lat'     => $att->check_in_lat,
                             'check_in_lng'     => $att->check_in_lng,
@@ -3922,9 +4324,25 @@ class AttendanceController extends Controller
                             'visit_notes'      => $att->visit_notes,
                             'status'           => $status,
                             'late_minutes'     => $lateMinutes,
+                            'late_fine_amount' => $att->late_fine_amount !== null ? (float) $att->late_fine_amount : null,
                             'overtime_minutes' => (int) ($att->overtime_minutes ?? 0),
                             'is_holiday'       => (bool) $att->is_holiday,
                             'working_minutes'  => $att->working_minutes,
+                            'notes'            => $att->notes,
+                            'is_auto_checkout' => (bool) $att->is_auto_checkout,
+                            // Jejak koreksi manual HRD — ditampilkan sebagai badge di laporan & CSV
+                            'is_manual_entry'   => (bool) $att->is_manual_entry,
+                            'is_corrected'      => $att->corrected_at !== null,
+                            'corrected_at'      => $att->corrected_at,
+                            'corrected_by_name' => $correctorNames[$att->corrected_by] ?? null,
+                            'correction_reason' => $att->correction_reason,
+                            'has_snapshot'      => $att->snap_source !== null,
+                            'snap_work_end_time' => $att->snap_work_end_time ? substr((string) $att->snap_work_end_time, 0, 5) : null,
+                            'updated_at'        => $att->updated_at ? Carbon::parse($att->updated_at)->toIso8601String() : null,
+                            // editable/block_reason = satu sumber kebenaran untuk tombol koreksi
+                            // di web, sehingga pesan penolakan tetap berasal dari payload API.
+                            'editable'          => true,
+                            'block_reason'      => null,
                         ];
                     }
                 } elseif (! $isFuture) {
@@ -3941,11 +4359,15 @@ class AttendanceController extends Controller
                         $offId = $user->attendance_setting_id ?? $fallbackOffId;
                         $office = $allOffices[$offId] ?? null;
                         $cutoffMins = $office?->late_checkin_cutoff_minutes;
-                        $nowWib = now('Asia/Jakarta');
+                        // Cutoff "belum hadir vs alpha" adalah keputusan bisnis → dinilai
+                        // di jam dinding cabang karyawan. Memakai jam WIB akan menandai
+                        // karyawan cabang Jayapura alpha dua jam sebelum batas lokalnya.
+                        $rowTz   = $userTimezones[$user->id] ?? $fallbackTz;
+                        $nowLocal = now($rowTz);
 
                         if ($cutoffMins !== null) {
-                            $cutoffCarbon = Carbon::parse("{$today} {$workStartTime}", 'Asia/Jakarta')->addMinutes($cutoffMins);
-                            $isPastCutoff = $nowWib->gt($cutoffCarbon);
+                            $cutoffCarbon = Carbon::parse("{$today} {$workStartTime}", $rowTz)->addMinutes($cutoffMins);
+                            $isPastCutoff = $nowLocal->gt($cutoffCarbon);
                         } else {
                             $isPastCutoff = false;
                         }
@@ -4012,6 +4434,10 @@ class AttendanceController extends Controller
                     }
 
                     if (!$isPaginated || ($totalFiltered > $offsetStart && $totalFiltered <= $offsetEnd)) {
+                        // Resolve tipe presensi otomatis untuk hint di frontend
+                        // Gunakan $user langsung (sudah Eloquent + kolom WFH tersedia dari query awal)
+                        $autoHint = $this->resolveAutoCheckInType($user, $dateStr);
+
                         $pageItems[] = [
                             'id'               => null,
                             'user_id'          => $user->id,
@@ -4026,14 +4452,46 @@ class AttendanceController extends Controller
                             'is_cross_day'     => false,
                             'check_in_time'    => null,
                             'check_out_time'   => null,
+                            // Bentuk baris disamakan dengan baris nyata (lihat di atas):
+                            // zona cabang karyawan supaya form input manual HRD tahu
+                            // jam dinding mana yang akan diketik.
+                            'check_in_time_local'  => null,
+                            'check_out_time_local' => null,
+                            'timezone'             => $userTimezones[$user->id] ?? $fallbackTz,
+                            'timezone_label'       => Timezone::label($userTimezones[$user->id] ?? $fallbackTz),
                             'check_in_type'    => null,
                             'check_in_lat'     => null,
                             'check_in_lng'     => null,
                             'status'           => $status,
                             'late_minutes'     => null,
+                            'late_fine_amount' => null,
                             'overtime_minutes' => 0,
                             'is_holiday'       => $isOff ? $isHolidayForUser : false,
                             'working_minutes'  => null,
+                            'notes'            => null,
+                            'is_auto_checkout' => false,
+                            // Bentuk baris disamakan dengan baris nyata supaya frontend
+                            // tidak perlu optional-chaining berlapis.
+                            'is_manual_entry'   => false,
+                            'is_corrected'      => false,
+                            'corrected_at'      => null,
+                            'corrected_by_name' => null,
+                            'correction_reason' => null,
+                            'has_snapshot'      => false,
+                            'snap_work_end_time' => null,
+                            'updated_at'        => null,
+                            // Hint tipe presensi otomatis — dipakai frontend untuk label
+                            // dropdown "Otomatis" sehingga HRD tahu resolusi default-nya.
+                            'auto_check_in_type'  => $autoHint['type'],
+                            'auto_check_in_label' => $autoHint['label'],
+                            // Libur/cuti/izin/sakit TIDAK boleh di-input manual: HRD harus
+                            // membatalkan pengajuan izinnya dulu agar tidak dihitung ganda.
+                            'editable'     => in_array($status, ['absent', 'belum_hadir'], true),
+                            'block_reason' => $status === 'libur'
+                                ? 'Hari libur / di luar jadwal kerja karyawan ini — tidak perlu presensi.'
+                                : (in_array($status, ['cuti', 'izin', 'sakit', 'wfh'], true)
+                                    ? 'Karyawan sudah tercatat ' . $this->statusLabelId($status) . ' pada tanggal ini. Batalkan pengajuan tersebut lebih dulu bila ingin mencatat presensi.'
+                                    : null),
                         ];
                     }
                 }
@@ -4094,8 +4552,12 @@ class AttendanceController extends Controller
         ]);
 
         $companyId = $actor->role === 'super_admin' ? null : $actor->company_id;
-        $startDate = $validated['start_date'] ?? now('Asia/Jakarta')->startOfMonth()->toDateString();
-        $endDate   = $validated['end_date']   ?? $this->todayDate();
+        // Rentang default laporan = KONTEKS KALENDER HRD, bukan keputusan bisnis:
+        // tetap zona penyimpanan agar dua HRD di cabang berbeda melihat periode
+        // yang sama. Jam di dalam barisnya yang mengikuti zona cabang.
+        $startDate = $validated['start_date'] ?? now(Timezone::storage())->startOfMonth()->toDateString();
+        // Jika start_date diisi tapi end_date kosong, tampilkan data tanggal hari itu saja
+        $endDate   = $validated['end_date']   ?? (!empty($validated['start_date']) ? $validated['start_date'] : $this->todayDate());
 
         if (Carbon::parse($startDate)->diffInDays(Carbon::parse($endDate)) > 62) {
             return response()->json([
@@ -4123,6 +4585,11 @@ class AttendanceController extends Controller
             'by_type'          => $result['by_type'],
             'by_shift'         => $result['by_shift'] ?? [],
             'available_shifts' => $result['available_shifts'] ?? [],
+            // Periode gaji ("YYYY-MM") yang sudah approved/paid → presensi di bulan
+            // itu tidak boleh dikoreksi. Dikirim agar tombol koreksi di web langsung
+            // non-aktif, bukan baru gagal setelah HRD mengisi form.
+            'locked_periods'   => app(\App\Services\Attendance\PayrollPeriodLock::class)
+                ->lockedPeriods($companyId, $startDate, $endDate, $actor->allowedBranchIds()),
             'report'  => [
                 'data'         => $result['data'],
                 'current_page' => $result['current_page'],
@@ -4152,8 +4619,10 @@ class AttendanceController extends Controller
         ]);
 
         $companyId  = $actor->role === 'super_admin' ? null : $actor->company_id;
-        $startDate  = $validated['start_date'] ?? now('Asia/Jakarta')->startOfMonth()->toDateString();
-        $endDate    = $validated['end_date']   ?? $this->todayDate();
+        // Lihat catatan di reportAttendance(): rentang = kalender HRD (zona penyimpanan).
+        $startDate  = $validated['start_date'] ?? now(Timezone::storage())->startOfMonth()->toDateString();
+        // Jika start_date diisi tapi end_date kosong, ekspor data tanggal hari itu saja
+        $endDate    = $validated['end_date']   ?? (!empty($validated['start_date']) ? $validated['start_date'] : $this->todayDate());
 
         if (Carbon::parse($startDate)->diffInDays(Carbon::parse($endDate)) > 62) {
             return response()->streamDownload(function () {
@@ -4177,7 +4646,13 @@ class AttendanceController extends Controller
 
         return response()->streamDownload(function () use ($rows) {
             $out = fopen('php://output', 'w');
-            fputcsv($out, ['NIK', 'Nama', 'Departemen', 'Shift', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Klien / Proyek', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur']);
+            // Kolom koreksi DITAMBAHKAN DI BELAKANG — jangan ubah urutan kolom lama,
+            // spreadsheet/laporan turunan milik HRD bergantung pada posisinya.
+            // Kolom 'Zona' ditambahkan paling belakang (bukan di sebelah kolom jam)
+            // demi aturan di atas. Kolom 'Check In'/'Check Out' kini berisi jam
+            // dinding CABANG karyawan, bukan selalu WIB — tanpa kolom zona, satu
+            // file ekspor lintas cabang akan mencampur tiga jam dinding tanpa penanda.
+            fputcsv($out, ['NIK', 'Nama', 'Departemen', 'Shift', 'Tanggal', 'Check In', 'Check Out', 'Tipe', 'Klien / Proyek', 'Status', 'Telat (Menit)', 'Jam Kerja', 'Lembur', 'Hari Libur', 'Input Manual', 'Dikoreksi Oleh', 'Waktu Koreksi', 'Alasan Koreksi', 'Zona', 'Denda Telat (Rp)']);
             foreach ($rows as $r) {
                 $mins     = $r['working_minutes'];
                 $jamKerja = $mins !== null
@@ -4194,8 +4669,9 @@ class AttendanceController extends Controller
                     $r['department'] ?? '-',
                     $r['shift_name'] ?? 'Kantor (Default)',
                     $dateExport,
-                    $r['check_in_time']  ? Carbon::parse($r['check_in_time'])->timezone('Asia/Jakarta')->format('H:i')  : '-',
-                    $r['check_out_time'] ? Carbon::parse($r['check_out_time'])->timezone('Asia/Jakarta')->format('H:i') : '-',
+                    // Jam sudah diformat buildFullRows() di zona cabang baris ini.
+                    $r['check_in_time_local']  ?? '-',
+                    $r['check_out_time_local'] ?? '-',
                     $r['check_in_type'] ?? '-',
                     $r['client_name'] ?? '-',
                     $r['status'],
@@ -4203,11 +4679,715 @@ class AttendanceController extends Controller
                     $jamKerja,
                     $lembur,
                     $r['is_holiday'] ? 'Ya' : 'Tidak',
+                    ! empty($r['is_manual_entry']) ? 'Ya' : 'Tidak',
+                    $r['corrected_by_name'] ?? '-',
+                    // Waktu koreksi = cap waktu audit, tetap satu jam dinding
+                    // (zona penyimpanan) untuk seluruh baris lintas cabang.
+                    ! empty($r['corrected_at'])
+                        ? Carbon::parse($r['corrected_at'])->timezone(Timezone::storage())->format('d M Y H:i')
+                        : '-',
+                    $r['correction_reason'] ?? '-',
+                    $r['timezone_label'] ?? Timezone::label(Timezone::storage()),
+                    ($r['late_fine_amount'] ?? null) !== null ? (int) round($r['late_fine_amount']) : '-',
                 ]);
             }
             fclose($out);
         }, $filename, ['Content-Type' => 'text/csv']);
     }
+
+    // ═══════════════════════════════════════════════════════════
+    // BAGIAN A1b — KOREKSI PRESENSI MANUAL OLEH HRD (2026-10-06)
+    //
+    // Latar belakang: GPS drift / HP mati / karyawan lupa check-in membuat baris
+    // presensi salah atau tidak ada sama sekali. Karena PayrollCalculator membaca
+    // attendances.status, attendances.is_holiday dan overtime_approvals, kesalahan
+    // presensi LANGSUNG menjadi kesalahan gaji. Endpoint ini jalur perbaikannya.
+    //
+    // TIGA ATURAN YANG MENGIKAT (jangan dilonggarkan tanpa PR khusus):
+    //   1. Field turunan TIDAK PERNAH diterima dari request. work_minutes,
+    //      overtime_minutes, is_holiday, late_minutes dan seluruh snap_* selalu
+    //      dihitung ulang server-side. Request hanya mengirim fakta mentah.
+    //   2. Perhitungan ulang memakai Attendance::snapshotSchedule() bila ada —
+    //      bukan attendance_settings live. Tanpa ini, mengoreksi presensi Januari
+    //      akan dihitung dengan aturan kantor bulan Oktober.
+    //   3. Periode payroll approved/paid adalah HARD BLOCK (PayrollPeriodLock),
+    //      tidak bisa dilewati gerbang konfirmasi SIMPAN.
+    // ═══════════════════════════════════════════════════════════
+
+    /**
+     * Koreksi (atau input manual) satu baris presensi dari tab Laporan.
+     *
+     * Satu endpoint menangani dua bentuk baris laporan karena tabel attendances
+     * punya unique(['user_id','date']) → updateOrCreate adalah jalur alaminya:
+     *   - baris nyata   (id != null) → dikoreksi
+     *   - baris virtual (id === null, status absent/belum_hadir) → dibuat baru
+     *     dengan is_manual_entry = true + snapshot jadwal segar.
+     *
+     * Izin: middleware role:hrd,admin,super_admin. Untuk custom role,
+     * RoleMiddleware memetakan action AttendanceController yang tidak terdaftar
+     * khusus ke Role::MODULE_ATTENDANCE level 'manage' (POST = write), jadi tidak
+     * perlu pengecekan izin ulang di sini.
+     */
+    public function correctAttendance(Request $request): JsonResponse
+    {
+        $actor = $request->user();
+
+        $validated = $request->validate([
+            'user_id'           => 'required|integer|exists:users,id',
+            'date'              => 'required|date_format:Y-m-d',
+            'check_in_time'     => 'nullable|date_format:H:i',
+            'check_out_time'    => 'nullable|date_format:H:i',
+            // 'auto' = sistem memilih berdasarkan status karyawan (WFH/shift/kantor).
+            // dinas_luar TIDAK diterima: tipe itu butuh client_name/client_address
+            // agar baris tetap konsisten. HRD yang perlu mengubahnya harus lewat
+            // alur kunjungan klien, bukan koreksi presensi.
+            'check_in_type'     => 'nullable|in:auto,onsite,wfh,field',
+            // Hanya nilai yang benar-benar ada di enum kolom status. Status
+            // sintetis laporan (cuti/izin/sakit/libur/alpha/belum_hadir) TIDAK
+            // boleh masuk DB — PayrollCalculator::attendanceDays() akan rusak.
+            'status'            => 'nullable|in:present,late,absent,wfh,early_leave',
+            'notes'             => 'nullable|string|max:500',
+            'correction_reason' => 'required|string|min:10|max:500',
+            'confirm_dangerous' => 'nullable|string',
+            // Konfirmasi eksplisit saat mengisi jam pulang hari ini pada sesi yang
+            // masih aktif berjalan (lihat Guard 9) — risikonya berbeda dari
+            // confirm_dangerous (bukan cuma dampak gaji, tapi memblokir checkout
+            // mobile karyawan sendiri), jadi sengaja dipisah field-nya.
+            'override_active_session' => 'nullable|boolean',
+        ], [
+            'user_id.required'           => 'Karyawan yang dikoreksi wajib dipilih.',
+            'user_id.exists'             => 'Karyawan tidak ditemukan.',
+            'date.required'              => 'Tanggal presensi wajib diisi.',
+            'date.date_format'           => 'Format tanggal harus YYYY-MM-DD.',
+            'check_in_time.date_format'  => 'Jam masuk harus berformat 24 jam (HH:MM).',
+            'check_out_time.date_format' => 'Jam pulang harus berformat 24 jam (HH:MM).',
+            'check_in_type.in'           => 'Tipe presensi hanya boleh auto, onsite, wfh, atau field.',
+            'status.in'                  => 'Status presensi tidak valid untuk koreksi manual.',
+            'notes.max'                  => 'Catatan maksimal 500 karakter.',
+            'correction_reason.required' => 'Alasan koreksi wajib diisi sebagai jejak audit.',
+            'correction_reason.min'      => 'Alasan koreksi minimal 10 karakter — tuliskan sebab perubahannya agar bisa diaudit.',
+            'correction_reason.max'      => 'Alasan koreksi maksimal 500 karakter.',
+        ]);
+
+        $date   = $validated['date'];
+        $reason = trim($validated['correction_reason']);
+
+        // ─── Guard 1: karyawan ada, se-perusahaan, cabangnya diizinkan ──────
+        $employee = User::find($validated['user_id']);
+        if (! $employee || ($actor->company_id && $employee->company_id !== $actor->company_id)) {
+            return response()->json([
+                'message' => 'Karyawan tidak ditemukan di perusahaan Anda.',
+            ], 422);
+        }
+
+        if (! $actor->allowsBranch($employee->attendance_setting_id)) {
+            return response()->json([
+                'message' => 'Anda tidak memiliki akses ke kantor cabang karyawan ini.',
+            ], 403);
+        }
+
+        // ─── Cegah race condition double-click pada baris virtual ──────────
+        //     Tanpa lock ini, dua request paralel (mis. double-click saat
+        //     jaringan lambat) bisa sama-sama membaca $existing = null lalu
+        //     sama-sama mengeksekusi Attendance::updateOrCreate() — request
+        //     kedua menabrak unique index (user_id, date) dan melempar
+        //     QueryException yang tidak tertangkap (HTTP 500). lockForUpdate()
+        //     di dalam transaksi TIDAK cukup karena belum ada baris untuk
+        //     dikunci saat baris masih virtual. Pola sama seperti checkIn()/
+        //     checkOut().
+        $lock = \Illuminate\Support\Facades\Cache::lock("correct_attendance_{$employee->id}_{$date}", 10);
+        if (! $lock->get()) {
+            return response()->json([
+                'message' => 'Koreksi presensi karyawan ini sedang diproses oleh permintaan lain. Silakan tunggu sebentar lalu coba lagi.',
+            ], 409);
+        }
+
+        try {
+
+        // ─── Guard 2: tanggal tidak boleh di masa depan ─────────────────────
+        //     "Hari ini" = tanggal lokal cabang KARYAWAN, bukan jam dinding
+        //     server. Tanpa ini, HRD di Jakarta pukul 23:00 WIB tidak bisa
+        //     mengoreksi presensi karyawan cabang Jayapura untuk tanggal yang
+        //     di sana sudah berjalan sejak 2 jam lalu (01:00 WIT hari berikutnya).
+        $tzEmployee = $employee->effectiveTimezone();
+        $today      = $this->todayDateForUser($employee);
+        if ($date > $today) {
+            return response()->json([
+                'message' => 'Presensi tanggal ' . Carbon::parse($date)->format('d M Y') . ' belum terjadi — koreksi untuk tanggal yang akan datang tidak diizinkan.',
+            ], 422);
+        }
+
+        // ─── Guard 3: batas usia koreksi (cegah menulis ulang sejarah lama) ──
+        //     Kedua tanggal sudah berupa 'Y-m-d' di zona cabang karyawan, jadi
+        //     di-parse di zona yang sama agar selisih harinya bulat.
+        $ageDays = (int) Carbon::parse($date, $tzEmployee)->diffInDays(Carbon::parse($today, $tzEmployee));
+        if ($ageDays > self::MAX_CORRECTION_AGE_DAYS) {
+            return response()->json([
+                'message'      => 'Presensi tanggal ' . Carbon::parse($date)->format('d M Y') . ' sudah berumur ' . $ageDays . ' hari. Koreksi hanya diizinkan untuk ' . self::MAX_CORRECTION_AGE_DAYS . ' hari terakhir agar laporan & gaji yang sudah berjalan tidak berubah retroaktif.',
+                'max_age_days' => self::MAX_CORRECTION_AGE_DAYS,
+                'age_days'     => $ageDays,
+            ], 422);
+        }
+
+        // ─── Guard 4: periode payroll terkunci = dinding beton ──────────────
+        $lockingPayroll = app(\App\Services\Attendance\PayrollPeriodLock::class)
+            ->findLocking($employee, $date);
+        if ($lockingPayroll) {
+            $periodLabel = $lockingPayroll->period_label
+                ?: Carbon::parse($date)->locale('id')->isoFormat('MMMM YYYY');
+            $statusLabel = $lockingPayroll->status === Payroll::STATUS_PAID ? 'sudah dibayarkan' : 'sudah disetujui';
+
+            return response()->json([
+                'message'        => "Payroll periode {$periodLabel} {$statusLabel}, sehingga presensi bulan tersebut tidak bisa dikoreksi lagi. Bila data memang salah, lakukan penyesuaian lewat payroll (komponen koreksi), bukan dengan mengubah presensi yang sudah dibayar.",
+                'payroll_locked' => true,
+                'payroll_id'     => $lockingPayroll->id,
+                'period_label'   => $periodLabel,
+                'payroll_status' => $lockingPayroll->status,
+            ], 422);
+        }
+
+        // ─── Guard 5: konflik cuti/izin/sakit/WFH yang sudah disetujui ──────
+        //     Jangan diam-diam menimpa: kalau presensi dicatat di atas cuti yang
+        //     approved, karyawan bisa terhitung dua kali di payroll.
+        $conflictLeave = LeaveRequest::where('user_id', $employee->id)
+            ->where('status', 'approved')
+            ->where('start_date', '<=', $date)
+            ->where('end_date', '>=', $date)
+            ->first(['id', 'leave_type', 'start_date', 'end_date']);
+        if ($conflictLeave) {
+            return response()->json([
+                'message'        => 'Karyawan ini sudah memiliki pengajuan ' . $this->statusLabelId((string) $conflictLeave->leave_type) . ' yang disetujui pada tanggal ' . Carbon::parse($date)->format('d M Y') . '. Batalkan / tolak pengajuan tersebut lebih dulu agar kehadiran tidak terhitung dua kali di payroll.',
+                'leave_conflict' => true,
+                'leave_id'       => $conflictLeave->id,
+                'leave_type'     => $conflictLeave->leave_type,
+            ], 422);
+        }
+
+        // ─── Guard 6: minimal ada satu fakta yang dikoreksi ─────────────────
+        $sendsCheckIn   = $request->exists('check_in_time');
+        $sendsCheckOut  = $request->exists('check_out_time');
+        $newCheckInStr  = $validated['check_in_time']  ?? null;
+        $newCheckOutStr = $validated['check_out_time'] ?? null;
+        $newStatus      = $validated['status'] ?? null;
+
+        if ($newCheckInStr === null && $newStatus === null) {
+            return response()->json([
+                'message' => 'Isi minimal jam masuk atau status presensi. Koreksi tanpa salah satu dari keduanya tidak mengubah apa pun.',
+            ], 422);
+        }
+
+        // ─── Guard 7: jam pulang tanpa jam masuk itu mustahil ───────────────
+        if ($newCheckOutStr !== null && $newCheckInStr === null) {
+            return response()->json([
+                'message' => 'Jam pulang tidak bisa diisi tanpa jam masuk. Isi jam masuk terlebih dahulu.',
+            ], 422);
+        }
+
+        // ═══ Eksekusi dalam transaksi + row lock ════════════════════════════
+        $result = DB::transaction(function () use (
+            $actor, $employee, $date, $today, $reason, $request,
+            $sendsCheckIn, $sendsCheckOut, $newCheckInStr, $newCheckOutStr, $newStatus
+        ) {
+            $existing = Attendance::where('user_id', $employee->id)
+                ->whereDate('date', $date)
+                ->lockForUpdate()
+                ->first();
+
+            // Jadwal efektif: SNAPSHOT dulu (aturan saat check-in), baru jadwal
+            // live untuk baris baru / baris lama yang belum punya snapshot.
+            $schedule = $existing?->snapshotSchedule() ?? $this->getWorkSchedule($employee, $date);
+
+            // ZONA OTORITATIF KOREKSI = zona yang berlaku SAAT presensi itu terjadi.
+            // Untuk baris yang punya snapshot, $schedule['timezone'] berasal dari
+            // snap_timezone — sehingga mengoreksi presensi Januari memakai zona
+            // cabang bulan Januari, walau HRD sudah memindahkan cabang ke zona lain
+            // sejak itu. Baris baru / baris lama tanpa snapshot memakai zona cabang
+            // live (atau zona penyimpanan bila NULL → hasil identik pra-multi-zona).
+            // Jam HH:MM yang diketik HRD di form adalah JAM DINDING CABANG, jadi
+            // harus dirakit di $tz; override Attendance::fromDateTime() yang
+            // mengembalikannya ke jam dinding penyimpanan sebelum disimpan.
+            $tz      = Timezone::normalize($schedule['timezone'] ?? null);
+            $tzLabel = Timezone::label($tz);
+
+            // ─── Rakit waktu absolut (sadar shift lintas hari) ──────────────
+            $checkInCarbon  = null;
+            $checkOutCarbon = null;
+
+            if ($newCheckInStr !== null) {
+                $checkInCarbon = Carbon::parse($date . ' ' . $newCheckInStr . ':00', $tz);
+            } elseif (! $sendsCheckIn && $existing?->check_in_time) {
+                $checkInCarbon = Carbon::parse($existing->check_in_time)->setTimezone($tz);
+            }
+
+            if ($newCheckOutStr !== null) {
+                $checkOutCarbon = Carbon::parse($date . ' ' . $newCheckOutStr . ':00', $tz);
+            } elseif (! $sendsCheckOut && $existing?->check_out_time) {
+                $checkOutCarbon = Carbon::parse($existing->check_out_time)->setTimezone($tz);
+            }
+
+            // ─── Shift lintas hari: offset jam dini hari ke tanggal yang benar ──
+            //     Shift lintas hari (mis. 22:00–06:00) dimulai MALAM tanggal $date
+            //     dan baru berakhir DINI HARI tanggal $date+1. Jam masuk/pulang yang
+            //     baru diketik HRD selalu di-assemble sebagai "$date HH:MM" di atas —
+            //     tanpa offset ini, jam masuk "01:00" dianggap terjadi ~21 jam SEBELUM
+            //     shift mulai (22:00) alih-alih SESUDAHNYA. Patokan: HH:MM yang <= jam
+            //     pulang jadwal (work_end_time) ada di ekor dini-hari -> milik $date+1;
+            //     HH:MM di sekitar/jam masuk jadwal (malam) tetap di $date. Hanya
+            //     berlaku untuk nilai yang BARU diketik (string, bukan datetime lama
+            //     yang sudah benar tanggalnya).
+            if (! empty($schedule['is_cross_day'])) {
+                $workEndHm = substr((string) ($schedule['work_end_time'] ?? ''), 0, 5);
+                if ($workEndHm !== '') {
+                    if ($checkInCarbon && $newCheckInStr !== null && $newCheckInStr <= $workEndHm) {
+                        $checkInCarbon->addDay();
+                    }
+                    if ($checkOutCarbon && $newCheckOutStr !== null && $newCheckOutStr <= $workEndHm) {
+                        $checkOutCarbon->addDay();
+                    }
+                }
+            }
+
+            // ─── Guard 8: status kehadiran fisik wajib punya jam masuk ──────
+            //     'present'/'late'/'early_leave'/'wfh' adalah hari kerja dibayar
+            //     di PayrollCalculator::attendanceDays(). Tanpa jam masuk, baris
+            //     itu menjadi gaji fiktif: hadir sehari penuh tanpa jam kerja.
+            //     Dicek terhadap jam masuk EFEKTIF (nilai baru, atau nilai lama
+            //     bila HRD tidak mengirim field-nya) supaya mengosongkan jam
+            //     masuk sambil mempertahankan status hadir juga tertangkap.
+            //     Hanya 'absent' yang boleh berdiri tanpa jam masuk.
+            if ($newStatus !== null && $checkInCarbon === null) {
+                $presenceStatuses = ['present', 'late', 'early_leave', 'wfh'];
+                if (in_array($newStatus, $presenceStatuses, true)) {
+                    throw new HttpResponseException(response()->json([
+                        'message' => 'Status "' . $this->statusLabelId($newStatus) . '" tidak bisa disimpan tanpa jam masuk — status kehadiran harus punya fakta waktu masuk, kalau tidak karyawan terhitung hadir sehari penuh di payroll tanpa jam kerja. Isi jam masuk, atau pilih status "Alpha" bila karyawan memang tidak hadir.',
+                        'requires_check_in' => true,
+                        'status'            => $newStatus,
+                    ], 422));
+                }
+            }
+
+            // ─── Guard 9: proteksi sesi presensi AKTIF hari ini ─────────────
+            //     Mobile checkOut() mencari baris via whereNull('check_out_time').
+            //     Kalau HRD mengisi jam pulang hari ini pada sesi yang karyawannya
+            //     masih di lapangan (sudah check-in, belum check-out), baris itu
+            //     tidak lagi "terbuka" di mata endpoint tersebut — karyawan akan
+            //     ditolak check-out sendiri sore harinya (bukti GPS & lembur riil
+            //     hingga jam itu hangus). Minta konfirmasi eksplisit dulu, terpisah
+            //     dari confirm_dangerous karena risikonya beda sifat.
+            if (
+                $date === $today
+                && $existing
+                && $existing->check_in_time
+                && ! $existing->check_out_time
+                && $sendsCheckOut
+                && $newCheckOutStr !== null
+                && ! $request->boolean('override_active_session')
+            ) {
+                $checkInHm = Carbon::parse($existing->check_in_time)->setTimezone($tz)->format('H:i');
+                throw new HttpResponseException(response()->json([
+                    'message' => 'Karyawan ini masih memiliki sesi presensi AKTIF hari ini (check-in jam ' . $checkInHm . ', belum check-out). Mengisi jam pulang sekarang akan membuat karyawan TIDAK BISA check-out sendiri lewat aplikasi mobile nanti — bukti GPS dan jam lembur riilnya akan hangus. Biarkan karyawan check-out sendiri bila sesi memang masih berjalan, atau konfirmasi pengambilalihan bila Anda yakin (misal karyawan kehilangan HP atau sudah resign).',
+                    'active_session_block' => true,
+                    'requires_confirmation' => true,
+                    'confirmation_field'   => 'override_active_session',
+                    'check_in_time'        => $checkInHm,
+                ], 422));
+            }
+
+            // ─── Guard Enterprise: Waktu presensi tidak boleh di masa depan ───
+            // Presensi adalah pencatatan fakta fisik yang SUDAH terjadi (empirical fact).
+            // Jika tanggal koreksi adalah hari ini, jam masuk maupun jam pulang tidak boleh
+            // mendahului waktu saat ini untuk mencegah presensi fiktif. Dibandingkan di jam
+            // dinding CABANG: untuk cabang Jayapura, 09:00 WIT sudah lewat pada 07:00 WIB —
+            // memakai jam WIB akan menolak koreksi yang sah selama dua jam setiap pagi.
+            if ($date === $today) {
+                $nowLocal   = now($tz);
+                $maxAllowed = $nowLocal->copy()->addMinute();
+
+                if ($checkInCarbon && $checkInCarbon->gt($maxAllowed)) {
+                    throw new HttpResponseException(response()->json([
+                        'message'        => 'Jam masuk (' . $checkInCarbon->format('H:i') . ' ' . $tzLabel . ') belum terjadi — waktu saat ini adalah ' . $nowLocal->format('H:i') . ' ' . $tzLabel . '. Presensi di masa depan tidak diizinkan.',
+                        'future_time'    => true,
+                        'check_in_time'  => $checkInCarbon->format('H:i'),
+                        'current_time'   => $nowLocal->format('H:i'),
+                        'timezone_label' => $tzLabel,
+                    ], 422));
+                }
+
+                if ($checkOutCarbon && $checkOutCarbon->gt($maxAllowed)) {
+                    throw new HttpResponseException(response()->json([
+                        'message'        => 'Jam pulang (' . $checkOutCarbon->format('H:i') . ' ' . $tzLabel . ') belum terjadi — waktu saat ini adalah ' . $nowLocal->format('H:i') . ' ' . $tzLabel . '. Kosongkan jam pulang jika karyawan belum selesai bekerja hari ini.',
+                        'future_time'    => true,
+                        'check_out_time' => $checkOutCarbon->format('H:i'),
+                        'current_time'   => $nowLocal->format('H:i'),
+                        'timezone_label' => $tzLabel,
+                    ], 422));
+                }
+            }
+
+            if ($checkInCarbon && $checkOutCarbon) {
+                if ($checkOutCarbon->lessThanOrEqualTo($checkInCarbon)) {
+                    // Shift malam (mis. 22:00–06:00): jam pulang ada di HARI BERIKUTNYA.
+                    if (! empty($schedule['is_cross_day'])) {
+                        $checkOutCarbon->addDay();
+                    } else {
+                        // KETERBATASAN YANG DISENGAJA: lembur shift siang yang
+                        // melewati tengah malam belum bisa di-input lewat koreksi
+                        // manual — butuh penanda hari eksplisit di request.
+                        // Ditolak keras daripada diam-diam menaikkan satu hari
+                        // (salah ketik HRD akan menjadi jam kerja ~23 jam).
+                        throw new HttpResponseException(response()->json([
+                            'message' => 'Jam pulang (' . $checkOutCarbon->format('H:i') . ') harus setelah jam masuk (' . $checkInCarbon->format('H:i') . '). Jadwal karyawan ini bukan shift lintas hari, jadi presensi tidak boleh melewati tengah malam.',
+                        ], 422));
+                    }
+                }
+
+                $spanMinutes = (int) $checkInCarbon->diffInMinutes($checkOutCarbon);
+                if ($spanMinutes <= 0) {
+                    throw new HttpResponseException(response()->json(['message' => 'Durasi presensi nol. Jam masuk dan jam pulang tidak boleh sama.'], 422));
+                }
+                if ($spanMinutes > 20 * 60) {
+                    throw new HttpResponseException(response()->json([
+                        'message'      => 'Durasi presensi ' . $this->formatMinutes($spanMinutes) . ' melebihi batas wajar 20 jam. Periksa kembali jam masuk & jam pulang yang Anda isi.',
+                        'span_minutes' => $spanMinutes,
+                    ], 422));
+                }
+            }
+
+            // ─── Gerbang konfirmasi SIMPAN untuk perubahan berdampak gaji ────
+            //     Mekanisme sama dengan updateSettings(): 422 + requires_confirmation.
+            $dangerousChanged = [];
+            $oldInHm  = $existing?->check_in_time ? Carbon::parse($existing->check_in_time)->setTimezone($tz)->format('H:i') : null;
+            $oldOutHm = $existing?->check_out_time ? Carbon::parse($existing->check_out_time)->setTimezone($tz)->format('H:i') : null;
+
+            if (! $existing) {
+                $dangerousChanged[] = 'baris presensi baru (input manual)';
+            } else {
+                if ($sendsCheckIn && $oldInHm !== $newCheckInStr) {
+                    $dangerousChanged[] = 'jam masuk';
+                }
+                if ($sendsCheckOut && $oldOutHm !== $newCheckOutStr) {
+                    $dangerousChanged[] = 'jam pulang';
+                }
+                if ($newStatus !== null && $existing->status !== $newStatus) {
+                    $dangerousChanged[] = 'status kehadiran';
+                }
+                // Status diubah ke Alpha akan menghapus jam masuk/pulang lama
+                // (lihat blok $facts di bawah) — bahkan kalau request mengirim
+                // jam yang SAMA dengan baris existing (form web selalu prefill
+                // dari nilai lama, jadi perubahan jam di atas tidak terdeteksi
+                // sebagai "berubah"). HRD tetap wajib diberi tahu jam itu ikut
+                // terhapus, bukan hanya status yang berubah.
+                if ($newStatus === 'absent' && ($oldInHm !== null || $oldOutHm !== null)) {
+                    $dangerousChanged[] = 'jam masuk/pulang dihapus (status menjadi Alpha)';
+                }
+            }
+
+            if ($dangerousChanged && $request->input('confirm_dangerous') !== 'SIMPAN') {
+                throw new HttpResponseException(response()->json([
+                    'message'                  => 'Koreksi ini mengubah ' . implode(', ', $dangerousChanged) . ' dan akan ikut mengubah jam kerja, lembur, serta perhitungan gaji periode ini. Ketik SIMPAN untuk melanjutkan.',
+                    'requires_confirmation'    => true,
+                    'confirmation_phrase'      => 'SIMPAN',
+                    'dangerous_changed_fields' => $dangerousChanged,
+                ], 422));
+            }
+
+            // ─── Nilai lama untuk diff audit (sebelum apa pun ditulis) ──────
+            $oldValues = $existing ? $existing->only([
+                'check_in_time', 'check_out_time', 'check_in_type', 'status',
+                'work_minutes', 'overtime_minutes', 'is_holiday', 'notes',
+            ]) : null;
+
+            // ─── Tulis fakta mentah ─────────────────────────────────────────
+            $facts = ['company_id' => $employee->company_id];
+
+            if ($sendsCheckIn || $newCheckInStr !== null) {
+                $facts['check_in_time'] = $checkInCarbon;
+            }
+            if ($sendsCheckOut || $newCheckOutStr !== null) {
+                $facts['check_out_time'] = $checkOutCarbon;
+            }
+            // ─── Resolusi tipe presensi: 'auto' = ikuti status karyawan ────
+            $rawType = $request->input('check_in_type');
+            if ($rawType === 'auto' || (! $rawType && ! $existing)) {
+                // Mode otomatis: sistem menentukan tipe berdasarkan prioritas:
+                // WFH approved > shift WFH > mode WFH global > shift lapangan > kantor.
+                $autoResolved = $this->resolveAutoCheckInType($employee, $date, $schedule);
+                $facts['check_in_type'] = $autoResolved['type'];
+            } elseif ($rawType && $rawType !== 'auto') {
+                $facts['check_in_type'] = $rawType;
+            }
+            if ($request->exists('notes')) {
+                $facts['notes'] = $request->input('notes');
+            }
+
+            // ─── Status 'absent' tidak boleh menyisakan jam/tipe presensi ──
+            //     Alpha berarti TIDAK hadir secara fisik. Tanpa override ini,
+            //     form web yang selalu mengirim jam prefilled (nilai lama yang
+            //     belum disentuh HRD) akan membuat baris tersimpan dengan
+            //     status Alpha TAPI check_in_time/check_out_time masih terisi
+            //     — baris kontradiktif di laporan. Dipaksa null di $facts
+            //     (bukan hanya di $derived di bawah) supaya updateOrCreate()
+            //     benar-benar menghapusnya dari DB, terlepas dari apa yang
+            //     dikirim request.
+            if ($newStatus === 'absent') {
+                $facts['check_in_time']  = null;
+                $facts['check_out_time'] = null;
+                $facts['check_in_type']  = null;
+            }
+
+            // Baris baru = backfill HRD: tandai manual + bekukan snapshot jadwal
+            // saat ini agar hitung ulang berikutnya punya acuan yang sama.
+            if (! $existing) {
+                $office    = $schedule['office'] ?? null;
+                $jamPulang = $schedule['work_end_time'];
+                if ($office && ! $jamPulang && ! empty($office->work_end_time)) {
+                    $jamPulang = $office->work_end_time;
+                }
+
+                $facts['is_manual_entry'] = true;
+                $facts['status']          = $newStatus ?? 'present';
+                // Argumen ke-5: zona yang dipakai merakit jam di atas ikut dibekukan,
+                // supaya koreksi berikutnya atas baris ini membaca zona yang sama walau
+                // HRD memindahkan cabang ke zona lain sesudahnya.
+                $facts += Attendance::make()->buildSnapshot($schedule, $jamPulang, $office, $employee, $tz);
+            }
+
+            $attendance = Attendance::updateOrCreate(
+                ['user_id' => $employee->id, 'date' => $date],
+                $facts
+            );
+
+            // ─── Hitung ulang SEMUA field turunan (urutan wajib) ────────────
+            $nonWorking   = $this->isNonWorkingDay($date, $employee->company_id, null, $employee->id);
+            $derived      = ['is_holiday' => $nonWorking];
+            $isEarlyLeave = false;
+
+            if ($attendance->check_in_time && $attendance->check_out_time) {
+                $recalc = app(AttendanceRecalculator::class)->recalculate(
+                    $employee,
+                    $attendance,
+                    $date,
+                    Carbon::parse($attendance->check_out_time)->setTimezone($tz),
+                    $nonWorking,
+                    $schedule
+                );
+                $derived['work_minutes']     = $recalc['work_minutes'];
+                $derived['overtime_minutes'] = $recalc['overtime_minutes'];
+                $derived['is_holiday']       = $recalc['is_holiday'];
+                $isEarlyLeave                = $recalc['is_early_leave'];
+            } else {
+                // Belum checkout (atau status absent) → tidak ada jam kerja/lembur.
+                $derived['work_minutes']     = null;
+                $derived['overtime_minutes'] = 0;
+            }
+
+            // ─── Resolusi status: nilai eksplisit HRD selalu menang ─────────
+            //     HRD bisa tahu konteks yang tidak diketahui sistem (mis. pulang
+            //     awal karena izin atasan). Bila HRD tidak menentukan status,
+            //     sistem menghitungnya: status dari jadwal, lalu early_leave
+            //     menimpa di akhir — urutan yang sama dengan checkOut().
+            if ($newStatus !== null) {
+                $derived['status'] = $newStatus;
+            } elseif ($attendance->check_in_time) {
+                $baseStatus = $this->determineStatus(
+                    $employee,
+                    Carbon::parse($attendance->check_in_time)->setTimezone($tz),
+                    $date
+                );
+
+                // Jika tipe presensi ter-resolve ke 'wfh' dan karyawan on-time,
+                // status presensi = 'wfh' (bukan 'present') agar laporan dan
+                // payroll mengenali hari ini sebagai hari WFH.
+                if (
+                    ($attendance->check_in_type ?? $facts['check_in_type'] ?? null) === 'wfh'
+                    && $baseStatus === 'present'
+                ) {
+                    $derived['status'] = 'wfh';
+                } else {
+                    $derived['status'] = $baseStatus;
+                }
+
+                if ($isEarlyLeave) {
+                    $derived['status'] = 'early_leave';
+                }
+            }
+
+            // ─── Menit telat & denda: dihitung ulang dari jam masuk + KONFIGURASI
+            //     SNAPSHOT (bukan setting live). Baris lama tanpa snapshot denda
+            //     (snap_late_tolerance_minutes NULL) tetap legacy: kolom dibiarkan NULL
+            //     dan laporan memakai hitungan on-the-fly lama. Status eksplisit HRD
+            //     selain late/early_leave (hadir/WFH/absen/cuti/sakit) berarti HRD
+            //     membebaskan keterlambatan → tanpa denda.
+            if ($attendance->snap_late_tolerance_minutes !== null || ! $existing) {
+                $explicit = $newStatus;
+                if ($explicit !== null && ! in_array($explicit, ['late', 'early_leave'], true)) {
+                    $derived['late_minutes']     = 0;
+                    $derived['late_fine_amount'] = 0;
+                } elseif ($attendance->check_in_time) {
+                    $fineOffice = $schedule['office'] ?? null;
+                    $lateFine = $this->calculateLateFine(
+                        Carbon::parse($attendance->check_in_time)->setTimezone($tz),
+                        $schedule,
+                        $attendance->isFlexitimeSession($employee),
+                        $attendance->lateFineConfig((int) ($fineOffice?->late_tolerance_minutes ?? 15)),
+                    );
+                    $derived['late_minutes']     = $lateFine['late_minutes'];
+                    $derived['late_fine_amount'] = $lateFine['late_fine_amount'];
+                } else {
+                    $derived['late_minutes']     = 0;
+                    $derived['late_fine_amount'] = 0;
+                }
+            }
+
+            // Status absent tidak boleh menyisakan jam kerja/lembur menggantung.
+            if (($derived['status'] ?? $attendance->status) === 'absent') {
+                $derived['work_minutes']     = null;
+                $derived['overtime_minutes'] = 0;
+            }
+
+            // ─── Rekonsiliasi pengajuan lembur yang sudah ada ───────────────
+            //     Tanpa ini overtime_approvals.overtime_minutes (yang dibaca
+            //     PayrollCalculator) akan berbeda dari attendances.overtime_minutes.
+            $newOvertime = (int) ($derived['overtime_minutes'] ?? 0);
+            $approval    = OvertimeApproval::where('attendance_id', $attendance->id)
+                ->lockForUpdate()
+                ->first();
+
+            if ($approval && $approval->status === 'approved' && (int) $approval->overtime_minutes !== $newOvertime) {
+                throw new HttpResponseException(response()->json([
+                    'message'                   => 'Lembur ' . $this->formatMinutes((int) $approval->overtime_minutes) . ' pada tanggal ini SUDAH DISETUJUI, sedangkan koreksi ini mengubahnya menjadi ' . $this->formatMinutes($newOvertime) . '. Tolak dulu persetujuan lembur tersebut di menu Approval Lembur, lalu ulangi koreksi ini.',
+                    'overtime_conflict'         => true,
+                    'overtime_approval_id'      => $approval->id,
+                    'approved_overtime_minutes' => (int) $approval->overtime_minutes,
+                    'new_overtime_minutes'      => $newOvertime,
+                ], 422));
+            }
+
+            if ($approval && $approval->status === 'pending') {
+                if ($newOvertime <= 0) {
+                    // Lembur hilang setelah koreksi → pengajuannya tidak punya dasar lagi.
+                    $approval->delete();
+                } elseif ((int) $approval->overtime_minutes !== $newOvertime) {
+                    $approval->update(['overtime_minutes' => $newOvertime]);
+                }
+            }
+            // Catatan: koreksi TIDAK membuat OvertimeApproval baru — sama dengan
+            // checkOut(). Karyawan wajib mengajukan lembur sendiri via
+            // claimOvertime() agar alasan lemburnya terisi.
+
+            // ─── Jejak koreksi wajib ────────────────────────────────────────
+            //     corrected_at adalah CAP WAKTU AUDIT ("kapan HRD menekan simpan"),
+            //     bukan keputusan bisnis — tetap di zona penyimpanan agar seluruh
+            //     jejak audit lintas cabang berada pada satu jam dinding.
+            $derived['corrected_by']      = $actor->id;
+            $derived['corrected_at']      = now(Timezone::storage());
+            $derived['correction_reason'] = $reason;
+
+            $attendance->fill($derived)->save();
+            $attendance->refresh();
+
+            return [
+                'attendance' => $attendance,
+                'old_values' => $oldValues,
+                'is_new'     => $oldValues === null,
+                // Zona dibawa keluar transaksi: notifikasi & respons di bawah harus
+                // menampilkan jam yang sama dengan yang dinilai di dalam closure.
+                'timezone'       => $tz,
+                'timezone_label' => $tzLabel,
+            ];
+        });
+
+        // Catatan: seluruh kegagalan validasi di dalam closure dilempar sebagai
+        // HttpResponseException, BUKAN di-return. Return hanya mengakhiri closure
+        // dan transaksi tetap ter-commit — baris presensi akan berubah meskipun
+        // API menjawab 422. Jangan ubah kembali menjadi return.
+
+        /** @var Attendance $attendance */
+        $attendance = $result['attendance'];
+        $tz         = $result['timezone'];
+        $tzLabel    = $result['timezone_label'];
+
+        // ─── Audit & notifikasi: DI LUAR transaksi ──────────────────────────
+        //     Supaya kegagalan logging/FCM tidak pernah membatalkan koreksi.
+        $newValues = $attendance->only([
+            'check_in_time', 'check_out_time', 'check_in_type', 'status',
+            'work_minutes', 'overtime_minutes', 'is_holiday', 'notes',
+        ]);
+        $tanggalLabel = Carbon::parse($attendance->date)->format('d M Y');
+        $dateStr      = $attendance->date instanceof Carbon
+            ? $attendance->date->toDateString()
+            : (string) $attendance->date;
+
+        $this->logActivity(
+            $actor->id,
+            $employee->company_id,
+            $result['is_new'] ? 'attendance_correction_manual_entry' : 'attendance_correction',
+            ($result['is_new'] ? 'Input manual presensi ' : 'Koreksi presensi ')
+                . $employee->name . ' tanggal ' . $tanggalLabel . '. Alasan: ' . $reason,
+            'attendance',
+            $attendance->id,
+            $result['old_values'],
+            $newValues
+        );
+
+        // Jam yang dibacakan ke karyawan = jam dinding cabangnya sendiri, lengkap
+        // dengan label zona supaya karyawan yang sedang dinas di zona lain tahu
+        // jam mana yang dimaksud.
+        $jamInfo = '';
+        if ($attendance->check_in_time) {
+            $jamInfo = ' (masuk ' . Carbon::parse($attendance->check_in_time)->setTimezone($tz)->format('H:i');
+            $jamInfo .= $attendance->check_out_time
+                ? ', pulang ' . Carbon::parse($attendance->check_out_time)->setTimezone($tz)->format('H:i') . ' ' . $tzLabel . ')'
+                : ' ' . $tzLabel . ')';
+        }
+
+        $this->notifyUser($employee->id, 'attendance_corrected', [
+            'message'           => 'Presensi Anda tanggal ' . $tanggalLabel . ' dikoreksi oleh ' . $actor->name
+                . ' menjadi ' . $this->statusLabelId((string) $attendance->status) . $jamInfo
+                . '. Alasan: ' . $reason,
+            'attendance_id'     => $attendance->id,
+            'date'              => $dateStr,
+            'status'            => $attendance->status,
+            'corrected_by_name' => $actor->name,
+            'correction_reason' => $reason,
+        ], 'attendance', $attendance->id);
+
+        return response()->json([
+            'message' => ($result['is_new'] ? 'Presensi manual ' : 'Koreksi presensi ')
+                . $employee->name . ' tanggal ' . $tanggalLabel . ' berhasil disimpan.',
+            'data' => [
+                'id'                => $attendance->id,
+                'user_id'           => $attendance->user_id,
+                'user_name'         => $employee->name,
+                'date'              => $dateStr,
+                'check_in_time'     => $attendance->check_in_time,
+                'check_out_time'    => $attendance->check_out_time,
+                'check_in_type'     => $attendance->check_in_type,
+                'status'            => $attendance->status,
+                'status_label'      => $this->statusLabelId((string) $attendance->status),
+                'working_minutes'   => $attendance->work_minutes,
+                'overtime_minutes'  => (int) ($attendance->overtime_minutes ?? 0),
+                'is_holiday'        => (bool) $attendance->is_holiday,
+                'notes'             => $attendance->notes,
+                'is_manual_entry'   => (bool) $attendance->is_manual_entry,
+                'is_corrected'      => true,
+                'corrected_at'      => $attendance->corrected_at,
+                'corrected_by_name' => $actor->name,
+                'correction_reason' => $attendance->correction_reason,
+                // Zona jam dinding baris ini. Form HRD WAJIB memotong string jam
+                // apa adanya (bukan new Date(...).getHours() yang mengikuti zona
+                // laptop HRD) lalu menampilkan timezone_label di sebelahnya.
+                'timezone'               => $tz,
+                'timezone_label'         => $tzLabel,
+                'timezone_offset_minutes'=> Timezone::offsetMinutes($tz),
+            ],
+        ]);
+
+        } finally {
+            $lock->release();
+        }
+    }
+
 
     // ═══════════════════════════════════════════════════════════
     // BAGIAN A2 — CRUD pengaturan kantor (attendance_settings)
@@ -4223,6 +5403,11 @@ class AttendanceController extends Controller
             'office_name'            => "{$req}|string|min:3|max:100",
             'office_latitude'        => "{$req}|numeric|between:-90,90",
             'office_longitude'       => "{$req}|numeric|between:-180,180",
+            // Zona waktu bisnis cabang. OPSIONAL pada store: bila tidak dikirim
+            // storeSettings() menebaknya dari koordinat (auto-detect sebagai default,
+            // bukan paksaan — HRD tetap bisa override, mis. Bali di 115°E tapi WITA).
+            // Dibatasi ke katalog agar tidak ada identifier IANA liar masuk ke Carbon.
+            'timezone'               => 'sometimes|nullable|string|in:' . implode(',', Timezone::identifiers()),
             'radius_meters'          => "{$req}|integer|min:10|max:5000",
             'work_start_time'        => "{$req}|date_format:H:i:s,H:i",
             'work_end_time'          => "{$req}|date_format:H:i:s,H:i",
@@ -4231,7 +5416,16 @@ class AttendanceController extends Controller
             'work_days'              => "{$req}|array|min:1|max:6",
             'work_days.*'            => 'integer|between:0,6|distinct',
             'late_tolerance_minutes'         => 'sometimes|integer|min:0',
+            // Denda keterlambatan (rupiah per menit). NULL/0 = tanpa denda.
+            'late_fine_per_minute'           => 'sometimes|nullable|numeric|min:0|max:100000000',
+            'late_count_mode'                => 'sometimes|nullable|string|in:after_tolerance,after_work_start',
+            'late_fine_max_per_day'          => 'sometimes|nullable|numeric|min:0|max:1000000000',
             'late_checkin_cutoff_minutes'     => 'sometimes|nullable|integer|min:0|max:1440',
+            // Aturan upah lembur: 'government' (PP 35/2021) atau 'custom' (nominal sendiri).
+            'overtime_rule'                  => 'sometimes|nullable|string|in:government,custom',
+            'overtime_rate_amount'           => 'sometimes|nullable|numeric|min:0|max:100000000',
+            'overtime_rate_unit'             => 'sometimes|nullable|string|in:hour,minute',
+            'overtime_rate_taxable'          => 'sometimes|nullable|boolean',
             'require_selfie'             => 'sometimes|boolean',
             'allow_wfh'                  => 'sometimes|boolean',
             'wfh_checkin_window_minutes' => 'sometimes|nullable|integer|min:0|max:720',
@@ -4289,6 +5483,15 @@ class AttendanceController extends Controller
             'work_days.min'               => 'Hari kerja minimal 1 hari per minggu.',
             'work_days.max'               => 'Hari kerja maksimal 6 hari per minggu. Karyawan wajib mendapat minimal 1 hari libur per minggu (UU No. 13/2003 Pasal 79).',
             'work_days.*.distinct'        => 'Setiap hari kerja hanya boleh dipilih satu kali.',
+            'late_fine_per_minute.numeric'  => 'Denda per menit harus berupa angka rupiah.',
+            'late_fine_per_minute.min'      => 'Denda per menit tidak boleh negatif.',
+            'late_fine_max_per_day.numeric' => 'Denda maksimum per hari harus berupa angka rupiah.',
+            'late_fine_max_per_day.min'     => 'Denda maksimum per hari tidak boleh negatif.',
+            'late_count_mode.in'            => 'Mode hitung keterlambatan harus "setelah jam masuk" atau "setelah toleransi telat".',
+            'overtime_rule.in'              => 'Aturan lembur harus "aturan pemerintah" atau "aturan sendiri".',
+            'overtime_rate_amount.numeric'  => 'Nominal bonus lembur harus berupa angka rupiah.',
+            'overtime_rate_amount.min'      => 'Nominal bonus lembur tidak boleh negatif.',
+            'overtime_rate_unit.in'         => 'Satuan bonus lembur harus "per jam" atau "per menit".',
             'work_days.*.between'         => 'Nilai hari kerja tidak valid (0=Minggu hingga 6=Sabtu).',
             'custom_schedules.*.start.date_format'          => 'Format jam masuk khusus harus HH:MM.',
             'custom_schedules.*.end.date_format'            => 'Format jam pulang khusus harus HH:MM.',
@@ -4299,6 +5502,11 @@ class AttendanceController extends Controller
             'default_leave_quota.min'     => 'Saldo cuti default minimal 0 hari.',
             'default_leave_quota.max'     => 'Saldo cuti default maksimal 365 hari.',
             'leave_reset_date.date_format'=> 'Format tanggal reset saldo cuti harus MM-DD (contoh: 01-01).',
+            'timezone.in'                 => 'Zona waktu kantor tidak dikenali. Pilihan yang tersedia: '
+                . implode(', ', array_map(
+                    fn ($tz) => Timezone::label($tz) . ' (' . $tz . ')',
+                    Timezone::identifiers()
+                )) . '.',
         ];
     }
 
@@ -4321,6 +5529,61 @@ class AttendanceController extends Controller
         $settings = $query->withCount('users')->orderBy('office_name')->get();
 
         return response()->json(['settings' => $settings]);
+    }
+
+    // 10b. listTimezones() — katalog zona waktu untuk dropdown form kantor
+    //
+    // Katalog dikirim dari server (bukan di-hardcode di web/Flutter) agar daftar
+    // zona, label, dan deskripsi wilayahnya punya satu sumber kebenaran: begitu
+    // config/timezones.php berubah, kedua frontend ikut tanpa rilis ulang.
+    //
+    // Bila ?latitude= & ?longitude= dikirim (HRD baru menjatuhkan pin di peta),
+    // satu entri ditandai is_suggested — hasil Timezone::fromCoordinates() yang
+    // SAMA dengan yang dipakai storeSettings() sebagai default. Jadi apa yang
+    // dilihat HRD di dropdown persis apa yang akan tersimpan bila ia tidak
+    // mengubah apa pun.
+    public function listTimezones(Request $request): JsonResponse
+    {
+        $request->validate([
+            'latitude'  => 'sometimes|nullable|numeric|between:-90,90',
+            'longitude' => 'sometimes|nullable|numeric|between:-180,180',
+        ], [
+            'latitude.between'  => 'Latitude harus berada dalam rentang -90 hingga 90 derajat.',
+            'longitude.between' => 'Longitude harus berada dalam rentang -180 hingga 180 derajat.',
+        ]);
+
+        $lat = $request->filled('latitude') ? (float) $request->query('latitude') : null;
+        $lng = $request->filled('longitude') ? (float) $request->query('longitude') : null;
+
+        // Koordinat tidak lengkap (hanya salah satu) → tidak ada saran, bukan
+        // saran ngawur: fromCoordinates() butuh keduanya.
+        $suggestion = ($lat !== null && $lng !== null)
+            ? Timezone::fromCoordinates($lat, $lng)
+            : null;
+
+        $timezones = [];
+        foreach (Timezone::catalog() as $id => $meta) {
+            $timezones[] = [
+                'id'             => $id,
+                'label'          => $meta['label'],
+                'name'           => $meta['name'],
+                'offset_minutes' => (int) $meta['offset_minutes'],
+                'regions'        => $meta['regions'] ?? null,
+                'is_suggested'   => $suggestion !== null && $suggestion['timezone'] === $id,
+            ];
+        }
+
+        return response()->json([
+            'timezones' => $timezones,
+            'storage'   => Timezone::storage(),
+            'suggested' => $suggestion ? [
+                'timezone' => $suggestion['timezone'],
+                'label'    => $suggestion['label'],
+                // 'box' = kotak pengecualian provinsi (mis. Bali, Maluku),
+                // 'longitude' = ambang bujur umum, 'default' = tanpa koordinat.
+                'source'   => $suggestion['source'],
+            ] : null,
+        ]);
     }
 
     // 11. storeSettings() — tambah kantor baru
@@ -4364,6 +5627,14 @@ class AttendanceController extends Controller
             ], 422);
         }
 
+        if (($validated['overtime_rule'] ?? 'government') === 'custom'
+            && (float) ($validated['overtime_rate_amount'] ?? 0) <= 0) {
+            return response()->json([
+                'message' => 'Aturan lembur "aturan sendiri" wajib mengisi nominal bonus lembur lebih dari 0.',
+                'errors'  => ['overtime_rate_amount' => ['Nominal bonus lembur wajib diisi lebih dari 0.']],
+            ], 422);
+        }
+
         $actor = $request->user();
         // super_admin boleh menentukan company_id; lainnya pakai milik sendiri
         $companyId = $actor->company_id;
@@ -4383,6 +5654,19 @@ class AttendanceController extends Controller
             $data['leave_reset_date'] = $validated['leave_reset_date'];
         }
         $data['company_id'] = $companyId;
+
+        // ─── Zona waktu cabang: auto-detect dari koordinat bila tidak dikirim ───
+        // Kolom timezone TIDAK boleh dibiarkan NULL untuk kantor baru: NULL memang
+        // di-fallback ke WIB oleh effectiveTimezone(), tapi kantor Makassar yang
+        // dibuat tanpa zona lalu dinilai dengan jam WIB adalah kesalahan senyap.
+        // Nilai tebakan tetap bisa diubah HRD lewat updateSettings().
+        if (empty($data['timezone'])) {
+            $detected = Timezone::fromCoordinates(
+                (float) $data['office_latitude'],
+                (float) $data['office_longitude']
+            );
+            $data['timezone'] = $detected['timezone'];
+        }
 
         $setting = AttendanceSetting::create($data);
 
@@ -4423,6 +5707,36 @@ class AttendanceController extends Controller
             $data['leave_reset_date']      = null;
             $data['last_leave_reset_on']   = null; // reset ulang riwayat agar jadwal baru bisa diproses
         }
+        // Denda telat: null eksplisit = HRD mengosongkan (tanpa denda / tanpa batas harian).
+        // Mode hitung tidak boleh NULL — kosong berarti kembali ke default.
+        foreach (['late_fine_per_minute', 'late_fine_max_per_day'] as $fineField) {
+            if (array_key_exists($fineField, $validated) && $validated[$fineField] === null) {
+                $data[$fineField] = null;
+            }
+        }
+        if (array_key_exists('late_count_mode', $validated) && $validated['late_count_mode'] === null) {
+            $data['late_count_mode'] = LateFineCalculator::MODE_AFTER_TOLERANCE;
+        }
+        // Aturan lembur: null eksplisit = kembali ke default (tarif boleh dikosongkan).
+        if (array_key_exists('overtime_rate_amount', $validated) && $validated['overtime_rate_amount'] === null) {
+            $data['overtime_rate_amount'] = null;
+        }
+        foreach (['overtime_rule' => 'government', 'overtime_rate_unit' => 'hour', 'overtime_rate_taxable' => true] as $otField => $otDefault) {
+            if (array_key_exists($otField, $validated) && $validated[$otField] === null) {
+                $data[$otField] = $otDefault;
+            }
+        }
+
+        $effOtRule   = $data['overtime_rule'] ?? ($attendanceSetting->overtime_rule ?: 'government');
+        $effOtAmount = array_key_exists('overtime_rate_amount', $data)
+            ? $data['overtime_rate_amount']
+            : $attendanceSetting->overtime_rate_amount;
+        if ($effOtRule === 'custom' && (float) ($effOtAmount ?? 0) <= 0) {
+            return response()->json([
+                'message' => 'Aturan lembur "aturan sendiri" wajib mengisi nominal bonus lembur lebih dari 0.',
+                'errors'  => ['overtime_rate_amount' => ['Nominal bonus lembur wajib diisi lebih dari 0.']],
+            ], 422);
+        }
 
         // ─── Deteksi perubahan field berbahaya & gerbang konfirmasi ───
         $changedDangerous = [];
@@ -4430,16 +5744,71 @@ class AttendanceController extends Controller
             if (! array_key_exists($field, $data)) {
                 continue;
             }
+
+            $old = $attendanceSetting->{$field};
+            $new = $data[$field];
+
+            // Tarif denda: kosong dan 0 sama-sama berarti "tanpa denda"; selisih
+            // sen tidak boleh lolos dari pembulatan integer di settingValueEquals().
+            if (in_array($field, ['late_fine_per_minute', 'late_fine_max_per_day'], true)) {
+                if ((float) ($old ?? 0) !== (float) ($new ?? 0)) {
+                    $changedDangerous[] = $field;
+                }
+                continue;
+            }
+            if ($field === 'overtime_rate_amount') {
+                if ((float) ($old ?? 0) !== (float) ($new ?? 0)) {
+                    $changedDangerous[] = $field;
+                }
+                continue;
+            }
+            if ($field === 'overtime_rate_taxable') {
+                if ((bool) $old !== (bool) $new) {
+                    $changedDangerous[] = $field;
+                }
+                continue;
+            }
+            if ($field === 'overtime_rule') {
+                $old = $old ?: 'government';
+            }
+            if ($field === 'overtime_rate_unit') {
+                $old = $old ?: 'hour';
+            }
+            if ($field === 'late_count_mode') {
+                $old = LateFineCalculator::normalizeMode($old);
+                $new = LateFineCalculator::normalizeMode($new);
+            }
+
+            // timezone dibandingkan SETELAH normalisasi: cabang lama dengan
+            // timezone NULL sudah bermakna WIB, jadi mengirim 'Asia/Jakarta'
+            // bukan perubahan aturan dan tidak perlu gerbang "SIMPAN".
+            if ($field === 'timezone') {
+                $old = Timezone::normalize($old);
+                $new = Timezone::normalize($new);
+            }
+
             // Pakai accessor ter-cast agar array/bool/angka dibandingkan konsisten
-            if (! $this->settingValueEquals($attendanceSetting->{$field}, $data[$field])) {
+            if (! $this->settingValueEquals($old, $new)) {
                 $changedDangerous[] = $field;
             }
         }
 
         if ($changedDangerous && $request->input('confirm_dangerous') !== 'SIMPAN') {
+            // Zona waktu diberi peringatan tersendiri: dampaknya tidak terbaca dari
+            // nama fieldnya. Jam kerja tertulis tetap "08:00", tetapi instan
+            // absolutnya bergeser 1-2 jam sehingga seluruh penilaian telat berubah.
+            $pesanZona = in_array('timezone', $changedDangerous, true)
+                ? ' PERHATIAN: zona waktu kantor berubah dari '
+                    . Timezone::label($attendanceSetting->timezone) . ' menjadi '
+                    . Timezone::label($data['timezone']) . '. Jam kerja tertulis tidak berubah, '
+                    . 'tetapi jam dinding penilaiannya bergeser — karyawan cabang ini akan dinilai '
+                    . 'terhadap jam ' . Timezone::label($data['timezone']) . '.'
+                : '';
+
             return response()->json([
                 'message' => 'Perubahan aturan presensi terdeteksi pada: ' . implode(', ', $changedDangerous) . '. ' .
-                    'Perubahan ini mempengaruhi karyawan yang BELUM check-in hari ini dan seluruh presensi esok hari. ' .
+                    'Perubahan ini mempengaruhi karyawan yang BELUM check-in hari ini dan seluruh presensi esok hari.' .
+                    $pesanZona . ' ' .
                     "Kirim ulang dengan confirm_dangerous = \"SIMPAN\" untuk melanjutkan.",
                 'requires_confirmation'   => true,
                 'confirmation_phrase'     => 'SIMPAN',
@@ -4564,12 +5933,25 @@ class AttendanceController extends Controller
             'office_latitude',
             'office_longitude',
             'radius_meters',
+            // Mengubah zona cabang menggeser SELURUH penilaian presensi mendatang
+            // (jam masuk 08:00 WIB → 08:00 WITA = 1 jam lebih awal dalam instan
+            // absolut), setara bahayanya dengan mengubah work_start_time.
+            'timezone',
             'late_tolerance_minutes',
+            // Denda telat: memengaruhi potongan gaji presensi berikutnya.
+            'late_fine_per_minute',
+            'late_count_mode',
+            'late_fine_max_per_day',
             'late_checkin_cutoff_minutes',
             'early_leave_tolerance_minutes',
             'min_checkout_interval_minutes',
             'overtime_enabled',
             'min_overtime_minutes',
+            // Aturan upah lembur: menentukan nominal bonus lembur di slip gaji berikutnya.
+            'overtime_rule',
+            'overtime_rate_amount',
+            'overtime_rate_unit',
+            'overtime_rate_taxable',
             'checkout_reminder_minutes',
             'auto_checkout_grace_minutes',
             'flex_arrival_start',
@@ -4855,7 +6237,10 @@ class AttendanceController extends Controller
     {
         $user      = $request->user();
         $companyId = $user->company_id;
-        $year      = $request->query('year', now('Asia/Jakarta')->year);
+        // Tahun default = KONTEKS KALENDER HRD → zona penyimpanan. Kalender libur
+        // berlaku satu perusahaan; mengikuti zona cabang akan membuat dua HRD di
+        // cabang berbeda melihat tahun berbeda pada malam tahun baru.
+        $year      = $request->query('year', now(Timezone::storage())->year);
 
         if ($companyId) {
             \App\Models\LeaveRequest::autoDeclineExpiredCollectiveLeaves($companyId);
@@ -4996,7 +6381,9 @@ class AttendanceController extends Controller
     {
         $user = $request->user();
         $companyId = $user->company_id;
-        $year = (int) $request->query('year', now('Asia/Jakarta')->year);
+        // Sama dengan listHolidays(): kalender libur nasional satu perusahaan →
+        // tahun default tetap di zona penyimpanan.
+        $year = (int) $request->query('year', now(Timezone::storage())->year);
 
         $service = app(\App\Services\IndonesianHolidayService::class);
         $fetched = $service->getHolidays($year);
@@ -5821,7 +7208,10 @@ class AttendanceController extends Controller
     {
         $user      = $request->user();
         $companyId = $user->company_id;
-        $today     = now('Asia/Jakarta')->toDateString();
+        // "Belum lewat" dinilai di tanggal lokal cabang KARYAWAN: banner cuti bersama
+        // di ponsel karyawan cabang Jayapura harus hilang begitu tanggalnya lewat di
+        // sana, bukan 2 jam kemudian ketika tanggal WIB menyusul.
+        $today     = $this->todayDateForUser($user);
 
         // Auto-decline cuti bersama yang sudah lewat / hari H
         \App\Models\LeaveRequest::autoDeclineExpiredCollectiveLeaves($companyId);
@@ -5876,7 +7266,11 @@ class AttendanceController extends Controller
         // Saldo cuti tahun ini
         // KEBIJAKAN 2026-08-25: auto-create selalu NON-AKTIF (quota 0) — banner cuti
         // bersama otomatis menolak (policy block) sampai HRD mengisi kuota manual.
-        $year    = (int) now('Asia/Jakarta')->year;
+        // leave_balances.year = TAHUN BUKU perusahaan → zona penyimpanan, sama dengan
+        // seluruh jalur saldo cuti lain. Memakai zona cabang di sini akan membuat
+        // karyawan cabang WIT membuat baris saldo tahun depan 2 jam lebih awal pada
+        // malam tahun baru, sementara approveLeave masih membaca baris tahun ini.
+        $year    = (int) now(Timezone::storage())->year;
         $balance = \App\Models\LeaveBalance::firstOrCreate(
             ['user_id' => $user->id, 'year' => $year, 'leave_type' => 'cuti'],
             ['company_id' => $companyId, 'quota' => 0, 'used' => 0]
@@ -5980,6 +7374,111 @@ class AttendanceController extends Controller
             ]);
 
         return response()->json(['message' => 'Pemberitahuan berhasil ditutup.']);
+    }
+
+    // dispatchH7CollectiveLeaveNotifications() — dipanggil oleh NotifyCollectiveLeaveH7Command
+    // (scheduler, hourly). Kirim notifikasi FCM & Notification Center ke karyawan yang BELUM
+    // memilih (collective_status pending) cuti bersama yang sudah memasuki window H-7 s/d
+    // Hari H — window dinilai pada TANGGAL LOKAL cabang penempatan karyawan (multi-zona),
+    // bukan zona penyimpanan, sama seperti listCollectiveLeaves().
+    // Dedup: maksimum 1x per (user, cuti bersama) per tanggal lokal (cache 24 jam) agar
+    // scheduler per-jam tidak membuat notifikasi berulang selama window 7 hari berjalan.
+    public function dispatchH7CollectiveLeaveNotifications(): int
+    {
+        $sent = 0;
+
+        $holidays = Holiday::where('is_collective', true)
+            ->whereNotNull('company_id')
+            ->with('excludedUsers:id')
+            ->get();
+
+        if ($holidays->isEmpty()) {
+            return 0;
+        }
+
+        foreach ($holidays->groupBy('company_id') as $companyId => $companyHolidays) {
+            $users = User::where('company_id', $companyId)->where('is_active', true)->get();
+            if ($users->isEmpty()) {
+                continue;
+            }
+
+            foreach ($users as $user) {
+                $tz    = $user->effectiveTimezone();
+                $today = now($tz)->toDateString();
+
+                // Cuti bersama milik perusahaan ini yang cocok dengan cabang user
+                // (NULL = semua cabang, ATAU attendance_setting_id sama) dan sudah
+                // memasuki window H-7 s/d Hari H pada tanggal lokal cabang user.
+                $eligible = $companyHolidays->filter(function ($h) use ($user, $today) {
+                    if ($h->attendance_setting_id && $h->attendance_setting_id !== $user->attendance_setting_id) {
+                        return false;
+                    }
+                    $dateStr = $h->date->toDateString();
+                    if ($dateStr < $today) {
+                        return false; // sudah lewat
+                    }
+                    $windowStart = Carbon::parse($dateStr)->subDays(7)->toDateString();
+
+                    return $today >= $windowStart;
+                })->reject(fn ($h) => $h->excludedUsers->contains('id', $user->id));
+
+                if ($eligible->isEmpty()) {
+                    continue;
+                }
+
+                $dates = $eligible->map(fn ($h) => $h->date->toDateString())->values();
+
+                // Status pilihan karyawan untuk cuti bersama ini.
+                $myRequests = LeaveRequest::where('user_id', $user->id)
+                    ->whereIn('holiday_id', $eligible->pluck('id'))
+                    ->pluck('collective_status', 'holiday_id');
+
+                // Libur dari jadwal shift & cuti pribadi approved → tidak perlu diingatkan
+                // (meniru persis kondisi show_banner di listCollectiveLeaves()).
+                $offFromScheduleSet = $this->resolveOffDatesForUser($user, $dates);
+                $approvedPersonalLeaves = LeaveRequest::where('user_id', $user->id)
+                    ->whereNull('holiday_id')
+                    ->where('status', 'approved')
+                    ->get(['id', 'start_date', 'end_date']);
+
+                foreach ($eligible as $h) {
+                    $dateStr = $h->date->toDateString();
+                    $status  = $myRequests->get($h->id) ?? 'pending';
+                    if ($status !== 'pending') {
+                        continue;
+                    }
+                    if ($offFromScheduleSet[$dateStr] ?? false) {
+                        continue;
+                    }
+                    $onPersonalLeave = $approvedPersonalLeaves->contains(
+                        fn ($l) => $l->start_date->toDateString() <= $dateStr && $l->end_date->toDateString() >= $dateStr
+                    );
+                    if ($onPersonalLeave) {
+                        continue;
+                    }
+
+                    $cacheKey = "collective_leave_h7_{$user->id}_{$h->id}_{$today}";
+                    if (cache()->has($cacheKey)) {
+                        continue;
+                    }
+
+                    $dateLabel = $h->date->translatedFormat('d M Y');
+                    $this->notifyUser($user->id, 'collective_leave_h7_reminder', [
+                        'title'      => 'Pilih Cuti Bersama',
+                        'message'    => "Jangan lupa pilih keikutsertaan cuti bersama \"{$h->name}\" ({$dateLabel}) sebelum hari H tiba.",
+                        'holiday_id' => $h->id,
+                        'name'       => $h->name,
+                        'date'       => $dateStr,
+                        'date_label' => $dateLabel,
+                    ], 'holiday', $h->id);
+
+                    cache()->put($cacheKey, true, now()->addHours(24));
+                    $sent++;
+                }
+            }
+        }
+
+        return $sent;
     }
 
     // ─── Helper bulk: tentukan "libur dari jadwal shift" per tanggal ───
@@ -6151,7 +7650,11 @@ class AttendanceController extends Controller
         }
 
         // Tidak bisa ubah pilihan setelah hari H tiba atau lewat
-        $today = now('Asia/Jakarta')->toDateString();
+        // Batas waktu dinilai di tanggal lokal cabang KARYAWAN — konsisten dengan
+        // listCollectiveLeaves() yang menyaring banner dengan tanggal yang sama.
+        // Tanpa ini, karyawan cabang Jayapura masih bisa mengubah pilihan selama
+        // 2 jam setelah hari H tiba di tempatnya.
+        $today = $this->todayDateForUser($user);
         if ($holiday->date->toDateString() <= $today) {
             return response()->json(['message' => 'Batas waktu memilih telah berakhir (hari H cuti bersama telah tiba).'], 422);
         }
@@ -6445,6 +7948,11 @@ class AttendanceController extends Controller
 
         $fullUsers = User::whereIn('id', $users->pluck('id'))->get()->keyBy('id');
 
+        // "Hari H sudah tiba?" dinilai per karyawan di tanggal lokal cabangnya —
+        // satu cuti bersama company-wide bisa mencakup cabang WIB sampai WIT, dan
+        // pada malam H-1 hari H sudah tiba di timur tapi belum di barat.
+        $todayByUser = $this->todayDatesForUsers($fullUsers);
+
         foreach ($users as $u) {
             if ($existingUserIds->has($u->id)) {
                 continue; // sudah punya leave_request cuti bersama ini
@@ -6463,7 +7971,7 @@ class AttendanceController extends Controller
                 continue; // libur dari jadwal shift / weekend menurut jadwalnya → skip
             }
 
-            $isExpired = $date <= now('Asia/Jakarta')->toDateString();
+            $isExpired = $date <= ($todayByUser[$u->id] ?? $this->todayDate());
             $rows[] = [
                 'user_id'               => $u->id,
                 'company_id'            => $companyId,
@@ -6890,6 +8398,13 @@ class AttendanceController extends Controller
             'is_mocked'      => 'nullable|boolean',
             'is_rooted'      => 'nullable|boolean',
             'is_emulator'    => 'nullable|boolean',
+            // AUDIT SAJA — zona & offset yang DIKLAIM perangkat. Tidak pernah ikut
+            // menentukan jam presensi, status telat, atau tanggal: waktu presensi mutlak
+            // diambil dari jam server (doktrin Online-Only/Anti-Clock-Spoofing,
+            // doc/rules.md). Selisih dengan check_in_local_timezone hasil GPS justru
+            // menjadi sinyal manipulasi jam perangkat.
+            'device_timezone'           => 'nullable|string|timezone',
+            'device_utc_offset_minutes' => 'nullable|integer|between:-840,840',
         ]);
 
         // Normalisasi alias 'office' dari mobile menjadi 'onsite'
@@ -6955,7 +8470,13 @@ class AttendanceController extends Controller
             }
         }
 
-        $checkInTime   = now('Asia/Jakarta');
+        // ZONA OTORITATIF = cabang PENEMPATAN karyawan (bukan lokasi fisiknya, dan
+        // bukan cabang terdekat hasil geofence roaming di bawah). Seluruh gerbang di
+        // bawah — cutoff check-in, jendela WFH, status telat, tanggal presensi —
+        // dibandingkan di jam dinding cabang ini.
+        $tz            = $user->effectiveTimezone();
+        $tzLabel       = Timezone::label($tz);
+        $checkInTime   = now($tz);
 
         $today = $checkInTime->toDateString();
         $jadwalHariIni = $this->getWorkSchedule($user, $today);
@@ -7024,7 +8545,8 @@ class AttendanceController extends Controller
 
         // Validasi batas waktu presensi telat (late_checkin_cutoff_minutes)
         // Jika kantor mengatur batas maks telat, presensi ditolak setelah jam batas tersebut.
-        // Contoh: jam masuk 08:00, cutoff 120 menit → presensi ditutup setelah 10:00 WIB.
+        // Contoh: jam masuk 08:00, cutoff 120 menit → presensi ditutup setelah 10:00
+        // jam cabang (label zona ikut ditampilkan di pesan agar tidak ambigu).
         // Berlaku untuk semua mode (WFH, lapangan, dll.) kecuali jika cutoff = null (tidak dibatasi).
         $officeForCutoff  = $jadwalHariIni['office'];
         $jamMasukCutoff   = $jadwalHariIni['work_start_time'];
@@ -7033,17 +8555,18 @@ class AttendanceController extends Controller
             && $officeForCutoff->late_checkin_cutoff_minutes !== null
             && $jamMasukCutoff
         ) {
-            $evalTimeWib     = $checkInTime;
-            $tanggalWib      = $evalTimeWib->toDateString();
-            $workStartCutoff = Carbon::parse("{$tanggalWib} {$jamMasukCutoff}", 'Asia/Jakarta');
+            $evalTimeLocal   = $checkInTime;
+            $tanggalLokal    = $evalTimeLocal->toDateString();
+            $workStartCutoff = Carbon::parse("{$tanggalLokal} {$jamMasukCutoff}", $tz);
             $cutoffTime      = $workStartCutoff->copy()->addMinutes($officeForCutoff->late_checkin_cutoff_minutes);
 
-            if ($evalTimeWib->gt($cutoffTime)) {
+            if ($evalTimeLocal->gt($cutoffTime)) {
                 return response()->json([
-                    'message'         => "Presensi sudah ditutup. Batas presensi masuk hari ini sampai jam {$cutoffTime->format('H:i')} WIB ({$officeForCutoff->late_checkin_cutoff_minutes} menit setelah jam masuk).",
+                    'message'         => "Presensi sudah ditutup. Batas presensi masuk hari ini sampai jam {$cutoffTime->format('H:i')} {$tzLabel} ({$officeForCutoff->late_checkin_cutoff_minutes} menit setelah jam masuk).",
                     'cutoff_at'       => $cutoffTime->format('H:i'),
                     'work_start_time' => $workStartCutoff->format('H:i'),
                     'cutoff_minutes'  => $officeForCutoff->late_checkin_cutoff_minutes,
+                    'timezone_label'  => $tzLabel,
                 ], 403);
             }
         }
@@ -7093,16 +8616,17 @@ class AttendanceController extends Controller
                 && $officeRef->wfh_checkin_window_minutes !== null
                 && $jamMasuk
             ) {
-                $evalTimeWib = $checkInTime;
-                $tanggalWib  = $evalTimeWib->toDateString();
-                $workStart   = Carbon::parse("{$tanggalWib} {$jamMasuk}", 'Asia/Jakarta');
-                $windowOpens = $workStart->copy()->subMinutes($officeRef->wfh_checkin_window_minutes);
+                $evalTimeLocal = $checkInTime;
+                $tanggalLokal  = $evalTimeLocal->toDateString();
+                $workStart     = Carbon::parse("{$tanggalLokal} {$jamMasuk}", $tz);
+                $windowOpens   = $workStart->copy()->subMinutes($officeRef->wfh_checkin_window_minutes);
 
-                if ($evalTimeWib->lt($windowOpens)) {
+                if ($evalTimeLocal->lt($windowOpens)) {
                     return response()->json([
-                        'message'         => "Presensi WFH belum bisa dilakukan. Silakan presensi mulai jam {$windowOpens->format('H:i')} WIB.",
+                        'message'         => "Presensi WFH belum bisa dilakukan. Silakan presensi mulai jam {$windowOpens->format('H:i')} {$tzLabel}.",
                         'window_open_at'  => $windowOpens->format('H:i'),
                         'work_start_time' => $workStart->format('H:i'),
+                        'timezone_label'  => $tzLabel,
                     ], 403);
                 }
             }
@@ -7179,15 +8703,41 @@ class AttendanceController extends Controller
             $jamPulang = $office->work_end_time;
         }
 
+        // Zona LOKASI FISIK karyawan — diturunkan server dari koordinat GPS, BUKAN dari
+        // jam/zona yang dilaporkan perangkat. Hanya untuk tampilan ("10:20 WIT lokasi
+        // Anda") & audit; tidak pernah memengaruhi status telat atau tanggal presensi.
+        $checkInLocalTz = Timezone::fromCoordinates(
+            (float) $validated['latitude'],
+            (float) $validated['longitude'],
+        )['timezone'];
+
+        $snapshotAttrs = Attendance::make()->buildSnapshot($jadwalHariIni, $jamPulang, $acuanOffice, $user, $tz);
+        $lateFine      = $this->calculateLateFine(
+            $checkInTime,
+            $jadwalHariIni,
+            (bool) $user->flexitime_enabled,
+            [
+                'rate'      => $snapshotAttrs['snap_late_fine_per_minute'],
+                'mode'      => $snapshotAttrs['snap_late_count_mode'],
+                'max'       => $snapshotAttrs['snap_late_fine_max_per_day'],
+                'tolerance' => $snapshotAttrs['snap_late_tolerance_minutes'],
+            ],
+        );
+
         $attendance = Attendance::updateOrCreate(
             ['user_id' => $user->id, 'date' => $today],
             [
                 'company_id'               => $user->company_id,
+                'late_minutes'             => $lateFine['late_minutes'],
+                'late_fine_amount'         => $lateFine['late_fine_amount'],
                 'check_in_time'            => $checkInTime,
                 'check_in_lat'             => $validated['latitude'],
                 'check_in_lng'             => $validated['longitude'],
                 'check_in_distance_meters' => $distanceMeters,
                 'check_in_type'            => $checkInType,
+                'check_in_local_timezone'  => $checkInLocalTz,
+                'device_timezone'          => $validated['device_timezone'] ?? null,
+                'device_utc_offset_minutes'=> $validated['device_utc_offset_minutes'] ?? null,
                 'status'                   => $status,
                 'client_name'              => $isDinasLuarRequest ? ($validated['client_name'] ?? null) : null,
                 'client_address'           => $isDinasLuarRequest ? $clientAddress : null,
@@ -7197,8 +8747,23 @@ class AttendanceController extends Controller
                 // kantor acuan, lembur, toleransi, auto-checkout, flexitime). Perubahan setting
                 // HRD di siang hari tidak lagi mempengaruhi record ini — lihat
                 // doc/rules.md "Snapshot Acuan Jam Kerja".
-            ] + Attendance::make()->buildSnapshot($jadwalHariIni, $jamPulang, $acuanOffice, $user)
+                // Argumen ke-5 ($timezone) SENGAJA $tz (cabang PENEMPATAN), bukan zona
+                // $acuanOffice: $acuanOffice adalah cabang terdekat hasil geofence roaming,
+                // yang bisa berada di zona lain. Roaming hanya melonggarkan geofence —
+                // jadwal kerja & kalender presensi tetap milik cabang penempatan.
+            ] + $snapshotAttrs
         );
+
+        // ─── Guard: check-in fisik membatalkan pengajuan cuti/izin/sakit yang masih
+        //     pending untuk tanggal ini. Tidak perlu menunggu H+1 — karyawan sudah
+        //     membuktikan sendiri bahwa klaim "tidak masuk" pada pengajuan itu tidak
+        //     berlaku lagi. Sweep H+1 (autoRejectExpiredLeaves) tetap berjalan sebagai
+        //     fallback untuk kasus karyawan yang memang tidak pernah check-in sama sekali.
+        try {
+            LeaveRequest::autoRejectPendingLeavesOnCheckIn($user->id, $today);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Gagal auto-reject pengajuan cuti saat check-in user #{$user->id}: {$e->getMessage()}");
+        }
 
         // ─── Queue Job: activity log & notifikasi di background ─────────
         // Operasi ini dilempar ke antrean agar response check-in tetap instan
@@ -7223,9 +8788,12 @@ class AttendanceController extends Controller
             // Tanpa ini, shift malam 22:00–06:00 akan menjadwalkan reminder/auto-checkout ke 06:00 hari ini (salah).
             $isCrossDay  = ! empty($jadwalHariIni['is_cross_day']);
             $workEndDate = $isCrossDay
-                ? Carbon::parse($today, 'Asia/Jakarta')->addDay()->toDateString()
+                ? Carbon::parse($today, $tz)->addDay()->toDateString()
                 : $today;
-            $workEnd         = Carbon::parse($workEndDate . ' ' . $jamPulang, 'Asia/Jakarta');
+            // Jam pulang dirakit di zona cabang, lalu toIso8601String() di bawah memancarkan
+            // offset cabang (+07:00/+08:00/+09:00) — Flutter menjadwalkan notifikasi lokal
+            // dari instan absolut itu, sehingga tetap benar di perangkat zona mana pun.
+            $workEnd         = Carbon::parse($workEndDate . ' ' . $jamPulang, $tz);
             $reminderAt      = $workEnd->copy()->addMinutes($reminderMinutes)->toIso8601String();
             $autoCheckoutAt  = $workEnd->copy()->addMinutes($graceMinutes)->toIso8601String();
         }
@@ -7247,6 +8815,15 @@ class AttendanceController extends Controller
             // Info untuk Flutter menjadwalkan notifikasi lokal
             'reminder_at'      => $reminderAt,
             'auto_checkout_at' => $autoCheckoutAt,
+            // Objek zona standar: jam cabang (otoritatif) + jam lokasi fisik karyawan,
+            // beserta string 'display' siap tampil. Web & Flutter TIDAK boleh mengonversi
+            // zona sendiri — seluruh teks untuk pengguna berasal dari payload ini.
+            'timezone' => Timezone::describe(
+                $tz,
+                $checkInLocalTz,
+                $checkInTime,
+                $acuanOffice?->office_name ?? $office?->office_name,
+            ),
         ], 201);
         
         } finally {
@@ -7308,7 +8885,13 @@ class AttendanceController extends Controller
             }
         }
 
-        $checkOutTime  = now('Asia/Jakarta');
+        // Zona untuk MENEMUKAN baris presensi hari ini: cabang penempatan karyawan —
+        // zona yang sama yang dipakai checkIn() menurunkan attendances.date. Setelah
+        // baris ditemukan, SELURUH perhitungan beralih ke $tz dari snap_timezone baris
+        // itu (lihat di bawah), sehingga HRD yang mengubah zona cabang di tengah hari
+        // tidak menggeser hasil presensi yang sudah berjalan.
+        $tzUser       = $user->effectiveTimezone();
+        $checkOutTime = now($tzUser);
 
         $today = $checkOutTime->toDateString();
 
@@ -7356,6 +8939,30 @@ class AttendanceController extends Controller
             return response()->json(['message' => 'Anda belum check-in hari ini.'], 403);
         }
 
+        // ZONA OTORITATIF baris ini = snap_timezone (zona cabang SAAT CHECK-IN), bukan
+        // zona cabang sekarang. Baris lama tanpa snapshot jatuh ke zona penyimpanan
+        // sehingga presensi historis dihitung persis seperti sebelum fitur multi-zona.
+        $tz      = $attendance->effectiveTimezone();
+        $tzLabel = Timezone::label($tz);
+
+        $checkInCarbon = Carbon::parse($attendance->check_in_time)->setTimezone($tz);
+        $nowLocal      = $checkOutTime->copy()->setTimezone($tz);
+
+        // ─── Guard Enterprise: Strict Chronological Sequence (Time Inversion Block) ───
+        // Menolak check-out jika jam checkout mendahului atau sama dengan jam check-in.
+        // Mencegah anomali waktu terbalik (misal jam masuk diedit HRD ke masa depan / 13:00
+        // sementara karyawan checkout pada 11:00) yang merusak integritas jam kerja.
+        // Guard ini independen dari setting cooldown kantor (selalu aktif demi integritas data).
+        if ($nowLocal->lessThanOrEqualTo($checkInCarbon)) {
+            return response()->json([
+                'message'        => "Check-out ditolak. Waktu check-out ({$nowLocal->format('H:i')} {$tzLabel}) tidak boleh mendahului atau sama dengan waktu check-in ({$checkInCarbon->format('H:i')} {$tzLabel}). Pastikan jam masuk tercatat dengan benar.",
+                'check_in_time'  => $checkInCarbon->format('H:i:s'),
+                'check_out_time' => $nowLocal->format('H:i:s'),
+                'timezone_label' => $tzLabel,
+                'time_inversion' => true,
+            ], 422);
+        }
+
         // ─── Validasi Jeda Minimal Check-out (Cooldown Buffer) ───────────────
         // Mencegah accidental tap / presensi kilat yang merusak rekap jam kerja.
         // Batas menit diambil dari snapshot attendance, fallback setting kantor, default 10 mnt.
@@ -7365,21 +8972,20 @@ class AttendanceController extends Controller
             ?? ($user->attendance_setting_id ? \App\Models\AttendanceSetting::find($user->attendance_setting_id)?->min_checkout_interval_minutes : null)
             ?? 10;
 
-        if ($minIntervalMinutes > 0 && $attendance->check_in_time) {
-            $checkInCarbon = Carbon::parse($attendance->check_in_time)->setTimezone('Asia/Jakarta');
-            $nowWib        = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
-            $diffSeconds   = $checkInCarbon->diffInSeconds($nowWib, false);
-            $requiredSecs  = $minIntervalMinutes * 60;
+        if ($minIntervalMinutes > 0) {
+            $diffSeconds  = $checkInCarbon->diffInSeconds($nowLocal, false);
+            $requiredSecs = $minIntervalMinutes * 60;
 
             if ($diffSeconds < $requiredSecs) {
                 $earliestCheckoutTime = $checkInCarbon->copy()->addMinutes($minIntervalMinutes);
                 $remainingMinutes     = max(1, (int) ceil(($requiredSecs - $diffSeconds) / 60));
 
                 return response()->json([
-                    'message'              => "Check-out belum dapat dilakukan. Minimal durasi kehadiran adalah {$minIntervalMinutes} menit setelah check-in. Silakan coba lagi pukul {$earliestCheckoutTime->format('H:i')} WIB (sisa {$remainingMinutes} menit).",
+                    'message'              => "Check-out belum dapat dilakukan. Minimal durasi kehadiran adalah {$minIntervalMinutes} menit setelah check-in. Silakan coba lagi pukul {$earliestCheckoutTime->format('H:i')} {$tzLabel} (sisa {$remainingMinutes} menit).",
                     'min_checkout_minutes' => $minIntervalMinutes,
                     'check_in_time'        => $checkInCarbon->format('H:i:s'),
                     'earliest_checkout_at' => $earliestCheckoutTime->format('H:i'),
+                    'timezone_label'       => $tzLabel,
                     'remaining_minutes'    => $remainingMinutes,
                     'is_cooldown'          => true,
                 ], 422);
@@ -7467,35 +9073,38 @@ class AttendanceController extends Controller
         //
         // SNAPSHOT (2026-08-26): pakai aturan yang dibekukan saat check-in bila ada,
         // agar edit setting HRD di siang hari tidak mengubah hasil checkout.
-        $schedule       = $attendance->snapshotSchedule() ?? $this->getWorkSchedule($user, $scheduleDate);
-        $workStart      = $this->resolveWorkStart($attendance->check_in_time, $schedule, $scheduleDate, $user, $attendance);
-        $workMinutes    = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta')));
-
-        // Potong jam istirahat jika bekerja >= 5 jam (300 menit) sesuai UU 13/2003
-        $breakMinutes   = (int) ($schedule['break_minutes'] ?? 60);
-        if ($workMinutes >= 300 && $breakMinutes > 0) {
-            $workMinutes = max(240, $workMinutes - $breakMinutes);
-        }
+        $schedule = $attendance->snapshotSchedule() ?? $this->getWorkSchedule($user, $scheduleDate);
 
         // isNonWorkingDay: apakah tanggal shift libur nasional/weekend secara kalender.
         // Pass $user->id agar cuti bersama yang di-decline tidak dianggap hari libur karyawan ini.
-        $nonWorking      = $this->isNonWorkingDay($scheduleDate, $user->company_id, null, $user->id);
-        // calculateOvertime & checkEarlyLeave sudah mempertimbangkan shift aktif karyawan (cross-day aware)
-        $overtimeMinutes = $this->calculateOvertime($user, $scheduleDate, $checkOutTime, $workMinutes, $nonWorking, $schedule, $attendance);
-        $isEarlyLeave    = $this->checkEarlyLeave($user, $scheduleDate, $checkOutTime, $nonWorking, $schedule, $workMinutes, $attendance);
+        $nonWorking = $this->isNonWorkingDay($scheduleDate, $user->company_id, null, $user->id);
+
+        // Satu sumber rumus: dipakai juga AutoCheckoutCommand & koreksi manual HRD.
+        // Urutan di dalamnya (jam kerja → potong istirahat → lembur → pulang awal)
+        // tidak boleh diubah.
+        $recalc = app(AttendanceRecalculator::class)->recalculate(
+            $user, $attendance, $scheduleDate, $checkOutTime, $nonWorking, $schedule
+        );
+
+        // Zona lokasi fisik saat pulang — diturunkan dari GPS checkout, display & audit saja.
+        $checkOutLocalTz = Timezone::fromCoordinates(
+            (float) $validated['latitude'],
+            (float) $validated['longitude'],
+        )['timezone'];
 
         $updateData = [
-            'check_out_time'      => $checkOutTime,
-            'check_out_lat'       => $validated['latitude'],
-            'check_out_lng'       => $validated['longitude'],
-            'check_out_type'      => $attendance->check_in_type,
-            'work_minutes'        => $workMinutes,
-            'overtime_minutes'    => $overtimeMinutes,
-            'is_holiday'          => $nonWorking,
+            'check_out_time'           => $checkOutTime,
+            'check_out_lat'            => $validated['latitude'],
+            'check_out_lng'            => $validated['longitude'],
+            'check_out_type'           => $attendance->check_in_type,
+            'check_out_local_timezone' => $checkOutLocalTz,
+            'work_minutes'             => $recalc['work_minutes'],
+            'overtime_minutes'         => $recalc['overtime_minutes'],
+            'is_holiday'               => $recalc['is_holiday'],
         ];
 
         // Tandai early leave — tidak berlaku di hari libur/weekend
-        if ($isEarlyLeave) {
+        if ($recalc['is_early_leave']) {
             $updateData['status'] = 'early_leave';
         }
 
@@ -7523,6 +9132,12 @@ class AttendanceController extends Controller
                 'id', 'date', 'check_in_time', 'check_out_time', 'check_in_type', 'check_out_type', 'status',
                 'work_minutes', 'overtime_minutes', 'is_holiday',
             ]),
+            'timezone' => Timezone::describe(
+                $tz,
+                $checkOutLocalTz,
+                $checkOutTime,
+                $schedule['office']?->office_name ?? null,
+            ),
         ]);
         
         } finally {
@@ -7544,70 +9159,9 @@ class AttendanceController extends Controller
     //     helper TIDAK me-resolve ulang (dipakai jalur snapshot checkout).
     private function calculateOvertime(User $user, string $date, Carbon $checkOutTime, int $workMinutes, bool $isNationalNonWorking, ?array $schedule = null, ?Attendance $attendance = null): int
     {
-        $schedule = $schedule ?? $this->getWorkSchedule($user, $date);
-        $office   = $schedule['office'];
-
-        // Cek pengaturan karyawan (utama).
-        // Jika karyawan OFF, tidak bisa lembur.
-        if (isset($user->overtime_enabled) && ! $user->overtime_enabled) {
-            return 0;
-        }
-
-        // Karyawan di-set ON, maka abaikan $office->overtime_enabled.
-        // Tapi tetap butuh data office untuk batas minimum lembur.
-        if (! $office) {
-            return 0;
-        }
-
-        $minOvertime = (int) $office->min_overtime_minutes;
-
-        // Kasus 1: jadwal shift menandai hari ini libur (is_off=true)
-        //          → seluruh menit kerja dianggap lembur (bekerja di luar jadwal),
-        //            asal mencapai min_overtime_minutes.
-        if ($schedule['is_off']) {
-            $full = max(0, $workMinutes);
-
-            return $full >= $minOvertime ? $full : 0;
-        }
-
-        // Kasus 2: tidak ada shift, dan hari ini libur nasional/weekend
-        //          → seluruh menit kerja dianggap lembur, dengan minimum yang sama
-        if ($schedule['source'] === 'office' && $isNationalNonWorking) {
-            $full = max(0, $workMinutes);
-
-            return $full >= $minOvertime ? $full : 0;
-        }
-
-        // Kasus 2.5: Karyawan dengan jam kerja fleksibel (flexitime)
-        //            Lembur dihitung dari akumulasi jam kerja bersih yang melebihi target harian
-        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) $user->flexitime_enabled;
-        if ($isFlex) {
-            $targetMins = (int) ($office->flex_target_minutes ?? 480);
-            $lewat = max(0, $workMinutes - $targetMins);
-
-            return $lewat >= $minOvertime ? $lewat : 0;
-        }
-
-        // Kasus 3: hari kerja efektif (dari shift atau default kantor)
-        //          → hitung lembur setelah jam pulang yang berlaku
-        $jamPulangStr = $schedule['work_end_time'];
-        if (! $jamPulangStr) {
-            return 0;
-        }
-
-        // Shift lintas hari (cross-day, mis. 22:00–06:00): jam pulang berada di HARI BERIKUTNYA.
-        $jamPulangDate = ! empty($schedule['is_cross_day'])
-            ? Carbon::parse($date, 'Asia/Jakarta')->addDay()->toDateString()
-            : $date;
-
-        $jamPulang   = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta');
-        $checkOutWib = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
-
-        $lewat = $checkOutWib->greaterThan($jamPulang)
-            ? (int) $jamPulang->diffInMinutes($checkOutWib)
-            : 0;
-
-        return $lewat >= (int) $office->min_overtime_minutes ? $lewat : 0;
+        return app(AttendanceRecalculator::class)->calculateOvertime(
+            $user, $date, $checkOutTime, $workMinutes, $isNationalNonWorking, $schedule, $attendance
+        );
     }
 
     // ─── Helper: deteksi pulang lebih awal (early leave) ────────
@@ -7617,64 +9171,9 @@ class AttendanceController extends Controller
     //     Mendukung jam kerja fleksibel (flexitime) dengan validasi jam inti & durasi target.
     private function checkEarlyLeave(User $user, string $date, Carbon $checkOutTime, bool $isNationalNonWorking, ?array $schedule = null, ?int $workMinutes = null, ?Attendance $attendance = null): bool
     {
-        $schedule = $schedule ?? $this->getWorkSchedule($user, $date);
-        $office   = $schedule['office'] ?? $user->office;
-
-        // Hari libur per jadwal shift → tidak ada konsep pulang awal
-        if (! empty($schedule['is_off'])) {
-            return false;
-        }
-
-        // Hari libur nasional/weekend tanpa shift → tidak ada konsep pulang awal
-        if (($schedule['source'] ?? 'office') === 'office' && $isNationalNonWorking) {
-            return false;
-        }
-
-        // Karyawan dengan jam kerja fleksibel (flexitime):
-        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) $user->flexitime_enabled;
-        if ($isFlex) {
-            // Syarat 1: Karyawan flexitime wajib standby sampai jam inti berakhir (flex_core_end, default 15:00)
-            $coreEndStr  = ! empty($office?->flex_core_end) ? substr((string) $office->flex_core_end, 0, 5) : '15:00';
-            $coreEnd     = Carbon::parse($date . ' ' . $coreEndStr, 'Asia/Jakarta');
-            $checkOutWib = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
-
-            if ($checkOutWib->lessThan($coreEnd)) {
-                return true; // Pulang mendahului batas jam inti
-            }
-
-            // Syarat 2: Karyawan flexitime wajib memenuhi target durasi kerja harian (default 480 menit = 8 jam)
-            $targetMinutes = (int) ($office?->flex_target_minutes ?? 480);
-            $toleransi     = (int) ($office?->early_leave_tolerance_minutes ?? 0);
-            $minRequired   = max(0, $targetMinutes - $toleransi);
-
-            if ($workMinutes !== null && $workMinutes < $minRequired) {
-                return true; // Durasi kerja belum memenuhi target harian
-            }
-
-            return false;
-        }
-
-        // Tanpa setting kantor atau fitur dimatikan (NULL) → tidak dianggap early leave
-        if (! $office || is_null($office->early_leave_tolerance_minutes)) {
-            return false;
-        }
-
-        $jamPulangStr = $schedule['work_end_time'];
-        if (! $jamPulangStr) {
-            return false;
-        }
-
-        // Shift lintas hari (cross-day): jam pulang berada di HARI BERIKUTNYA.
-        $jamPulangDate = ! empty($schedule['is_cross_day'])
-            ? Carbon::parse($date, 'Asia/Jakarta')->addDay()->toDateString()
-            : $date;
-
-        $toleransi   = (int) $office->early_leave_tolerance_minutes;
-        $jamPulang   = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta');
-        $batasAwal   = $jamPulang->copy()->subMinutes($toleransi);
-        $checkOutWib = $checkOutTime->copy()->setTimezone('Asia/Jakarta');
-
-        return $checkOutWib->lessThan($batasAwal);
+        return app(AttendanceRecalculator::class)->checkEarlyLeave(
+            $user, $date, $checkOutTime, $isNationalNonWorking, $schedule, $workMinutes, $attendance
+        );
     }
 
     // ─── Helper: buat record OvertimeApproval & notifikasi HRD ──────────────
@@ -7812,7 +9311,7 @@ class AttendanceController extends Controller
         $this->triggerAutoCheckoutCatchup();
 
         $user  = $request->user();
-        $today = $this->todayDate();
+        $today = $this->todayDateForUser($user);
 
         $attendance = Attendance::where('user_id', $user->id)
             ->whereDate('date', $today)
@@ -7854,6 +9353,8 @@ class AttendanceController extends Controller
             'longitude'      => (float) $primaryOffice->office_longitude,
             'radius_meters'  => (int) $primaryOffice->radius_meters,
             'require_selfie' => (bool) $primaryOffice->require_selfie,
+            'timezone'       => $primaryOffice->effectiveTimezone(),
+            'timezone_label' => Timezone::label($primaryOffice->effectiveTimezone()),
         ] : null;
 
         // Multi-geofence roaming: ambil seluruh cabang aktif milik perusahaan
@@ -7870,6 +9371,10 @@ class AttendanceController extends Controller
                 'longitude'      => (float) $off->office_longitude,
                 'radius_meters'  => (int) $off->radius_meters,
                 'require_selfie' => (bool) $off->require_selfie,
+                // Zona tiap cabang dikirim supaya mobile bisa memberi tahu karyawan
+                // yang roaming bahwa cabang terdekat berbeda zona dari cabangnya.
+                'timezone'       => $off->effectiveTimezone(),
+                'timezone_label' => Timezone::label($off->effectiveTimezone()),
             ];
         })->values()->all();
 
@@ -7878,6 +9383,12 @@ class AttendanceController extends Controller
         }
 
         $isWfhApproved = $user->hasApprovedWfhToday($today);
+
+        // Zona otoritatif untuk seluruh jam yang dikirim ke mobile: snapshot sesi yang
+        // sedang berjalan bila ada (agar jam tidak bergeser saat HRD mengubah zona
+        // cabang di tengah hari), selain itu zona cabang penempatan karyawan.
+        $tz      = $attendance ? $attendance->effectiveTimezone() : $user->effectiveTimezone();
+        $tzLabel = Timezone::label($tz);
 
         $isFlexSession = $attendance
             ? $attendance->isFlexitimeSession($user)
@@ -7897,7 +9408,7 @@ class AttendanceController extends Controller
 
             $targetCheckoutTime = null;
             if ($attendance && $attendance->check_in_time) {
-                $checkInCarbon = Carbon::parse($attendance->check_in_time)->setTimezone('Asia/Jakarta');
+                $checkInCarbon = Carbon::parse($attendance->check_in_time)->setTimezone($tz);
                 $targetCheckoutTime = $checkInCarbon->copy()->addMinutes($targetMins + $breakMins)->format('H:i');
             }
 
@@ -7910,6 +9421,9 @@ class AttendanceController extends Controller
                 'target_hours'         => round($targetMins / 60, 1),
                 'break_minutes'        => $breakMins,
                 'target_checkout_time' => $targetCheckoutTime,
+                // Seluruh jam di atas adalah jam dinding cabang — label dikirim agar
+                // mobile tidak perlu menebak zona sendiri.
+                'timezone_label'       => $tzLabel,
             ];
         }
 
@@ -7943,6 +9457,9 @@ class AttendanceController extends Controller
                     'is_wfh'          => (bool) ($jadwalHariIni['is_wfh'] ?? false),
                     'is_field'        => (bool) ($jadwalHariIni['is_field'] ?? false),
                 ] : null,
+                // Belum check-in → zona lokasi fisik belum diketahui (GPS baru dikirim
+                // saat check-in), jadi hanya zona cabang yang dilaporkan.
+                'timezone' => Timezone::describe($tz, null, now($tz), $primaryOffice?->office_name),
             ]);
         }
 
@@ -7973,20 +9490,49 @@ class AttendanceController extends Controller
                 $isCrossDay  = ! empty($jadwalAcuan['is_cross_day']);
                 $scheduleDateStr = Carbon::parse($scheduleDate)->toDateString();
                 $workEndDate = $isCrossDay
-                    ? Carbon::parse($scheduleDateStr, 'Asia/Jakarta')->addDay()->toDateString()
+                    ? Carbon::parse($scheduleDateStr, $tz)->addDay()->toDateString()
                     : $scheduleDateStr;
-                $workEnd               = Carbon::parse($workEndDate . ' ' . $jamPulang, 'Asia/Jakarta');
+                // Dirakit di zona cabang; toIso8601String() memancarkan offset cabang
+                // sehingga notifikasi lokal Flutter menunjuk instan absolut yang benar.
+                $workEnd               = Carbon::parse($workEndDate . ' ' . $jamPulang, $tz);
                 $scheduledAutoCheckout = $workEnd->copy()->addMinutes($graceMinutes)->toIso8601String();
             }
         }
 
         $overtimeApproval = OvertimeApproval::where('attendance_id', $attendance->id)->first();
 
-        // Jika karyawan sudah check-in tapi belum checkout, wfh_enabled selalu true
-        // agar tombol checkout tetap muncul di Flutter meskipun HRD mematikan toggle WFH.
-        // Toggle WFH yang dimatikan hanya berlaku untuk MENCEGAH check-in baru, bukan memblokir checkout.
+        // Sesi aktif: karyawan sudah check-in tapi belum check-out.
         $isActiveSession = $attendance->check_in_time && ! $attendance->check_out_time;
-        $wfhEnabledForResponse = $isActiveSession ? true : (bool) ($user->canWfh() || $isWfhApproved);
+
+        if ($isActiveSession) {
+            $inType = $attendance->check_in_type ?? 'onsite';
+            if ($inType === 'wfh') {
+                $wfhEnabledForResponse    = true;
+                $radiusEnabledForResponse = false;
+                $dinasLuarForResponse     = false;
+            } elseif ($inType === 'dinas_luar') {
+                $wfhEnabledForResponse    = false;
+                $radiusEnabledForResponse = false;
+                $dinasLuarForResponse     = true;
+            } elseif ($inType === 'field') {
+                $wfhEnabledForResponse    = false;
+                $radiusEnabledForResponse = true;
+                $dinasLuarForResponse     = false;
+            } else {
+                // onsite: sesi di kantor.
+                // Karyawan sedang di kantor, wfh_enabled harus false agar Flutter tidak menampilkan banner WFH.
+                // radius_enabled harus true karena saat checkout karyawan WAJIB berada dalam radius geofence kantor.
+                $wfhEnabledForResponse    = false;
+                $radiusEnabledForResponse = true;
+                $dinasLuarForResponse     = false;
+            }
+        } else {
+            $wfhEnabledForResponse    = (bool) ($user->canWfh() || $isWfhApproved);
+            $radiusEnabledForResponse = (bool) ($user->canDinasLuar() || $isWfhApproved || ($attendance && in_array($attendance->check_in_type, ['wfh', 'dinas_luar']))
+                ? false
+                : ($user->radius_enabled || ! empty($jadwalHariIni['is_field']) || ($attendance && $attendance->check_in_type === 'field')));
+            $dinasLuarForResponse     = (bool) ($user->canDinasLuar() || (! empty($jadwalHariIni['is_field'])));
+        }
 
         // Jadwal shift aktif hari ini (untuk tampilan di Flutter).
         // SNAPSHOT: jika karyawan sedang dalam sesi aktif (sudah check-in tapi belum checkout),
@@ -8005,11 +9551,10 @@ class AttendanceController extends Controller
             ]),
             // Flag WFH karyawan — dipakai Flutter untuk menampilkan/menyembunyikan
             // tombol "Catat Presensi" saat tombol Refresh ditekan.
-            // Jika user sedang aktif (checked-in, belum checkout), paksa true.
             'attendance_enabled'  => (bool) $user->canAccessAttendance(),
             'wfh_enabled'         => $wfhEnabledForResponse,
-            'radius_enabled'      => (bool) ($user->canDinasLuar() || $isWfhApproved || ($attendance && in_array($attendance->check_in_type, ['wfh', 'dinas_luar'])) ? false : ($user->radius_enabled || ! empty($jadwalHariIni['is_field']) || ($attendance && $attendance->check_in_type === 'field'))),
-            'dinas_luar_enabled'  => (bool) ($user->canDinasLuar() || (! empty($jadwalHariIni['is_field']))),
+            'radius_enabled'      => $radiusEnabledForResponse,
+            'dinas_luar_enabled'  => $dinasLuarForResponse,
             'flexitime_enabled'   => (bool) $isFlexSession,
             'flexitime_config'    => $flexConfig,
             'is_wfh_approved'     => $isWfhApproved,
@@ -8026,6 +9571,14 @@ class AttendanceController extends Controller
             'overtime_approval' => $overtimeApproval ? $overtimeApproval->only([
                 'id', 'overtime_minutes', 'status', 'reviewed_at', 'notes',
             ]) : null,
+            // Zona lokasi fisik diambil dari check-in (atau checkout bila sudah pulang) —
+            // nilai yang diturunkan server dari GPS, bukan klaim perangkat.
+            'timezone' => Timezone::describe(
+                $tz,
+                $attendance->check_out_local_timezone ?? $attendance->check_in_local_timezone,
+                Carbon::parse($attendance->check_out_time ?? $attendance->check_in_time),
+                $jadwalTampilan['office']?->office_name ?? $primaryOffice?->office_name,
+            ),
         ]);
     }
 
@@ -8142,7 +9695,7 @@ class AttendanceController extends Controller
             ->when($validated['user_id'] ?? null, fn ($q, $u) => $q->where('overtime_approvals.user_id', $u))
             ->when($validated['division_id'] ?? null, fn ($q, $div) => $q->where('users.division_id', $div))
             ->when($validated['start_date'] ?? null, fn ($q, $d) => $q->where('attendances.date', '>=', $d))
-            ->when($validated['end_date']   ?? null, fn ($q, $d) => $q->where('attendances.date', '<=', $d));
+            ->when($validated['end_date'] ?? ($validated['start_date'] ?? null), fn ($q, $d) => $q->where('attendances.date', '<=', $d));
 
         // Scoping cabang approver jika bukan super_admin
         if ($actor->role !== 'super_admin') {
@@ -8193,6 +9746,7 @@ class AttendanceController extends Controller
             'attendances.date as attendance_date',
             'attendances.check_in_time',
             'attendances.check_out_time',
+            'attendances.snap_timezone',
             'overtime_approvals.overtime_minutes',
             'overtime_approvals.status',
             'overtime_approvals.current_step',
@@ -8214,12 +9768,21 @@ class AttendanceController extends Controller
         $approvals->getCollection()->transform(function ($a) {
             $a->overtime_formatted = $this->formatMinutes((int) $a->overtime_minutes);
 
+            // ISO8601 dikirim DENGAN offset zona cabang baris itu (snap_timezone),
+            // sehingga daftar lembur lintas cabang menampilkan jam dinding masing-masing
+            // cabang — bukan jam dinding laptop pemeriksa. timezone_label menyertainya
+            // supaya klien tidak perlu menerjemahkan offset menjadi WIB/WITA/WIT.
+            $tz = Timezone::normalize($a->snap_timezone);
+
             if ($a->check_in_time) {
-                $a->check_in_time = \Carbon\Carbon::parse($a->check_in_time)->toJSON();
+                $a->check_in_time = \Carbon\Carbon::parse($a->check_in_time)->setTimezone($tz)->toJSON();
             }
             if ($a->check_out_time) {
-                $a->check_out_time = \Carbon\Carbon::parse($a->check_out_time)->toJSON();
+                $a->check_out_time = \Carbon\Carbon::parse($a->check_out_time)->setTimezone($tz)->toJSON();
             }
+
+            $a->timezone       = $tz;
+            $a->timezone_label = Timezone::label($tz);
 
             return $a;
         });
@@ -8375,12 +9938,17 @@ class AttendanceController extends Controller
             // Otorisasi Atasan Langsung & Divisi
             // Jika karyawan belum memiliki manager_id yang ditunjuk:
             // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
-            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV perusahaan (fallback umum)
+            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV
+            //    perusahaan (fallback umum) — KECUALI untuk HRD Level 2. Fallback ini harus
+            //    membuktikan wewenang struktural atas karyawan spesifik ybs, bukan sekadar
+            //    "punya bawahan di tim lain"; tanpa pengecualian ini, HRD yang juga menjabat
+            //    posisi supervisor di tim manapun bisa melewati Tahap 1 untuk karyawan tanpa
+            //    manager_id/division_id sama sekali (lihat WAITING_SPV_APPROVAL).
             $isSameDivisionSpv = false;
             if (! $targetUser?->manager_id) {
                 if ($targetUser?->division_id) {
                     $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
-                } else {
+                } elseif (! $isHrdLevelOnly) {
                     $isSameDivisionSpv = true;
                 }
             }
@@ -8602,12 +10170,14 @@ class AttendanceController extends Controller
 
             // Jika karyawan belum memiliki manager_id yang ditunjuk:
             // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
-            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV perusahaan (fallback umum)
+            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV
+            //    perusahaan (fallback umum) — KECUALI untuk HRD Level 2 (lihat alasan di
+            //    approveOvertime()).
             $isSameDivisionSpv = false;
             if (! $targetUser?->manager_id) {
                 if ($targetUser?->division_id) {
                     $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
-                } else {
+                } elseif (! $isHrdLevelOnly) {
                     $isSameDivisionSpv = true;
                 }
             }
@@ -8967,9 +10537,13 @@ class AttendanceController extends Controller
             'longitude'      => (float) $primaryOffice->office_longitude,
             'radius_meters'  => (int) $primaryOffice->radius_meters,
             'require_selfie' => (bool) $primaryOffice->require_selfie,
+            // Bentuk office/offices[] WAJIB identik dengan checkStatus() (:8963) —
+            // mobile memakai satu model OfficeArea untuk kedua endpoint.
+            'timezone'       => $primaryOffice->effectiveTimezone(),
+            'timezone_label' => Timezone::label($primaryOffice->effectiveTimezone()),
         ] : null;
 
-        $todayStr = $this->todayDate();
+        $todayStr = $this->todayDateForUser($user);
         $isWfhApprovedToday = LeaveRequest::where('user_id', $user->id)
             ->where('status', 'approved')
             ->where('leave_type', 'wfh')
@@ -9007,6 +10581,7 @@ class AttendanceController extends Controller
                 'attendances.date as attendance_date',
                 'attendances.check_in_time',
                 'attendances.check_out_time',
+                'attendances.snap_timezone',
                 'overtime_approvals.overtime_minutes',
                 'overtime_approvals.status',
                 'overtime_approvals.current_step',
@@ -9026,12 +10601,21 @@ class AttendanceController extends Controller
         $approvals->getCollection()->transform(function ($a) {
             $a->overtime_formatted = $this->formatMinutes((int) $a->overtime_minutes);
 
+            // check_in_time/check_out_time tetap ISO8601 (instan absolut) — dikirim
+            // DENGAN offset zona cabang supaya klien yang memformatnya langsung
+            // mendapat jam dinding cabang, bukan jam perangkat. Ditambah dua field
+            // siap-tampil agar klien tidak perlu mengonversi zona sendiri.
+            $tz = Timezone::normalize($a->snap_timezone);
+
             if ($a->check_in_time) {
-                $a->check_in_time = \Carbon\Carbon::parse($a->check_in_time)->toJSON();
+                $a->check_in_time = \Carbon\Carbon::parse($a->check_in_time)->setTimezone($tz)->toJSON();
             }
             if ($a->check_out_time) {
-                $a->check_out_time = \Carbon\Carbon::parse($a->check_out_time)->toJSON();
+                $a->check_out_time = \Carbon\Carbon::parse($a->check_out_time)->setTimezone($tz)->toJSON();
             }
+
+            $a->timezone       = $tz;
+            $a->timezone_label = Timezone::label($tz);
 
             return $a;
         });
@@ -9111,6 +10695,8 @@ class AttendanceController extends Controller
             'attendances.date as attendance_date',
             'attendances.check_in_time',
             'attendances.check_out_time',
+            // Zona bisnis saat check-in — dipakai memformat kedua jam di bawah.
+            'attendances.snap_timezone',
             'overtime_approvals.overtime_minutes',
             'overtime_approvals.overtime_reason',
             'overtime_approvals.status',
@@ -9126,6 +10712,12 @@ class AttendanceController extends Controller
         ->get();
 
         $formatted = $approvals->map(function ($a) {
+            // Jam ditampilkan di jam dinding CABANG baris presensi itu (snap_timezone),
+            // bukan jam dinding server. Sebelum ini kedua jam di-format TANPA
+            // setTimezone sama sekali — berbeda dari semua titik serupa di controller
+            // ini dan akan menampilkan jam penyimpanan untuk cabang WITA/WIT.
+            $tz = Timezone::normalize($a->snap_timezone);
+
             return [
                 'id'                 => $a->id,
                 'attendance_id'      => $a->attendance_id,
@@ -9136,8 +10728,10 @@ class AttendanceController extends Controller
                 'division_name'      => $a->division_name ?? $a->department,
                 'position_name'      => $a->position_name ?? 'Karyawan',
                 'date'               => $a->attendance_date,
-                'check_in_time'      => $a->check_in_time ? Carbon::parse($a->check_in_time)->format('H:i') : null,
-                'check_out_time'     => $a->check_out_time ? Carbon::parse($a->check_out_time)->format('H:i') : null,
+                'check_in_time'      => $a->check_in_time ? Carbon::parse($a->check_in_time)->setTimezone($tz)->format('H:i') : null,
+                'check_out_time'     => $a->check_out_time ? Carbon::parse($a->check_out_time)->setTimezone($tz)->format('H:i') : null,
+                'timezone'           => $tz,
+                'timezone_label'     => Timezone::label($tz),
                 'overtime_minutes'   => (int) $a->overtime_minutes,
                 'formatted_overtime' => $this->formatMinutes((int) $a->overtime_minutes),
                 'reason'             => $a->overtime_reason ?: '-',
@@ -10039,7 +11633,10 @@ class AttendanceController extends Controller
 
         // Validasi tanggal: lampau dilarang. Hari H (hari ini) dilarang jika sudah check-in.
         $startDateStr = $start->toDateString();
-        $todayStr     = $this->todayDate();
+        // "Hari ini" menurut zona cabang karyawan: karyawan cabang Jayapura pada 00:30 WIT
+        // sudah berada di hari baru, padahal jam server masih 22:30 WIB hari sebelumnya —
+        // tanpa ini pengajuan untuk hari lokalnya ditolak sebagai "tanggal yang sudah lewat".
+        $todayStr     = $this->todayDateForUser($user);
 
         if ($startDateStr < $todayStr) {
             return response()->json([
@@ -10199,7 +11796,8 @@ class AttendanceController extends Controller
         // - Tanggal lampau (sebelum hari ini) selalu dilarang.
         // - Hari H (hari ini) DIPERBOLEHKAN untuk semua tipe cuti/izin, asalkan user BELUM melakukan check-in.
         // - Jika user sudah check-in hari ini, pengajuan untuk hari ini dilarang untuk tipe apa pun.
-        $todayStr = $this->todayDate();
+        // "Hari ini" = tanggal lokal cabang karyawan, konsisten dengan attendances.date.
+        $todayStr = $this->todayDateForUser($user);
 
         if ($startDateStr < $todayStr) {
             return response()->json([

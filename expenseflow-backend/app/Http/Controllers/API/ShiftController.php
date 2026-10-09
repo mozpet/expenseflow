@@ -16,6 +16,7 @@ use App\Models\User;
 use App\Models\UserShift;
 use App\Services\FcmService;
 use App\Services\ShiftRestService;
+use App\Support\Timezone;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -209,7 +210,7 @@ class ShiftController extends Controller
             'attendance_setting_id' => 'nullable|integer', // filter per cabang
         ]);
 
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
 
         $shifts = Shift::with(['schedules', 'office:id,office_name,late_tolerance_minutes'])
             ->withCount(['userShifts as assigned_count' => function ($q) use ($today) {
@@ -322,7 +323,7 @@ class ShiftController extends Controller
             ]);
 
             // Versi pertama: berlaku sejak hari ini
-            $this->syncSchedules($shift, $validated['schedules'], now('Asia/Jakarta')->toDateString());
+            $this->syncSchedules($shift, $validated['schedules'], now(Timezone::storage())->toDateString());
 
             return $shift;
         });
@@ -481,7 +482,13 @@ class ShiftController extends Controller
         $liveAssignments = collect();
 
         if (isset($validated['schedules'])) {
-            $todayStr = now('Asia/Jakarta')->toDateString();
+            // Tanggal efektif versi jam kerja memakai hari lokal cabang pemilik shift:
+            // template shift milik satu cabang, jadi "berlaku hari ini / H+N" harus
+            // dihitung dari kalender cabang itu, bukan kalender server.
+            $tzShift  = $shift->office?->effectiveTimezone()
+                ?? AttendanceSetting::find($shift->attendance_setting_id)?->effectiveTimezone()
+                ?? Timezone::storage();
+            $todayStr = now($tzShift)->toDateString();
 
             foreach ($validated['schedules'] as $schInput) {
                 $day  = (int) $schInput['day_of_week'];
@@ -522,7 +529,7 @@ class ShiftController extends Controller
                     // TIDAK ADA KARYAWAN TERPASANG:
                     // Tidak ada karyawan yang terganggu, sehingga tidak memerlukan notice period (H-N).
                     // Jam kerja baru LANGSUNG BERLAKU HARI INI (effective_date = today).
-                    $scheduleEffectiveDate = Carbon::now('Asia/Jakarta')->startOfDay()->toDateString();
+                    $scheduleEffectiveDate = Carbon::now($tzShift)->startOfDay()->toDateString();
                 } else {
                     // ADA KARYAWAN TERPASANG:
                     // Jam kerja baru berlaku sesuai pengaturan notice kantor (H-N, min 1 hari)
@@ -535,7 +542,7 @@ class ShiftController extends Controller
                         $noticeDays = 1; // default aman: berlaku besok
                     }
 
-                    $scheduleEffectiveDate = Carbon::now('Asia/Jakarta')->startOfDay()
+                    $scheduleEffectiveDate = Carbon::now($tzShift)->startOfDay()
                         ->addDays($noticeDays)
                         ->toDateString();
                 }
@@ -738,7 +745,7 @@ class ShiftController extends Controller
         // masih aktif agar mereka tahu jadwalnya sementara kembali ke default kantor.
         // Data assignment (user_shifts) TIDAK dihapus — shift bisa diaktifkan kembali kapan saja.
         if (! $willBeActive) {
-            $today = now('Asia/Jakarta')->toDateString();
+            $today = now(Timezone::storage())->toDateString();
 
             $terdampak = UserShift::with('user')
                 ->where('shift_id', $shift->id)
@@ -771,7 +778,7 @@ class ShiftController extends Controller
     //     sehingga tidak memblokir hapus/nonaktifkan shift.
     private function liveAssignmentsForShift(int $shiftId)
     {
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
 
         return UserShift::with('user:id,name')
             ->where('shift_id', $shiftId)
@@ -813,7 +820,7 @@ class ShiftController extends Controller
         //   expired  → shift sudah berakhir (end_date < hari ini)
         // Ini dipakai frontend untuk menampilkan badge status pada tiap assignment
         // dan agar HRD tahu bahwa assignment yang aktif adalah yang sedang berlaku.
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
 
         $history->getCollection()->transform(function (UserShift $us) use ($today) {
             $startDate = $us->start_date->toDateString();
@@ -854,7 +861,7 @@ class ShiftController extends Controller
             return response()->json(['message' => 'Shift tidak ditemukan.'], 404);
         }
 
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
 
         $assignments = UserShift::with(['user:id,name,department,attendance_setting_id', 'user.office:id,office_name', 'shift:id,name'])
             ->where('shift_id', $id)
@@ -955,7 +962,7 @@ class ShiftController extends Controller
                 return response()->json(['message' => $err], 422);
             }
 
-            $todayStr = now('Asia/Jakarta')->toDateString();
+            $todayStr = now(Timezone::storage())->toDateString();
             $duplicateActive = UserShift::where('user_id', $validated['user_id'])
                 ->where('shift_id', $validated['shift_id'])
                 ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
@@ -989,7 +996,7 @@ class ShiftController extends Controller
                 return response()->json(['message' => "Posisi hari awal siklus harus antara 1 dan {$pattern->cycle_days}."], 422);
             }
 
-            $todayStr = now('Asia/Jakarta')->toDateString();
+            $todayStr = now(Timezone::storage())->toDateString();
             $duplicateActive = UserShift::where('user_id', $validated['user_id'])
                 ->where('shift_pattern_id', $validated['shift_pattern_id'])
                 ->where(fn ($q) => $q->whereNull('end_date')->orWhere('end_date', '>=', $todayStr))
@@ -1041,8 +1048,12 @@ class ShiftController extends Controller
         }
         $allWarnings = array_merge($k3['warnings'] ?? [], $nightK3['warnings'] ?? []);
 
-        // Tanggal mulai tidak boleh tanggal lampau
-        $todayForGuard = Carbon::now('Asia/Jakarta')->toDateString();
+        // Tanggal mulai tidak boleh tanggal lampau.
+        // "Hari ini" menurut zona cabang KARYAWAN: tanpa ini, HRD di Jakarta tidak
+        // bisa menugaskan shift tanggal 8 untuk karyawan cabang Jayapura yang di
+        // sana sudah tanggal 8 (00:30 WIT = 22:30 WIB tanggal 7).
+        $tzUser        = $targetUser->effectiveTimezone();
+        $todayForGuard = Carbon::now($tzUser)->toDateString();
         if ($validated['start_date'] < $todayForGuard) {
             return response()->json([
                 'message' => "Tanggal mulai shift tidak boleh berupa tanggal yang sudah lewat.",
@@ -1058,7 +1069,7 @@ class ShiftController extends Controller
         // periksa apakah karyawan sedang dalam sesi presensi aktif hari ini.
         $newStartDate = $validated['start_date'];
         $newEndDate   = $validated['end_date'] ?? null;
-        $todayStr     = now('Asia/Jakarta')->toDateString();
+        $todayStr     = $todayForGuard;
 
         $coversToday = $newStartDate <= $todayStr
             && ($newEndDate === null || $newEndDate >= $todayStr);
@@ -1141,7 +1152,11 @@ class ShiftController extends Controller
     private function checkAssignRestGap(User $user, ?Shift $newShift, string $startDate): array
     {
         $restSvc  = app(ShiftRestService::class);
-        $dayBefore = Carbon::parse($startDate, 'Asia/Jakarta')->subDay()->toDateString();
+        // Jeda istirahat K3 dibandingkan dalam jam dinding cabang karyawan: pesan
+        // error menyebut jam konkret ("berakhir 22:00") yang harus terbaca sebagai
+        // jam lokal karyawan, bukan WIB.
+        $tz        = $user->effectiveTimezone();
+        $dayBefore = Carbon::parse($startDate, $tz)->subDay()->toDateString();
 
         // Jadwal karyawan pada hari sebelum assignment baru mulai (pakai shift lama)
         $prevSchedule = self::resolveSchedule($user, $dayBefore);
@@ -1184,13 +1199,13 @@ class ShiftController extends Controller
         // Hitung datetime akhir shift lama
         $prevEndTime  = $prevSchedule['work_end_time'];
         $isCrossDay   = (bool) ($prevSchedule['is_cross_day'] ?? false);
-        $prevEndDt    = Carbon::parse($dayBefore . ' ' . $prevEndTime, 'Asia/Jakarta');
+        $prevEndDt    = Carbon::parse($dayBefore . ' ' . $prevEndTime, $tz);
         if ($isCrossDay) {
             $prevEndDt->addDay(); // jam pulang jatuh di hari mulai shift baru
         }
 
         // Hitung datetime mulai shift baru
-        $newStartDt = Carbon::parse($startDate . ' ' . $newStartTime, 'Asia/Jakarta');
+        $newStartDt = Carbon::parse($startDate . ' ' . $newStartTime, $tz);
 
         $result = $restSvc->checkGapBetweenDatetimes($prevEndDt, $newStartDt);
 
@@ -1268,8 +1283,8 @@ class ShiftController extends Controller
 
         // 3. Cek Batas Usia (Minimal 17 tahun)
         if ($user->birth_date) {
-            $targetStart = Carbon::parse($startDate, 'Asia/Jakarta');
-            $ageOnStart  = (int) Carbon::parse($user->birth_date, 'Asia/Jakarta')->diffInYears($targetStart);
+            $targetStart = Carbon::parse($startDate, Timezone::storage());
+            $ageOnStart  = (int) Carbon::parse($user->birth_date, Timezone::storage())->diffInYears($targetStart);
 
             if ($ageOnStart < self::MIN_NIGHT_SHIFT_AGE) {
                 return [
@@ -1477,8 +1492,11 @@ class ShiftController extends Controller
         }
 
         $noticeDays = (int) $office->shift_notice_days;
-        $today = Carbon::now('Asia/Jakarta')->startOfDay();
-        $start = Carbon::parse($startDate, 'Asia/Jakarta')->startOfDay();
+        // Notice period dihitung dari hari lokal cabang: cabang WIT sudah berganti
+        // hari 2 jam sebelum server, dan selisih itu nyata di batas tengah malam.
+        $tz    = $office->effectiveTimezone();
+        $today = Carbon::now($tz)->startOfDay();
+        $start = Carbon::parse($startDate, $tz)->startOfDay();
 
         $diffDays = (int) $today->diffInDays($start, false);
 
@@ -1551,7 +1569,7 @@ class ShiftController extends Controller
             // Cegah assign shift yang sedang AKTIF atau SEGERA (belum mulai) untuk
             // karyawan yang sama (duplikat), kecuali assignment itu sendiri
             // (no-op self-update tidak diblokir).
-            $todayStr = now('Asia/Jakarta')->toDateString();
+            $todayStr = now(Timezone::storage())->toDateString();
             $duplicateActive = UserShift::where('user_id', $userShift->user_id)
                 ->where('shift_id', $validated['shift_id'])
                 ->where('id', '!=', $userShift->id)
@@ -1588,7 +1606,7 @@ class ShiftController extends Controller
                 return response()->json(['message' => "Posisi hari awal siklus harus antara 1 dan {$pattern->cycle_days}."], 422);
             }
 
-            $todayStr = now('Asia/Jakarta')->toDateString();
+            $todayStr = now(Timezone::storage())->toDateString();
             $duplicateActive = UserShift::where('user_id', $userShift->user_id)
                 ->where('shift_pattern_id', $validated['shift_pattern_id'])
                 ->where('id', '!=', $userShift->id)
@@ -1644,9 +1662,12 @@ class ShiftController extends Controller
             $k3Warnings = array_merge($k3['warnings'] ?? [], $nightK3['warnings'] ?? []);
         }
 
-        // Hanya blokir jika tanggal mulai diubah ke masa lalu
+        // Hanya blokir jika tanggal mulai diubah ke masa lalu.
+        // Zona cabang karyawan, bukan jam dinding server (lihat assignStore()).
+        $tzUser = $targetUser->effectiveTimezone();
+
         if (array_key_exists('start_date', $validated)) {
-            $todayForGuard = Carbon::now('Asia/Jakarta')->toDateString();
+            $todayForGuard = Carbon::now($tzUser)->toDateString();
             if ($validated['start_date'] < $todayForGuard) {
                 return response()->json([
                     'message' => "Tanggal mulai shift tidak boleh berupa tanggal yang sudah lewat.",
@@ -1662,7 +1683,7 @@ class ShiftController extends Controller
         // CEGAH BUG: jika assignment ini sedang berlaku HARI INI dan diubah
         // (shift_id / shift_pattern_id / start_date / end_date) saat karyawan sedang dalam jam kerja,
         // blokir — agar jadwal hari ini tidak berubah di tengah jam kerja.
-        $todayStr = now('Asia/Jakarta')->toDateString();
+        $todayStr = Carbon::now($tzUser)->toDateString();
         $effectiveEnd = $validated['end_date']
             ?? $userShift->end_date?->toDateString()
             ?? $todayStr; // end_date null = berlaku tanpa batas → aktif hari ini
@@ -1750,7 +1771,7 @@ class ShiftController extends Controller
 
         $targetUser = $userShift->user;
         $tglMulai   = $userShift->start_date->toDateString();
-        $today      = now('Asia/Jakarta')->toDateString();
+        $today      = now(Timezone::storage())->toDateString();
 
         // Apakah assignment ini MASIH AKTIF hari ini?
         $isActive = $userShift->start_date->toDateString() <= $today
@@ -1801,7 +1822,7 @@ class ShiftController extends Controller
             // Jika assignment sudah berjalan sejak masa lalu (start_date < today) -> SOFT-END:
             // set end_date = kemarin. Histori masa lalu tetap tersimpan utuh,
             // dan karyawan otomatis kembali ke jadwal kantor default mulai hari ini.
-            $yesterday = Carbon::yesterday('Asia/Jakarta')->toDateString();
+            $yesterday = Carbon::yesterday(Timezone::storage())->toDateString();
             $userShift->end_date = $yesterday;
             $userShift->save();
 
@@ -1870,7 +1891,11 @@ class ShiftController extends Controller
             return null;
         }
 
-        $today  = now('Asia/Jakarta');
+        // "Sekarang" dalam jam dinding cabang karyawan — guard ini membandingkan
+        // jam saat ini terhadap jam mulai/pulang shift, jadi ia WAJIB sadar-zona:
+        // dengan zona server, karyawan cabang WITA dinilai bergeser 1 jam dan
+        // assignment bisa terhapus di tengah jam kerjanya.
+        $today   = now($userShift->user?->effectiveTimezone() ?? Timezone::storage());
         $dateStr = $today->toDateString();
 
         // Shift tidak berlaku hari ini
@@ -1995,7 +2020,7 @@ class ShiftController extends Controller
             ->pluck('user_id')
             ->flip();
 
-        $todayStr = now('Asia/Jakarta')->toDateString();
+        $todayStr = now(Timezone::storage())->toDateString();
         $alreadyActive = ! empty($validated['shift_id'])
             ? UserShift::whereIn('user_id', $validated['user_ids'])
                 ->where('shift_id', $validated['shift_id'])
@@ -2230,12 +2255,17 @@ class ShiftController extends Controller
             'department'            => 'nullable|string|max:100',
         ]);
 
-        $month    = $validated['month'] ?? now('Asia/Jakarta')->month;
-        $year     = $validated['year']  ?? now('Asia/Jakarta')->year;
+        // Kalender shift dasbor HRD SENGAJA memakai zona penyimpanan: satu perusahaan
+        // butuh satu kalender bersama, agar dua HRD di cabang berbeda tidak melihat
+        // bulan yang berbeda untuk data yang sama.
+        $month    = $validated['month'] ?? now(Timezone::storage())->month;
+        $year     = $validated['year']  ?? now(Timezone::storage())->year;
         $branchId = $validated['attendance_setting_id'] ?? null;
         $dept     = $validated['department'] ?? null;
 
-        $startOfMonth = Carbon::create($year, $month, 1)->startOfDay();
+        // Zona eksplisit: Carbon::create() tanpa zona memakai default global dan bisa
+        // menggeser batas bulan 1 hari terhadap $month/$year yang dibaca di atas.
+        $startOfMonth = Carbon::create($year, $month, 1, 0, 0, 0, Timezone::storage())->startOfDay();
         $endOfMonth   = $startOfMonth->copy()->endOfMonth();
 
         // Kumpulkan daftar departemen unik untuk filter dropdown
@@ -2494,7 +2524,7 @@ class ShiftController extends Controller
 
         $date = isset($validated['date'])
             ? Carbon::parse($validated['date'])->toDateString()
-            : now('Asia/Jakarta')->toDateString();
+            : now(Timezone::storage())->toDateString();
 
         $departments = User::query()
             ->when($actor->role !== 'super_admin', fn ($q) => $q->where('company_id', $actor->company_id))
@@ -2841,6 +2871,14 @@ class ShiftController extends Controller
     // ═══════════════════════════════════════════════════════════
     public static function resolveSchedulesBulk($users, string $date): array
     {
+        return array_map(
+            fn (array $schedule) => self::withTimezone($schedule),
+            self::resolveSchedulesBulkRaw($users, $date)
+        );
+    }
+
+    private static function resolveSchedulesBulkRaw($users, string $date): array
+    {
         $usersCollection = collect($users);
         if ($usersCollection->isEmpty()) {
             return [];
@@ -3104,6 +3142,35 @@ class ShiftController extends Controller
     // Static helper: resolveSchedule(User, date)
     // ═══════════════════════════════════════════════════════════
     public static function resolveSchedule(User $user, string $date): array
+    {
+        return self::withTimezone(self::resolveScheduleRaw($user, $date));
+    }
+
+    /**
+     * Lampirkan zona bisnis cabang ke array jadwal.
+     *
+     * SENGAJA diterapkan sebagai pembungkus, bukan ditambahkan satu per satu ke
+     * 11 cabang return resolveSchedule()/resolveSchedulesBulk(): satu cabang yang
+     * terlewat akan menghasilkan perhitungan presensi yang diam-diam jatuh ke WIB
+     * untuk cabang WITA/WIT — bug yang tidak melempar error dan sangat sulit
+     * ditemukan. Dengan pembungkus, mustahil ada cabang yang terlewat.
+     *
+     * Zona diambil dari 'office' yang sudah dibawa SEMUA cabang return, yaitu
+     * kantor PENEMPATAN karyawan (bukan kantor acuan hasil geofence roaming).
+     * Office NULL (source 'none') → zona penyimpanan.
+     */
+    private static function withTimezone(array $schedule): array
+    {
+        $office = $schedule['office'] ?? null;
+
+        $schedule['timezone'] = $office instanceof AttendanceSetting
+            ? $office->effectiveTimezone()
+            : Timezone::storage();
+
+        return $schedule;
+    }
+
+    private static function resolveScheduleRaw(User $user, string $date): array
     {
         $dayOfWeek = Carbon::parse($date)->dayOfWeek; // 0=Minggu … 6=Sabtu
 
@@ -3369,7 +3436,10 @@ class ShiftController extends Controller
     public function mySchedule(Request $request): JsonResponse
     {
         $user = $request->user();
-        $today = now('Asia/Jakarta')->toDateString();
+        // Kartu "Jadwal Hari Ini" di beranda karyawan: hari lokal cabang karyawan.
+        $tz    = $user->effectiveTimezone();
+        $tzLabel = Timezone::label($tz);
+        $today = now($tz)->toDateString();
 
         // Cari assignment shift yang berlaku hari ini:
         // - start_date <= hari ini
@@ -3446,11 +3516,11 @@ class ShiftController extends Controller
 
                 if ($session === 'morning') {
                     $todayTitle = 'Cuti Setengah Hari (Sesi 1)';
-                    $todaySubTitle = "Masuk {$midpoint} — {$origEnd} WIB";
+                    $todaySubTitle = "Masuk {$midpoint} — {$origEnd} {$tzLabel}";
                     $resolvedToday['work_start_time'] = $midpoint;
                 } else {
                     $todayTitle = 'Cuti Setengah Hari (Sesi 2)';
-                    $todaySubTitle = "Masuk {$origStart} — Pulang {$midpoint} WIB";
+                    $todaySubTitle = "Masuk {$origStart} — Pulang {$midpoint} {$tzLabel}";
                     $resolvedToday['work_end_time'] = $midpoint;
                 }
             } else {
@@ -3494,7 +3564,7 @@ class ShiftController extends Controller
             $todayIsOff = false;
             $startTime = $resolvedToday['work_start_time'] ? substr((string) $resolvedToday['work_start_time'], 0, 5) : '08:00';
             $endTime = $resolvedToday['work_end_time'] ? substr((string) $resolvedToday['work_end_time'], 0, 5) : '17:00';
-            $todaySubTitle = "{$startTime} — {$endTime} WIB";
+            $todaySubTitle = "{$startTime} — {$endTime} {$tzLabel}";
 
             if ($resolvedToday['source'] === 'shift') {
                 $todayTitle = $resolvedToday['shift_name'] ?? 'Shift Kerja';
@@ -3691,10 +3761,14 @@ class ShiftController extends Controller
             'year'  => 'nullable|integer|min:2020|max:2100',
         ]);
 
-        $month = $validated['month'] ?? (int) now('Asia/Jakarta')->format('n');
-        $year  = $validated['year']  ?? (int) now('Asia/Jakarta')->format('Y');
+        // Bulan default = bulan berjalan menurut kalender cabang karyawan.
+        $tz    = $user->effectiveTimezone();
+        $month = $validated['month'] ?? (int) now($tz)->format('n');
+        $year  = $validated['year']  ?? (int) now($tz)->format('Y');
 
-        $startOfMonth = Carbon::create($year, $month, 1)->startOfDay();
+        // Zona eksplisit: Carbon::create() tanpa zona memakai default global, sehingga
+        // batas bulan bisa bergeser 1 hari terhadap $month/$year yang baru dibaca di atas.
+        $startOfMonth = Carbon::create($year, $month, 1, 0, 0, 0, $tz)->startOfDay();
         $endOfMonth   = $startOfMonth->copy()->endOfMonth();
 
         // Pre-load SEMUA assignment karyawan yang berpotensi berlaku dalam bulan ini:
@@ -4171,7 +4245,7 @@ class ShiftController extends Controller
     public function patternIndex(Request $request): JsonResponse
     {
         $actor = $request->user();
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
 
         $patterns = ShiftPattern::where('company_id', $actor->company_id)
             ->when($request->filled('attendance_setting_id'), function ($q) use ($request) {
@@ -4338,7 +4412,7 @@ class ShiftController extends Controller
     public function patternShow(Request $request, int $id): JsonResponse
     {
         $actor = $request->user();
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
         $pattern = ShiftPattern::where('company_id', $actor->company_id)
             ->with(['office:id,office_name', 'items.shift:id,name,color,is_active', 'dayOverrides'])
             ->withCount(['userShifts as active_users_count' => function ($q) use ($today) {
@@ -4711,7 +4785,7 @@ class ShiftController extends Controller
             return response()->json(['message' => 'Pola rotasi tidak ditemukan.'], 404);
         }
 
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
         $hasActive = UserShift::where('shift_pattern_id', $pattern->id)
             ->where(function ($q) use ($today) {
                 $q->whereDate('start_date', '<=', $today)
@@ -4812,7 +4886,7 @@ class ShiftController extends Controller
      */
     private function liveAssignmentsForPattern(int $patternId)
     {
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
 
         return UserShift::with('user:id,name')
             ->where('shift_pattern_id', $patternId)
@@ -4842,7 +4916,7 @@ class ShiftController extends Controller
             return response()->json(['message' => 'Pola rotasi tidak ditemukan.'], 404);
         }
 
-        $today = now('Asia/Jakarta')->toDateString();
+        $today = now(Timezone::storage())->toDateString();
 
         $assignments = UserShift::with(['user:id,name,department,attendance_setting_id', 'user.office:id,office_name', 'shiftPattern:id,name,cycle_days'])
             ->where('shift_pattern_id', $id)
@@ -4870,8 +4944,8 @@ class ShiftController extends Controller
             // Hitung hari siklus ke berapa pada hari ini jika aktif
             $currentCycleDay = null;
             if ($status === 'active' && $pattern->cycle_days > 0) {
-                $startCarbon = \Carbon\Carbon::parse($startDate, 'Asia/Jakarta')->startOfDay();
-                $todayCarbon = \Carbon\Carbon::parse($today, 'Asia/Jakarta')->startOfDay();
+                $startCarbon = \Carbon\Carbon::parse($startDate, Timezone::storage())->startOfDay();
+                $todayCarbon = \Carbon\Carbon::parse($today, Timezone::storage())->startOfDay();
                 $diffDays = $startCarbon->diffInDays($todayCarbon);
                 $anchor = ($us->anchor_day_order ?? 1) - 1;
                 $currentCycleDay = (($anchor + $diffDays) % $pattern->cycle_days) + 1;
@@ -4914,7 +4988,7 @@ class ShiftController extends Controller
      *   13:00–22:00 → 17:30  (9 jam / 2 = 4.5 jam dari 13:00)
      *   22:00–06:00 → 02:00  (8 jam / 2 = 4 jam dari 22:00)
      */
-    private function calculateHalfDayMidpoint(string $startTime, string $endTime, ?string $date = null): string
+    public static function calculateHalfDayMidpoint(string $startTime, string $endTime, ?string $date = null): string
     {
         $baseDate = $date ? Carbon::parse($date)->startOfDay() : Carbon::today();
 

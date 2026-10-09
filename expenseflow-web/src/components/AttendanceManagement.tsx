@@ -368,11 +368,21 @@ const rows = (res: any): any[] => {
   return [];
 };
 
-const fmtTime = (v?: string | null) => {
+const fmtTime = (v?: string | null, tzLabel?: string | null) => {
   if (!v) return '—';
-  const d = new Date(v);
-  if (isNaN(d.getTime())) return v;
-  return d.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' });
+  const s = String(v).trim();
+  let timeStr = '';
+  if (/^\d{2}:\d{2}/.test(s)) {
+    timeStr = s.slice(0, 5);
+  } else {
+    const match = s.match(/[T ](\d{2}:\d{2})/);
+    if (match) {
+      timeStr = match[1];
+    } else {
+      timeStr = s.length >= 5 ? s.slice(0, 5) : s;
+    }
+  }
+  return tzLabel ? `${timeStr} ${tzLabel}` : timeStr;
 };
 const fmtDate = (v?: string | null) => {
   if (!v) return '—';
@@ -904,6 +914,46 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     photoUrl?: string | null;
     loadingPhoto: boolean;
   } | null>(null);
+
+  // ─── Koreksi presensi manual HRD (tab Laporan) ──────────────────────
+  // row = baris laporan yang dikoreksi (bisa baris virtual id === null).
+  // Form HANYA memuat fakta mentah; jam kerja/lembur/is_holiday selalu
+  // dihitung ulang server-side dari snapshot, jadi tidak pernah dikirim.
+  const [correctionModal, setCorrectionModal] = useState<{
+    row: any;
+    isNew: boolean;
+  } | null>(null);
+  const [correctionForm, setCorrectionForm] = useState({
+    check_in_time: '',
+    check_out_time: '',
+    // 'auto'       = sistem memilih sesuai status karyawan (WFH/shift/kantor)
+    // 'dinas_luar' = read-only: ditampilkan tapi tidak bisa diubah via form ini
+    check_in_type: 'auto' as 'auto' | 'onsite' | 'wfh' | 'field' | 'dinas_luar',
+    status: '' as '' | 'present' | 'late' | 'absent' | 'wfh' | 'early_leave',
+    notes: '',
+    correction_reason: '',
+  });
+  const [isSavingCorrection, setIsSavingCorrection] = useState(false);
+  // Error 422 ditampilkan DI DALAM modal, bukan sebagai banner halaman —
+  // banner halaman tertutup modal sehingga HRD tidak melihat sebabnya.
+  const [correctionError, setCorrectionError] = useState<string | null>(null);
+  // Gerbang konfirmasi server: 422 { requires_confirmation, dangerous_changed_fields }
+  const [correctionConfirm, setCorrectionConfirm] = useState<{
+    message: string;
+    fields: string[];
+    phrase: string;
+  } | null>(null);
+  const [correctionConfirmText, setCorrectionConfirmText] = useState('');
+  // Gerbang konfirmasi server khusus: 422 { active_session_block, requires_confirmation }
+  // saat jam pulang hari ini diisi pada sesi yang masih aktif (karyawan belum
+  // check-out sendiri) — risikonya beda dari confirm_dangerous (bukan cuma
+  // dampak gaji, tapi memblokir check-out mobile karyawan), jadi field & state
+  // konfirmasinya sengaja dipisah.
+  const [correctionActiveSessionConfirm, setCorrectionActiveSessionConfirm] = useState<{
+    message: string;
+    checkInTime: string;
+  } | null>(null);
+
   const [users, setUsers] = useState<any[]>([]);
   const [userSearch, setUserSearch] = useState('');
   const [userOfficeFilter, setUserOfficeFilter] = useState('');
@@ -1653,8 +1703,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     try {
       if (forceRefresh) invalidateCache('/dashboard/attendance/report');
       const f: any = { page, per_page: reportPageSize };
-      if (reportFilter.start_date) f.start_date = reportFilter.start_date;
-      if (reportFilter.end_date) f.end_date = reportFilter.end_date;
+      if (reportFilter.start_date) {
+        f.start_date = reportFilter.start_date;
+        f.end_date = reportFilter.end_date || reportFilter.start_date;
+      } else if (reportFilter.end_date) {
+        f.end_date = reportFilter.end_date;
+      }
       if (reportFilter.status) f.status = reportFilter.status;
       if (reportFilter.type) f.type = reportFilter.type;
       if (reportFilter.search) f.search = reportFilter.search;
@@ -1942,6 +1996,205 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     setVisitDetailModal(null);
   };
 
+  // ═══════════════════════════════════════════════════════════════════
+  // KOREKSI PRESENSI MANUAL (tab Laporan)
+  //
+  // Satu modal untuk dua kasus, dibedakan oleh row.id:
+  //   - row.id != null  → mengoreksi baris presensi yang sudah ada
+  //   - row.id === null → input manual (backfill alpha / lupa check-in)
+  // Keduanya memakai endpoint yang sama (attendances unique user_id+date).
+  //
+  // Jam kerja, lembur dan is_holiday TIDAK ada di form: server selalu
+  // menghitungnya ulang dari snapshot aturan saat check-in. Mengirimnya dari
+  // sini hanya akan diabaikan — dan kalau sampai diterima, akan menjadi
+  // sumber selisih gaji yang tidak terdeteksi.
+  // ═══════════════════════════════════════════════════════════════════
+
+  /** Periode "YYYY-MM" yang slip gajinya sudah approved/paid → koreksi ditolak server. */
+  const lockedPeriods: string[] = useMemo(
+    () => (Array.isArray((report as any)?.locked_periods) ? (report as any).locked_periods : []),
+    [report]
+  );
+
+  const isPeriodLocked = useCallback(
+    (date?: string | null) => !!date && lockedPeriods.includes(String(date).slice(0, 7)),
+    [lockedPeriods]
+  );
+
+  /** "2026-10-06T08:05:00+07:00" atau "08:05:00" → "08:05" untuk <input type="time"> (string parsing murni tanpa new Date() agar tidak tergeser zona laptop HRD). */
+  const toTimeInput = (v?: string | null): string => {
+    if (!v) return '';
+    const s = String(v).trim();
+    if (/^\d{2}:\d{2}/.test(s)) return s.slice(0, 5);
+    const match = s.match(/[T ](\d{2}:\d{2})/);
+    if (match) return match[1];
+    return s.slice(11, 16);
+  };
+
+  const openCorrectionModal = (row: any) => {
+    const isNew = row.id === null || row.id === undefined;
+    setCorrectionModal({ row, isNew });
+
+    // Resolusi tipe presensi awal:
+    // - Baris baru (virtual): default 'auto' agar sistem pilih WFH/lapangan/kantor
+    // - Dinas luar: pertahankan 'dinas_luar' (read-only badge, tidak ditulis ulang)
+    // - Tipe valid lain: pakai nilai dari record
+    let initType: 'auto' | 'onsite' | 'wfh' | 'field' | 'dinas_luar';
+    if (isNew) {
+      initType = 'auto';
+    } else if (row.check_in_type === 'dinas_luar') {
+      initType = 'dinas_luar'; // tampilkan read-only, tidak dikirim ke API
+    } else if (['onsite', 'wfh', 'field'].includes(row.check_in_type)) {
+      initType = row.check_in_type;
+    } else {
+      initType = 'auto';
+    }
+
+    setCorrectionForm({
+      check_in_time: row.check_in_time_local || toTimeInput(row.check_in_time),
+      check_out_time: row.check_out_time_local || toTimeInput(row.check_out_time),
+      check_in_type: initType,
+      // Kosong = biarkan server menghitung status dari jadwal (termasuk
+      // early_leave). HRD hanya mengisinya bila tahu konteks di luar sistem.
+      status: '',
+      notes: row.notes ?? '',
+      correction_reason: '',
+    });
+    setCorrectionError(null);
+    setCorrectionConfirm(null);
+    setCorrectionConfirmText('');
+    setCorrectionActiveSessionConfirm(null);
+  };
+
+  const closeCorrectionModal = () => {
+    if (isSavingCorrection) return;
+    setCorrectionModal(null);
+    setCorrectionError(null);
+    setCorrectionConfirm(null);
+    setCorrectionConfirmText('');
+    setCorrectionActiveSessionConfirm(null);
+  };
+
+  const handleSaveCorrection = async (withConfirmation = false) => {
+    if (!correctionModal || isSavingCorrection) return;
+    const { row } = correctionModal;
+
+    // ─── Validasi lokal: tangkap yang jelas sebelum memanggil API ──────
+    const reason = correctionForm.correction_reason.trim();
+    if (reason.length < 10) {
+      setCorrectionError('Alasan koreksi wajib diisi minimal 10 karakter sebagai jejak audit.');
+      return;
+    }
+    if (!correctionForm.check_in_time && !correctionForm.status) {
+      setCorrectionError('Isi minimal jam masuk atau status presensi.');
+      return;
+    }
+    if (correctionForm.check_out_time && !correctionForm.check_in_time) {
+      setCorrectionError('Jam pulang tidak bisa diisi tanpa jam masuk.');
+      return;
+    }
+    // Status kehadiran fisik tanpa jam masuk = hari kerja dibayar tanpa jam kerja
+    // (gaji fiktif di payroll). Hanya "Alpha" yang boleh tanpa jam masuk.
+    if (!correctionForm.check_in_time && ['present', 'late', 'early_leave', 'wfh'].includes(correctionForm.status)) {
+      setCorrectionError(
+        `Status "${statusLabel(correctionForm.status)}" wajib disertai jam masuk — tanpa itu karyawan terhitung hadir sehari penuh di payroll tanpa jam kerja. Isi jam masuk, atau pilih status Alpha bila karyawan memang tidak hadir.`
+      );
+      return;
+    }
+    if (withConfirmation && correctionConfirm && correctionConfirmText.trim().toUpperCase() !== correctionConfirm.phrase) {
+      setCorrectionError(`Ketik ${correctionConfirm.phrase} dengan tepat untuk melanjutkan.`);
+      return;
+    }
+
+    setIsSavingCorrection(true);
+    setCorrectionError(null);
+    try {
+      const payload: any = {
+        user_id: row.user_id,
+        date: String(row.date).slice(0, 10),
+        check_in_time: correctionForm.check_in_time || null,
+        check_out_time: correctionForm.check_out_time || null,
+        // 'dinas_luar' tidak dikirim ke endpoint koreksi (field tidak ada di allowlist).
+        // Backend akan mempertahankan nilai lama jika check_in_type tidak dikirim.
+        ...(correctionForm.check_in_type !== 'dinas_luar' && {
+          check_in_type: correctionForm.check_in_type,
+        }),
+        notes: correctionForm.notes || null,
+        correction_reason: reason,
+      };
+      if (correctionForm.status) payload.status = correctionForm.status;
+      if (withConfirmation && correctionConfirm) {
+        payload.confirm_dangerous = correctionConfirm.phrase;
+      }
+      if (correctionActiveSessionConfirm) {
+        payload.override_active_session = true;
+      }
+
+      const res: any = await attendanceApi.correct(payload);
+
+      setCorrectionModal(null);
+      setCorrectionConfirm(null);
+      setCorrectionConfirmText('');
+      setCorrectionActiveSessionConfirm(null);
+      await loadReport(reportPage, true);
+
+      onAddAuditLog(
+        correctionModal.isNew ? 'Input Manual Presensi' : 'Presensi Dikoreksi',
+        `${row.user_name} — ${fmtDate(row.date)}. Alasan: ${reason}`,
+        'bg-sky-500'
+      );
+      onAddNotification(
+        'success',
+        correctionModal.isNew ? 'Presensi Diinput' : 'Presensi Dikoreksi',
+        res?.message || 'Koreksi presensi berhasil disimpan.'
+      );
+    } catch (e) {
+      if (e instanceof ApiError) {
+        // 429 tetap lewat jalur banner halaman agar countdown rate-limit jalan.
+        if (e.status === 429) {
+          setCorrectionModal(null);
+          reportApiError(e, 'Terlalu banyak permintaan koreksi.');
+          return;
+        }
+        // Gerbang konfirmasi server: jam pulang hari ini diisi pada sesi yang
+        // masih aktif — akan memblokir check-out mobile karyawan sendiri.
+        // Dicek SEBELUM requires_confirmation generik karena guard ini di
+        // backend selalu menembak lebih dulu (lihat Guard 9).
+        if (e.data?.active_session_block === true) {
+          setCorrectionActiveSessionConfirm({
+            message: e.data?.message || 'Karyawan ini masih memiliki sesi presensi aktif hari ini.',
+            checkInTime: e.data?.check_in_time || '',
+          });
+          setCorrectionError(null);
+          return;
+        }
+        // Gerbang konfirmasi server: perubahan ini menggeser perhitungan gaji.
+        if (e.data?.requires_confirmation === true) {
+          setCorrectionConfirm({
+            message: e.data?.message || 'Koreksi ini mengubah perhitungan gaji periode ini.',
+            fields: Array.isArray(e.data?.dangerous_changed_fields) ? e.data.dangerous_changed_fields : [],
+            phrase: e.data?.confirmation_phrase || 'SIMPAN',
+          });
+          setCorrectionConfirmText('');
+          setCorrectionError(null);
+          return;
+        }
+        // Presedensi pesan: error per-field → message → message exception.
+        const firstError = e.data?.errors && Object.values(e.data.errors)[0];
+        setCorrectionError(
+          (Array.isArray(firstError) ? firstError[0] : undefined)
+          || e.data?.message
+          || e.message
+          || 'Gagal menyimpan koreksi presensi.'
+        );
+      } else {
+        setCorrectionError('Gagal menyimpan koreksi presensi.');
+      }
+    } finally {
+      setIsSavingCorrection(false);
+    }
+  };
+
   const handleToggleCutiQuota = async (
     userId: number,
     userName: string,
@@ -2051,8 +2304,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   const handleExport = async () => {
     try {
       const f: any = {};
-      if (reportFilter.start_date) f.start_date = reportFilter.start_date;
-      if (reportFilter.end_date) f.end_date = reportFilter.end_date;
+      if (reportFilter.start_date) {
+        f.start_date = reportFilter.start_date;
+        f.end_date = reportFilter.end_date || reportFilter.start_date;
+      } else if (reportFilter.end_date) {
+        f.end_date = reportFilter.end_date;
+      }
       if (reportFilter.status) f.status = reportFilter.status;
       if (reportFilter.type) f.type = reportFilter.type;
       if (reportFilter.search) f.search = reportFilter.search;
@@ -2369,6 +2626,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                     </button>
                                   )}
                                   <span className={`text-[9px] font-bold px-2 py-0.5 rounded ${statusBadge(p.status)}`}>{statusLabel(p.status)}</span>
+                                  {p.is_half_day && (
+                                    <span
+                                      className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200 dark:border-sky-900/40 shrink-0"
+                                      title={p.half_day_label || 'Cuti Setengah Hari'}
+                                    >
+                                      {p.half_day_label ?? 'Cuti ½ Hari'}
+                                    </span>
+                                  )}
                                 </div>
                               </div>
                             ))}
@@ -2431,6 +2696,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                       >
                                         <Home className="w-2.5 h-2.5" />
                                         WFH
+                                      </span>
+                                    )}
+                                    {p.is_half_day && (
+                                      <span
+                                        className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 dark:bg-sky-950/40 dark:text-sky-300 border border-sky-200 dark:border-sky-900/40 shrink-0"
+                                        title={p.half_day_label ? `${p.half_day_label}${p.half_day_start ? ` (${p.half_day_start} - ${p.half_day_end})` : ''}` : 'Cuti Setengah Hari'}
+                                      >
+                                        {p.half_day_label ?? 'Cuti ½ Hari'}
                                       </span>
                                     )}
                                     {isAlpha && (
@@ -4675,12 +4948,15 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                 />
               </div>
               <div className="space-y-1.5">
-                <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">Sampai Tanggal</label>
+                <label className="text-[10px] font-bold text-slate-400 block uppercase tracking-wider">
+                  Sampai Tanggal
+                  <span className="ml-1 text-[9px] font-normal text-slate-400 dark:text-slate-500 lowercase">(opsional)</span>
+                </label>
                 <CustomDatePicker
                   value={reportFilter.end_date}
                   min={reportFilter.start_date || undefined}
                   onChange={(val) => setReportFilterAndReset({ ...reportFilter, end_date: val })}
-                  placeholder="Pilih tanggal akhir"
+                  placeholder={reportFilter.start_date ? "Sama dg tanggal mulai" : "Pilih tanggal akhir"}
                   size="sm"
                 />
               </div>
@@ -4858,6 +5134,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         <th className="py-2 px-2 font-semibold">Lokasi</th>
                         <th className="py-2 px-2 font-semibold">GPS (WFH)</th>
                         <th className="py-2 px-2 font-semibold text-center">Status</th>
+                        <th className="py-2 px-2 font-semibold text-center">Aksi</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
@@ -4873,7 +5150,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         if (filteredReport.length === 0) {
                           return (
                             <tr>
-                              <td colSpan={13} className="text-center py-12">
+                              <td colSpan={14} className="text-center py-12">
                                 <div className="flex flex-col items-center justify-center text-slate-400 space-y-3">
                                   <div className="w-12 h-12 rounded-full bg-slate-50 dark:bg-slate-800/50 flex items-center justify-center">
                                     <CalendarCheck className="w-6 h-6 opacity-40" />
@@ -4919,8 +5196,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                   )}
                                 </span>
                               </td>
-                              <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_in_time)}</td>
-                              <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_out_time)}</td>
+                              <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_in_time_local || r.check_in_time, r.timezone_label)}</td>
+                              <td className="py-3 px-2 font-mono whitespace-nowrap">{fmtTime(r.check_out_time_local || r.check_out_time, r.timezone_label)}</td>
                               <td className="py-3 px-2 font-mono text-violet-600 dark:text-violet-400 font-medium whitespace-nowrap">
                                 {r.working_minutes != null ? fmtMinutes(r.working_minutes) : <span className="text-slate-300 dark:text-slate-600">—</span>}
                               </td>
@@ -4995,9 +5272,62 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 )}
                               </td>
                               <td className="py-3 px-2 text-center whitespace-nowrap">
-                                <span className={`inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${statusBadge(r.status)}`}>
-                                  {statusLabel(r.status)}
-                                </span>
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className={`inline-flex items-center justify-center text-[10px] font-bold px-2 py-1 rounded-md uppercase tracking-wider ${statusBadge(r.status)}`}>
+                                    {statusLabel(r.status)}
+                                  </span>
+                                  {/* Jejak koreksi manual HRD — palet sky (ungu dipakai auto-checkout,
+                                      violet dipakai early_leave). Alasan & pengoreksi di tooltip. */}
+                                  {r.is_corrected && (
+                                    <span
+                                      className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-400 border border-sky-200/70 dark:border-sky-900"
+                                      title={`${r.is_manual_entry ? 'Diinput manual' : 'Dikoreksi'} oleh ${r.corrected_by_name || 'HRD'}${r.corrected_at ? ' pada ' + fmtDate(r.corrected_at) : ''}${r.correction_reason ? '\nAlasan: ' + r.correction_reason : ''}`}
+                                    >
+                                      <Pencil className="w-2 h-2" />
+                                      {r.is_manual_entry ? 'INPUT MANUAL' : 'DIKOREKSI'}
+                                    </span>
+                                  )}
+                                </div>
+                              </td>
+                              <td className="py-3 px-2 text-center whitespace-nowrap">
+                                {(() => {
+                                  // editable/block_reason berasal dari API (satu sumber kebenaran),
+                                  // jadi alasan penolakan tidak di-hardcode di UI.
+                                  if (!r.editable) {
+                                    return r.block_reason ? (
+                                      <span title={r.block_reason} className="inline-flex items-center justify-center text-slate-300 dark:text-slate-600">
+                                        <Lock className="w-3.5 h-3.5" />
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-300 dark:text-slate-600">—</span>
+                                    );
+                                  }
+
+                                  // Periode payroll approved/paid: tombol non-aktif TANPA harus
+                                  // gagal dulu di server (locked_periods dikirim di envelope laporan).
+                                  const locked = isPeriodLocked(r.date);
+                                  if (locked) {
+                                    return (
+                                      <span
+                                        title="Payroll periode ini sudah disetujui/dibayarkan — presensi bulan tersebut tidak bisa dikoreksi lagi."
+                                        className="inline-flex items-center justify-center p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed"
+                                      >
+                                        <Lock className="w-3.5 h-3.5" />
+                                      </span>
+                                    );
+                                  }
+
+                                  return (
+                                    <button
+                                      type="button"
+                                      onClick={() => openCorrectionModal(r)}
+                                      title={isVirtual ? "Input presensi manual (karyawan lupa check-in / HP mati)" : "Koreksi jam / status presensi ini"}
+                                      className="inline-flex items-center justify-center p-1.5 rounded-lg bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-100 dark:hover:bg-indigo-900/50 transition cursor-pointer"
+                                    >
+                                      <Pencil className="w-3.5 h-3.5" />
+                                    </button>
+                                  );
+                                })()}
                               </td>
                             </tr>
                           );
@@ -5403,6 +5733,329 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         </div>
       )}
 
+      {/* ─── Modal: Koreksi / Input Manual Presensi ─── */}
+      {correctionModal && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+          <div onClick={closeCorrectionModal} className="fixed inset-0 bg-slate-900/70 backdrop-blur-sm" />
+          <div className="relative z-10 bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden max-h-[92vh]">
+
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-2.5">
+                <div className={`p-2 rounded-xl ${correctionModal.isNew
+                  ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400'
+                  : 'bg-indigo-50 dark:bg-indigo-950/50 text-indigo-600 dark:text-indigo-400'}`}>
+                  {correctionModal.isNew ? <Plus className="w-4 h-4" /> : <Pencil className="w-4 h-4" />}
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-800 dark:text-slate-100 text-sm">
+                    {correctionModal.isNew ? 'Input Manual Presensi' : 'Koreksi Presensi'}
+                  </h3>
+                  <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                    {correctionModal.row.user_name} &middot; {fmtDate(correctionModal.row.date)}{correctionModal.row.timezone_label ? ` · Zona: ${correctionModal.row.timezone_label}` : ''}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={closeCorrectionModal}
+                disabled={isSavingCorrection}
+                className="p-1.5 text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4">
+
+              {/* Ringkasan tersimpan — supaya HRD melihat apa yang akan berubah */}
+              <div className="rounded-xl bg-slate-50 dark:bg-slate-950/50 border border-slate-200/70 dark:border-slate-800 p-3.5">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-[11px]">
+                  <div>
+                    <span className="block text-slate-400 font-semibold uppercase tracking-wider text-[9px] mb-0.5">NIK</span>
+                    <span className="font-mono text-slate-700 dark:text-slate-300">{correctionModal.row.employee_code || '-'}</span>
+                  </div>
+                  <div>
+                    <span className="block text-slate-400 font-semibold uppercase tracking-wider text-[9px] mb-0.5">Shift</span>
+                    <span className="text-slate-700 dark:text-slate-300">{correctionModal.row.shift_name || 'Kantor (Default)'}</span>
+                  </div>
+                  <div>
+                    <span className="block text-slate-400 font-semibold uppercase tracking-wider text-[9px] mb-0.5">Jam Kerja</span>
+                    <span className="font-mono text-violet-600 dark:text-violet-400 font-semibold">
+                      {correctionModal.row.working_minutes != null ? fmtMinutes(correctionModal.row.working_minutes) : '-'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="block text-slate-400 font-semibold uppercase tracking-wider text-[9px] mb-0.5">Lembur</span>
+                    <span className="font-mono text-orange-600 dark:text-orange-400 font-semibold">
+                      {correctionModal.row.overtime_minutes > 0 ? fmtMinutes(correctionModal.row.overtime_minutes) : '-'}
+                    </span>
+                  </div>
+                </div>
+                <p className="mt-3 pt-3 border-t border-slate-200/70 dark:border-slate-800 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                  Jam kerja, lembur dan status hari libur <strong>dihitung ulang otomatis</strong> oleh sistem memakai aturan kantor/shift yang berlaku saat presensi ini dibuat, bukan pengaturan hari ini. Anda hanya perlu mengisi fakta jam &amp; status.
+                </p>
+              </div>
+
+              {/* Banner error 422 — di DALAM modal, bukan banner halaman yang tertutup modal */}
+              {correctionError && (
+                <div className="flex items-start gap-2.5 p-3 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900 text-rose-700 dark:text-rose-300">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <p className="text-xs leading-relaxed">{correctionError}</p>
+                </div>
+              )}
+
+              {/* Gerbang konfirmasi server: jam pulang hari ini diisi pada sesi yang
+                  masih aktif — akan memblokir check-out mobile karyawan sendiri */}
+              {correctionActiveSessionConfirm && (
+                <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-300 dark:border-rose-800 space-y-2">
+                  <div className="flex items-start gap-2.5">
+                    <ShieldAlert className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0 mt-0.5" />
+                    <p className="text-xs text-rose-800 dark:text-rose-200 leading-relaxed">{correctionActiveSessionConfirm.message}</p>
+                  </div>
+                  <p className="ml-6 text-[11px] text-rose-700 dark:text-rose-300 leading-relaxed">
+                    Klik <strong>Tetap Ambil Alih &amp; Simpan</strong> di bawah hanya bila Anda yakin sesi ini memang tidak akan ditutup sendiri oleh karyawan (mis. HP hilang, sudah resign).
+                  </p>
+                </div>
+              )}
+
+              {/* Gerbang konfirmasi server: perubahan ini menggeser perhitungan gaji */}
+              {correctionConfirm && (
+                <div className="p-3.5 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-300 dark:border-amber-800 space-y-2.5">
+                  <div className="flex items-start gap-2.5">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 dark:text-amber-400 shrink-0 mt-0.5" />
+                    <p className="text-xs text-amber-800 dark:text-amber-200 leading-relaxed">{correctionConfirm.message}</p>
+                  </div>
+                  {correctionConfirm.fields.length > 0 && (
+                    <ul className="ml-6 list-disc text-[11px] text-amber-800 dark:text-amber-200 space-y-0.5">
+                      {correctionConfirm.fields.map((f, i) => <li key={i}>{f}</li>)}
+                    </ul>
+                  )}
+                  <div className="ml-6">
+                    <label className="block text-[10px] font-bold text-amber-700 dark:text-amber-300 uppercase tracking-wider mb-1">
+                      Ketik {correctionConfirm.phrase} untuk melanjutkan
+                    </label>
+                    <input
+                      type="text"
+                      value={correctionConfirmText}
+                      onChange={(e) => {
+                        setCorrectionConfirmText(e.target.value.toUpperCase().trim());
+                        if (correctionError) setCorrectionError(null);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleSaveCorrection(true);
+                        }
+                      }}
+                      placeholder={correctionConfirm.phrase}
+                      autoComplete="off"
+                      className="w-full sm:w-48 p-2 border border-amber-300 dark:border-amber-800 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs font-mono font-bold tracking-widest uppercase focus:ring-1 focus:ring-amber-500 focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Jam masuk & jam pulang. input type=time dipakai (bukan CustomTimePicker)
+                  karena picker itu hanya menyediakan menit per 5 langkah tanpa input bebas,
+                  sehingga tidak bisa mewakili jam log mesin seperti 08:07. */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider">
+                    Jam Masuk {correctionModal.row.timezone_label ? `(${correctionModal.row.timezone_label})` : ''} <span className="text-rose-500">*</span>
+                  </label>
+                  <input
+                    type="time"
+                    value={correctionForm.check_in_time}
+                    onChange={(e) => {
+                      setCorrectionForm(f => ({ ...f, check_in_time: e.target.value }));
+                      if (correctionError) setCorrectionError(null);
+                    }}
+                    className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider">
+                    Jam Pulang {correctionModal.row.timezone_label ? `(${correctionModal.row.timezone_label})` : ''}
+                  </label>
+                  <input
+                    type="time"
+                    value={correctionForm.check_out_time}
+                    onChange={(e) => {
+                      setCorrectionForm(f => ({ ...f, check_out_time: e.target.value }));
+                      if (correctionError) setCorrectionError(null);
+                    }}
+                    className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                  />
+                  <p className="text-[10px] text-slate-400 leading-relaxed">
+                    Kosongkan bila karyawan belum pulang. Shift malam: isi jam pulang keesokan harinya (mis. 06:00).
+                  </p>
+                </div>
+              </div>
+
+              {/* Tipe & status */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider">
+                    Tipe Presensi
+                  </label>
+
+                  {/* Dinas luar: read-only badge — tidak boleh diubah via koreksi */}
+                  {correctionForm.check_in_type === 'dinas_luar' ? (
+                    <>
+                      <div className="w-full p-2.5 border border-amber-300 dark:border-amber-700 rounded-xl bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-300 text-sm flex items-center gap-2">
+                        <span className="text-base">🏢</span>
+                        <span className="font-semibold">Dinas Luar / Kunjungan Klien</span>
+                      </div>
+                      <p className="text-[10px] text-amber-600 dark:text-amber-400 leading-relaxed">
+                        Tipe dinas luar tidak bisa diubah di sini. Untuk mengubah, gunakan alur kunjungan klien.
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <select
+                        value={correctionForm.check_in_type}
+                        onChange={(e) => setCorrectionForm(f => ({ ...f, check_in_type: e.target.value as 'auto' | 'onsite' | 'wfh' | 'field' }))}
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:ring-1 focus:ring-indigo-500 focus:outline-none cursor-pointer"
+                      >
+                        <option value="auto">
+                          Otomatis
+                          {correctionModal?.row?.auto_check_in_label
+                            ? ` · ${correctionModal.row.auto_check_in_label}`
+                            : ' (Ikuti Status Karyawan)'}
+                        </option>
+                        <option value="onsite">Kantor</option>
+                        <option value="wfh">WFH</option>
+                        <option value="field">Lapangan</option>
+                      </select>
+
+                      {/* Helper note dinamis untuk mode Otomatis */}
+                      {correctionForm.check_in_type === 'auto' && (
+                        <p className="text-[10px] text-indigo-600 dark:text-indigo-400 leading-relaxed">
+                          {correctionModal?.row?.auto_check_in_label
+                            ? <>Terdeteksi: <strong>{correctionModal.row.auto_check_in_label}</strong>. Sistem akan menetapkan tipe ini secara otomatis.</>
+                            : <>Sistem akan menentukan tipe presensi berdasarkan jadwal, shift, dan status WFH karyawan pada tanggal ini.</>}
+                        </p>
+                      )}
+                      {correctionForm.check_in_type !== 'auto' && (
+                        <p className="text-[10px] text-slate-400 leading-relaxed">
+                          Dinas luar tidak tersedia di sini karena memerlukan data klien &amp; foto bukti kunjungan.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider">
+                    Status Kehadiran
+                  </label>
+                  <select
+                    value={correctionForm.status}
+                    onChange={(e) => setCorrectionForm(f => ({ ...f, status: e.target.value as typeof f.status }))}
+                    className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:ring-1 focus:ring-indigo-500 focus:outline-none cursor-pointer"
+                  >
+                    <option value="">Hitung otomatis dari jadwal</option>
+                    <option value="present">Hadir</option>
+                    <option value="late">Telat</option>
+                    <option value="early_leave">Pulang Awal</option>
+                    <option value="wfh">WFH</option>
+                    <option value="absent">Alpha</option>
+                  </select>
+                  {!correctionForm.check_in_time && ['present', 'late', 'early_leave', 'wfh'].includes(correctionForm.status) ? (
+                    <p className="text-[10px] text-rose-600 dark:text-rose-400 font-semibold leading-relaxed">
+                      Status "{statusLabel(correctionForm.status)}" wajib disertai jam masuk. Tanpa jam masuk, karyawan terhitung hadir sehari penuh di payroll tanpa jam kerja. Pilih Alpha bila karyawan memang tidak hadir.
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-slate-400 leading-relaxed">
+                      Biarkan otomatis bila tidak yakin. Isi hanya bila Anda tahu konteks di luar sistem.
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              {/* Catatan presensi */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider">
+                  Catatan Presensi
+                </label>
+                <input
+                  type="text"
+                  value={correctionForm.notes}
+                  maxLength={500}
+                  onChange={(e) => setCorrectionForm(f => ({ ...f, notes: e.target.value }))}
+                  placeholder="Opsional - catatan yang menempel pada baris presensi ini"
+                  className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                />
+              </div>
+
+              {/* Alasan koreksi - WAJIB, ini jejak auditnya */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block uppercase tracking-wider">
+                  Alasan Koreksi <span className="text-rose-500">*</span>
+                </label>
+                <textarea
+                  rows={3}
+                  value={correctionForm.correction_reason}
+                  maxLength={500}
+                  onChange={(e) => {
+                    setCorrectionForm(f => ({ ...f, correction_reason: e.target.value }));
+                    if (correctionError) setCorrectionError(null);
+                  }}
+                  placeholder="Contoh: HP karyawan mati, kehadiran diverifikasi dari buku tamu satpam dan rekaman CCTV."
+                  className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-sm leading-relaxed focus:ring-1 focus:ring-indigo-500 focus:outline-none resize-none"
+                />
+                <div className="flex items-center justify-between gap-3 text-[10px]">
+                  <span className={correctionForm.correction_reason.trim().length < 10 ? 'text-amber-600 dark:text-amber-400 font-semibold' : 'text-slate-400'}>
+                    {correctionForm.correction_reason.trim().length < 10
+                      ? `Minimal 10 karakter (kurang ${10 - correctionForm.correction_reason.trim().length}).`
+                      : 'Alasan tersimpan permanen di log aktivitas dan ikut ter-export ke CSV.'}
+                  </span>
+                  <span className="text-slate-400 font-mono shrink-0">{correctionForm.correction_reason.length}/500</span>
+                </div>
+              </div>
+
+              <div className="flex items-start gap-2 text-[10px] text-slate-500 dark:text-slate-400 leading-relaxed">
+                <Info className="w-3.5 h-3.5 shrink-0 mt-0.5 text-slate-400" />
+                <span>Karyawan akan menerima notifikasi bahwa presensinya dikoreksi, lengkap dengan alasan yang Anda tulis.</span>
+              </div>
+
+            </div>
+
+            <div className="px-5 py-4 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/80 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={closeCorrectionModal}
+                disabled={isSavingCorrection}
+                className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSaveCorrection(!!correctionConfirm)}
+                disabled={isSavingCorrection}
+                className={`inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold text-white transition disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer ${
+                  correctionActiveSessionConfirm
+                    ? 'bg-rose-600 hover:bg-rose-700'
+                    : correctionConfirm
+                    ? 'bg-amber-600 hover:bg-amber-700'
+                    : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                {isSavingCorrection ? (
+                  <><Loader2 className="w-3.5 h-3.5 animate-spin" /> Menyimpan...</>
+                ) : correctionActiveSessionConfirm ? (
+                  <><ShieldAlert className="w-3.5 h-3.5" /> Tetap Ambil Alih &amp; Simpan</>
+                ) : correctionConfirm ? (
+                  <><ShieldAlert className="w-3.5 h-3.5" /> Konfirmasi &amp; Simpan</>
+                ) : (
+                  <><Check className="w-3.5 h-3.5" /> Simpan Koreksi</>
+                )}
+              </button>
+            </div>
+
+          </div>
+        </div>
+      )}
+
       {/* ─── Modal: Panduan/Legend ─── */}
       {showLegend && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -5463,6 +6116,33 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       <span className="text-[9px] font-bold text-rose-500 bg-rose-50/50 px-1 py-0.5 rounded mt-0.5">LIBUR</span>
                       <span className="flex-1">
                         Di dalam kolom <strong>Lembur</strong>, label merah menandakan bahwa lembur tersebut dilakukan pada saat hari libur / weekend (uang lembur biasanya berbeda).
+                      </span>
+                    </li>
+                  </ul>
+                </div>
+
+                {/* Bagian Koreksi Manual HRD */}
+                <div>
+                  <h4 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-3">Koreksi Presensi (Kolom Aksi)</h4>
+                  <ul className="space-y-3 text-sm text-slate-700 dark:text-slate-300">
+                    <li className="flex gap-3 items-start">
+                      <span className="inline-flex items-center gap-1 text-[9px] font-bold px-1.5 py-0.5 rounded bg-sky-50 text-sky-700 dark:bg-sky-950/30 dark:text-sky-400 border border-sky-200/70 dark:border-sky-900 shrink-0 mt-0.5">
+                        <Pencil className="w-2 h-2" /> DIKOREKSI
+                      </span>
+                      <span className="flex-1">
+                        Baris ini pernah <strong>dikoreksi manual</strong> oleh HRD. Arahkan kursor ke badge untuk melihat siapa yang mengoreksi dan alasannya. Label <strong>INPUT MANUAL</strong> berarti barisnya memang dibuat HRD (karyawan tidak check-in sama sekali).
+                      </span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <Pencil className="w-4 h-4 text-indigo-500 shrink-0 mt-0.5" />
+                      <span className="flex-1">
+                        <strong>Koreksi &amp; Input Manual:</strong> klik icon pensil untuk memperbaiki jam masuk/pulang atau status presensi yang sudah tercatat, maupun mencatat kehadiran pada baris <strong>Alpha / Belum Hadir</strong> (karyawan lupa check-in / HP mati). Jam kerja, lembur dan status libur <strong>dihitung ulang otomatis</strong> memakai aturan kantor/shift yang berlaku saat check-in — bukan pengaturan hari ini.
+                      </span>
+                    </li>
+                    <li className="flex gap-3 items-start">
+                      <Lock className="w-4 h-4 text-slate-400 shrink-0 mt-0.5" />
+                      <span className="flex-1">
+                        <strong>Terkunci:</strong> payroll periode tersebut sudah disetujui atau dibayarkan, sehingga presensinya tidak bisa diubah lagi. Selisih yang memang perlu diperbaiki ditangani lewat komponen koreksi di payroll.
                       </span>
                     </li>
                   </ul>

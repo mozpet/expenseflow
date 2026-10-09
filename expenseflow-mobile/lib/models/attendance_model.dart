@@ -166,6 +166,8 @@ class OfficeArea {
   final double longitude;
   final double radiusMeters;
   final bool requireSelfie;
+  final String? timezone;
+  final String? timezoneLabel;
 
   OfficeArea({
     required this.id,
@@ -174,6 +176,8 @@ class OfficeArea {
     required this.longitude,
     required this.radiusMeters,
     this.requireSelfie = false,
+    this.timezone,
+    this.timezoneLabel,
   });
 
   factory OfficeArea.fromJson(Map<String, dynamic> json) {
@@ -188,6 +192,8 @@ class OfficeArea {
               0.0,
       radiusMeters: (json['radius_meters'] as num?)?.toDouble() ?? 100.0,
       requireSelfie: json['require_selfie'] == true,
+      timezone: json['timezone'] as String?,
+      timezoneLabel: json['timezone_label'] as String?,
     );
   }
 }

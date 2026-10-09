@@ -120,14 +120,22 @@ const OfficesTab: React.FC<{
     office_name: '',
     office_latitude: '',
     office_longitude: '',
+    timezone: 'Asia/Jakarta',
     radius_meters: 100,
     work_start_time: '08:00',
     work_end_time: '17:00',
     break_minutes: 60,
     work_days: [1, 2, 3, 4, 5] as number[],
     late_tolerance_minutes: 15,
+    late_fine_per_minute: '' as number | '',
+    late_count_mode: 'after_tolerance' as 'after_tolerance' | 'after_work_start',
+    late_fine_max_per_day: '' as number | '',
     late_checkin_cutoff_minutes: '' as number | '',
     wfh_checkin_window_minutes: 120,
+    overtime_rule: 'government' as 'government' | 'custom',
+    overtime_rate_amount: '' as number | '',
+    overtime_rate_unit: 'hour' as 'hour' | 'minute',
+    overtime_rate_taxable: true,
     overtime_enabled: true,
     overtime_multi_approval_enabled: true,
     min_overtime_minutes: 30,
@@ -177,11 +185,18 @@ const OfficesTab: React.FC<{
     office_longitude: 'Lokasi Kantor (Longitude)',
     radius_meters: 'Radius Presensi',
     late_tolerance_minutes: 'Toleransi Telat',
+    late_fine_per_minute: 'Denda Telat per Menit',
+    late_count_mode: 'Cara Hitung Keterlambatan',
+    late_fine_max_per_day: 'Denda Telat Maksimum per Hari',
     late_checkin_cutoff_minutes: 'Batas Waktu Presensi Telat',
     early_leave_tolerance_minutes: 'Toleransi Pulang Awal',
     min_checkout_interval_minutes: 'Jeda Minimal Check-out (Cooldown Buffer)',
     overtime_enabled: 'Hitung Lembur Otomatis',
     min_overtime_minutes: 'Ambang Minimal Lembur',
+    overtime_rule: 'Aturan Upah Lembur',
+    overtime_rate_amount: 'Nominal Bonus Lembur',
+    overtime_rate_unit: 'Satuan Bonus Lembur',
+    overtime_rate_taxable: 'Bonus Lembur Kena Pajak',
     checkout_reminder_minutes: 'Reminder Checkout',
     auto_checkout_grace_minutes: 'Auto-Checkout',
     flex_arrival_start: 'Window Datang Flexitime (Mulai)',
@@ -189,6 +204,7 @@ const OfficesTab: React.FC<{
     flex_core_start: 'Jam Inti Flexitime (Mulai)',
     flex_core_end: 'Jam Inti Flexitime (Selesai)',
     flex_target_minutes: 'Target Durasi Flexitime',
+    timezone: 'Zona Waktu Kantor',
   };
 
   const openAdd = () => {
@@ -209,14 +225,22 @@ const OfficesTab: React.FC<{
       office_name: o.office_name ?? '',
       office_latitude: o.office_latitude ?? '',
       office_longitude: o.office_longitude ?? '',
+      timezone: o.timezone ?? 'Asia/Jakarta',
       radius_meters: o.radius_meters ?? 100,
       work_start_time: (o.work_start_time ?? '08:00').slice(0, 5),
       work_end_time: (o.work_end_time ?? '17:00').slice(0, 5),
       break_minutes: o.break_minutes ?? 60,
       work_days: o.work_days ?? [1, 2, 3, 4, 5],
       late_tolerance_minutes: o.late_tolerance_minutes ?? 15,
+      late_fine_per_minute: o.late_fine_per_minute != null ? Number(o.late_fine_per_minute) : '',
+      late_count_mode: o.late_count_mode === 'after_work_start' ? 'after_work_start' : 'after_tolerance',
+      late_fine_max_per_day: o.late_fine_max_per_day != null ? Number(o.late_fine_max_per_day) : '',
       late_checkin_cutoff_minutes: o.late_checkin_cutoff_minutes != null ? o.late_checkin_cutoff_minutes : '',
       wfh_checkin_window_minutes: o.wfh_checkin_window_minutes ?? 120,
+      overtime_rule: o.overtime_rule === 'custom' ? 'custom' : 'government',
+      overtime_rate_amount: o.overtime_rate_amount != null ? Number(o.overtime_rate_amount) : '',
+      overtime_rate_unit: o.overtime_rate_unit === 'minute' ? 'minute' : 'hour',
+      overtime_rate_taxable: o.overtime_rate_taxable !== false && o.overtime_rate_taxable !== 0,
       overtime_enabled: o.overtime_enabled ?? true,
       overtime_multi_approval_enabled: o.overtime_multi_approval_enabled !== false,
       min_overtime_minutes: o.min_overtime_minutes ?? 30,
@@ -394,6 +418,20 @@ const OfficesTab: React.FC<{
       return 'Menit auto-checkout harus LEBIH BESAR dari menit reminder checkout, agar karyawan sempat menerima pengingat sebelum sistem menutup presensinya.';
     }
 
+    for (const [key, label] of [['late_fine_per_minute', 'Denda per menit'], ['late_fine_max_per_day', 'Denda maksimum per hari']] as const) {
+      const v = form[key];
+      if (v !== '' && v != null && (isNaN(Number(v)) || Number(v) < 0)) {
+        return `${label} harus berupa angka rupiah 0 atau lebih.`;
+      }
+    }
+
+    if (form.overtime_rule === 'custom') {
+      const amt = Number(form.overtime_rate_amount);
+      if (form.overtime_rate_amount === '' || form.overtime_rate_amount == null || isNaN(amt) || amt <= 0) {
+        return 'Aturan lembur sendiri: nominal bonus lembur wajib diisi dan lebih dari 0.';
+      }
+    }
+
     // Toleransi telat tidak boleh lebih besar dari batas waktu presensi telat (cutoff)
     if (
       form.late_checkin_cutoff_minutes !== '' &&
@@ -444,14 +482,22 @@ const OfficesTab: React.FC<{
         office_name: form.office_name,
         office_latitude: Number(form.office_latitude),
         office_longitude: Number(form.office_longitude),
+        timezone: form.timezone || 'Asia/Jakarta',
         radius_meters: Number(form.radius_meters),
         work_start_time: form.work_start_time,
         work_end_time: form.work_end_time,
         break_minutes: Number(form.break_minutes ?? 60),
         work_days: form.work_days,
         late_tolerance_minutes: Number(form.late_tolerance_minutes),
+        late_fine_per_minute: form.late_fine_per_minute === '' || form.late_fine_per_minute == null ? null : Number(form.late_fine_per_minute),
+        late_count_mode: form.late_count_mode === 'after_work_start' ? 'after_work_start' : 'after_tolerance',
+        late_fine_max_per_day: form.late_fine_max_per_day === '' || form.late_fine_max_per_day == null ? null : Number(form.late_fine_max_per_day),
         late_checkin_cutoff_minutes: form.late_checkin_cutoff_minutes === '' || form.late_checkin_cutoff_minutes === null ? null : Number(form.late_checkin_cutoff_minutes),
         wfh_checkin_window_minutes: form.wfh_checkin_window_minutes === '' ? null : Number(form.wfh_checkin_window_minutes),
+        overtime_rule: form.overtime_rule === 'custom' ? 'custom' : 'government',
+        overtime_rate_amount: form.overtime_rule === 'custom' && form.overtime_rate_amount !== '' && form.overtime_rate_amount != null ? Number(form.overtime_rate_amount) : null,
+        overtime_rate_unit: form.overtime_rate_unit === 'minute' ? 'minute' : 'hour',
+        overtime_rate_taxable: form.overtime_rate_taxable !== false,
         overtime_enabled: !!form.overtime_enabled,
         overtime_multi_approval_enabled: form.overtime_multi_approval_enabled !== false,
         min_overtime_minutes: Number(form.min_overtime_minutes),
@@ -549,8 +595,11 @@ const OfficesTab: React.FC<{
             <div key={o.id} className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-2">
               <div className="flex justify-between items-start">
                 <div className="space-y-1">
-                  <h5 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                  <h5 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5 flex-wrap">
                     <Building2 className="w-4 h-4 text-indigo-600" /> {o.office_name}
+                    <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                      {o.timezone_label || 'WIB'}
+                    </span>
                   </h5>
                   {o.users_count !== undefined && (
                     <span className={`inline-flex items-center gap-1 text-[10px] font-medium px-2 py-0.5 rounded-full border ${
@@ -579,6 +628,16 @@ const OfficesTab: React.FC<{
                 <span>Radius: {o.radius_meters} m</span>
                 <span>Jam: {(o.work_start_time ?? '').slice(0, 5)} – {(o.work_end_time ?? '').slice(0, 5)}</span>
                 <span>Toleransi telat: {o.late_tolerance_minutes} mnt</span>
+                {o.late_fine_per_minute != null && Number(o.late_fine_per_minute) > 0 && (
+                  <span className="col-span-2 text-red-600 dark:text-red-400">
+                    Denda telat: Rp {Number(o.late_fine_per_minute).toLocaleString('id-ID')}/mnt
+                    {o.late_fine_max_per_day != null && Number(o.late_fine_max_per_day) > 0
+                      ? ` (maks Rp ${Number(o.late_fine_max_per_day).toLocaleString('id-ID')}/hari)`
+                      : ''}
+                    {' · '}
+                    {o.late_count_mode === 'after_work_start' ? 'dihitung dari jam masuk' : 'dihitung setelah toleransi'}
+                  </span>
+                )}
                 <span className="col-span-2 flex items-center gap-1">
                   <CalendarDays className="w-3 h-3 text-indigo-500" />
                   Hari kerja:{' '}
@@ -602,6 +661,14 @@ const OfficesTab: React.FC<{
                     : <span className="text-orange-600 dark:text-orange-400 font-semibold">Aktif (min {o.min_overtime_minutes ?? 30} mnt lewat jam pulang)</span>
                   }
                 </span>
+                {o.overtime_enabled !== false && (
+                  <span className="col-span-2 text-orange-600 dark:text-orange-400">
+                    Upah lembur:{' '}
+                    {o.overtime_rule === 'custom' && Number(o.overtime_rate_amount) > 0
+                      ? `Aturan sendiri · Rp ${Number(o.overtime_rate_amount).toLocaleString('id-ID')}/${o.overtime_rate_unit === 'minute' ? 'menit' : 'jam'} · ${o.overtime_rate_taxable === false || o.overtime_rate_taxable === 0 ? 'tidak kena pajak' : 'kena pajak'}`
+                      : 'Aturan pemerintah (PP 35/2021)'}
+                  </span>
+                )}
                 <span className="col-span-2 flex items-center gap-1">
                   <Clock className="w-3 h-3 text-violet-500" />
                   Pulang Awal:{' '}
@@ -767,6 +834,23 @@ const OfficesTab: React.FC<{
                         if (validationError) setValidationError(null);
                       }}
                     />
+                  </div>
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                      Zona Waktu Kantor <span className="text-rose-500 font-bold">*</span>
+                    </label>
+                    <select
+                      value={form.timezone || 'Asia/Jakarta'}
+                      onChange={(e) => {
+                        setForm({ ...form, timezone: e.target.value });
+                        if (validationError) setValidationError(null);
+                      }}
+                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                    >
+                      <option value="Asia/Jakarta">WIB — Asia/Jakarta (UTC+7)</option>
+                      <option value="Asia/Makassar">WITA — Asia/Makassar (UTC+8)</option>
+                      <option value="Asia/Jayapura">WIT — Asia/Jayapura (UTC+9)</option>
+                    </select>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
                     <div className="space-y-1">
@@ -1071,6 +1155,71 @@ const OfficesTab: React.FC<{
                     </div>
                   </div>
 
+                  {/* Denda keterlambatan */}
+                  <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-3">
+                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                      <Clock className="w-3.5 h-3.5 text-red-500" /> Denda Keterlambatan
+                    </span>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 block">Denda per Menit (Rp)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={100}
+                          value={form.late_fine_per_minute ?? ''}
+                          onChange={(e) => setForm({ ...form, late_fine_per_minute: e.target.value })}
+                          placeholder="Kosongkan = tanpa denda"
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-400 block">Denda Maksimum per Hari (Rp)</label>
+                        <input
+                          type="number"
+                          min={0}
+                          step={1000}
+                          value={form.late_fine_max_per_day ?? ''}
+                          onChange={(e) => setForm({ ...form, late_fine_max_per_day: e.target.value })}
+                          placeholder="Kosongkan = tanpa batas"
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1.5">
+                      <label className="text-[10px] font-bold text-slate-400 block">Keterlambatan mulai dihitung</label>
+                      <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
+                        <input
+                          type="radio"
+                          name="late_count_mode"
+                          checked={form.late_count_mode === 'after_work_start'}
+                          onChange={() => setForm({ ...form, late_count_mode: 'after_work_start' })}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <b>Setelah jam masuk</b> — dalam toleransi tidak dicatat telat sama sekali; begitu lewat toleransi,
+                          telat dihitung sejak jam masuk (jam masuk 08:00, toleransi 15 mnt: 08:12 aman, 08:16 langsung telat 16 menit).
+                        </span>
+                      </label>
+                      <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
+                        <input
+                          type="radio"
+                          name="late_count_mode"
+                          checked={form.late_count_mode !== 'after_work_start'}
+                          onChange={() => setForm({ ...form, late_count_mode: 'after_tolerance' })}
+                          className="mt-0.5"
+                        />
+                        <span>
+                          <b>Setelah toleransi telat</b> — hanya kelebihan dari toleransi yang dihitung
+                          (08:16 dengan toleransi 15 mnt = telat 1 menit).
+                        </span>
+                      </label>
+                    </div>
+                    <p className="text-[9px] text-slate-400">
+                      Denda tersimpan per presensi dan otomatis dipotong dari slip gaji (Potongan Keterlambatan).
+                    </p>
+                  </div>
+
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
                     {/* Lembur */}
                     <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
@@ -1099,6 +1248,78 @@ const OfficesTab: React.FC<{
                           <p className="text-[9px] text-slate-400">
                             Lembur dihitung jika lewat jam pulang ≥ ambang ini.
                           </p>
+                        </div>
+                      )}
+                      {form.overtime_enabled && (
+                        <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-slate-700/80">
+                          <label className="text-[10px] font-bold text-slate-400 block">Aturan upah lembur</label>
+                          <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
+                            <input
+                              type="radio"
+                              name="overtime_rule"
+                              checked={form.overtime_rule !== 'custom'}
+                              onChange={() => setForm({ ...form, overtime_rule: 'government' })}
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <b>Aturan pemerintah (PP 35/2021)</b> — upah/173 per jam; jam pertama x1,5, berikutnya x2,
+                              hari libur x2. Muncul di slip sebagai "Tunjangan Lembur".
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
+                            <input
+                              type="radio"
+                              name="overtime_rule"
+                              checked={form.overtime_rule === 'custom'}
+                              onChange={() => setForm({ ...form, overtime_rule: 'custom' })}
+                              className="mt-0.5"
+                            />
+                            <span>
+                              <b>Aturan sendiri</b> — tarif tetap per jam/menit lembur, sama untuk semua hari.
+                              Muncul di slip sebagai "Bonus Lembur".
+                            </span>
+                          </label>
+                          {form.overtime_rule === 'custom' && (
+                            <div className="space-y-2 pl-6">
+                              <div className="grid grid-cols-2 gap-2">
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-slate-400 block">Nominal bonus (Rp)</label>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={500}
+                                    value={form.overtime_rate_amount ?? ''}
+                                    onChange={(e) => setForm({ ...form, overtime_rate_amount: e.target.value })}
+                                    placeholder="mis. 20000"
+                                    className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                                  />
+                                </div>
+                                <div className="space-y-1">
+                                  <label className="text-[10px] font-bold text-slate-400 block">Satuan</label>
+                                  <select
+                                    value={form.overtime_rate_unit}
+                                    onChange={(e) => setForm({ ...form, overtime_rate_unit: e.target.value })}
+                                    className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs"
+                                  >
+                                    <option value="hour">Per jam</option>
+                                    <option value="minute">Per menit</option>
+                                  </select>
+                                </div>
+                              </div>
+                              <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
+                                <input
+                                  type="checkbox"
+                                  checked={form.overtime_rate_taxable !== false}
+                                  onChange={(e) => setForm({ ...form, overtime_rate_taxable: e.target.checked })}
+                                  className="w-4 h-4 accent-orange-600"
+                                />
+                                Kena pajak (masuk dasar bruto PPh21)
+                              </label>
+                              <p className="text-[9px] text-amber-600 dark:text-amber-400">
+                                Jangan membuat komponen gaji lembur lagi di Penggajian agar lembur tidak dibayar ganda.
+                              </p>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>

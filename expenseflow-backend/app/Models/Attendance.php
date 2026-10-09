@@ -17,6 +17,11 @@ class Attendance extends Model
         'check_in_distance_meters',
         'check_in_type',
         'check_in_photo',
+        // Zona lokasi fisik karyawan & klaim perangkat (lihat migration 2026_10_08_000002)
+        'check_in_local_timezone',
+        'check_out_local_timezone',
+        'device_timezone',
+        'device_utc_offset_minutes',
         'client_name',
         'client_address',
         'visit_notes',
@@ -34,12 +39,19 @@ class Attendance extends Model
         'is_offline_sync',
         'offline_recorded_at',
 
+        // Jejak koreksi presensi manual oleh HRD (lihat migration 2026_10_06_000001)
+        'corrected_by',
+        'corrected_at',
+        'correction_reason',
+        'is_manual_entry',
+
         // Snapshot pengaturan kantor saat check-in (lihat migration 2026_08_26 & 2026_09_04)
         'snap_office_id',
         'snap_office_latitude',
         'snap_office_longitude',
         'snap_radius_meters',
         'snap_source',
+        'snap_timezone',
         'snap_shift_id',
         'snap_shift_name',
         'snap_work_start_time',
@@ -58,6 +70,18 @@ class Attendance extends Model
         'snap_flex_core_start',
         'snap_flex_core_end',
         'snap_flex_target_minutes',
+        // keterlambatan & denda (2026-10-09)
+        'late_minutes',
+        'late_fine_amount',
+        'snap_late_fine_per_minute',
+        'snap_late_count_mode',
+        'snap_late_fine_max_per_day',
+        'snap_late_tolerance_minutes',
+        // aturan upah lembur saat check-in (2026-10-10)
+        'snap_overtime_rule',
+        'snap_overtime_rate_amount',
+        'snap_overtime_rate_unit',
+        'snap_overtime_rate_taxable',
     ];
 
     protected function casts(): array
@@ -78,6 +102,8 @@ class Attendance extends Model
             'is_holiday'               => 'boolean',
             'is_auto_checkout'         => 'boolean',
             'is_offline_sync'          => 'boolean',
+            'corrected_at'             => 'datetime',
+            'is_manual_entry'          => 'boolean',
             'snap_office_latitude'     => 'decimal:8',
             'snap_office_longitude'    => 'decimal:11',
             'snap_radius_meters'       => 'integer',
@@ -92,7 +118,49 @@ class Attendance extends Model
             'snap_grace_minutes'       => 'integer',
             'snap_flexitime_enabled'   => 'boolean',
             'snap_flex_target_minutes' => 'integer',
+            'device_utc_offset_minutes'=> 'integer',
+            'late_minutes'             => 'integer',
+            'late_fine_amount'         => 'decimal:2',
+            'snap_late_fine_per_minute'  => 'decimal:2',
+            'snap_late_fine_max_per_day' => 'decimal:2',
+            'snap_late_tolerance_minutes'=> 'integer',
+            'snap_overtime_rate_amount'  => 'decimal:2',
+            'snap_overtime_rate_taxable' => 'boolean',
         ];
+    }
+
+    /**
+     * JARING PENGAMAN PENYIMPANAN DATETIME (2026-10-08)
+     *
+     * Laravel menuliskan datetime dengan format() pada zona Carbon yang diberikan.
+     * Sejak perhitungan presensi menjadi sadar-zona, Carbon bernuansa
+     * Asia/Makassar atau Asia/Jayapura mengalir ke seluruh logika — dan bila satu
+     * saja di-assign langsung ke kolom datetime, jam dinding WITA/WIT akan
+     * tersimpan lalu dibaca ulang sebagai WIB (bergeser 1-2 jam) TANPA error.
+     *
+     * Override ini membuat kelas kesalahan itu tidak mungkin terjadi: apa pun zona
+     * Carbon yang masuk, database selalu menerima jam dinding zona penyimpanan.
+     */
+    public function fromDateTime($value)
+    {
+        if ($value === null) {
+            return null;
+        }
+
+        return parent::fromDateTime(
+            $this->asDateTime($value)->copy()->setTimezone(\App\Support\Timezone::storage())
+        );
+    }
+
+    /**
+     * Zona bisnis yang berlaku untuk baris presensi ini.
+     *
+     * Memprioritaskan snapshot saat check-in — baris lama (snap_timezone NULL)
+     * jatuh ke zona penyimpanan sehingga presensi historis tidak pernah berubah.
+     */
+    public function effectiveTimezone(): string
+    {
+        return \App\Support\Timezone::normalize($this->snap_timezone);
     }
 
     public function user(): BelongsTo
@@ -108,6 +176,18 @@ class Attendance extends Model
     public function overtimeApproval()
     {
         return $this->hasOne(\App\Models\OvertimeApproval::class);
+    }
+
+    /** HRD/Admin yang terakhir mengoreksi baris presensi ini. */
+    public function corrector(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'corrected_by');
+    }
+
+    /** Apakah baris ini pernah dikoreksi manual oleh HRD? */
+    public function isCorrected(): bool
+    {
+        return $this->corrected_at !== null;
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -133,15 +213,43 @@ class Attendance extends Model
      * @param \App\Models\AttendanceSetting|null $office Kantor acuan (hasil radius
      *        check bila berjalan, selain itu kantor penempatan karyawan).
      * @param \App\Models\User|null $user Karyawan yang melakukan presensi (untuk snapshot flexitime).
+     * @param string|null $timezone Zona bisnis otoritatif saat check-in. WAJIB diambil
+     *        dari cabang PENEMPATAN karyawan ($user->effectiveTimezone()), BUKAN dari
+     *        $office — karena $office di sini adalah kantor acuan hasil multi-geofence
+     *        roaming yang bisa berpindah cabang. Roaming hanya melonggarkan geofence;
+     *        jadwal kerja, kalender presensi & periode payroll tetap milik cabang
+     *        penempatan. NULL → zona penyimpanan.
      */
-    public function buildSnapshot(array $schedule, ?string $jamPulang, ?AttendanceSetting $office, ?User $user = null): array
+    public function buildSnapshot(array $schedule, ?string $jamPulang, ?AttendanceSetting $office, ?User $user = null, ?string $timezone = null): array
     {
+        // Denda telat & toleransi efektif mengikuti kantor PENEMPATAN (schedule['office'],
+        // sama dengan determineStatus), bukan kantor acuan hasil roaming geofence.
+        $fine = \App\Services\Attendance\LateFineCalculator::configFromOffice(
+            $schedule['office'] ?? $office,
+            isset($schedule['late_tolerance_minutes']) ? (int) $schedule['late_tolerance_minutes'] : null
+        );
+
+        // Aturan upah lembur mengikuti kantor PENEMPATAN, sama seperti denda telat.
+        $otOffice = $schedule['office'] ?? $office;
+        $otCustom = $otOffice?->overtime_rule === 'custom';
+
         return [
+            'snap_overtime_rule'                 => $otOffice?->overtime_rule ?: 'government',
+            'snap_overtime_rate_amount'          => $otCustom ? $otOffice->overtime_rate_amount : null,
+            'snap_overtime_rate_unit'            => $otCustom ? ($otOffice->overtime_rate_unit ?: 'hour') : null,
+            'snap_overtime_rate_taxable'         => $otCustom ? (bool) $otOffice->overtime_rate_taxable : null,
+            'snap_late_fine_per_minute'          => $fine['rate'],
+            'snap_late_count_mode'               => $fine['mode'],
+            'snap_late_fine_max_per_day'         => $fine['max'],
+            'snap_late_tolerance_minutes'        => $fine['tolerance'],
             'snap_office_id'                     => $office?->id,
             'snap_office_latitude'               => $office?->office_latitude,
             'snap_office_longitude'              => $office?->office_longitude,
             'snap_radius_meters'                 => $office?->radius_meters,
             'snap_source'                        => $schedule['source'] === 'shift' ? 'shift' : 'office',
+            'snap_timezone'                      => \App\Support\Timezone::normalize(
+                $timezone ?? ($schedule['timezone'] ?? null)
+            ),
             'snap_shift_id'                      => $schedule['shift_id'] ?? null,
             'snap_shift_name'                    => $schedule['shift_name'] ?? null,
             'snap_work_start_time'               => $schedule['work_start_time'],
@@ -205,6 +313,9 @@ class Attendance extends Model
             'is_cross_day'    => (bool) $this->snap_is_cross_day,
             'break_minutes'   => $breakMinutes,
             'office'          => $office,
+            // Bentuk array WAJIB identik dengan ShiftController::resolveSchedule()
+            // agar bisa dipakai bergantian oleh semua perhitungan.
+            'timezone'        => $this->effectiveTimezone(),
         ];
     }
 
@@ -229,6 +340,9 @@ class Attendance extends Model
             $office->office_name  = '(kantor saat check-in)';
         }
 
+        if ($this->snap_timezone !== null) {
+            $office->timezone = $this->snap_timezone;
+        }
         if ($this->snap_office_latitude !== null) {
             $office->office_latitude = $this->snap_office_latitude;
         }
@@ -273,6 +387,25 @@ class Attendance extends Model
         }
 
         return $office;
+    }
+
+    /**
+     * Konfigurasi denda telat yang dibekukan saat check-in.
+     * Baris tanpa snapshot denda (sebelum fitur) → tarif NULL = tanpa denda;
+     * toleransi jatuh ke $fallbackTolerance.
+     *
+     * @return array{rate: ?float, mode: string, max: ?float, tolerance: int}
+     */
+    public function lateFineConfig(int $fallbackTolerance = 15): array
+    {
+        return [
+            'rate'      => $this->snap_late_fine_per_minute !== null ? (float) $this->snap_late_fine_per_minute : null,
+            'mode'      => \App\Services\Attendance\LateFineCalculator::normalizeMode($this->snap_late_count_mode),
+            'max'       => $this->snap_late_fine_max_per_day !== null ? (float) $this->snap_late_fine_max_per_day : null,
+            'tolerance' => $this->snap_late_tolerance_minutes !== null
+                ? (int) $this->snap_late_tolerance_minutes
+                : $fallbackTolerance,
+        ];
     }
 
     /**

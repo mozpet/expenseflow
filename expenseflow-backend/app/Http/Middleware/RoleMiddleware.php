@@ -207,7 +207,14 @@ class RoleMiddleware
         array $roles
     ): bool {
         // 1. Shared endpoints
-        if (! $isWrite && (str_contains($path, 'attendance/settings') || str_contains($path, 'offices'))) {
+        //    attendance/timezones = katalog zona waktu (WIB/WITA/WIT) untuk dropdown
+        //    form kantor. Hak bacanya disamakan dengan daftar cabang: ia dipakai di
+        //    form yang sama dan tidak memuat data perusahaan apa pun.
+        if (! $isWrite && (
+            str_contains($path, 'attendance/settings')
+            || str_contains($path, 'attendance/timezones')
+            || str_contains($path, 'offices')
+        )) {
             return $this->canAccessSharedBranchSettings($user, false);
         }
 

@@ -17,7 +17,12 @@ class SyncVersionController extends Controller
     {
         $user = $request->user();
         $companyId = $user->company_id;
-        $today = now('Asia/Jakarta')->toDateString();
+
+        // Tanggal presensi yang dicocokkan WAJIB tanggal lokal cabang karyawan:
+        // kolom attendances.date diturunkan di zona cabang, jadi memakai tanggal
+        // WIB akan membuat mobile cabang WIT membandingkan baris HARI SEBELUMNYA
+        // selama 2 jam pertama hari kerjanya (00:00-02:00 WIT = 22:00-00:00 WIB).
+        $today = now($user->effectiveTimezone())->toDateString();
 
         // 1. Presensi hari ini (check-in, check-out, perubahan status)
         $attendanceQuery = DB::table('attendances')->where('date', $today);
@@ -74,7 +79,11 @@ class SyncVersionController extends Controller
             'receipts'       => (string) $receiptsVersion,
             'invoices'       => (string) $invoicesVersion,
             'notifications'  => (string) $notifVersion,
-            'synced_at'      => now('Asia/Jakarta')->toDateTimeString(),
+            // Cap waktu sinkronisasi dalam jam lokal cabang karyawan + labelnya,
+            // agar klien tidak perlu mengonversi zona sendiri.
+            'synced_at'       => now($user->effectiveTimezone())->toDateTimeString(),
+            'timezone'        => $user->effectiveTimezone(),
+            'timezone_label'  => \App\Support\Timezone::label($user->effectiveTimezone()),
         ]);
     }
 }

@@ -75,11 +75,14 @@ class ActivityLogController extends Controller
         }
 
         // Filter: Date Range
-        if ($startDate = $request->query('start_date')) {
+        $startDate = $request->query('start_date');
+        $endDate   = $request->query('end_date') ?: ($startDate ?: null);
+
+        if ($startDate) {
             $query->whereDate('activity_logs.created_at', '>=', $startDate);
         }
 
-        if ($endDate = $request->query('end_date')) {
+        if ($endDate) {
             $query->whereDate('activity_logs.created_at', '<=', $endDate);
         }
 
@@ -127,9 +130,15 @@ class ActivityLogController extends Controller
             fputs($handle, "\xEF\xBB\xBF");
 
             // Header kolom
+            //
+            // Kolom waktu SENGAJA tetap dalam zona penyimpanan dan bukan zona cabang:
+            // audit log adalah satu aliran lintas cabang & lintas perusahaan, sehingga
+            // satu sumbu waktu tunggal adalah syarat agar urutan kejadiannya terbaca.
+            // Label diperjelas menjadi "Waktu Server" + labelnya agar pembaca tidak
+            // mengira jam ini adalah jam lokal cabangnya.
             fputcsv($handle, [
                 'ID',
-                'Waktu (WIB)',
+                'Waktu Server (' . \App\Support\Timezone::label(\App\Support\Timezone::storage()) . ')',
                 'Pelaku',
                 'Role Pelaku',
                 'Kategori',

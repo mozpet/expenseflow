@@ -366,4 +366,37 @@ class AttendanceTimezoneAndReportTest extends TestCase
             ->assertJsonPath('period.month', 10)
             ->assertJsonPath('period.year', 2026);
     }
+
+    // ─── 10. Uji Filter Sampai Tanggal Opsional (Single Day Default) ─────────
+    public function test_report_with_only_start_date_defaults_to_single_day(): void
+    {
+        Carbon::setTestNow(Carbon::parse('2026-10-05 10:00:00', 'Asia/Jakarta'));
+
+        $employee = $this->createEmployee('Budi Filter');
+
+        // Presensi di tanggal 2026-10-02
+        Attendance::create([
+            'user_id'       => $employee->id,
+            'date'          => '2026-10-02',
+            'check_in_time' => '2026-10-02 08:00:00',
+            'status'        => 'present',
+        ]);
+
+        // Presensi di tanggal 2026-10-03
+        Attendance::create([
+            'user_id'       => $employee->id,
+            'date'          => '2026-10-03',
+            'check_in_time' => '2026-10-03 08:00:00',
+            'status'        => 'present',
+        ]);
+
+        // Request hanya dengan start_date = 2026-10-02 (tanpa end_date)
+        $response = $this->actingAs($this->admin, 'sanctum')
+            ->getJson('/api/v1/dashboard/attendance/report?start_date=2026-10-02');
+
+        $response->assertOk();
+
+        $dates = collect($response->json('report.data'))->pluck('date')->unique()->values()->all();
+        $this->assertEquals(['2026-10-02'], $dates, 'Laporan hanya boleh memuat data untuk tanggal 2026-10-02 saja');
+    }
 }

@@ -132,7 +132,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
     final prov = Provider.of<PresensiProvider>(context, listen: false);
     try {
       await prov.syncStatusFromBackend(forceRefresh: true);
-      if (mounted && prov.canCheckIn) {
+      if (mounted && (prov.canCheckIn || prov.canCheckOut)) {
         setState(() {
           if (prov.canDinasLuar) {
             _selectedMode = 'dinas_luar';
@@ -160,7 +160,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
       await prov.syncStatusFromBackend(forceRefresh: true);
 
       // 2. Sinkronkan mode presensi lokal secara real-time berdasarkan respons backend
-      if (mounted && prov.canCheckIn) {
+      if (mounted && (prov.canCheckIn || prov.canCheckOut)) {
         setState(() {
           if (prov.canDinasLuar) {
             _selectedMode = 'dinas_luar';
@@ -536,17 +536,18 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
       final targetCheckoutStr = targetCheckoutRaw != null && targetCheckoutRaw.length >= 5
           ? targetCheckoutRaw.substring(0, 5)
           : targetCheckoutRaw;
-      final now = DateTime.now();
-      final nowTimeStr =
-          '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+      final branchNow = prov.currentBranchDateTime;
+      final nowTimeStr = prov.branchTime ??
+          '${branchNow.hour.toString().padLeft(2, '0')}:${branchNow.minute.toString().padLeft(2, '0')}';
 
       final isBeforeCore = nowTimeStr.compareTo(coreEndStr) < 0;
       final isBeforeTarget = targetCheckoutStr != null && nowTimeStr.compareTo(targetCheckoutStr) < 0;
 
       if (isBeforeCore || isBeforeTarget) {
+        final tzLabel = prov.branchTimezoneLabel;
         final reason = isBeforeCore
-            ? 'Saat ini masih dalam Jam Inti Wajib Hadir (Core Hours s.d. $coreEndStr WIB).'
-            : 'Target durasi kerja harian Anda belum tercapai (Target pulang: $targetCheckoutStr WIB).';
+            ? 'Saat ini masih dalam Jam Inti Wajib Hadir (Core Hours s.d. $coreEndStr $tzLabel).'
+            : 'Target durasi kerja harian Anda belum tercapai (Target pulang: $targetCheckoutStr $tzLabel).';
 
         final confirmed = await showDialog<bool>(
           context: context,
@@ -713,9 +714,13 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
         return;
       }
 
+      final crossTzInfo = (prov.isCrossTimezone && prov.timezoneDisplay != null)
+          ? ' • ${prov.timezoneDisplay}'
+          : '';
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text(wasCheckIn
+          content: Text((wasCheckIn
               ? (_selectedMode == 'dinas_luar'
                   ? 'Presensi dinas luar berhasil dicatat!'
                   : (_selectedMode == 'wfh'
@@ -723,7 +728,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                       : 'Presensi masuk berhasil dicatat!'))
               : (isEarlyLeave
                   ? 'Presensi pulang berhasil dicatat (Pulang Cepat)'
-                  : 'Presensi pulang berhasil dicatat!')),
+                  : 'Presensi pulang berhasil dicatat!')) + crossTzInfo),
           backgroundColor: isEarlyLeave
               ? const Color(0xFF7E22CE)
               : (_selectedMode == 'dinas_luar'
@@ -941,7 +946,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
     }
     
     // Inisialisasi awal & update dinamis mode presensi secara otomatis dari backend
-    if (prov.canCheckIn) {
+    if (prov.canCheckIn || prov.canCheckOut) {
       if (prov.canDinasLuar) {
         _selectedMode = 'dinas_luar';
       } else if (!prov.radiusEnabled && prov.wfhEnabled) {
@@ -1417,7 +1422,7 @@ class _PresensiMapScreenState extends State<PresensiMapScreen> {
                             ],
                           ),
                         ),
-                      ] else if (!prov.radiusEnabled && _hasActivePosition) ...[
+                      ] else if (prov.isWfhMode && _hasActivePosition) ...[
                         Container(
                           margin: const EdgeInsets.only(top: 8),
                           padding: const EdgeInsets.symmetric(

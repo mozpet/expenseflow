@@ -13,6 +13,8 @@ class AttendanceSetting extends Model
         'office_name',
         'office_latitude',
         'office_longitude',
+        // zona waktu bisnis cabang (WIB/WITA/WIT) — lihat migrasi 2026_10_08_000001
+        'timezone',
         'radius_meters',
         'work_start_time',
         'work_end_time',
@@ -20,6 +22,15 @@ class AttendanceSetting extends Model
         'work_days',
         'custom_schedules',
         'late_tolerance_minutes',
+        // denda keterlambatan — migrasi 2026_10_09_000001
+        'late_fine_per_minute',
+        'late_count_mode',
+        'late_fine_max_per_day',
+        // aturan upah lembur — migrasi 2026_10_10_000001
+        'overtime_rule',
+        'overtime_rate_amount',
+        'overtime_rate_unit',
+        'overtime_rate_taxable',
         'late_checkin_cutoff_minutes',
         'require_selfie',
         'allow_wfh',
@@ -61,7 +72,11 @@ class AttendanceSetting extends Model
             'break_minutes'                 => 'integer',
             'late_tolerance_minutes'           => 'integer',
             'late_checkin_cutoff_minutes'      => 'integer',
-            'require_selfie'                => 'boolean',
+            'late_fine_per_minute'          => 'decimal:2',
+            'late_fine_max_per_day'         => 'decimal:2',
+            'overtime_rate_amount'          => 'decimal:2',
+            'overtime_rate_taxable'         => 'boolean',
+            'require_selfie'               => 'boolean',
             'allow_wfh'                     => 'boolean',
             'wfh_checkin_window_minutes'    => 'integer',
             'overtime_enabled'              => 'boolean',
@@ -84,6 +99,56 @@ class AttendanceSetting extends Model
             'variance_limit'                => 'integer',
             'max_claim_limit'               => 'decimal:2',
         ];
+    }
+
+    /**
+     * Field turunan zona yang SELALU menyertai setiap serialisasi kantor.
+     *
+     * Di-append di level model (bukan dirakit per endpoint) karena baris
+     * attendance_settings diserialisasi dari belasan tempat — listSettings,
+     * showSettings, updateSettings, relasi office pada payload karyawan. Satu
+     * endpoint yang terlewat berarti frontend menerima jam tanpa label zona dan
+     * menampilkannya seolah WIB.
+     */
+    protected $appends = [
+        'timezone_label',
+        'timezone_offset_minutes',
+    ];
+
+    /**
+     * Zona waktu bisnis cabang ini — OTORITAS untuk jadwal kerja, status telat,
+     * dan tanggal presensi karyawan yang ditempatkan di sini.
+     *
+     * NULL (baris lama / cabang belum dikonfigurasi) → zona penyimpanan (WIB),
+     * sehingga perilaku identik dengan sebelum fitur multi-zona.
+     */
+    public function effectiveTimezone(): string
+    {
+        return \App\Support\Timezone::normalize($this->timezone);
+    }
+
+    /**
+     * 'WIB' | 'WITA' | 'WIT' — label siap tampil untuk jam-jam kantor ini.
+     *
+     * NULL bila kolom `timezone` tidak ikut di-select (beberapa jalur daftar
+     * meng-eager-load `office:id,office_name`). SENGAJA null, bukan 'WIB':
+     * mengembalikan label default di situ akan memberi tahu frontend bahwa cabang
+     * Makassar memakai WIB — keliru tanpa error. Frontend yang butuh label wajib
+     * memakai endpoint/relasi yang memuat kolomnya.
+     */
+    public function getTimezoneLabelAttribute(): ?string
+    {
+        return array_key_exists('timezone', $this->attributes)
+            ? \App\Support\Timezone::label($this->timezone)
+            : null;
+    }
+
+    /** Offset dari UTC dalam menit (420 | 480 | 540). NULL mengikuti aturan di atas. */
+    public function getTimezoneOffsetMinutesAttribute(): ?int
+    {
+        return array_key_exists('timezone', $this->attributes)
+            ? \App\Support\Timezone::offsetMinutes($this->timezone)
+            : null;
     }
 
     public function company(): BelongsTo

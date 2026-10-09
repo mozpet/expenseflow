@@ -173,7 +173,8 @@ class User extends Authenticatable
             return false;
         }
 
-        $targetDate = $date ?? now('Asia/Jakarta')->toDateString();
+        // "Hari ini" menurut zona cabang karyawan — bukan jam dinding server.
+        $targetDate = $date ?? now($this->effectiveTimezone())->toDateString();
 
         return LeaveRequest::where('user_id', $this->id)
             ->where('status', 'approved')
@@ -249,7 +250,8 @@ class User extends Authenticatable
     /** Ambil penugasan shift atau pola rotasi aktif karyawan pada tanggal tertentu. */
     public function activeShiftAssignment(?string $date = null): ?UserShift
     {
-        $targetDate = $date ?? now('Asia/Jakarta')->toDateString();
+        // "Hari ini" menurut zona cabang karyawan — bukan jam dinding server.
+        $targetDate = $date ?? now($this->effectiveTimezone())->toDateString();
 
         return $this->userShifts()
             ->with(['shift', 'shiftPattern'])
@@ -278,7 +280,8 @@ class User extends Authenticatable
      */
     public function getActiveShiftRequirements(?string $date = null): array
     {
-        $targetDate = $date ?? now('Asia/Jakarta')->toDateString();
+        // "Hari ini" menurut zona cabang karyawan — bukan jam dinding server.
+        $targetDate = $date ?? now($this->effectiveTimezone())->toDateString();
 
         $assignments = $this->relationLoaded('userShifts')
             ? $this->userShifts->filter(function ($us) use ($targetDate) {
@@ -459,6 +462,29 @@ class User extends Authenticatable
         return $this->belongsTo(AttendanceSetting::class, 'attendance_setting_id');
     }
 
+    /**
+     * Zona waktu bisnis OTORITATIF untuk karyawan ini — zona cabang PENEMPATAN.
+     *
+     * Dipakai menentukan tanggal presensi, status telat, lembur, cutoff check-in,
+     * dan jendela WFH. SENGAJA bukan zona lokasi fisik karyawan: karyawan yang
+     * dinas/WFH di Papua tetap dinilai terhadap jam dinding cabangnya (standar
+     * aplikasi enterprise) — zona lokasi fisik hanya untuk tampilan & audit.
+     *
+     * Rantai fallback mengikuti ShiftController::resolveScheduleRaw(): kantor
+     * penempatan → kantor pertama perusahaan → zona penyimpanan.
+     */
+    public function effectiveTimezone(): string
+    {
+        $office = $this->office
+            ?? ($this->company_id
+                ? AttendanceSetting::where('company_id', $this->company_id)
+                    ->orderBy('id')
+                    ->first()
+                : null);
+
+        return $office?->effectiveTimezone() ?? \App\Support\Timezone::storage();
+    }
+
     public function loginAttempts()
     {
         return $this->hasMany(LoginAttempt::class);
@@ -521,7 +547,8 @@ class User extends Authenticatable
     /** Gaji pokok efektif karyawan pada tanggal tertentu (default: hari ini). */
     public function activeSalaryOn(?string $date = null): ?EmployeeSalary
     {
-        $targetDate = $date ?? now('Asia/Jakarta')->toDateString();
+        // "Hari ini" menurut zona cabang karyawan — bukan jam dinding server.
+        $targetDate = $date ?? now($this->effectiveTimezone())->toDateString();
 
         return $this->employeeSalaries()
             ->where('is_active', true)

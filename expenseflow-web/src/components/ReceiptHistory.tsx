@@ -335,7 +335,12 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
               <div className="w-36">
                 <CustomDatePicker
                   value={startDate}
-                  onChange={setStartDate}
+                  onChange={(val) => {
+                    setStartDate(val);
+                    if (endDate && val && endDate < val) {
+                      setEndDate('');
+                    }
+                  }}
                   placeholder="Dari tanggal"
                   size="sm"
                 />
@@ -344,8 +349,9 @@ export const ReceiptHistory: React.FC<ReceiptHistoryProps> = ({
               <div className="w-36">
                 <CustomDatePicker
                   value={endDate}
+                  min={startDate || undefined}
                   onChange={setEndDate}
-                  placeholder="Sampai tanggal"
+                  placeholder={startDate ? "Sama dg tgl mulai" : "Sampai tanggal"}
                   size="sm"
                 />
               </div>

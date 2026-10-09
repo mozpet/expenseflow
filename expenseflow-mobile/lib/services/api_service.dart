@@ -278,7 +278,21 @@ class ApiService {
     String? visitNotes,
     Uint8List? photoBytes,
     String? photoFileName,
+    String? deviceTimezone,
+    int? deviceUtcOffsetMinutes,
   }) async {
+    final resolvedOffset = deviceUtcOffsetMinutes ?? DateTime.now().timeZoneOffset.inMinutes;
+    String? resolvedTz = deviceTimezone;
+    if (resolvedTz == null) {
+      if (resolvedOffset == 420) {
+        resolvedTz = 'Asia/Jakarta';
+      } else if (resolvedOffset == 480) {
+        resolvedTz = 'Asia/Makassar';
+      } else if (resolvedOffset == 540) {
+        resolvedTz = 'Asia/Jayapura';
+      }
+    }
+
     if (photoBytes != null) {
       final token = await getToken();
       final uri = Uri.parse('${ApiConfig.baseUrl}/attendance/check-in');
@@ -297,6 +311,8 @@ class ApiService {
       if (clientName != null) req.fields['client_name'] = clientName;
       if (clientAddress != null) req.fields['client_address'] = clientAddress;
       if (visitNotes != null) req.fields['visit_notes'] = visitNotes;
+      if (resolvedTz != null) req.fields['device_timezone'] = resolvedTz;
+      req.fields['device_utc_offset_minutes'] = resolvedOffset.toString();
 
       req.files.add(
         http.MultipartFile.fromBytes(
@@ -342,6 +358,8 @@ class ApiService {
     if (clientName != null) body['client_name'] = clientName;
     if (clientAddress != null) body['client_address'] = clientAddress;
     if (visitNotes != null) body['visit_notes'] = visitNotes;
+    if (resolvedTz != null) body['device_timezone'] = resolvedTz;
+    body['device_utc_offset_minutes'] = resolvedOffset;
 
     return _request('POST', '/attendance/check-in', body: body);
   }

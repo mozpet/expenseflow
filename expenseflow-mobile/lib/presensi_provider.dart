@@ -29,6 +29,7 @@ class PresensiProvider extends ChangeNotifier {
   final List<OfficeArea> _offices = [];
   OfficeArea? _primaryOffice;
   bool _radiusEnabled = false;
+  Map<String, dynamic>? _timezoneData;
 
   String? _todayMasuk;
   String? _todayPulang;
@@ -41,6 +42,26 @@ class PresensiProvider extends ChangeNotifier {
   bool _loadingBalance = false;
   bool _loadingLeaves = false;
   bool _loadingCollectiveLeaves = false;
+
+  Map<String, dynamic>? get timezoneData => _timezoneData;
+  String? get branchTime => _timezoneData?['branch_time'] as String?;
+  String? get localTime => _timezoneData?['local_time'] as String?;
+  bool get isCrossTimezone => _timezoneData?['is_cross_timezone'] == true;
+  String? get timezoneDisplay => _timezoneData?['display'] as String?;
+  String get branchTimezoneLabel =>
+      (_timezoneData?['branch']?['label'] as String?) ??
+      _primaryOffice?.timezoneLabel ??
+      (flexitimeConfig?['timezone_label'] as String?) ??
+      'WIB';
+  int get branchOffsetMinutes =>
+      (_timezoneData?['branch']?['offset_minutes'] as num?)?.toInt() ?? 420;
+
+  /// Jam dinding saat ini di zona kantor cabang penempatan
+  DateTime get currentBranchDateTime {
+    final utc = DateTime.now().toUtc();
+    final branch = utc.add(Duration(minutes: branchOffsetMinutes));
+    return DateTime(branch.year, branch.month, branch.day, branch.hour, branch.minute, branch.second);
+  }
 
   List<PresensiRecord> get records => List.unmodifiable(_records);
   List<LeaveRequestRecord> get leaveRequests =>
@@ -82,14 +103,14 @@ class PresensiProvider extends ChangeNotifier {
   int? get todayWorkMinutes => _todayWorkMinutes;
   DateTime? get todayCheckInDateTime => _todayCheckInDateTime;
 
-  /// Titik acuan DateTime check-in hari ini
+  /// Titik acuan DateTime check-in hari ini (dalam zona kantor cabang)
   DateTime? get effectiveCheckInTime {
     if (_todayCheckInDateTime != null) return _todayCheckInDateTime;
     if (_todayMasuk != null && _todayMasuk!.contains(':')) {
       final parts = _todayMasuk!.split(':');
       final h = int.tryParse(parts[0]) ?? 0;
       final m = int.tryParse(parts[1]) ?? 0;
-      final now = DateTime.now();
+      final now = currentBranchDateTime;
       var dt = DateTime(now.year, now.month, now.day, h, m);
       if (now.isBefore(dt) && dt.difference(now).inHours > 12) {
         dt = dt.subtract(const Duration(days: 1));
@@ -99,11 +120,11 @@ class PresensiProvider extends ChangeNotifier {
     return null;
   }
 
-  /// Menit kerja berjalan kotor (sejak check-in sampai saat ini)
+  /// Menit kerja berjalan kotor (sejak check-in sampai saat ini di zona kantor cabang)
   int get flexElapsedGrossMinutes {
     final checkIn = effectiveCheckInTime;
     if (checkIn == null) return 0;
-    final diff = DateTime.now().difference(checkIn).inMinutes;
+    final diff = currentBranchDateTime.difference(checkIn).inMinutes;
     return diff > 0 ? diff : 0;
   }
 
@@ -235,10 +256,13 @@ class PresensiProvider extends ChangeNotifier {
           photoBytes: photoBytes,
           photoFileName: photoFileName);
       final att = res['attendance'] as Map<String, dynamic>?;
+      if (res['timezone'] is Map<String, dynamic>) {
+        _timezoneData = res['timezone'] as Map<String, dynamic>;
+      }
       _todayMasuk = _extractTime(att?['check_in_time']) ?? nowFormatted;
       _todayCheckInDateTime = att?['check_in_time'] != null
-          ? DateTime.tryParse(att!['check_in_time'].toString())?.toLocal() ?? DateTime.now()
-          : DateTime.now();
+          ? _parseBranchDateTime(att!['check_in_time'].toString()) ?? currentBranchDateTime
+          : currentBranchDateTime;
       _todayStatus = att?['status'] as String? ?? 'present';
       _records.insert(
         0,
@@ -272,6 +296,9 @@ class PresensiProvider extends ChangeNotifier {
     } else if (canCheckOut) {
       final res = await ApiService.checkOut(lat, lng,
           isMocked: isMocked, isRooted: isRooted, isEmulator: isEmulator);
+      if (res['timezone'] is Map<String, dynamic>) {
+        _timezoneData = res['timezone'] as Map<String, dynamic>;
+      }
       final att = res['attendance'] as Map<String, dynamic>?;
       final attId = (att?['id'] as num?)?.toInt();
       _todayPulang = _extractTime(att?['check_out_time']) ?? nowFormatted;
@@ -384,6 +411,9 @@ class PresensiProvider extends ChangeNotifier {
     }
 
     final att = status['attendance'] as Map<String, dynamic>?;
+    if (status['timezone'] is Map<String, dynamic>) {
+      _timezoneData = status['timezone'] as Map<String, dynamic>;
+    }
     if (att == null) {
       // Jika backend tidak memiliki record presensi hari ini, reset status lokal hari ini
       if (_todayMasuk != null || _todayPulang != null) {
@@ -394,6 +424,7 @@ class PresensiProvider extends ChangeNotifier {
         _todayLateMinutes = 0;
         _todayWorkMinutes = null;
         _todayCheckInDateTime = null;
+        _timezoneData = null;
         notifyListeners();
       }
       return;
@@ -412,7 +443,7 @@ class PresensiProvider extends ChangeNotifier {
       final newPulang = _extractTime(att['check_out_time']);
       final newStatus = att['status'] as String?;
       final newCheckInDt = att['check_in_time'] != null
-          ? DateTime.tryParse(att['check_in_time'].toString())?.toLocal()
+          ? _parseBranchDateTime(att['check_in_time'].toString())
           : null;
 
       bool changed = false;
@@ -942,16 +973,32 @@ class PresensiProvider extends ChangeNotifier {
   /// Ambil "HH:mm" dari string datetime backend (ISO atau "Y-m-d H:i:s").
   String? _extractTime(dynamic raw) {
     if (raw == null) return null;
-    final s = raw.toString();
+    final s = raw.toString().trim();
     if (s.isEmpty) return null;
+    if (RegExp(r'^\d{2}:\d{2}').hasMatch(s)) {
+      return s.substring(0, 5);
+    }
+    final match = RegExp(r'[T ](\d{2}:\d{2})').firstMatch(s);
+    if (match != null) {
+      return match.group(1);
+    }
     final dt = DateTime.tryParse(s);
     if (dt != null) {
-      final local = dt.toLocal();
-      return '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+      return '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
     }
-    // fallback: cari pola HH:mm di dalam string
-    final match = RegExp(r'(\d{2}):(\d{2})').firstMatch(s);
-    return match?.group(0);
+    return null;
+  }
+
+  /// Parse datetime string menjadi DateTime jam dinding zona cabang
+  DateTime? _parseBranchDateTime(String? raw) {
+    if (raw == null) return null;
+    final timeStr = _extractTime(raw);
+    if (timeStr == null || !timeStr.contains(':')) return null;
+    final parts = timeStr.split(':');
+    final h = int.tryParse(parts[0]) ?? 0;
+    final m = int.tryParse(parts[1]) ?? 0;
+    final now = currentBranchDateTime;
+    return DateTime(now.year, now.month, now.day, h, m);
   }
 
   /// Format tanggal dari backend (ISO "YYYY-MM-DD" atau datetime lengkap)

@@ -269,7 +269,7 @@ if ($startStr === $today) {
 
 | # | Kekurangan | Dampak Operasional |
 |---|-----------|-------------------|
-| 1 | **Tidak ada koreksi presensi manual** — HRD tidak bisa edit/lengkapi absen yang salah (lupa checkout sudah ter-handle auto-checkout, tapi check-in hilang/salah lokasi tidak bisa diperbaiki HRD) | Data laporan permanen salah; sudah tercatat di roadmap rules.md P3 |
+| 1 | ~~**Tidak ada koreksi presensi manual** — HRD tidak bisa edit/lengkapi absen yang salah (lupa checkout sudah ter-handle auto-checkout, tapi check-in hilang/salah lokasi tidak bisa diperbaiki HRD)~~ ✅ SELESAI 2026-10-06 — `POST /api/v1/dashboard/attendance/corrections` → `AttendanceController::correctAttendance()`, tombol **Koreksi** / **Input Manual** di tab Laporan. Field turunan selalu dihitung ulang dari snapshot, periode payroll approved/paid ditolak keras, alasan koreksi wajib + masuk activity log & CSV. Lihat rules.md bagian "Koreksi Presensi Manual HRD". | Data laporan permanen salah; sudah tercatat di roadmap rules.md P3 |
 | 2 | **Tidak ada batas maksimal lembur** — UU 13/2003: lembur maks 4 jam/hari & 18 jam/minggu. Sistem menghitung lembur tanpa cap | Risiko kepatuhan ketenagakerjaan |
 | 3 | ~~**Tidak ada notifikasi proaktif ke HRD saat pengaturan kantor diubah** — rekomendasi strategi proteksi #3 di rules.md sendiri belum diimplement~~ ✅ SELESAI 2026-08-26 — `AttendanceController::updateSettings()` kini melooping dan mengirim `notifyUser` ke semua HRD/Admin/SuperAdmin sesudah update. | Perubahan `work_end_time`/grace mendadak bisa merusak auto-checkout hari itu; audit log ada tapi pasif (tidak ada yang membaca) |
 | 4 | **Tarif/rate lembur belum ada** — approval lembur menghasilkan menit, tidak ada konversi nominal | Payroll (roadmap FASE 2) nanti mentok di sini |
@@ -790,5 +790,357 @@ if ($startStr === $today) {
   - **Bradford Factor:** Rumus standar manajemen SDM internasional untuk mengukur dampak gangguan operasional akibat ketidakhadiran berulang ($B = S^2 \times D$, di mana $S$ adalah frekuensi kejadian izin dan $D$ adalah total hari).
   - Sistem dapat otomatis memberikan indikator "Lampu Kuning / Merah" kepada HRD untuk mendeteksi karyawan yang sering mengambil izin singkat di hari-hari strategis (seperti selalu izin di hari Senin atau Jumat untuk memperpanjang akhir pekan).
 
+---
 
+## 🔍 Bagian 6 — Temuan Audit QA & Edge Cases Fitur Koreksi Presensi Manual HRD (2026-10-06)
 
+> Hasil audit mendalam (QA Engineering, boundary value analysis, concurrency & state machine check) terhadap implementasi endpoint `AttendanceController::correctAttendance()` dan antarmuka web `AttendanceManagement.tsx` per **2026-10-06**.
+> Catatan ini mendokumentasikan skenario aksi user/HRD yang dapat memicu error, inkonsistensi status kehadiran, celah manipulasi gaji, hingga konflik sesi mobile.
+
+---
+
+### 🔴 Kategori L — Integritas Data, Concurrency & Validasi Bisnis Koreksi Presensi
+
+#### 14. KRITIS: Status `present` (Hadir) Dapat Disimpan Tanpa Jam Masuk (Gaji Fiktif) — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `AttendanceController::correctAttendance()` (~line 4425) & `AttendanceManagement.tsx`
+- **Skenario Aksi User:**
+  - Pada baris alpha atau baris virtual, HRD memilih status *"Hadir"* (`present`), namun membiarkan jam masuk dan jam pulang kosong (`null`).
+- **Akar Cacat Logika:**
+  - Guard 6 hanya memeriksa:
+    ```php
+    if ($newCheckInStr === null && $newStatus === null) { ... }
+    ```
+    Karena `$newStatus` bernilai `'present'`, validasi lolos meskipun `$newCheckInStr` bernilai `null`.
+- **Dampak Kritis:**
+  - Database menyimpan record presensi dengan `status = 'present'`, tetapi `check_in_time = null` dan `work_minutes = null`.
+  - Pada modul **Payroll**, karyawan ini dihitung hadir penuh 1 hari kerja (mendapat gaji harian/kehadiran penuh) tanpa ada jam kerja riil.
+  - Pada laporan tabel dan CSV, jam masuk & pulang muncul sebagai strip (`-`) namun statusnya Hadir (anomali data).
+- **Rekomendasi Solusi:**
+  - Jika `$newStatus` adalah `'present'`, `'late'`, atau `'early_leave'`, wajibkan `$newCheckInStr !== null`. Status kehadiran fisik tidak boleh ada tanpa fakta waktu masuk.
+- **Implementasi (2026-10-07):**
+  - **Backend — `AttendanceController::correctAttendance()` (Guard 8, ~line 4643):** Guard baru dipasang **di dalam** `DB::transaction` tepat setelah blok perakitan waktu absolut (agar `$checkInCarbon` sudah ter-resolve) dan sebelum Guard Enterprise waktu-masa-depan. Dilempar sebagai `HttpResponseException` (bukan `return`) sesuai invariant file: `return` di dalam closure hanya mengakhiri closure, transaksi tetap ter-commit.
+    ```php
+    if ($newStatus !== null && $checkInCarbon === null) {
+        $presenceStatuses = ['present', 'late', 'early_leave', 'wfh'];
+        if (in_array($newStatus, $presenceStatuses, true)) {
+            throw new HttpResponseException(response()->json([
+                'message'           => 'Status "…" tidak bisa disimpan tanpa jam masuk — …',
+                'requires_check_in' => true,
+                'status'            => $newStatus,
+            ], 422));
+        }
+    }
+    ```
+  - **Dua penguatan di luar rekomendasi awal dokumen:**
+    1. **`'wfh'` ikut diblokir.** Verifikasi ke `PayrollCalculator::attendanceDays()` (`app/Services/Payroll/PayrollCalculator.php:865`) menunjukkan status yang dihitung sebagai hari kerja **dibayar** ada **empat**: `whereIn('status', ['present', 'late', 'wfh', 'early_leave'])` — bukan tiga. Tanpa `wfh`, celah gaji fiktif tetap terbuka lewat status WFH.
+    2. **Dicek terhadap jam masuk EFEKTIF (`$checkInCarbon`), bukan hanya `$newCheckInStr`.** Ini sekaligus menutup celah kedua yang belum tercatat di temuan: HRD mengirim `check_in_time: null` secara eksplisit pada baris yang SUDAH `present` — jam masuknya terhapus sementara status berbayarnya tetap utuh. Karena `$checkInCarbon` jatuh kembali ke `$existing->check_in_time` hanya bila field-nya tidak dikirim, pengosongan eksplisit tetap tertangkap.
+  - Hanya `'absent'` (Alpha) yang boleh berdiri tanpa jam masuk — ini memang kasus sah dan tidak dibayar di payroll.
+  - **Web Dashboard — `AttendanceManagement.tsx`:**
+    - `handleSaveCorrection()` (~line 2069): validasi pre-flight lokal tepat setelah guard "jam pulang tanpa jam masuk", memakai daftar status yang sama. Umpan balik instan tanpa request terbuang.
+    - Blok *Status Kehadiran* pada modal koreksi (~line 5892): paragraf bantuan statis diganti peringatan inline kondisional (merah/rose) yang muncul begitu kombinasi status-berbayar + jam masuk kosong terdeteksi, dan kembali ke teks bantuan normal bila kombinasinya sah.
+- **Verifikasi:**
+  - `tests/Feature/AttendanceCorrectionTest.php` — 4 test regresi baru (bagian 18): (a) keempat status berbayar (`present`/`late`/`early_leave`/`wfh`) tanpa jam masuk → 422 + `requires_check_in: true` **dan** `assertDatabaseMissing` (bukti transaksi benar-benar rollback, tidak ada baris presensi tertulis); (b) `absent` tanpa jam masuk → tetap 200 & tersimpan dengan `work_minutes` null; (c) mengosongkan jam masuk pada baris `present` yang sudah ada → 422, baris lama utuh (jam masuk 08:00 & status tetap); (d) `present` **dengan** jam masuk → tetap 200 (tanpa regresi).
+  - `php artisan test --filter=AttendanceCorrection` → **36 test, 160 assertion, 100% lulus** (32 test lama tidak ada yang pecah).
+  - `php artisan test --filter=Attendance` → **139 test, 718 assertion, 100% lulus**.
+  - `php -l` bersih pada `AttendanceController.php` & file test; `npx tsc --noEmit` bersih pada `expenseflow-web`.
+
+---
+
+#### 15. TINGGI: Koreksi Jam Pulang pada Sesi Hari Ini Memblokir Check-out Karyawan di Mobile — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `AttendanceController::correctAttendance()` (~line 4460) & `AttendanceController::checkOut()` (~line 7850)
+- **Skenario Aksi User:**
+  - Karyawan check-in di kantor jam 08:00 WIB hari ini.
+  - Jam 11:00 WIB, HRD membuka web Laporan dan mengisikan jam pulang jam 10:30 WIB (misal salah memilih baris karyawan atau mengira karyawan sudah pulang).
+- **Dampak Operasional:**
+  - Sore harinya jam 17:00 WIB, karyawan yang bersangkutan menyelesaikan pekerjaan dan menekan tombol **Check Out** di aplikasi mobile.
+  - Endpoint `/api/v1/attendance/check-out` mencari record dengan `whereNull("check_out_time")`. Karena jam pulangnya sudah diisi oleh HRD, backend menolak check-out karyawan dengan error HTTP 422:
+    > *"Anda belum melakukan check-in hari ini atau sudah melakukan check-out."*
+  - Akibatnya: Bukti GPS riil, koordinat kantor, dan jam lembur karyawan yang sebenarnya hingga jam 17:00 WIB **hangus dan tertolak**.
+- **Rekomendasi Solusi:**
+  - Berikan peringatan atau larangan mengoreksi jam pulang pada tanggal hari ini (`$date === $today`) jika sesi presensi karyawan masih berstatus aktif berjalan di lapangan (`existing->check_in_time && !existing->check_out_time`).
+- **Implementasi (2026-10-07):**
+  - **Backend — `AttendanceController::correctAttendance()` (Guard 9, ~line 4662):** Guard baru dipasang **di dalam** `DB::transaction` tepat setelah Guard 8 (status-tanpa-jam-masuk) dan sebelum Guard Enterprise waktu-masa-depan, memakai kondisi persis sesuai rekomendasi dokumen:
+    ```php
+    if (
+        $date === $today
+        && $existing
+        && $existing->check_in_time
+        && ! $existing->check_out_time
+        && $sendsCheckOut
+        && $newCheckOutStr !== null
+        && ! $request->boolean('override_active_session')
+    ) {
+        throw new HttpResponseException(response()->json([
+            'message' => 'Karyawan ini masih memiliki sesi presensi AKTIF hari ini (…). Mengisi jam pulang sekarang akan membuat karyawan TIDAK BISA check-out sendiri lewat aplikasi mobile nanti — …',
+            'active_session_block'  => true,
+            'requires_confirmation' => true,
+            'confirmation_field'    => 'override_active_session',
+            'check_in_time'         => $checkInHm,
+        ], 422));
+    }
+    ```
+  - **Sengaja bukan larangan keras, tapi gerbang konfirmasi terpisah** dari `confirm_dangerous` yang sudah ada: field baru `override_active_session` (boolean, divalidasi `nullable|boolean`) harus dikirim `true` agar koreksi tetap jalan. Dipisah dari `confirm_dangerous` karena sifat risikonya berbeda — bukan cuma dampak gaji, tapi memblokir aksi karyawan sendiri di mobile. HRD yang memang bermaksud menutup sesi (HP karyawan hilang, karyawan sudah resign) tetap bisa melanjutkan setelah membaca peringatannya secara eksplisit.
+  - Guard ini hanya menembak bila **keempat** kondisi terpenuhi sekaligus: tanggal = hari ini, baris existing punya jam masuk, baris existing BELUM punya jam pulang (sesi masih "terbuka" di mata mobile `checkOut()`), dan request benar-benar mengisi jam pulang baru. Koreksi tanggal lampau, sesi yang sudah ditutup, atau koreksi yang tidak menyentuh jam pulang sama sekali tidak terpengaruh.
+  - **Web Dashboard — `AttendanceManagement.tsx`:**
+    - State baru `correctionActiveSessionConfirm` (terpisah dari `correctionConfirm`/`correctionConfirmText` yang dipakai gerbang `confirm_dangerous`), diisi saat response 422 membawa `active_session_block: true`, dicek **sebelum** pengecekan `requires_confirmation` generik di `handleSaveCorrection()` karena Guard 9 di backend selalu menembak lebih dulu.
+    - Kotak peringatan rose/merah baru di modal koreksi (sebelum kotak amber `confirm_dangerous`) menampilkan pesan dari server + instruksi untuk mengklik tombol konfirmasi bila HRD memang yakin.
+    - Tombol Simpan berubah warna (rose) & label (**"Tetap Ambil Alih & Simpan"**) saat state ini aktif; klik ulang mengirim ulang request dengan `override_active_session: true` di payload. Bila koreksi itu juga mengubah jam/gaji, gerbang `confirm_dangerous` tetap menyusul normal pada submit berikutnya (dua gerbang independen, bisa berurutan).
+- **Verifikasi:**
+  - `tests/Feature/AttendanceCorrectionTest.php` — 5 test regresi baru (bagian 19): (a) mengisi jam pulang hari ini pada sesi aktif tanpa konfirmasi → 422 + `active_session_block: true` + `requires_confirmation: true` + `confirmation_field: 'override_active_session'`, dan baris lama tidak berubah (`check_out_time` tetap null); (b) sama persis tapi dengan `override_active_session: true` → 200, jam pulang tersimpan; (c) koreksi jam pulang pada **tanggal lampau** (bukan hari ini) pada sesi yang terlihat "aktif" → tetap 200 tanpa guard ini (mobile `checkOut()` memang tidak pernah mencari tanggal lampau); (d) sesi hari ini yang **sudah** check-out → koreksi lanjutan tidak terkena guard ini; (e) koreksi yang hanya mengisi jam masuk (tidak menyentuh jam pulang) pada sesi aktif hari ini → tidak terkena guard ini. Test (b), (d), (e) mengunci jam sistem (`Carbon::setTestNow`) agar lolos Guard Enterprise waktu-masa-depan secara deterministik, tidak bergantung jam jalan sungguhan saat suite dieksekusi.
+  - `php artisan test --filter=AttendanceCorrection` → **41 test, 176 assertion, 100% lulus** (36 test lama tidak ada yang pecah).
+  - `php artisan test --filter=Attendance` → **144 test, 734 assertion, 100% lulus**.
+  - `php -l` bersih pada `AttendanceController.php` & file test; `npx tsc --noEmit` bersih pada `expenseflow-web`.
+
+---
+
+#### 16. TINGGI: Presensi "Dinas Luar" Otomatis Berubah Diam-diam Menjadi "Onsite" Saat Dikoreksi
+- **Lokasi Kode:** `AttendanceManagement.tsx` (~line 2013-2015)
+- **Skenario Aksi User:**
+  - Karyawan melakukan presensi dinas luar ke klien (memiliki nama klien, alamat, dan catatan agenda), namun lupa checkout. HRD membuka modal edit untuk melengkapi jam pulang.
+- **Akar Masalah di Frontend:**
+  - Saat modal edit dibuka, nilai form di-set dengan:
+    ```ts
+    check_in_type: (["onsite", "wfh", "field"].includes(row.check_in_type) ? row.check_in_type : "onsite"),
+    ```
+    Karena opsi `"dinas_luar"` tidak ada di dropdown, form otomatis menjatuhkannya (*fallback*) ke `"onsite"`.
+- **Dampak:**
+  - Saat HRD menyimpan koreksi, payload mengirimkan `check_in_type: "onsite"`.
+  - Record presensi dinas luar karyawan **berubah diam-diam menjadi presensi kantor biasa (`onsite`)**. Rekapitulasi kunjungan klien dan laporan dinas luar menjadi tidak akurat.
+- **Rekomendasi Solusi:**
+  - Sertakan tipe `dinas_luar` pada dropdown/pilihan form koreksi atau pertahankan `row.check_in_type` asli jika pengguna tidak secara eksplisit mengubah tipe kehadiran.
+
+---
+
+#### 17. SEDANG: Shift Lintas Hari: Check-in Dini Hari Dihitung Mundur 22 Jam Sebelum Shift Dimulai ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `AttendanceController::correctAttendance()` (~line 4632-4646)
+- **Skenario Aksi User:**
+  - Karyawan memiliki shift malam lintas hari (22:00 – 06:00, `is_cross_day = true`).
+  - Karyawan terlambat masuk dan baru check-in jam 01:00 dini hari (hari kalender berikutnya), lalu pulang jam 06:00.
+  - HRD menginput koreksi tanggal shift (misal 5 Okt): `check_in_time: 01:00`, `check_out_time: 06:00`.
+- **Akar Cacat Logika:**
+  ```php
+  if ($checkOutCarbon->lessThanOrEqualTo($checkInCarbon)) {
+      if (! empty($schedule["is_cross_day"])) {
+          $checkOutCarbon->addDay();
+      }
+  }
+  ```
+  Karena jam pulang `06:00` lebih besar dari jam masuk `01:00`, kondisi `lessThanOrEqualTo` bernilai `false`. Fungsi `addDay()` tidak dipanggil, sehingga kedua waktu dianggap terjadi pada tanggal 5 Oktober (jam 01:00 pagi ke 06:00 pagi = 21 jam sebelum shift malam tanggal 5 Oktober dimulai).
+- **Rekomendasi Solusi:**
+  - Pada shift lintas hari (`is_cross_day`), evaluasi apakah jam masuk berada di bawah batas jam pulang shift (dini hari); jika ya, kedua jam masuk dan jam pulang harus di-offset ke hari berikutnya (+1 hari dari tanggal penugasan shift).
+
+- **Implementasi (2026-10-07):**
+  - Ditambahkan blok offset baru tepat sebelum pengecekan `lessThanOrEqualTo` lama, dieksekusi khusus untuk shift `is_cross_day = true`. Blok ini mengevaluasi **setiap** jam yang baru diketik HRD (jam masuk & jam pulang, independen satu sama lain) terhadap `work_end_time` jadwal (jam pulang shift, misal `06:00`): jika nilai `HH:MM` yang diketik ≤ `work_end_time`, nilai itu termasuk "ekor dini hari" milik shift tersebut → di-`addDay()`.
+    ```php
+    // ─── Shift lintas hari: offset jam dini hari ke tanggal yang benar ──
+    if (! empty($schedule['is_cross_day'])) {
+        $workEndHm = substr((string) ($schedule['work_end_time'] ?? ''), 0, 5);
+        if ($workEndHm !== '') {
+            if ($checkInCarbon && $newCheckInStr !== null && $newCheckInStr <= $workEndHm) {
+                $checkInCarbon->addDay();
+            }
+            if ($checkOutCarbon && $newCheckOutStr !== null && $newCheckOutStr <= $workEndHm) {
+                $checkOutCarbon->addDay();
+            }
+        }
+    }
+    ```
+  - Hanya berlaku untuk nilai yang **baru diketik** (`$newCheckInStr`/`$newCheckOutStr`, berupa string `HH:MM` dari request) — tidak menyentuh nilai existing yang sudah tersimpan benar (datetime lama yang tidak dikirim ulang), sehingga koreksi parsial (misal HRD hanya mengoreksi jam masuk) tidak merusak jam pulang yang sudah benar.
+  - Mekanisme lama (`lessThanOrEqualTo` → `addDay()` pada jam pulang saja) **tetap dipertahankan** sebagai fallback setelah blok baru ini — terbukti tidak menyebabkan regresi karena `diffInMinutes` antara jam masuk & jam pulang bersifat relatif (invariant terhadap kedua instance yang sama-sama bergeser hari).
+- **Verifikasi:**
+  - Regresi pada 3 test lintas-hari yang sudah ada sebelum perbaikan (`test_shift_lintas_hari_menerima_jam_pulang_lebih_kecil_dari_jam_masuk`, `test_jam_pulang_sebelum_jam_masuk_pada_shift_biasa_ditolak`, `test_durasi_presensi_melebihi_dua_puluh_jam_ditolak`) diverifikasi lolos tanpa perubahan assert.
+  - 2 test baru ditambahkan di `AttendanceCorrectionTest.php`: `test_check_in_dini_hari_pada_shift_lintas_hari_dioffset_ke_hari_berikutnya` (reproduksi skenario bug persis — check-in `01:00` & check-out `06:00` keduanya ter-offset ke `$date+1`, `work_minutes = 240`) dan `test_koreksi_hanya_jam_masuk_dini_hari_shift_lintas_hari_tidak_mengganggu_jam_pulang_tersimpan` (koreksi parsial hanya jam masuk tidak merusak jam pulang existing yang sudah benar).
+  - `php artisan test --filter=AttendanceCorrectionTest`: **43/43 lolos** (187 assertions).
+  - `php artisan test --filter=Attendance` (suite penuh): **146/146 lolos** (745 assertions) — tidak ada regresi di luar file koreksi.
+  - `php -l` bersih untuk `AttendanceController.php` dan `AttendanceCorrectionTest.php`.
+
+---
+
+#### 18. SEDANG: Potensi Double-Count Presensi dengan Pengajuan Cuti Berstatus `pending`
+- **Lokasi Kode:** `AttendanceController::correctAttendance()` (~line 4390) & `AttendanceController::approveLeave()` (~line 1650)
+- **Skenario Aksi User:**
+  - Karyawan mengajukan cuti untuk tanggal 10 Oktober (status pengajuan masih `pending` menunggu persetujuan).
+  - HRD menginput presensi manual pada tanggal tersebut karena melihat data kosong (Guard 5 hanya memblokir jika cuti berstatus `approved`).
+  - Beberapa hari kemudian, Atasan menyetujui pengajuan cuti tersebut di menu Cuti.
+- **Dampak:**
+  - Pada tanggal yang sama, karyawan tercatat **Hadir Bekerja** (ada jam kerja di tabel `attendances`) DAN sekaligus **Cuti** (saldo cuti terpotong di tabel `leave_requests`).
+  - Karyawan terhitung ganda (*double counted*) di laporan dan modul payroll.
+- **Rekomendasi Solusi:**
+  - Di `correctAttendance()`, peringatkan/blokir jika ada pengajuan cuti yang masih `pending` pada tanggal tersebut.
+  - Di `approveLeave()`, tambahkan validasi penolakan jika karyawan sudah memiliki catatan presensi hadir pada rentang tanggal cuti yang diajukan.
+
+---
+
+#### 19. SEDANG: Race Condition Double-Click pada Baris Virtual Menyebabkan HTTP 500 (Duplicate Entry) ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `AttendanceController::correctAttendance()` (~line 4440)
+- **Skenario Aksi User:**
+  - Saat jaringan lambat, HRD mengklik tombol Simpan dua kali secara cepat (*double-click*) pada baris virtual (input manual yang belum memiliki row di database).
+- **Akar Cacat Concurrency:**
+  - Tabel `attendances` memiliki unique index `unique(["user_id", "date"])`.
+  - Kedua request paralel membaca `$existing = null`, lalu keduanya mengeksekusi `Attendance::updateOrCreate()`. Request kedua menabrak unique constraint database dan melempar `QueryException`.
+- **Dampak:**
+  - Muncul dialog crash **HTTP 500 Internal Server Error** yang membingungkan HRD.
+- **Rekomendasi Solusi:**
+  - Terapkan `Cache::lock("correct_attendance_{$employee->id}_{$date}", 10)` di backend (seperti yang sudah diterapkan pada `checkOut()`), atau tangani `QueryException` secara elegan.
+
+- **Implementasi (2026-10-07):**
+  - Diterapkan `Cache::lock("correct_attendance_{$employee->id}_{$date}", 10)` tepat setelah Guard 1 (begitu `$employee` & `$date` diketahui), persis pola yang sudah dipakai `checkIn()`/`checkOut()`.
+  - Jika lock gagal diambil (permintaan lain untuk karyawan+tanggal yang sama masih berjalan), endpoint langsung menjawab **HTTP 409** dengan pesan ramah ("sedang diproses oleh permintaan lain"), bukan mencoba `updateOrCreate()` dan menabrak unique constraint.
+  - Guard 2–7, transaksi (`DB::transaction` + `lockForUpdate()`), audit log, notifikasi, dan response akhir kini dibungkus `try { ... } finally { $lock->release(); }` — lock selalu dilepas baik pada jalur sukses, `return` awal (gagal guard), maupun saat `HttpResponseException` dilempar dari dalam transaksi.
+    ```php
+    $lock = Cache::lock("correct_attendance_{$employee->id}_{$date}", 10);
+    if (! $lock->get()) {
+        return response()->json([
+            'message' => 'Koreksi presensi karyawan ini sedang diproses oleh permintaan lain. Silakan tunggu sebentar lalu coba lagi.',
+        ], 409);
+    }
+    try {
+        // Guard 2-7 + transaksi + audit + response ...
+    } finally {
+        $lock->release();
+    }
+    ```
+  - `lockForUpdate()` yang sudah ada di dalam transaksi tetap dipertahankan (masih berguna untuk baris yang SUDAH ada), tapi `Cache::lock` di luar transaksi inilah yang menutup celah baris virtual (belum ada row untuk dikunci database).
+- **Verifikasi:**
+  - Test baru `test_double_click_pada_baris_virtual_tidak_menyebabkan_500_duplicate_entry` di `AttendanceCorrectionTest.php`: menyimulasikan "request pertama masih berjalan" dengan menahan lock yang sama lebih dulu → request kedua pada baris virtual yang sama ditolak bersih dengan **409** (bukan 500) dan tidak membuat baris apa pun; setelah lock dilepas, request susulan tetap berhasil normal dan hanya tersimpan **1 baris** (tidak ada duplikat).
+  - `php artisan test --filter=AttendanceCorrectionTest`: **44/44 lolos** (193 assertions) — termasuk seluruh test koreksi lama (snapshot, shift lintas hari, guard payroll lock, dsb.) tanpa regresi akibat pembungkusan `try/finally`.
+  - `php artisan test --filter=Attendance` (suite penuh): **147/147 lolos** (751 assertions).
+  - `php -l` bersih untuk `AttendanceController.php` dan `AttendanceCorrectionTest.php`.
+
+---
+
+#### 20. RENDAH / UX: Konfirmasi `SIMPAN` Gagal / Terkunci Jika Mengetik Huruf Kecil `simpan` — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `AttendanceManagement.tsx` (`handleSaveCorrection` line ~2092 & modal input konfirmasi line ~5825)
+- **Skenario Aksi User:**
+  - Saat gerbang konfirmasi bahaya muncul, HRD mengetik kata `simpan` menggunakan huruf kecil (tanpa tombol CapsLock).
+- **Akar Cacat UI:**
+  - Elemen `<input>` memiliki kelas Tailwind `uppercase`. Kelas ini hanya memberikan transformasi visual pada tampilan layar.
+  - Nilai variabel state JavaScript `correctionConfirmText` tetap bernilai huruf kecil `"simpan"`.
+- **Dampak UX:**
+  - Di layar HRD terlihat jelas tulisan kapital `SIMPAN`, namun saat tombol *Konfirmasi & Simpan* ditekan, sistem menolak dengan pesan *"Ketik SIMPAN dengan tepat untuk melanjutkan."* Pengguna akan mengira sistem mengalami error/macet.
+- **Rekomendasi Solusi:**
+  - Tambahkan transformasi eksplisit pada input event handler: `onChange={(e) => setCorrectionConfirmText(e.target.value.toUpperCase())}` dan lakukan pemangkasan spasi (`.trim()`).
+- **Implementasi (2026-10-07):**
+  1. Pada elemen `<input>` konfirmasi koreksi (`AttendanceManagement.tsx`):
+     - Ditambahkan transformasi otomatis saat input berubah: `setCorrectionConfirmText(e.target.value.toUpperCase().trim())`.
+     - Ditambahkan reset error aktif saat user mengetik: `if (correctionError) setCorrectionError(null)`.
+     - Ditambahkan shortcut tombol Enter (`onKeyDown`) agar langsung memicu `handleSaveCorrection(true)` tanpa harus klik mouse.
+  2. Pada fungsi validasi `handleSaveCorrection()`:
+     - Dilakukan sanitasi ganda: `correctionConfirmText.trim().toUpperCase() !== correctionConfirm.phrase` sebelum pengecekan validasi, memastikan input tetap lolos meski ada spasi atau variasi casing.
+- **Verifikasi:**
+  - `npm run lint` (`tsc --noEmit`) pada `expenseflow-web` → Lolos tanpa error TypeScript (exit code 0).
+
+---
+
+#### 21. RENDAH: Perbedaan Zona Waktu Browser/Laptop HRD (WITA/WIT) Menggeser Jam Tampilan Input — ✅ SELESAI 2026-10-08
+- **Lokasi Kode:** `AttendanceManagement.tsx` (`toTimeInput` & `fmtTime`)
+- **Skenario Aksi User:**
+  - HRD atau Admin membuka dashboard web dari cabang luar Jawa (WITA UTC+8 seperti Bali/Makassar, atau WIT UTC+9 seperti Jayapura/Papua).
+- **Akar Masalah:**
+  - Fungsi pembantu form menggunakan `new Date(v).getHours()`. Fungsi ini membaca jam berdasarkan zona waktu lokal perangkat/laptop pengakses, bukan acuan zona waktu operasional sistem (WIB / Asia/Jakarta).
+- **Dampak:**
+  - Presensi jam 08:00 WIB akan otomatis terisi dan tampil sebagai 09:00 di form laptop HRD di Bali. Jika HRD tidak teliti dan langsung menekan Simpan, jam presensi karyawan bergeser terlambat 1 jam.
+- **Implementasi (2026-10-08):**
+  - Mengganti `toTimeInput` dan `fmtTime` agar melakukan pemotongan string murni (`Regex` / `slice`) tanpa memanggil `new Date()`.
+  - Di `openCorrectionModal`, `check_in_time` dan `check_out_time` mengutamakan `row.check_in_time_local` / `row.check_out_time_local` dari payload sebelum fallback ke `toTimeInput`.
+  - Menampilkan label zona waktu cabang per baris di tabel laporan presensi dan di modal koreksi presensi.
+- **Verifikasi:**
+  - `npm run lint` (`tsc --noEmit`) pada `expenseflow-web` lolos tanpa error (exit code 0).
+
+---
+
+#### 22. KRITIS: Status `absent` (Alpha) Tidak Membersihkan Jam Masuk/Pulang yang Sudah Ada — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `AttendanceController::correctAttendance()` (blok `$dangerousChanged` ~line 4805 & blok `$facts` ~line 4844)
+- **Skenario Aksi User (dikonfirmasi empiris via script standalone, lalu dihapus):**
+  - Baris presensi awalnya `status=present`, `check_in_time=08:00`, `check_out_time=17:00`.
+  - HRD membuka modal koreksi dan **hanya mengubah dropdown status ke "Alpha"** (tanpa menyentuh input jam), lalu klik Simpan.
+  - Hasil di DB sebelum perbaikan: `status=absent` TAPI `check_in_time` & `check_out_time` **masih tersimpan utuh**.
+  - Reachable langsung dari UI (bukan cuma API mentah) karena `AttendanceManagement.tsx` selalu mengirim `check_in_time`/`check_out_time` dari nilai form yang sudah pre-filled, dan form tidak auto-clear jam saat status diganti ke Alpha.
+- **Akar Masalah:**
+  - Blok "Status absent tidak boleh menyisakan jam kerja/lembur menggantung" (~line 4922, lihat temuan di atas) hanya me-null-kan `work_minutes`/`overtime_minutes` di `$derived` — tidak pernah men-null-kan `check_in_time`/`check_out_time`/`check_in_type` di `$facts` sebelum `updateOrCreate()`.
+  - Gerbang konfirmasi SIMPAN (`$dangerousChanged`) membandingkan jam lama vs baru secara string; karena HRD tidak mengetik ulang jamnya (form mengirim nilai yang SAMA), jam tidak terdeteksi "berubah" — HRD tidak pernah diperingatkan bahwa jam tetap akan tersimpan/terhapus.
+- **Dampak:**
+  - Laporan Presensi menampilkan baris kontradiktif (status "Alpha" tapi kolom Jam Masuk/Jam Pulang terisi 08:00–17:00) — membingungkan HRD dan berisiko disalahartikan sebagai bug data.
+  - Payroll (`PayrollCalculator::attendanceDays()`) kebetulan aman karena hanya membaca kolom `status`, bukan jam — tapi laporan & integrasi lain yang membaca jam langsung tetap berisiko.
+- **Implementasi (2026-10-07):**
+  1. **Blok `$facts` (sebelum `updateOrCreate()`):** ditambahkan override tanpa kondisi — begitu `$newStatus === 'absent'`, `$facts['check_in_time']`, `$facts['check_out_time']`, dan `$facts['check_in_type']` dipaksa `null`, terlepas dari apa yang dikirim request (menutup celah "field tidak dikirim sama sekali" sekaligus "dikirim dengan nilai lama").
+  2. **Blok `$dangerousChanged`:** ditambahkan pengecekan baru — jika `$newStatus === 'absent'` dan baris lama punya `check_in_time`/`check_out_time` non-null, masuk daftar `dangerousChanged` dengan label `'jam masuk/pulang dihapus (status menjadi Alpha)'`, sehingga gerbang konfirmasi SIMPAN tetap menembak dengan pesan yang akurat (bukan hanya karena "status kehadiran" berubah).
+- **Verifikasi:**
+  - `tests/Feature/AttendanceCorrectionTest.php` — 2 test regresi baru: (a) `test_ubah_status_ke_alpha_menghapus_jam_masuk_dan_pulang_lama` — reproduksi skenario bug persis (form mengirim jam lama yang sama + status absent) → jam masuk, jam pulang, dan tipe presensi semuanya `null` setelah disimpan; (b) `test_ubah_status_ke_alpha_tanpa_konfirmasi_ditolak_dengan_alasan_jam_terhapus` — tanpa `confirm_dangerous`, request ditolak 422 dengan `dangerous_changed_fields` memuat alasan penghapusan jam, dan baris lama tidak berubah sama sekali.
+  - `php artisan test --filter=AttendanceCorrectionTest` → **46/46 lolos** (206 assertions, 44 test lama tidak ada yang pecah).
+  - `php artisan test --filter=Attendance` (suite penuh) → **149/149 lolos** (764 assertions).
+  - `php -l` bersih pada `AttendanceController.php` dan `AttendanceCorrectionTest.php`.
+
+---
+
+#### 23. Guard Baru: Pengajuan Cuti/Izin/Sakit `pending` Otomatis Ditolak Saat Karyawan Check-in di Hari H — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `LeaveRequest::autoRejectPendingLeavesOnCheckIn()` (baru, `app/Models/LeaveRequest.php`) & `AttendanceController::checkIn()` (~setelah `Attendance::updateOrCreate()`).
+- **Latar Belakang / Permintaan:**
+  - Sebelumnya hanya ada satu mekanisme auto-reject: sweep terjadwal `LeaveRequest::autoRejectExpiredLeaves()` yang menolak pengajuan `pending` begitu lewat **H+1** (`start_date < hari ini`) — murni berbasis waktu, bukan berbasis bukti kehadiran.
+  - Permintaan: tambahkan guard yang **lebih cepat** — begitu karyawan terbukti **check-in presensi** pada tanggal yang tercakup pengajuan cuti/izin/sakit miliknya yang masih `pending`, pengajuan itu otomatis ditolak saat itu juga, tidak perlu menunggu H+1.
+  - Guard baru ini bersifat **tambahan**, bukan pengganti: sweep H+1 tetap dipertahankan sebagai jaring pengaman untuk kasus karyawan yang memang tidak pernah check-in sama sekali (mis. benar-benar tidak masuk tanpa approval).
+- **Mengapa Aman Dipasang di `checkIn()`:**
+  - `checkIn()` sudah punya guard lama (~line 7863) yang **memblokir total** proses check-in jika ada pengajuan cuti/sakit/izin berstatus **`approved`** untuk hari ini. Jadi begitu kode mencapai titik pembuatan baris `attendances`, satu-satunya pengajuan yang mungkin masih "nyangkut" untuk tanggal tersebut sudah pasti **bukan** `approved` (hanya `pending` atau sudah `rejected`) — aman untuk langsung di-reject tanpa menabrak kasus yang sudah sah disetujui.
+- **Implementasi:**
+  1. Method baru `LeaveRequest::autoRejectPendingLeavesOnCheckIn(int $userId, string $date): int` — mencari pengajuan `status='pending'`, `leave_type` IN `['cuti','izin','sakit']`, milik user tersebut, dengan rentang `start_date <= $date <= end_date`. Untuk setiap baris yang cocok: set `status='rejected'`, `rejection_reason` baru yang membedakan pemicunya dari sweep H+1 ("...terdeteksi melakukan presensi check-in pada tanggal pengajuan..."), `collective_status='declined'` jika cuti bersama (`holiday_id` tidak null), hapus notifikasi `leave_requested` pending milik approver, lalu kirim notifikasi `personal_leave_cancelled` + push FCM ke karyawan — meniru persis pola yang sudah dipakai `autoRejectExpiredLeaves()` agar konsisten.
+  2. `leave_type = 'wfh'` **sengaja dikecualikan** — WFH adalah pengajuan *mode kerja* (dari rumah), bukan klaim tidak hadir, jadi check-in (termasuk check-in bertipe `wfh` itu sendiri) tidak membatalkannya. Ini konsisten dengan pengecualian yang sama di guard lama "Cegah presensi jika user sedang cuti/sakit/izin" (~line 7862).
+  3. Dipanggil dari `checkIn()` tepat setelah `Attendance::updateOrCreate()` berhasil, dibungkus `try/catch` + `Log::warning` — kegagalan di sisi ini (mis. gagal kirim FCM) tidak boleh menggagalkan proses check-in karyawan yang sudah berhasil.
+  4. Pengajuan multi-hari: karena satu baris `leave_requests` mencakup satu rentang `start_date..end_date` (bukan per-hari), check-in di **salah satu** hari dalam rentang tersebut menolak **seluruh** pengajuan — selaras dengan cara sweep H+1 bekerja (satu baris = satu keputusan).
+- **Verifikasi:**
+  - Test baru `tests/Feature/LeaveRejectedOnCheckInTest.php` (5 test): (a) pengajuan `izin` 1 hari otomatis `rejected` saat check-in di hari H, notifikasi approver terhapus & notifikasi karyawan terkirim; (b) pengajuan `cuti` 3 hari ikut `rejected` walau check-in hanya di hari ke-2; (c) pengajuan `wfh` **tetap `pending`** saat check-in (tidak ikut ter-reject, sesuai pengecualian); (d) pengajuan untuk tanggal lain tidak terpengaruh; (e) pengajuan yang sudah `rejected` manual sebelumnya tidak ditimpa ulang.
+  - `php artisan test --filter=LeaveRejectedOnCheckInTest` → **5/5 lolos** (14 assertions).
+  - `php artisan test --filter=Leave` (suite penuh pengajuan cuti) → **85/88 lolos**; 3 gagal pra-eksisting di `LeaveMultiApprovalWorkflowTest` (dikonfirmasi gagal juga di `git stash` sebelum perubahan ini — tidak terkait).
+  - `php artisan test --filter=Attendance` (suite penuh presensi) → **149/149 lolos** (764 assertions), tidak ada regresi pada `checkIn()`.
+  - `php artisan test` (seluruh suite backend) → **741/744 lolos** (4334 assertions); 3 gagal sama persis dengan yang pra-eksisting di atas.
+  - `php -l` bersih pada `LeaveRequest.php`, `AttendanceController.php`, dan `LeaveRejectedOnCheckInTest.php`.
+
+#### 24. Guard Baru: Role "Khusus Mobile" Otomatis Mengunci Modul Non-Cuti/Lembur di Create/Edit Role — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `Role::MOBILE_ONLY_ALLOWED_MODULES` (baru, `app/Models/Role.php`) & `RoleController::sanitizePermissionsForMobileOnly()` (baru, dipanggil dari `store()` & `update()`, `app/Http/Controllers/API/RoleController.php`); frontend `RoleFormModal.tsx` (`MOBILE_ONLY_ALLOWED_MODULES`, `sanitizePermissionsForMobileOnly()`, badge "Khusus Mobile: Terkunci").
+- **Latar Belakang / Permintaan:**
+  - Permintaan: pada form Create/Edit Role di web, jika platform dipilih **"Khusus Mobile"** di Tahap 1, maka di Tahap 3 (matriks izin) modul Finance otomatis off, dan di modul HRD & Kepegawaian hanya **Persetujuan Lembur** yang aktif secara default — modul lain tidak bisa di-manage lewat web, karena hanya **Persetujuan Cuti** & **Persetujuan Lembur** yang punya alur approval lewat aplikasi mobile.
+  - Dua keputusan diklarifikasi ke user sebelum implementasi: (1) cakupan kunci — dipilih **HRD + Pengaturan & Sistem** (grup Pengaturan Aturan, Manajemen Role, Audit Log juga ikut dikunci ke `none`, bukan cuma sub-modul HRD); (2) lapisan penegakan — dipilih **UI + Backend** (defense-in-depth, konsisten dengan pola di item #22/#23).
+  - Kedua jawaban itu disederhanakan menjadi satu desain **allow-list**: hanya modul `leave` & `overtime` yang boleh dikonfigurasi untuk `platform='mobile_only'`; seluruh modul lain (termasuk `payroll` yang bahkan tidak muncul di `MODULE_GROUPS` frontend) otomatis dipaksa `none`.
+- **Implementasi:**
+  1. Backend: konstanta `Role::MOBILE_ONLY_ALLOWED_MODULES = [MODULE_LEAVE, MODULE_OVERTIME]` + method privat `RoleController::sanitizePermissionsForMobileOnly(array $permissions): array` yang memaksa semua modul di luar allow-list ke `'none'`, dan men-default `overtime` ke `'manage'` jika hasilnya `'none'` (agar "Persetujuan Lembur" aktif secara default sesuai permintaan).
+  2. Dipanggil di `store()` tepat setelah validasi (sebelum cek dependensi `role_management`↔`settings`), dan di `update()` dengan **fallback ke permission yang sudah tersimpan di DB** (`$role->permissions()->pluck('access_level','module')->all()`) jika request tidak mengirim ulang `permissions` sama sekali — mencegah guard ini menghapus konfigurasi `leave`/`overtime` yang sudah ada saat admin hanya mengubah field lain (mis. ganti platform ke `mobile_only` tanpa mengirim ulang matriks izin).
+  3. Frontend: `sanitizePermissionsForMobileOnly()` dipanggil saat memuat role untuk edit (`useEffect`), saat klik kartu platform "Khusus Mobile", di setiap aksi massal (`setAllPermissions`/`setGroupPermissions`), dan sekali lagi tepat sebelum submit sebagai jaring pengaman terakhir. `handlePermissionChange` juga memblokir percobaan mengaktifkan modul terkunci via early-return guard.
+  4. UI Tahap 3: setiap modul di luar allow-list saat `platform==='mobile_only'` mendapat badge sky "Khusus Mobile: Terkunci" + penjelasan, dan seluruh tombol kontrolnya (`disabled`) di ketiga varian UI (tri-state standar, 5-tombol overtime, segmented control receipt) — termasuk tombol "None" yang sebelumnya tidak pernah di-disable.
+- **Verifikasi:**
+  - Test baru `tests/Feature/RoleMobileOnlyPermissionGuardTest.php` (5 test): role mobile-only dengan payload mencoba mengaktifkan Finance/HRD/Settings/Role Management → semua dipaksa `none`, `leave`/`overtime` tetap sesuai kiriman; `overtime` otomatis `manage` saat dikirim `none`/tidak dikirim; role `platform='both'` tidak terpengaruh; update role existing ke `mobile_only` **tanpa** mengirim ulang `permissions` tetap men-sanitize data lama di DB (bukan mengosongkannya); update dengan payload baru tetap konsisten disanitasi.
+  - `php artisan test --filter=RoleMobileOnlyPermissionGuardTest` → **5/5 lolos** (25 assertions).
+  - `php artisan test --filter=Role` (seluruh suite role, termasuk `RoleManagementTest` yang disesuaikan 1 test-nya dari `platform='mobile_only'` ke `'both'` karena test itu sengaja menguji format array-of-objects dengan modul `attendance`, yang sekarang memang harus `none` untuk mobile-only) → **55/55 lolos** (248 assertions).
+  - `php artisan test` (seluruh suite backend) → **746/749 lolos** (4359 assertions); 3 gagal sama persis dengan pra-eksisting di `LeaveMultiApprovalWorkflowTest` (dikonfirmasi ulang via `git stash` — tidak terkait sama sekali dengan perubahan role).
+  - `php -l` bersih pada `Role.php`, `RoleController.php`, `RoleMobileOnlyPermissionGuardTest.php`; `npx tsc --noEmit` bersih (tanpa error) pada `RoleFormModal.tsx`.
+  - UI tidak diverifikasi langsung di browser (tidak ada alat otomasi browser tersedia di sesi ini) — verifikasi mengandalkan type-check TypeScript bersih + review manual logika lock.
+
+#### 25. Dua Bug Kecil pada `RoleController` Ditemukan Saat Mengerjakan Item #24 — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `RoleController::destroy()`, `RoleController::store()`, `RoleController::update()`, helper baru `RoleController::validModulesKeysRule()` — `app/Http/Controllers/API/RoleController.php`.
+- **Latar Belakang:** ditemukan saat review kode untuk item #24 (guard role khusus mobile), bukan laporan bug dari user — dua kekurangan kecil pada controller yang sama:
+  1. **Audit log penghapusan role tidak lengkap:** `destroy()` memanggil `AuditLogger::log()` hanya dengan `entityId`, tanpa `oldValues` — berbeda dengan `store()`/`update()` yang selalu menyertakan snapshot penuh. Akibatnya, begitu custom role dihapus, riwayat *modul & level akses apa saja yang pernah dimiliki role itu* serta *cabang mana yang pernah diaturnya* hilang permanen dari audit trail, meski role lain tetap tercatat lengkap.
+  2. **Key permission yang tidak dikenal diam-diam diabaikan:** validasi `'permissions.*' => Rule::in([...])` hanya mengecek *value*, tidak mengecek apakah *key* (nama modul) itu benar-benar ada di `Role::AVAILABLE_MODULES`. Payload dengan key typo (mis. `'attendence'` alih-alih `'attendance'`) tetap lolos validasi 422, lalu modul "hantu" itu cuma di-skip tanpa pesan error di loop penyimpanan `store()`/`update()` — berpotensi menyembunyikan bug pengiriman payload (typo frontend atau API caller lain) tanpa jejak apa pun bagi admin.
+- **Implementasi:**
+  1. Sebelum `DB::transaction()` di `destroy()`, tangkap `$oldValues = $role->load(['permissions', 'branches'])->toArray()` lalu teruskan sebagai parameter `oldValues` ke `AuditLogger::log()` — konsisten dengan pola snapshot di `store()`/`update()`.
+  2. Tambah helper privat `validModulesKeysRule(array $availableModules): \Closure` yang mengembalikan validation rule closure: `array_diff(array_keys($value), $availableModules)` — jika ada key asing, `$fail()` dengan pesan "Modul izin tidak dikenal: ...". Dipasang sebagai rule ketiga pada field `'permissions'` di `store()` maupun `update()` (setelah `'nullable'`, `'array'`), sehingga payload dengan key modul tidak valid langsung ditolak 422 alih-alih diam-diam di-drop.
+  3. Karena `normalizePermissions()` sudah dipanggil sebelum `$request->validate()`, format array-of-objects (`[['module' => ..., 'access_level' => ...]]`) juga otomatis tervalidasi dengan benar — rule ini bekerja di atas bentuk map yang sudah dinormalisasi.
+- **Verifikasi:**
+  - Test baru `tests/Feature/RoleAuditAndValidationGuardTest.php` (4 test): (a) hapus role mencatat `old_values` lengkap (nama, daftar permission per modul, daftar cabang) di tabel `activity_logs`; (b) create role dengan key modul typo → 422 + `permissions` validation error, role tidak tersimpan; (c) update role dengan key modul tidak dikenal → 422; (d) create role dengan key modul valid tetap berhasil 201 (regression check).
+  - `php artisan test --filter=RoleAuditAndValidationGuardTest` → **4/4 lolos** (15 assertions).
+  - `php artisan test --filter=Role` (seluruh suite role) → **59/59 lolos** (263 assertions) — tidak ada regresi pada test lama (termasuk yang pakai format array-of-objects & payload permissions lain).
+  - `php artisan test` (seluruh suite backend) → **750/753 lolos** (4374 assertions); 3 gagal sama persis dengan pra-eksisting di `LeaveMultiApprovalWorkflowTest` (tidak terkait).
+  - `php -l` bersih pada `RoleController.php` dan `RoleAuditAndValidationGuardTest.php`.
+
+#### 26. Fitur Baru: "Persetujuan Cuti" Lv 1 (SPV) & Lv 2 (HRD) di Matriks Izin Create/Edit Role, Disamakan dengan "Persetujuan Lembur" — ✅ SELESAI 2026-10-07
+- **Lokasi Kode:** `RoleFormModal.tsx` (Tahap 3 — info dinamis per level & segmented control 5-tombol untuk `mod.key === 'leave'`, `setAllPermissions()`); `RoleController::modules()` (`app/Http/Controllers/API/RoleController.php`, deskripsi `access_levels` untuk `spv`/`hrd`); test baru `RoleManagementTest::test_can_create_role_with_leave_approval_spv_and_hrd_levels_like_overtime`.
+- **Latar Belakang / Permintaan:** User: *"pada edit role dan create role tahap ke 3 tolong buatkan persetujuan cuti lv1 dan lv 2 sama seperti persetujuan lembur"*. Investigasi menunjukkan backend **sudah generik** mendukung level `spv`/`hrd` untuk modul apa pun lewat `Role::hasPermission()` (tidak ada percabangan khusus `MODULE_OVERTIME` vs `MODULE_LEAVE`), dan alur approval cuti bertingkat (SPV → HRD) di `AttendanceController`, `RoleMiddleware`, `User::hasPermission()` **sudah memakai mekanisme generik ini** untuk `MODULE_LEAVE`. Jadi gap-nya murni di frontend: Tahap 3 `RoleFormModal.tsx` hanya memberi modul `overtime` kontrol 5-tombol (None/Read/Lv1 SPV/Lv2 HRD/Penuh); modul `leave` masih memakai kontrol tri-state standar (None/Read/Manage) sehingga admin tidak bisa memilih level SPV atau HRD khusus untuk cuti dari web.
+- **Implementasi:**
+  1. Tambah blok keterangan dinamis khusus `mod.key === 'leave'` (mirip blok `overtime` yang sudah ada) — teks berbeda per level (`none`/`read`/`spv`: Approver Tahap 1 SPV/`hrd`: Approver Tahap 2 Final HRD + kelola kuota saldo cuti/`manage`: wewenang penuh Lv1 & 2).
+  2. Tambah cabang ternary baru `mod.key === 'leave' ? (...)` pada render kontrol Tahap 3 — segmented control 5-tombol (None/Read/Lv 1: SPV/Lv 2: HRD/Lv 1 & 2: Penuh), identik strukturnya dengan kontrol `overtime` (tanpa `disabled`, karena `leave` sudah ada di `MOBILE_ONLY_ALLOWED_MODULES` sehingga `isLocked` selalu `false` untuk modul ini — sama seperti `overtime`).
+  3. `setAllPermissions()`: perluas kondisi skip bulk-set spv/hrd dari `m.key === 'overtime'` menjadi `(m.key === 'overtime' || m.key === 'leave')` agar tombol "Semua Read/Manage/None" tidak pernah memaksa cuti ke level spv/hrd yang tidak relevan secara global (konsisten dengan perilaku overtime). `setGroupPermissions()` tidak disentuh karena tombol aksi grup di UI hanya pernah memanggilnya dengan `'read'/'manage'/'none'`, tidak pernah `'spv'/'hrd'` — jadi skip-logic ini secara praktik tidak pernah teraktivasi lewat UI yang ada, baik untuk `overtime` maupun `leave` (inconsistency lama dibiarkan apa adanya, di luar scope permintaan).
+  4. Backend: generalisasi teks deskripsi `access_levels` `spv`/`hrd` pada `RoleController::modules()` dari *"Khusus persetujuan lembur tahap 1/2..."* menjadi *"Khusus persetujuan cuti/lembur tahap 1/2..."* agar akurat merepresentasikan kedua modul yang sekarang memakai level ini. Tidak ada perubahan logika backend lain — validasi `'permissions.*' => Rule::in(['none','read','manage','spv','hrd','finance'])` di `store()`/`update()` sudah mengizinkan `spv`/`hrd` untuk modul apa pun sejak awal.
+- **Verifikasi:**
+  - Test baru `RoleManagementTest::test_can_create_role_with_leave_approval_spv_and_hrd_levels_like_overtime`: create role dengan `leave: 'spv'` → tersimpan & `Role::hasPermission(MODULE_LEAVE, 'spv')` true, `'hrd'` false; update role yang sama ke `leave: 'hrd'` → tersimpan & `hasPermission('hrd')` true, `'spv'` false.
+  - `php artisan test --filter=RoleManagementTest` → **10/10 lolos** (57 assertions).
+  - `php artisan test --filter=Role` (seluruh suite role) → **60/60 lolos** (271 assertions) — tidak ada regresi.
+  - `php artisan test` (seluruh suite backend) → **751/754 lolos** (4382 assertions); 3 gagal sama persis dengan pra-eksisting di `LeaveMultiApprovalWorkflowTest` (tidak terkait, dikonfirmasi berulang kali di item #24/#25).
+  - `php -l` bersih pada `RoleController.php`; `npx tsc --noEmit` bersih (tanpa error) pada `RoleFormModal.tsx`.
+  - UI tidak diverifikasi langsung di browser (tidak ada alat otomasi browser tersedia di sesi ini) — verifikasi mengandalkan type-check TypeScript bersih + review manual struktur JSX yang mem-mirror pola `overtime` yang sudah terverifikasi sebelumnya.

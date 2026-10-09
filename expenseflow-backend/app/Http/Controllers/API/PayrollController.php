@@ -304,6 +304,7 @@ class PayrollController extends Controller
             'bpjs'                  => 'boolean',
             'overtime'              => 'boolean',
             'attendance_deduction'  => 'boolean',
+            'late_penalty'          => 'boolean',
             'receipt_reimbursement' => 'boolean',
             'loan_installment'      => 'boolean',
             'adjustments'           => 'boolean',

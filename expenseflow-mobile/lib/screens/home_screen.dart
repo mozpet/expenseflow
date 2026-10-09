@@ -906,6 +906,34 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               ],
             ),
           ),
+          if ((hasCheckedIn || hasCheckedOut) && presensiProv.isCrossTimezone && presensiProv.timezoneDisplay != null) ...[
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                color: const Color(0xFFEFF6FF),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0xFFBFDBFE)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.public, size: 14, color: Color(0xFF2563EB)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      presensiProv.timezoneDisplay!,
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1E40AF),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
           if (presensiProv.flexitimeEnabled && (hasCheckedIn || hasCheckedOut)) ...[
             const SizedBox(height: 10),
             const FlexitimeProgressWidget(compact: true),
@@ -1361,15 +1389,16 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     // - Jika libur / off / cuti / izin -> "Libur"
     // - Jika jam kantor default -> "08:00 — 17:00 WIB"
     // - Jika shift -> jam masuk dan pulangnya: "07:00 — 15:00 WIB"
+    final tzLabel = context.read<PresensiProvider>().branchTimezoneLabel;
     String subTitleText;
     if (isOff) {
       subTitleText = 'Libur';
     } else if (today != null && today.subTitle.isNotEmpty) {
       subTitleText = today.subTitle;
     } else if (schedule != null && schedule.workStartTime != null) {
-      subTitleText = '${_shortTime(schedule.workStartTime!)} — ${_shortTime(schedule.workEndTime!)} WIB';
+      subTitleText = '${_shortTime(schedule.workStartTime!)} — ${_shortTime(schedule.workEndTime!)} $tzLabel';
     } else {
-      subTitleText = '08:00 — 17:00 WIB';
+      subTitleText = '08:00 — 17:00 $tzLabel';
     }
 
     // Icon dan warna aksen kartu

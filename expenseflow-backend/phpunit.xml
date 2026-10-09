@@ -19,6 +19,11 @@
     </source>
     <php>
         <env name="APP_ENV" value="testing"/>
+        <!-- Jangkar penyimpanan datetime. Dipin eksplisit karena 140+ assertion di
+             tests/ menegaskan jam dinding WIB; tanpa ini suite bergantung pada .env
+             mesin yang menjalankannya dan kegagalan tidak bisa dibedakan antara
+             regresi nyata dengan perbedaan konfigurasi lokal. -->
+        <env name="APP_TIMEZONE" value="Asia/Jakarta"/>
         <env name="APP_MAINTENANCE_DRIVER" value="file"/>
         <env name="BCRYPT_ROUNDS" value="4"/>
         <env name="BROADCAST_CONNECTION" value="null"/>

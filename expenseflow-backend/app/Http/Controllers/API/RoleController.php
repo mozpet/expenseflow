@@ -40,8 +40,8 @@ class RoleController extends Controller
                 ['id' => 'none',    'name' => 'Tidak Ada Akses',    'desc' => 'Menu disembunyikan & akses API diblokir'],
                 ['id' => 'read',    'name' => 'Hanya Lihat',        'desc' => 'Hanya bisa melihat daftar & detail data'],
                 ['id' => 'manage',  'name' => 'Kelola Penuh',       'desc' => 'Bisa melihat, menambah, mengubah, menghapus, serta mengelola pengaturan & klaim limit'],
-                ['id' => 'spv',     'name' => 'Level 1: SPV',       'desc' => 'Khusus persetujuan lembur tahap 1 (SPV/Atasan)'],
-                ['id' => 'hrd',     'name' => 'Level 2: HRD',       'desc' => 'Khusus persetujuan lembur tahap 2 (HRD Final)'],
+                ['id' => 'spv',     'name' => 'Level 1: SPV',       'desc' => 'Khusus persetujuan cuti/lembur tahap 1 (SPV/Atasan)'],
+                ['id' => 'hrd',     'name' => 'Level 2: HRD',       'desc' => 'Khusus persetujuan cuti/lembur tahap 2 (HRD Final)'],
                 ['id' => 'finance', 'name' => 'Lv 1: Finance',      'desc' => 'Approval struk Tier 1 & Tier 2, + tahap pertama Tier 3'],
             ],
             'platforms' => [
@@ -149,7 +149,7 @@ class RoleController extends Controller
                     }
                 }),
             ],
-            'permissions'   => 'nullable|array',
+            'permissions'   => ['nullable', 'array', $this->validModulesKeysRule($availableModules)],
             'permissions.*' => [Rule::in(['none', 'read', 'manage', 'spv', 'hrd', 'finance'])],
         ];
 
@@ -162,6 +162,12 @@ class RoleController extends Controller
         $validated = $request->validate($rules);
         if ($isSuperAdmin && isset($validated['company_id'])) {
             $companyId = (int) $validated['company_id'];
+        }
+
+        // Guard: role khusus mobile hanya boleh punya izin Cuti & Lembur aktif.
+        // Dipaksa di backend juga agar tidak bisa di-bypass lewat panggilan API langsung.
+        if ($validated['platform'] === 'mobile_only') {
+            $validated['permissions'] = $this->sanitizePermissionsForMobileOnly($validated['permissions'] ?? []);
         }
 
         // Validasi dependensi: role_management hanya boleh aktif jika settings = 'manage'
@@ -326,10 +332,20 @@ class RoleController extends Controller
                     }
                 }),
             ],
-            'permissions'   => 'nullable|array',
+            'permissions'   => ['nullable', 'array', $this->validModulesKeysRule($availableModules)],
             'permissions.*' => [Rule::in(['none', 'read', 'manage', 'spv', 'hrd', 'finance'])],
             'is_active'     => 'sometimes|boolean',
         ]);
+
+        // Guard: role khusus mobile hanya boleh punya izin Cuti & Lembur aktif.
+        // Dipaksa di backend juga agar tidak bisa di-bypass lewat panggilan API langsung —
+        // termasuk saat request tidak mengirim ulang 'permissions' sama sekali, dengan
+        // fallback ke matriks izin yang sudah tersimpan di database untuk role ini.
+        if ($validated['platform'] === 'mobile_only') {
+            $basePermissions = $validated['permissions']
+                ?? $role->permissions()->pluck('access_level', 'module')->all();
+            $validated['permissions'] = $this->sanitizePermissionsForMobileOnly($basePermissions);
+        }
 
         // Validasi dependensi: role_management hanya boleh aktif jika settings = 'manage'
         if (isset($validated['permissions'])) {
@@ -438,6 +454,10 @@ class RoleController extends Controller
 
         $roleName = $role->name;
         $roleId = $role->id;
+        // Simpan snapshot izin & cabang SEBELUM dihapus agar audit log tidak kehilangan
+        // jejak hak akses apa saja yang pernah dimiliki role ini (konsisten dengan
+        // store()/update() yang selalu mencatat oldValues/newValues).
+        $oldValues = $role->load(['permissions', 'branches'])->toArray();
 
         DB::transaction(function () use ($role) {
             $employeeRole = Role::whereNull('company_id')->where('slug', 'employee')->first();
@@ -468,12 +488,61 @@ class RoleController extends Controller
             category: AuditLogger::CATEGORY_HR,
             severity: AuditLogger::SEVERITY_WARNING,
             entityType: 'Role',
-            entityId: $roleId
+            entityId: $roleId,
+            oldValues: $oldValues
         );
 
         return response()->json([
             'message' => "Custom Role '{$roleName}' berhasil dihapus.",
         ]);
+    }
+
+    /**
+     * Rule validasi agar key pada payload 'permissions' hanya berisi identifier modul
+     * yang benar-benar dikenal sistem (Role::AVAILABLE_MODULES). Tanpa ini, key yang
+     * typo/tidak dikenal akan lolos validasi lalu diam-diam diabaikan di store()/update()
+     * (karena loop penyimpanan hanya mengiterasi $availableModules) — berpotensi menutupi
+     * bug pengiriman payload tanpa ada error yang terlihat oleh admin.
+     *
+     * @param string[] $availableModules
+     */
+    private function validModulesKeysRule(array $availableModules): \Closure
+    {
+        return function (string $attribute, mixed $value, \Closure $fail) use ($availableModules) {
+            if (! is_array($value)) {
+                return;
+            }
+            $unknown = array_diff(array_keys($value), $availableModules);
+            if (! empty($unknown)) {
+                $fail('Modul izin tidak dikenal: ' . implode(', ', $unknown) . '.');
+            }
+        };
+    }
+
+    /**
+     * Paksa seluruh modul di luar Role::MOBILE_ONLY_ALLOWED_MODULES (Cuti & Lembur)
+     * ke 'none' untuk role dengan platform 'mobile_only'. Dipanggil dari store() &
+     * update() agar matriks izin role khusus mobile selalu konsisten meski request
+     * dikirim langsung lewat API (bukan lewat form web) dan mencoba menyelundupkan
+     * izin Finance/HRD lain selain Cuti & Lembur.
+     *
+     * @param array<string, string> $permissions
+     * @return array<string, string>
+     */
+    private function sanitizePermissionsForMobileOnly(array $permissions): array
+    {
+        foreach (array_keys(Role::AVAILABLE_MODULES) as $mod) {
+            if (! in_array($mod, Role::MOBILE_ONLY_ALLOWED_MODULES, true)) {
+                $permissions[$mod] = 'none';
+            }
+        }
+
+        // Persetujuan Lembur aktif secara default untuk role khusus mobile.
+        if (($permissions[Role::MODULE_OVERTIME] ?? 'none') === 'none') {
+            $permissions[Role::MODULE_OVERTIME] = 'manage';
+        }
+
+        return $permissions;
     }
 
     /**

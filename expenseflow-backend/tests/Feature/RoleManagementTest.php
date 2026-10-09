@@ -307,7 +307,7 @@ class RoleManagementTest extends TestCase
         $payload = [
             'name'         => 'Staff Gudang Logistik',
             'description'  => 'Izin format array of objects',
-            'platform'     => 'mobile_only',
+            'platform'     => 'both',
             'branch_scope' => 'self',
             'permissions'  => [
                 ['module' => Role::MODULE_ATTENDANCE, 'access_level' => 'manage'],
@@ -321,7 +321,7 @@ class RoleManagementTest extends TestCase
 
         $response->assertCreated()
             ->assertJsonPath('data.name', 'Staff Gudang Logistik')
-            ->assertJsonPath('data.platform', 'mobile_only')
+            ->assertJsonPath('data.platform', 'both')
             ->assertJsonPath('data.branch_scope', 'self');
 
         $roleId = $response->json('data.id');
@@ -366,6 +366,59 @@ class RoleManagementTest extends TestCase
             ]);
         $resRead->assertStatus(422)
             ->assertJsonValidationErrors(['permissions.role_management']);
+    }
+
+    public function test_can_create_role_with_leave_approval_spv_and_hrd_levels_like_overtime(): void
+    {
+        $payload = [
+            'name'         => 'SPV Cuti Cabang Jakarta',
+            'platform'     => 'both',
+            'branch_scope' => 'specific',
+            'branch_ids'   => [$this->branchJakarta->id],
+            'permissions'  => [
+                Role::MODULE_LEAVE => 'spv',
+            ],
+        ];
+
+        $response = $this->actingAs($this->admin, 'sanctum')
+            ->postJson('/api/v1/admin/roles', $payload);
+
+        $response->assertCreated();
+        $roleId = $response->json('data.id');
+
+        $this->assertDatabaseHas('role_permissions', [
+            'role_id'      => $roleId,
+            'module'       => Role::MODULE_LEAVE,
+            'access_level' => 'spv',
+        ]);
+
+        $role = Role::find($roleId);
+        $this->assertTrue($role->hasPermission(Role::MODULE_LEAVE, 'spv'));
+        $this->assertFalse($role->hasPermission(Role::MODULE_LEAVE, 'hrd'));
+
+        // Update ke level HRD (Lv 2) — sama seperti perilaku lembur.
+        $updateRes = $this->actingAs($this->admin, 'sanctum')
+            ->putJson("/api/v1/admin/roles/{$roleId}", [
+                'name'         => $payload['name'],
+                'platform'     => 'both',
+                'branch_scope' => 'specific',
+                'branch_ids'   => [$this->branchJakarta->id],
+                'permissions'  => [
+                    Role::MODULE_LEAVE => 'hrd',
+                ],
+            ]);
+
+        $updateRes->assertOk();
+
+        $this->assertDatabaseHas('role_permissions', [
+            'role_id'      => $roleId,
+            'module'       => Role::MODULE_LEAVE,
+            'access_level' => 'hrd',
+        ]);
+
+        $role->refresh();
+        $this->assertTrue($role->hasPermission(Role::MODULE_LEAVE, 'hrd'));
+        $this->assertFalse($role->hasPermission(Role::MODULE_LEAVE, 'spv'));
     }
 
     public function test_can_assign_role_management_when_settings_is_manage(): void

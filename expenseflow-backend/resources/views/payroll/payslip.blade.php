@@ -182,7 +182,8 @@
     </table>
 
     <div class="foot">
-        Dokumen ini dicetak otomatis oleh sistem penggajian pada {{ now()->timezone('Asia/Jakarta')->format('d-m-Y H:i') }} WIB
+        {{-- Cap waktu cetak sudah diformat controller di zona cabang karyawan pemilik slip. --}}
+        Dokumen ini dicetak otomatis oleh sistem penggajian pada {{ $printedAt }} {{ $printedZone }}
         dan sah tanpa tanda tangan basah. PPh21 dihitung dengan metode TER 2024 (PMK 168/2023).
         Simpan slip ini sebagai bukti penerimaan gaji.
     </div>

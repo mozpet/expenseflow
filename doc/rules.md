@@ -634,6 +634,7 @@ GET  /api/v1/dashboard/attendance/today          → today (dashboard hari ini)
 GET  /api/v1/dashboard/attendance/summary        → monthlySummary
 GET  /api/v1/dashboard/attendance/report         → reportAttendance
 GET  /api/v1/dashboard/attendance/report/export  → exportReport (CSV)
+POST /api/v1/dashboard/attendance/corrections    → correctAttendance (koreksi presensi manual HRD; gate ketik SIMPAN + kunci periode payroll)
 GET  /api/v1/dashboard/attendance/leave-balances → listLeaveBalances
 POST /api/v1/dashboard/attendance/leave-balances → setLeaveBalance
 GET  /api/v1/dashboard/attendance/leave-types    → listLeaveTypeSettings (katalog master + konfigurasi on/off & kuota per kantor)
@@ -774,7 +775,64 @@ HRD Dashboard
   → listOvertimeApprovals(): daftar pengajuan lembur (filter status/user/tanggal)
   → approveOvertime(): setujui lembur (overtime_minutes dikonfirmasi ke payroll)
   → rejectOvertime(): tolak lembur (overtime_minutes di-reset ke 0)
+  → correctAttendance(): koreksi / input manual satu baris presensi (lihat bagian "Koreksi Presensi Manual HRD")
 ```
+
+## Koreksi Presensi Manual HRD (2026-10-06)
+
+`POST /api/v1/dashboard/attendance/corrections` → `AttendanceController::correctAttendance()`.
+Satu endpoint untuk dua kasus: **mengubah** baris presensi yang sudah ada, dan **input manual**
+baris baru (backfill `alpha` / karyawan lupa check-in) — karena `attendances` punya
+`unique(user_id, date)` sehingga `updateOrCreate` adalah jalur alaminya.
+
+### Tiga aturan yang mengikat
+1. **Field turunan TIDAK PERNAH diterima dari request.** `work_minutes`, `overtime_minutes`,
+   `is_holiday`, `late_minutes` dan seluruh kolom `snap_*` selalu dihitung ulang server-side.
+   Request hanya boleh mengirim fakta mentah: `check_in_time`, `check_out_time`,
+   `check_in_type`, `status` (opsional), `notes`, `correction_reason`.
+2. **Hitung ulang memakai snapshot** (`Attendance::snapshotSchedule()`), bukan
+   `attendance_settings` live. Tanpa ini, mengoreksi presensi Januari akan dihitung dengan
+   aturan kantor bulan Oktober. Urutan recompute wajib:
+   `work_minutes` → potong istirahat → `is_holiday` → lembur → `early_leave`
+   (`early_leave` menimpa status paling akhir). Lihat `App\Services\Attendance\AttendanceRecalculator`.
+3. **Periode payroll `approved`/`paid` ditolak keras** — `App\Services\Attendance\PayrollPeriodLock`.
+   Ini call site pertama `Payroll::isLocked()`. Bukan peringatan, dan **tidak bisa** dilewati
+   gerbang `SIMPAN`. `reportAttendance()` ikut mengirim `locked_periods: ["2026-09", ...]`
+   agar tombol koreksi di web non-aktif tanpa harus gagal dulu di server.
+
+### Rantai validasi lain
+- `correction_reason` **wajib**, 10–500 karakter — ini jejak auditnya.
+- `status` hanya menerima enum DB `present|late|absent|wfh|early_leave`. Status sintetis laporan
+  (`cuti`, `izin`, `sakit`, `libur`, `alpha`, `belum_hadir`) **ditolak** karena menulisnya ke
+  `attendances.status` akan merusak `PayrollCalculator::attendanceDays()`.
+- Tanggal masa depan ditolak; tanggal lebih tua dari 90 hari (`MAX_CORRECTION_AGE_DAYS`) ditolak.
+- Cuti/izin/sakit yang sudah approved di tanggal itu → ditolak; HRD harus membatalkan
+  pengajuannya dulu, bukan ditimpa diam-diam.
+- Shift lintas hari: `check_out` berjam lebih kecil dari `check_in` diterima dan dihitung ke
+  hari berikutnya. Di luar cross-day, `check_out < check_in` ditolak. Span akhir wajib
+  `> 0` dan `<= 20 jam`.
+- Lembur: `OvertimeApproval` pending ikut disinkronkan (atau dihapus bila lembur hilang);
+  lembur yang **sudah disetujui** memblokir koreksi (`overtime_conflict`) — HRD harus menolak
+  lemburnya dulu lewat Approval Lembur.
+
+### Gerbang konfirmasi "SIMPAN"
+Perubahan pada `check_in_time` / `check_out_time` / `status` menggeser perhitungan gaji, jadi
+server menjawab `422 { requires_confirmation: true, confirmation_phrase: 'SIMPAN',
+dangerous_changed_fields: [...] }` pada percobaan pertama. Percobaan kedua mengirim
+`confirm_dangerous: 'SIMPAN'`. Mekanisme yang sama dengan `updateSettings()`.
+
+### WAJIB DIPERHATIKAN SAAT MENGUBAH METHOD INI
+Seluruh kegagalan validasi **di dalam** `DB::transaction` dilempar sebagai
+`HttpResponseException`, **BUKAN** di-`return`. `return` dari closure transaksi hanya
+mengakhiri closure — Laravel tetap **commit**, sehingga baris presensi berubah meskipun API
+menjawab 422. Bug ini pernah terjadi dan tertangkap test
+`test_lembur_yang_sudah_disetujui_memblokir_koreksi`. Jangan ubah kembali menjadi `return`.
+
+### Jejak audit
+`activity_logs` menerima satu entri `attendance_correction` (severity `warning`) berisi diff
+`old_values` → `new_values`, karyawan menerima notifikasi `attendance_corrected` berisi alasan,
+dan laporan + export CSV menampilkan kolom `Dikoreksi Oleh`, `Waktu Koreksi`, `Alasan Koreksi`,
+`Input Manual`. Test: `tests/Feature/AttendanceCorrectionTest.php` (27 kasus).
 
 ## Pipeline Lembur & Approval Lembur (overtime_approvals)
 ```
@@ -802,6 +860,26 @@ Alur pengajuan & approval:
 
 monthlySummary() sudah menjumlahkan overtime_minutes dari attendances.
 Setelah HRD reject, overtime_minutes=0 → tidak terhitung di payroll.
+```
+
+## Aturan Upah Lembur per Kantor (2026-10-10)
+```
+HRD memilih di form buat/ubah kantor (attendance_settings.overtime_rule):
+  government (default) → PP 35/2021: upah/173 per jam; hari kerja jam 1 x1,5 & berikutnya x2; libur x2
+                         → slip: "Tunjangan Lembur" (kena pajak)
+  custom               → tarif sendiri: overtime_rate_amount (Rp) per overtime_rate_unit (hour|minute),
+                         SAMA untuk semua hari (tidak ada tarif libur terpisah)
+                         overtime_rate_taxable: true → masuk dasar bruto PPh21; false → bebas pajak
+                         → slip: "Bonus Lembur" (source=overtime), dipisah per status pajak
+
+- Aturan dibekukan saat check-in ke attendances.snap_overtime_* (pola snapshot). Ubah tarif / pindah
+  kantor tengah bulan TIDAK mengubah lembur yang sudah terjadi; satu slip boleh memuat campuran.
+- snap_overtime_rule NULL (presensi lama) = aturan pemerintah, tanpa backfill.
+- Hanya menit lembur berstatus approved dalam periode yang dihitung. Opsi payroll overtime=false
+  mematikan kedua jenis baris.
+- Keempat field berbahaya (confirm_dangerous "SIMPAN"). custom tanpa nominal > 0 → 422.
+- Bila memakai "Aturan sendiri", HRD JANGAN membuat komponen gaji lembur lagi (akan dibayar ganda).
+- Tes: tests/Feature/OvertimeRulePayrollTest.php
 ```
 
 ## Pipeline Lembur & Libur (overtime + holidays)
@@ -2691,3 +2769,381 @@ Dikonfigurasikan pada `app/Providers/AppServiceProvider.php` atau `routes/api.ph
    - User A menghabiskan kuota request Tier 3 miliknya hingga 429.
    - User B melakukan request Tier 3 -> Tetap berhasil `200/422` (bukan 429), membuktikan kuota terikat ke `user_id`, bukan IP (`test_checklist_4_multi_tenant_ip_user_independence`).
 
+
+---
+
+# Presensi Multi-Zona Waktu (WIB / WITA / WIT) — 2026-10-08 ✅ BACKEND SELESAI
+
+Backend presensi kini sadar zona waktu untuk ketiga zona Indonesia. Sebelumnya seluruh logika
+waktu dipatok `Asia/Jakarta` secara hardcode (201 literal di 40 file non-vendor), sehingga
+cabang Makassar dengan jam masuk 08:00 sebenarnya dinilai terhadap 08:00 **WIB** (= 09:00 WITA
+lokal), dan karyawan yang dinas/WFH di Papua dibandingkan terhadap jam dinding yang salah.
+
+**Status:** backend + 12 test (`tests/Feature/MultiTimezoneAttendanceTest.php`) SELESAI & hijau.
+Frontend web & Flutter BELUM — kontrak API di §5 adalah acuannya (pola yang sama dengan
+Payroll Fase 6).
+
+## 1. Dua aturan yang mengunci seluruh desain
+
+### Aturan A — Zona bisnis = zona kantor cabang PENEMPATAN karyawan
+
+Jadwal kerja, status telat/hadir, lembur, early-leave, gerbang cutoff, jendela WFH, dan
+**`attendances.date`** SELALU dihitung di zona cabang penempatan karyawan. Zona lokasi fisik
+karyawan bersifat **display-only** — tidak pernah memengaruhi satu pun keputusan bisnis.
+
+Contoh kanonik — karyawan cabang Jakarta sedang dinas di Jayapura, jam masuk cabang 08:00,
+toleransi 15 menit:
+
+| | Nilai |
+|---|---|
+| Jam lokasi fisik karyawan | 10:20 WIT |
+| Jam cabang (otoritatif) | 08:20 WIB |
+| Status | **`late`** (telat 20 menit terhadap 08:00 WIB) |
+| `attendances.date` | tanggal **WIB** |
+| Ditampilkan ke karyawan | `"08:20 WIB (10:20 WIT lokasi Anda)"` |
+
+Alasannya standar enterprise: jadwal kerja, kalender presensi, dan periode payroll adalah milik
+cabang. Bila penilaian mengikuti lokasi fisik, karyawan bisa "memilih" zona yang menguntungkan
+hanya dengan berpindah tempat.
+
+**Roaming TIDAK memindahkan zona.** `checkIn()` menimpa `$acuanOffice` dengan cabang terdekat
+(multi-geofence), tapi zona tetap dari cabang **penempatan**. Roaming hanya melonggarkan
+geofence. `snap_office_id` merekam cabang terdekat (audit geofence); `snap_timezone` merekam
+zona cabang penempatan.
+
+### Aturan B — Zona penyimpanan tetap WIB selamanya
+
+Laravel menyimpan datetime sebagai **string jam dinding** pada zona yang kebetulan dibawa
+instance Carbon-nya (`HasAttributes::fromDateTime()` → `format(getDateFormat())`), lalu
+membacanya kembali dengan zona default aplikasi. `check_in_time`/`check_out_time` bertipe MySQL
+`TIMESTAMP` yang dibaca lewat `DB_TIMEZONE=+07:00` (`config/database.php:62`) — jadi string yang
+bolak-balik adalah **jam dinding WIB, bukan UTC**.
+
+Keputusan: kolom DB tetap jam dinding WIB. Yang berubah hanyalah **zona tempat perbandingan
+bisnis dilakukan**. Data historis tidak pernah diinterpretasi ulang. Ketiga zona Indonesia tidak
+punya DST, jadi offset tetap +7/+8/+9 sepanjang tahun dan migrasi ke UTC tidak memberi manfaat
+apa pun yang sebanding dengan risiko backfill seluruh tabel presensi.
+
+> ⛔ **`APP_TIMEZONE=Asia/Jakarta` dan `DB_TIMEZONE=+07:00` di `.env` TIDAK BOLEH DIUBAH.**
+> Keduanya adalah jangkar penyimpanan. `phpunit.xml` juga sudah memasang
+> `<env name="APP_TIMEZONE" value="Asia/Jakarta"/>` agar suite deterministik — entri itu
+> mengubah nol perilaku hari ini, tetapi mengunci jangkar ketika kode memakai tiga zona.
+
+**Bahaya yang dihilangkan secara struktural:** bila Carbon bernuansa `Asia/Makassar` di-assign
+ke kolom datetime, DB menerima jam WITA yang nanti dibaca sebagai WIB — instan bergeser 1 jam
+**tanpa error apa pun**. Karena itu `Attendance`, `LeaveRequest`, dan `OvertimeApproval`
+meng-override `fromDateTime()`: apa pun zona yang masuk, DB selalu menerima jam dinding zona
+penyimpanan.
+
+```php
+public function fromDateTime($value)
+{
+    if ($value === null) return null;
+    return parent::fromDateTime(
+        $this->asDateTime($value)->copy()->setTimezone(\App\Support\Timezone::storage())
+    );
+}
+```
+
+## 2. Batas scope — apa yang sadar-zona dan apa yang tidak
+
+Aturan praktis: **kalau nilainya dibandingkan dengan jadwal kerja, ia sadar-zona; kalau hanya
+dicatat, ia tidak.**
+
+| Kategori | Contoh | Perlakuan |
+|---|---|---|
+| **Keputusan bisnis** | tanggal presensi, status telat, lembur, cutoff, early-leave, jendela WFH, auto-checkout | **Sadar zona cabang** |
+| **Cap waktu audit** | `created_at`, `updated_at`, `approved_at`, `spv_approved_at`, `corrected_at`, `device_bound_at`, `synced_at`, TTL cache (≈60 titik) | **TIDAK diubah.** Instan absolutnya sama; cukup satu zona render. Mengubahnya hanya menambah risiko tanpa manfaat. |
+| **Kalender dasbor HRD** | default `year`/`month` laporan & daftar libur | **Zona penyimpanan.** Dasbor satu perusahaan butuh satu kalender — kalau ikut zona cabang, dua HRD melihat bulan berbeda. |
+| **Output developer** | banner console, laporan markdown stress-test | Zona penyimpanan, dengan komentar eksplisit. |
+
+Catatan khusus:
+- **`leave_balances.year` adalah tahun buku perusahaan** — sengaja tetap zona penyimpanan,
+  berbeda dari `last_leave_reset_on` yang bersifat lokal cabang.
+- **CSV audit log** (`ActivityLogController`) lintas cabang → header diperjelas menjadi
+  `Waktu Server (WIB)`, isinya tetap satu jam dinding.
+- **Kolom `date`** (DATE murni) aman karena sudah berupa tanggal lokal cabang. Itu sebabnya
+  `PayrollCalculator` dan `PayrollPeriodLock` **tidak perlu diubah sama sekali** — payroll ikut
+  benar dengan sendirinya. Ini justru alasan kuat mengapa `date` harus diturunkan di zona
+  cabang, bukan di UTC. Audit `whereDate`/`whereBetween` atas 96 pemanggilan sudah dilakukan:
+  tidak ada satu pun yang menyaring kolom *datetime* dengan batas sadar-zona, jadi tidak ada
+  konversi `Timezone::forStorage()` yang dibutuhkan.
+
+## 3. Komponen baru
+
+**`config/timezones.php`** — `storage` (jangkar penyimpanan) + `catalog` 3 entri + `detection`.
+Deteksi memeriksa **`boxes` lebih dulu**, baru ambang longitude. Kotak pengecualian ini wajib
+karena geografi Indonesia tidak sejalan dengan garis bujur: **Bali di ~115°E tapi WITA**,
+**Maluku di ~128°E tapi WIT**, serta Kalimantan Selatan (WITA) vs Kalimantan Barat (WIB).
+
+**`app/Support/Timezone.php`** — helper statis tanpa state & tanpa I/O:
+`storage()`, `catalog()`, `identifiers()`, `isValid()`, `normalize()` (gerbang pusat: zona tak
+dikenal / NULL → `storage()`), `label()`, `name()`, `offsetMinutes()`, `fromCoordinates()`,
+`forStorage()`, `describe()`. Diletakkan di `app/Support/` (bukan `LocationService`) karena tidak
+melakukan I/O — `LocationService::reverseGeocode()` tetap satu-satunya pemanggil jaringan.
+
+**Accessor `effectiveTimezone()`** di tiga model, masing-masing dengan rantai fallback:
+- `AttendanceSetting` → `$this->timezone` → `Timezone::storage()`
+- `User` → cabang penempatan → cabang pertama perusahaan → `Timezone::storage()`
+- `Attendance` → `$this->snap_timezone` → `Timezone::storage()`
+
+**Kolom DB baru** (semua nullable, tanpa downtime):
+
+| Tabel | Kolom | Catatan |
+|---|---|---|
+| `attendance_settings` | `timezone` varchar(64) | **di-backfill** ke `Asia/Jakarta` agar dropdown HRD punya nilai nyata |
+| `attendances` | `snap_timezone` varchar(64) | **TANPA backfill** — NULL = baris mendahului fitur → dihitung WIB (jaminan non-regresi) |
+| `attendances` | `check_in_local_timezone`, `check_out_local_timezone` | zona lokasi fisik, **diturunkan server dari GPS** |
+| `attendances` | `device_timezone`, `device_utc_offset_minutes` | apa yang *diklaim* perangkat — **audit saja** |
+
+> **Sengaja GPS, bukan jam perangkat, yang menentukan zona lokasi.** Aturan Online-Only /
+> Anti-Clock-Spoofing (§4 di atas) melarang mempercayai perangkat. Selisih antara
+> `device_timezone` dan `check_in_local_timezone` justru menjadi **sinyal kecurangan**, bukan
+> sumber data.
+
+**Pembawa zona ke seluruh perhitungan** adalah `$schedule['timezone']`, ditambahkan di setiap
+cabang return `ShiftController::resolveSchedule()`. Karena itu signature publik
+`AttendanceRecalculator::recalculate()/resolveWorkStart()/calculateOvertime()/checkEarlyLeave()`
+**tidak berubah sama sekali** — semuanya cukup membaca `$schedule['timezone']`. Urutan wajib
+`recalculate()` juga tetap: `work_minutes` → potong istirahat → `is_holiday` → lembur →
+`early_leave`.
+
+**Scheduler:** `attendance:reset-leave-balances` & `attendance:sync-shift-wfh` diubah dari
+`dailyAt()` menjadi `->hourly()`, dengan penjagaan dipindahkan ke dalam command (iterasi cabang,
+kerjakan hanya cabang yang tanggal lokalnya baru berganti dan belum diproses hari lokal itu).
+Sebelumnya cabang WIT tertinggal 2 jam karena hari lokalnya mulai 22:00 WIB H-1.
+`ResetLeaveBalancesCommand` sudah berdesain catch-up/idempoten, jadi ini konsisten dengan pola
+yang ada — bukan mekanisme baru. `attendance:auto-checkout` (5 menit) dan
+`attendance:send-reminders` (10 menit) sudah menurunkan segalanya dari record.
+
+**Bug laten yang ikut tertutup** — tidak terlihat selama hanya satu zona, menjadi selisih jam
+nyata begitu ada dua: `AutoCheckoutCommand` membangun `$checkInWib` tanpa `->setTimezone()`;
+`spvListOvertimeApprovals()` memformat `check_in_time`/`check_out_time` tanpa `setTimezone`;
+`ShiftController` memanggil `Carbon::create($year,$month,1)` tanpa zona dua baris setelah membaca
+`$year`/`$month` dari `now('Asia/Jakarta')`; `calculateHalfDayMidpoint()` jatuh ke
+`Carbon::today()` polos dan `shiftUpdates()` ke `now()->subDays(7)` polos.
+
+## 4. Jebakan yang terdokumentasi (jangan diulang)
+
+- **Eager-load terbatas = kegagalan senyap.** Beberapa jalur daftar memakai
+  `office:id,office_name` tanpa kolom `timezone`. Accessor yang membaca `$this->timezone` di sana
+  mendapat NULL dan jatuh ke WIB **tanpa error**. Mitigasi: helper batch `todayDatesForUsers()`,
+  dan accessor `timezone_label`/`timezone_offset_minutes` pada `AttendanceSetting` sengaja
+  mengembalikan **NULL** (bukan `'WIB'`) bila kolomnya tidak di-select — supaya ketiadaan data
+  terlihat, bukan tertutup nilai palsu. Ini juga alasan `PayslipController` menambahkan
+  `'user.office'` ke eager load-nya.
+- **PHP membuang argumen ekstra ke method userland tanpa error.** Memasok `$tz` ke helper yang
+  signature-nya belum menerimanya menghasilkan **hasil salah yang senyap**, bukan crash.
+- **`Carbon::setTestNow()` mewarisi zonanya ke hasil parse.** Selama waktu uji bernuansa WIT
+  aktif, string DB `'15:45'` ikut di-parse **sebagai WIT**, dan instannya bergeser 2 jam. Itu
+  artefak harness, bukan perilaku produksi (di produksi tidak ada testNow, jadi pembacaan selalu
+  memakai zona default aplikasi). Test yang memeriksa pembacaan ulang **wajib** me-reset
+  `setTestNow()` lebih dulu — lihat `test_datetime_selalu_tersimpan_sebagai_jam_dinding_wib`.
+- **Blade yang dirender langsung oleh test punya kontrak variabel bersama.**
+  `PayslipBpjsBlockTest` memanggil `view('payroll.payslip', …)->render()` dengan `viewData()`
+  miliknya sendiri, jadi menambah variabel wajib di Blade akan merusak test itu bila cerminnya
+  tidak ikut diperbarui.
+- **`AutoCheckoutCommand` sengaja menduplikasi logika kalkulasi** (lihat docblock "ATURAN
+  DUPLIKASI SENGAJA (2026-10-06)"). Jangan ditukar ke `AttendanceRecalculator` tanpa PR
+  tersendiri. Perlu diingat juga: jam checkout otomatisnya adalah
+  `MIN(waktu eksekusi, jam pulang + grace)` — **jam pulang + grace**, bukan jam pulang.
+- **Semua kegagalan validasi di dalam `DB::transaction` harus `throw new HttpResponseException`,
+  bukan `return`** — return dari closure tetap commit.
+- **`company_settings.timezone` hasil seed (`DatabaseSeeder.php:180`) tidak dibaca siapa pun.**
+  Biarkan, dan **jangan** jadikan sumber zona — sumber kebenarannya adalah kolom per-cabang.
+- **"WIB berganti tanggal paling akhir"** adalah argumen keamanan struktural untuk sapuan lintas
+  cabang (`LeaveRequest::autoRejectExpiredLeaves()`): `start_date < today(WIB)` tidak mungkin
+  menolak lebih awal daripada tanggal lokal cabang mana pun. Cabang WITA/WIT paling banter
+  tertunda 1-2 jam — arah yang memberi kelonggaran bagi karyawan.
+
+## 5. Kontrak API (acuan tim Web & Mobile)
+
+### Objek `timezone` standar
+
+Dikembalikan oleh `checkIn`, `checkOut`, dan `checkStatus`:
+
+```json
+"timezone": {
+  "branch": { "id": "Asia/Jakarta", "label": "WIB", "name": "Waktu Indonesia Barat",
+              "offset_minutes": 420, "office_name": "Kantor Pusat Jakarta" },
+  "local":  { "id": "Asia/Jayapura", "label": "WIT", "name": "Waktu Indonesia Timur",
+              "offset_minutes": 540 },
+  "is_cross_timezone": true,
+  "branch_time": "08:20",
+  "local_time": "10:20",
+  "display": "08:20 WIB (10:20 WIT lokasi Anda)"
+}
+```
+
+String **`display` dibentuk backend** — aturan proyek: seluruh teks untuk pengguna berasal dari
+payload API. Web & Flutter cukup menampilkannya dan **tidak boleh mengonversi zona sendiri**.
+
+Bila karyawan berada di zona yang sama dengan cabangnya, `is_cross_timezone` = `false` dan
+`display` hanya `"08:20 WITA"` — `local` tetap terisi dengan nilai yang sama dengan `branch`.
+`local` bernilai `null` hanya bila zona lokasi memang **tidak bisa ditentukan** (mis. check-out
+tanpa GPS). Jadi gerbang tampilan di FE adalah `is_cross_timezone`, **bukan** `local != null`.
+
+### Endpoint baru
+
+`GET /api/v1/dashboard/attendance/timezones?latitude=&longitude=` — 🛡
+
+```json
+{
+  "timezones": [
+    { "id": "Asia/Jakarta", "label": "WIB", "name": "Waktu Indonesia Barat",
+      "offset_minutes": 420, "regions": "Sumatra, Jawa, Kalimantan Barat & Tengah",
+      "is_suggested": false }
+  ],
+  "storage": "Asia/Jakarta",
+  "suggested": { "timezone": "Asia/Makassar", "label": "WITA", "source": "box" }
+}
+```
+
+`source`: `"box"` (kena kotak pengecualian — mis. Bali/Maluku) · `"longitude"` (ambang bujur
+biasa) · `"default"`. Tanpa parameter koordinat, `suggested` bernilai `null` dan katalog tetap
+lengkap (3 entri). Dipakai dropdown form kantor.
+
+### Perubahan pada endpoint yang sudah ada
+
+| Endpoint / payload | Perubahan |
+|---|---|
+| `POST`/`PUT /dashboard/attendance/settings` | Menerima `timezone` (opsional — auto-detect dari koordinat bila kosong; override manual selalu menang). Divalidasi `in:` katalog, jadi identifier IANA liar (mis. `Europe/London`) ditolak **422**, bukan diam-diam di-fallback ke WIB. |
+| ⚠️ `timezone` masuk **field berbahaya** | Butuh `confirm_dangerous: "SIMPAN"`, dan muncul di `dangerous_changed_fields[]`. Dibandingkan **setelah normalisasi**: cabang lama ber-`timezone` NULL sudah bermakna WIB, jadi mengirim `'Asia/Jakarta'` bukan perubahan aturan. Web wajib menambah `timezone: 'Zona Waktu Kantor'` di `DANGEROUS_LABELS` (`SettingsManagement.tsx:170-192`). |
+| Respons settings (list/show/store/update) | `timezone`, `timezone_label`, `timezone_offset_minutes`. Catatan: `storeSettings()` mengembalikan objek di key **`setting`** (bukan `data`) dengan status 201. |
+| `offices[]` + kantor utama di `checkStatus` & riwayat | `timezone`, `timezone_label` (model Flutter `OfficeArea` perlu 2 field baru) — supaya mobile bisa memberi tahu karyawan yang roaming bahwa cabang terdekat berbeda zona |
+| 403 cutoff check-in | `message` (label zona cabang), `cutoff_at`, `work_start_time` (keduanya jam lokal cabang), `cutoff_minutes`, `timezone_label` |
+| 422 jendela WFH | idem — pesan + `timezone_label` |
+| 422 urutan checkout | `check_in_time`, `check_out_time`, `timezone_label`, `time_inversion` |
+| 422 interval minimum checkout | `min_checkout_minutes`, `check_in_time`, `earliest_checkout_at`, `timezone_label`, `remaining_minutes`, `is_cooldown` |
+| Baris laporan (`/report`, `/summary`) | `check_in_time_local`, `check_out_time_local`, `timezone`, `timezone_label` per baris |
+| Ekspor CSV (`/report/export`) | Kolom baru **`Zona`** di akhir. Kolom `corrected_at` tetap zona penyimpanan (cap audit). |
+| Daftar approval lembur (HRD, SPV, karyawan) | `timezone`, `timezone_label`; ISO8601 kini membawa offset cabang (`+08:00`/`+09:00`) |
+| `reminder_at`, `auto_checkout_at`, `scheduled_auto_checkout_at` | Tetap ISO8601 **dengan offset** — kini offset cabang. Flutter sudah menanganinya benar via `tz.TZDateTime.from(...)` + `absoluteTime` (`notification_service.dart:134,163`); cukup hapus literal `'WIB'` di :162 dan :208. |
+| Payload FCM `attendance:send-reminders` | `timezone`, `timezone_label` sebagai **field data** (`checkin_reminder`, `checkout_reminder`, `cutoff_warning`), di samping jam lokal cabang. |
+| Notifikasi `attendance:auto-checkout` | Label zona ada di **teks body** (`"...pukul 17:00 WITA"`), bukan sebagai field data terpisah — `auto_checkout_at` tetap ISO8601 beroffset cabang. |
+| `flexitime_config` | `timezone_label`; nilai `arrival_start`/`core_end`/`target_checkout_time` kini jam lokal cabang |
+| `GET /sync-versions` | `timezone`, `timezone_label`; `synced_at` dalam jam lokal cabang |
+| Respons `correctAttendance()` | `timezone`, `timezone_label`, `timezone_offset_minutes`. **Form HRD wajib memotong string jam dari payload, bukan `new Date(...).getHours()`.** Zona diambil dari `snapshotSchedule()['timezone']`, sehingga koreksi presensi Januari memakai zona yang berlaku saat itu. |
+| Request `checkIn` (opsional) | `device_timezone` (`nullable|string|timezone`) + `device_utc_offset_minutes` (`nullable|integer|between:-840,840`) — **audit saja**, tidak pernah memengaruhi perhitungan |
+| PDF slip gaji | Footer dicetak di zona cabang karyawan pemilik slip (`printedAt` + `printedZone`), bukan jam server |
+| CSV audit log | Header `Waktu Server (WIB)` |
+| `attendance:sync-shift-wfh` | Dapat opsi `--force` |
+
+### Utang teknis frontend yang ikut tertutup
+
+`doc/kekurangnAttendance.md:1035` (#21) — `toTimeInput()` (`AttendanceManagement.tsx:2014-2020`)
+dan `fmtTime()` (:371-376) memakai `new Date(v).getHours()` sehingga mengikuti zona laptop HRD.
+Setelah backend ini keduanya **wajib** memakai pemotongan string + `timezone_label` dari payload.
+12 literal `'WIB'` hardcode di 5 file Flutter (`utils.dart:59,93`, `home_screen.dart:1362-1372`,
+`presensi_map_screen.dart:548-549`, `notification_service.dart:162,208`,
+`flexitime_progress_widget.dart:241,542`) harus diganti label dari API. Perbandingan
+`DateTime.now()` vs ambang WIB di `presensi_map_screen.dart:539-544` dan
+`presensi_provider.dart:85-99` harus memakai `timezone.branch_time` dari server.
+
+## 6. Verifikasi
+
+`tests/Feature/MultiTimezoneAttendanceTest.php` — **12 test, 105 assertion**, tiga cabang:
+Jakarta (−6.2000, 106.8166), Makassar (−5.1477, 119.4327), Jayapura (−2.5330, 140.7000).
+
+Yang dijaga: saran zona dari koordinat termasuk kotak pengecualian Bali & Maluku · auto-detect
+saat store + override manual menang + zona luar katalog ditolak 422 · telat dinilai di jam
+dinding cabang · check-in dini hari WIT tercatat pada tanggal lokal cabang · dinas lintas zona
+dinilai dengan jam cabang · lembur checkout memakai `snap_timezone` · gerbang `"SIMPAN"` untuk
+ubah zona · snapshot melindungi presensi yang sedang berjalan · baris lama tanpa `snap_timezone`
+tetap WIB · pesan cutoff memakai label zona cabang · satu eksekusi auto-checkout melayani WITA &
+WIT dengan jam pulang masing-masing · penyimpanan selalu jam dinding WIB.
+
+Assertion kunci memakai **string mentah dari DB** (`DB::table('attendances')->value(...)`), bukan
+accessor model — accessor justru menyembunyikan pergeseran zona yang ingin dideteksi.
+
+```powershell
+cd E:\koding\coba\backend-gawe\expenseflow-backend
+php artisan test --filter=MultiTimezoneAttendanceTest
+php artisan test --filter=AttendanceTimezoneAndReportTest   # harus TETAP hijau tanpa diubah
+php artisan test                                            # suite penuh
+```
+
+**Jaring non-regresi:** cabang tanpa `timezone` (NULL) dan presensi tanpa `snap_timezone` (NULL)
+wajib berperilaku **identik** dengan sebelum perubahan. Karena itu
+`AttendanceTimezoneAndReportTest.php` **tidak boleh disentuh** — bila ia perlu diubah agar lulus,
+itu tanda regresi, bukan tanda test-nya usang.
+
+**Temuan di luar scope (belum diperbaiki, dilaporkan terpisah):**
+`NotifyCollectiveLeaveH7Command.php:16` memanggil
+`AttendanceController::dispatchH7CollectiveLeaveNotifications()` yang **tidak ada** di controller
+itu.
+
+---
+
+# Denda Keterlambatan Presensi — 2026-10-09 ✅ BACKEND + FORM KANTOR WEB SELESAI
+
+HRD mengatur denda telat per kantor cabang (form create/edit kantor, di samping "toleransi telat").
+
+## Field pengaturan kantor (`attendance_settings`)
+
+| Field | Tipe | Keterangan |
+|---|---|---|
+| `late_fine_per_minute` | decimal(12,2) null | Rupiah per menit. NULL/0 = menit telat tetap dicatat, denda 0. |
+| `late_count_mode` | `after_work_start` \| `after_tolerance` (default) | Titik awal hitung menit telat. |
+| `late_fine_max_per_day` | decimal(12,2) null | Batas denda per hari. NULL = tanpa batas. |
+
+Ketiganya masuk daftar **field berbahaya**: mengubahnya butuh `confirm_dangerous: "SIMPAN"` (label web: `DANGEROUS_LABELS`).
+
+## Aturan hitung (contoh: masuk 08:00, toleransi 15 menit, Rp 1.000/menit)
+
+| Jam check-in | `after_work_start` | `after_tolerance` |
+|---|---|---|
+| 08:12 | tidak telat, denda 0 | tidak telat, denda 0 |
+| 08:15 | tidak telat | tidak telat |
+| 08:16 | **telat 16 menit** → Rp 16.000 | telat 1 menit → Rp 1.000 |
+
+- Dalam toleransi: tidak ada pencatatan telat sama sekali. Toleransi efektif = jadwal shift → kantor → 15 (sama dengan `determineStatus()`).
+- Denda = menit × tarif, dibatasi `late_fine_max_per_day`.
+- Flexitime: acuan telat = `flex_arrival_end` (default 10:00) + toleransi.
+
+## Snapshot & koreksi
+
+- Saat check-in aturan dibekukan ke `attendances.snap_late_*` (tarif, mode, maksimum, toleransi) dan hasilnya ke `late_minutes` + `late_fine_amount`. Mengubah tarif kantor **tidak** mengubah presensi lama.
+- Koreksi HRD (`correctAttendance`) menghitung ulang dari snapshot. Baris lama (snapshot NULL) **tidak disentuh** — tanpa backfill.
+- `checkOut()` menimpa status `late` → `early_leave`, tetapi `late_minutes`/`late_fine_amount` tetap (independen dari status).
+- Status eksplisit non-telat dari HRD pada koreksi membebaskan denda.
+
+## Laporan, CSV, Payroll
+
+- Baris laporan presensi: `late_minutes`, `late_fine_amount`. CSV: kolom **`Denda Telat (Rp)`** ditambahkan di paling akhir.
+- Payroll: `PayrollCalculator` menjumlah `late_fine_amount` pada periode → item potongan **"Potongan Keterlambatan"** (`type=deduction`, `source=attendance`) + langkah `LATE_PENALTY`. Opsi `late_penalty` pada `POST /dashboard/payroll/runs/{id}/calculate` (default `true`; `false` menonaktifkan).
+
+## Kontrak untuk Web/Mobile
+
+- `POST/PUT /dashboard/attendance/settings`: terima 3 field di atas (validasi: rate/max `numeric|min:0`, mode `in:after_tolerance,after_work_start`).
+- Respons settings memuat ketiga field. Tampilan web: kartu kantor "Denda telat: Rp …/mnt (maks …) · dihitung dari jam masuk / setelah toleransi".
+
+## Verifikasi
+
+`LateFineTest` (15) + `LateFinePayrollTest` (3); suite penuh 785/785.
+
+---
+
+# Fix: Notifikasi H-7 Cuti Bersama — 2026-10-09 ✅ SELESAI
+
+Bug lama (tercatat di atas sebagai temuan di luar scope): command terjadwal
+`attendance:notify-collective-leaves` (`NotifyCollectiveLeaveH7Command.php`, jalan
+`hourly()`) memanggil `AttendanceController::dispatchH7CollectiveLeaveNotifications()`
+yang **tidak ada** → setiap eksekusi scheduler crash dengan `Method ... does not exist`.
+
+**Perbaikan:** menambahkan method tersebut di `AttendanceController`, mengikuti pola
+`listCollectiveLeaves()`/`resolveOffDatesForUser()` yang sudah ada:
+
+- Mengirim notifikasi (tabel `notifications` + FCM via helper `notifyUser()`) ke karyawan
+  yang cuti bersamanya **masih `pending`** dan sudah memasuki window **H-7 s/d Hari H**.
+- Window dinilai pada **tanggal lokal cabang penempatan karyawan** (`$user->effectiveTimezone()`),
+  bukan zona penyimpanan — konsisten dengan multi-zona.
+- Karyawan yang hari itu sudah libur dari jadwal shift, sudah punya cuti pribadi approved
+  di tanggal tsb, atau masuk daftar `excludedUsers` cuti bersama tersebut → dilewati (sama
+  seperti kondisi `show_banner` di `listCollectiveLeaves()`).
+- **Dedup:** maksimum 1 notifikasi per (user, cuti bersama) per tanggal lokal — cache 24 jam
+  (`cache()->put(..., now()->addHours(24))`) — supaya scheduler per-jam tidak spam selama
+  window 7 hari berjalan.
+- Tipe notifikasi baru `collective_leave_h7_reminder` (judul: "Pilih Cuti Bersama").
+
+Test: `CollectiveLeaveH7NotificationTest` (5). Suite penuh 790/790.

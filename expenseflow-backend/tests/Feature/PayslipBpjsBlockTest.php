@@ -128,7 +128,11 @@ class PayslipBpjsBlockTest extends TestCase
     /** Susun data view slip identik dengan PayslipController::streamPdf(). */
     private function viewData(Payslip $payslip): array
     {
-        $payslip->load(['items', 'calculationSteps', 'payroll:id,period_label,period_month,period_year']);
+        $payslip->load(['items', 'calculationSteps', 'payroll:id,period_label,period_month,period_year', 'user.office']);
+
+        // Cermin payload PayslipController::streamPdf() — termasuk cap waktu cetak
+        // di zona cabang karyawan pemilik slip (multi-zona 2026-10-08).
+        $slipTz = $payslip->user?->effectiveTimezone() ?? \App\Support\Timezone::storage();
 
         return [
             'payslip'      => $payslip,
@@ -136,6 +140,8 @@ class PayslipBpjsBlockTest extends TestCase
             'earnings'     => $payslip->items->where('type', PayslipItem::TYPE_EARNING)->values(),
             'deductions'   => $payslip->items->where('type', PayslipItem::TYPE_DEDUCTION)->values(),
             'bpjsEmployer' => EmployerBpjsBreakdown::fromSteps($payslip->calculationSteps),
+            'printedAt'    => now($slipTz)->format('d-m-Y H:i'),
+            'printedZone'  => \App\Support\Timezone::label($slipTz),
         ];
     }
 

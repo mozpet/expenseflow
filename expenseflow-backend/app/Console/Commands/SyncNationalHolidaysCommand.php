@@ -30,7 +30,9 @@ class SyncNationalHolidaysCommand extends Command
      */
     public function handle(IndonesianHolidayService $service): int
     {
-        $year = (int) ($this->argument('year') ?: now('Asia/Jakarta')->year);
+        // Tahun kalender libur NASIONAL — satu untuk seluruh Indonesia, jadi
+        // sengaja zona penyimpanan dan bukan zona cabang.
+        $year = (int) ($this->argument('year') ?: now(\App\Support\Timezone::storage())->year);
         $overwrite = (bool) $this->option('overwrite');
 
         $this->info("Menghubungi API Hari Libur Indonesia untuk tahun {$year}...");

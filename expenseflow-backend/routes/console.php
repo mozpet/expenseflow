@@ -23,8 +23,9 @@ Schedule::command('attendance:send-reminders')
     ->runInBackground();
 
 // Auto-decline karyawan yang belum memilih cuti bersama saat hari H tiba.
-// Berjalan setiap jam 00:07 (ambil jam non-round untuk distribusi beban),
-// menandai pending → declined untuk tanggal cuti yang sudah lewat.
+// Berjalan SETIAP JAM (bukan sekali di jam 00:07), menandai pending → declined
+// untuk tanggal cuti yang sudah lewat. Frekuensi jam juga yang membuatnya aman
+// lintas zona: cabang WITA/WIT paling banter tertunda 1-2 jam, tidak terlewat.
 Schedule::command('attendance:auto-decline-collective-leave')
     ->hourly()
     ->withoutOverlapping()
@@ -44,18 +45,25 @@ Schedule::command('attendance:notify-collective-leaves')
     ->runInBackground();
 
 // Reset otomatis saldo cuti tahunan per kantor (anniversary leave_reset_date).
-// Berjalan setiap hari jam 00:03 — command sendiri yang memutuskan apakah ada
-// kantor yang anniversary-nya sudah/sedang jatuh tempo (catch-up bila server mati).
+// MULTI-ZONA: berjalan setiap JAM, bukan harian jam 00:03. Hari lokal cabang WIT
+// mulai 2 jam lebih awal dari jam dinding server (00:00 WIT = 22:00 WIB H-1), jadi
+// jadwal harian WIB membuat reset cabang timur terlambat 2 jam. Command sendiri
+// yang memutuskan kantor mana yang anniversary-nya jatuh tempo menurut TANGGAL
+// LOKAL kantor itu; anti-dobel dijaga oleh last_leave_reset_on (sudah idempoten &
+// catch-up sejak awal), jadi frekuensi jam tidak menyebabkan reset ganda.
 Schedule::command('attendance:reset-leave-balances')
-    ->dailyAt('00:03')
+    ->hourly()
     ->withoutOverlapping()
     ->runInBackground();
 
-// Sync status WFH dan Radius karyawan setiap hari jam 00:01
-// berdasarkan jadwal shift hari tersebut.
+// Sync status WFH dan Radius karyawan berdasarkan jadwal shift hari tersebut.
 // Hal ini memungkinkan HRD untuk melakukan override (on/off) di tengah hari jika diperlukan.
+// MULTI-ZONA: berjalan setiap JAM, bukan harian jam 00:01 — alasan sama seperti di
+// atas. Command mengelompokkan karyawan per zona cabang dan hanya menyinkronkan
+// zona yang tanggal lokalnya baru berganti; penanda cache per (zona, tanggal lokal)
+// menjaga agar override manual HRD di tengah hari tidak tertimpa tick jam berikutnya.
 Schedule::command('attendance:sync-shift-wfh')
-    ->dailyAt('00:01')
+    ->hourly()
     ->withoutOverlapping()
     ->runInBackground();
 

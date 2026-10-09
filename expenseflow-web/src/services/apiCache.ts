@@ -284,6 +284,20 @@ export const MUTATION_INVALIDATIONS: MutationInvalidationRule[] = [
     pattern: /^\/dashboard\/invoices/,
     invalidates: ['/dashboard/invoices', '/dashboard/activity-logs', '/dashboard/vendors'],
   },
+  // Koreksi presensi manual HRD (tab Laporan).
+  // WAJIB ada: aturan cache laporan ber-TTL 30s + SWR, jadi tanpa invalidasi ini
+  // koreksi yang sudah tersimpan akan tampak "tidak tersimpan" sampai 30 detik.
+  // Koreksi mengubah status/jam kerja/lembur, sehingga ringkasan harian,
+  // summary bulanan dan log aktivitas juga ikut basi.
+  {
+    pattern: /^\/dashboard\/attendance\/corrections/,
+    invalidates: [
+      '/dashboard/attendance/report',
+      '/dashboard/attendance/today',
+      '/dashboard/attendance/summary',
+      '/dashboard/activity-logs',
+    ],
+  },
   // Cuti & Izin
   {
     pattern: /^\/dashboard\/attendance\/leaves/,

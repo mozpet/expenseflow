@@ -26,6 +26,17 @@ class Role extends Model
     public const MODULE_SETTINGS        = 'settings';
     public const MODULE_ROLE_MANAGEMENT = 'role_management';
 
+    /**
+     * Modul yang tetap bisa dikelola bebas untuk role dengan platform 'mobile_only'.
+     * Hanya Persetujuan Cuti & Persetujuan Lembur punya alur approval via aplikasi
+     * mobile, sehingga modul lain (Finance, Data Karyawan, Presensi, Shift,
+     * Pengaturan, Manajemen Role, Audit Log, Payroll) otomatis dipaksa 'none'.
+     */
+    public const MOBILE_ONLY_ALLOWED_MODULES = [
+        self::MODULE_LEAVE,
+        self::MODULE_OVERTIME,
+    ];
+
     public const AVAILABLE_MODULES = [
         self::MODULE_RECEIPT         => ['id' => self::MODULE_RECEIPT, 'name' => 'Struk Reimbursement', 'desc' => 'Inbox, persetujuan klaim struk bertingkat, serta pengaturan aturan & batas klaim limit'],
         self::MODULE_EXPENSE_REPORT  => ['id' => self::MODULE_EXPENSE_REPORT, 'name' => 'Laporan Dinas', 'desc' => 'Bundling pengeluaran laporan perjalanan dinas'],

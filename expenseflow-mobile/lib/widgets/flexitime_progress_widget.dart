@@ -238,7 +238,7 @@ class _FlexitimeProgressWidgetState extends State<FlexitimeProgressWidget> {
               ),
               if (targetCheckout != null)
                 Text(
-                  'Target Pulang: $targetCheckout WIB',
+                  'Target Pulang: $targetCheckout ${prov.branchTimezoneLabel}',
                   style: TextStyle(
                     fontSize: 10.5,
                     color: Colors.grey.shade600,
@@ -539,7 +539,7 @@ class _FlexitimeProgressWidgetState extends State<FlexitimeProgressWidget> {
                         const SizedBox(width: 4),
                         Text(
                           targetCheckout != null
-                              ? '$targetCheckout WIB'
+                              ? '$targetCheckout ${prov.branchTimezoneLabel}'
                               : '--:--',
                           style: const TextStyle(
                             fontSize: 11.5,

@@ -159,7 +159,7 @@ class NotificationService {
     await _plugin.zonedSchedule(
       11,
       '⚠️ Auto-Checkout dalam 5 Menit!',
-      'Pukul $jam WIB sistem akan otomatis checkout jika kamu belum checkout.',
+      'Pukul $jam sistem akan otomatis checkout jika kamu belum checkout.',
       tz.TZDateTime.from(warningTime, tz.local),
       const NotificationDetails(android: _warningDetails, iOS: _darwinDetails),
       androidScheduleMode: AndroidScheduleMode.exactAllowWhileIdle,
@@ -205,7 +205,7 @@ class NotificationService {
     await showInstant(
       id: 12,
       title: '🔔 Kamu Sudah Di-Checkout Otomatis',
-      body: 'Sistem checkout pukul $jam WIB karena kamu lupa checkout. '
+      body: 'Sistem checkout pukul $jam karena kamu lupa checkout. '
           'Lembur menunggu persetujuan HRD.',
       payload: 'auto_checkout_confirm',
     );

@@ -478,6 +478,25 @@ export const attendanceApi = {
     per_page?: number | string;
     page?: number;
   }, forceRefresh = false) => apiGet('/dashboard/attendance/report', filters as Record<string, string | number | boolean>, { forceRefresh }),
+  // Koreksi presensi manual oleh HRD dari tab Laporan.
+  // Satu endpoint untuk dua kasus: mengubah baris presensi yang sudah ada DAN
+  // input manual baris baru (backfill alpha / lupa check-in).
+  // Field turunan (work_minutes/overtime_minutes/is_holiday) TIDAK pernah
+  // dikirim dari sini — server selalu menghitungnya ulang dari snapshot.
+  // confirm_dangerous: 'SIMPAN' dikirim pada percobaan kedua setelah server
+  // menjawab 422 { requires_confirmation: true }.
+  correct: (payload: {
+    user_id: number;
+    date: string;
+    check_in_time?: string | null;
+    check_out_time?: string | null;
+    check_in_type?: 'onsite' | 'wfh' | 'field';
+    status?: 'present' | 'late' | 'absent' | 'wfh' | 'early_leave';
+    notes?: string | null;
+    correction_reason: string;
+    confirm_dangerous?: string;
+  }) => apiPost<{ message: string; data: Record<string, unknown> }>('/dashboard/attendance/corrections', payload),
+
   exportReport: (filters?: {
     start_date?: string;
     end_date?: string;
@@ -510,6 +529,21 @@ export const attendanceApi = {
     destroy: (id: number | string) =>
       apiDelete(`/dashboard/attendance/settings/${id}`),
   },
+
+  // Katalog zona waktu Indonesia (WIB/WITA/WIT) dan auto-detect koordinat
+  timezones: (params?: { latitude?: number | string; longitude?: number | string }) =>
+    apiGet<{
+      timezones: Array<{
+        id: string;
+        label: string;
+        name: string;
+        offset_minutes: number;
+        regions: string;
+        is_suggested: boolean;
+      }>;
+      storage: string;
+      suggested: { timezone: string; label: string; source: string } | null;
+    }>('/dashboard/attendance/timezones', params),
 
   // Kalender libur nasional / cuti bersama perusahaan
   holidays: {
@@ -556,6 +590,13 @@ export interface ShiftPatternItemInput {
   work_end_time?: string | null;
   break_minutes?: number;
   late_tolerance_minutes?: number | null;
+  late_fine_per_minute?: number | string | null;
+  late_count_mode?: "after_tolerance" | "after_work_start" | null;
+  late_fine_max_per_day?: number | string | null;
+  overtime_rule?: 'government' | 'custom' | null;
+  overtime_rate_amount?: number | string | null;
+  overtime_rate_unit?: 'hour' | 'minute' | null;
+  overtime_rate_taxable?: boolean | null;
   is_cross_day?: boolean;
   is_wfh?: boolean;
   is_field?: boolean;
@@ -573,6 +614,13 @@ export interface ShiftPatternItem {
   work_end_time: string | null;
   break_minutes: number;
   late_tolerance_minutes?: number | null;
+  late_fine_per_minute?: number | string | null;
+  late_count_mode?: "after_tolerance" | "after_work_start" | null;
+  late_fine_max_per_day?: number | string | null;
+  overtime_rule?: 'government' | 'custom' | null;
+  overtime_rate_amount?: number | string | null;
+  overtime_rate_unit?: 'hour' | 'minute' | null;
+  overtime_rate_taxable?: boolean | null;
   is_cross_day: boolean;
   is_wfh?: boolean;
   is_field?: boolean;
@@ -589,6 +637,13 @@ export interface ShiftPatternDayOverrideInput {
   work_end_time?: string | null;
   break_minutes?: number | null;
   late_tolerance_minutes?: number | null;
+  late_fine_per_minute?: number | string | null;
+  late_count_mode?: "after_tolerance" | "after_work_start" | null;
+  late_fine_max_per_day?: number | string | null;
+  overtime_rule?: 'government' | 'custom' | null;
+  overtime_rate_amount?: number | string | null;
+  overtime_rate_unit?: 'hour' | 'minute' | null;
+  overtime_rate_taxable?: boolean | null;
 }
 
 export interface ShiftPatternDayOverride {
@@ -599,6 +654,13 @@ export interface ShiftPatternDayOverride {
   work_end_time?: string | null;
   break_minutes?: number | null;
   late_tolerance_minutes?: number | null;
+  late_fine_per_minute?: number | string | null;
+  late_count_mode?: "after_tolerance" | "after_work_start" | null;
+  late_fine_max_per_day?: number | string | null;
+  overtime_rule?: 'government' | 'custom' | null;
+  overtime_rate_amount?: number | string | null;
+  overtime_rate_unit?: 'hour' | 'minute' | null;
+  overtime_rate_taxable?: boolean | null;
 }
 
 export interface ShiftPattern {
@@ -613,6 +675,13 @@ export interface ShiftPattern {
   description?: string | null;
   color?: string | null;
   late_tolerance_minutes?: number | null;
+  late_fine_per_minute?: number | string | null;
+  late_count_mode?: "after_tolerance" | "after_work_start" | null;
+  late_fine_max_per_day?: number | string | null;
+  overtime_rule?: 'government' | 'custom' | null;
+  overtime_rate_amount?: number | string | null;
+  overtime_rate_unit?: 'hour' | 'minute' | null;
+  overtime_rate_taxable?: boolean | null;
   cycle_days: number;
   is_active: boolean;
   active_users_count?: number;
@@ -634,6 +703,13 @@ export const shiftApi = {
     schedules: ShiftScheduleInput[];
     color?: string | null;
     late_tolerance_minutes?: number | null;
+    late_fine_per_minute?: number | string | null;
+    late_count_mode?: "after_tolerance" | "after_work_start" | null;
+    late_fine_max_per_day?: number | string | null;
+    overtime_rule?: 'government' | 'custom' | null;
+    overtime_rate_amount?: number | string | null;
+    overtime_rate_unit?: 'hour' | 'minute' | null;
+    overtime_rate_taxable?: boolean | null;
   }) => apiPost('/dashboard/attendance/shifts', payload),
   update: (
     id: number | string,
@@ -644,6 +720,13 @@ export const shiftApi = {
       schedules?: ShiftScheduleInput[];
       color?: string | null;
       late_tolerance_minutes?: number | null;
+      late_fine_per_minute?: number | string | null;
+      late_count_mode?: "after_tolerance" | "after_work_start" | null;
+      late_fine_max_per_day?: number | string | null;
+      overtime_rule?: 'government' | 'custom' | null;
+      overtime_rate_amount?: number | string | null;
+      overtime_rate_unit?: 'hour' | 'minute' | null;
+      overtime_rate_taxable?: boolean | null;
     },
   ) => apiPut(`/dashboard/attendance/shifts/${id}`, payload),
   toggleActive: (id: number | string) =>
@@ -731,6 +814,13 @@ export const shiftApi = {
       description?: string;
       color?: string | null;
       late_tolerance_minutes?: number | null;
+      late_fine_per_minute?: number | string | null;
+      late_count_mode?: "after_tolerance" | "after_work_start" | null;
+      late_fine_max_per_day?: number | string | null;
+      overtime_rule?: 'government' | 'custom' | null;
+      overtime_rate_amount?: number | string | null;
+      overtime_rate_unit?: 'hour' | 'minute' | null;
+      overtime_rate_taxable?: boolean | null;
       attendance_setting_id?: number | null;
       cycle_days: number;
       is_active?: boolean;
@@ -744,6 +834,13 @@ export const shiftApi = {
         description?: string;
         color?: string | null;
         late_tolerance_minutes?: number | null;
+        late_fine_per_minute?: number | string | null;
+        late_count_mode?: "after_tolerance" | "after_work_start" | null;
+        late_fine_max_per_day?: number | string | null;
+        overtime_rule?: 'government' | 'custom' | null;
+        overtime_rate_amount?: number | string | null;
+        overtime_rate_unit?: 'hour' | 'minute' | null;
+        overtime_rate_taxable?: boolean | null;
         attendance_setting_id?: number | null;
         cycle_days?: number;
         is_active?: boolean;

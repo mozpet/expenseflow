@@ -8,6 +8,7 @@ use App\Models\AttendanceSetting;
 use App\Models\OvertimeApproval;
 use App\Models\User;
 use App\Services\FcmService;
+use App\Support\Timezone;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -32,6 +33,17 @@ use Illuminate\Support\Str;
  * jam server menyala — agar work_minutes & overtime tidak membengkak palsu dan konsisten
  * dengan isi notifikasi reminder ("sistem akan otomatis checkout pukul XX:XX").
  *
+ * MULTI-ZONA (2026-10-08): command ini memproses presensi SEMUA cabang dalam satu
+ * eksekusi, jadi zonanya diambil PER RECORD dari snap_timezone (lewat
+ * Attendance::effectiveTimezone() / $snapshot['timezone']) — bukan satu konstanta.
+ * "$jamPulang 17:00" berarti 17:00 WITA untuk cabang Makassar dan 17:00 WIT untuk
+ * cabang Jayapura; memakai jam dinding WIB akan menutup presensi cabang timur 1-2
+ * jam terlambat dan menambahkan lembur palsu sebesar selisih zonanya.
+ *
+ * Perbandingan "$now sudah lewat batas?" sendiri tetap aman lintas zona karena Carbon
+ * membandingkan INSTAN ABSOLUT — yang penting hanyalah $workEnd dibangun di zona yang
+ * benar.
+ *
  * Jadwal: setiap 5 menit (via routes/console.php scheduler).
  */
 class AutoCheckoutCommand extends Command
@@ -49,8 +61,12 @@ class AutoCheckoutCommand extends Command
 
     public function handle(): int
     {
-        $today  = now()->toDateString();
-        $nowWib = now(); // waktu WIB (app.timezone = Asia/Jakarta) untuk perbandingan
+        $today = now()->toDateString(); // hanya untuk baris log ringkasan
+        // Instan "sekarang" tunggal untuk seluruh iterasi. Perbandingan gte()/lt()
+        // di bawah membandingkan instan absolut, jadi zona variabel ini tidak
+        // memengaruhi hasil — ia hanya perlu konsisten agar satu eksekusi tidak
+        // memakai dua titik waktu berbeda.
+        $nowInstant = now();
 
         // CATCH-UP: proses SEMUA presensi terbuka tanpa batas tanggal.
         // Sebelumnya hanya melihat hari ini + kemarin dan melewatkan record kemarin
@@ -127,20 +143,30 @@ class AutoCheckoutCommand extends Command
                 $officeForCalc   = $office;
             }
 
+            // ─── Zona bisnis record ini ───────────────────────────────────────
+            // Prioritas: snapshot check-in → jadwal live → kantor acuan → zona
+            // penyimpanan. Baris presensi lama (snap_timezone NULL) jatuh ke zona
+            // penyimpanan sehingga hasilnya identik dengan sebelum multi-zona.
+            $tz = Timezone::normalize(
+                $scheduleForCalc['timezone']
+                    ?? $attendance->snap_timezone
+                    ?? $officeForCalc?->timezone
+            );
+
             // Shift lintas hari: jam pulang berada di HARI BERIKUTNYA setelah tanggal shift.
             $jamPulangDate = $isCrossDay
-                ? Carbon::parse($attDate, 'Asia/Jakarta')->addDay()->toDateString()
+                ? Carbon::parse($attDate, $tz)->addDay()->toDateString()
                 : $attDate;
 
-            $workEnd = Carbon::parse($jamPulangDate . ' ' . substr($jamPulang, 0, 5), 'Asia/Jakarta');
+            $workEnd = Carbon::parse($jamPulangDate . ' ' . substr($jamPulang, 0, 5), $tz);
 
             // Khusus flexitime: sesuaikan batas jam pulang dengan jam check-in aktual & snapshot
             $isFlexSession = $attendance->isFlexitimeSession($attendance->user);
             if ($isFlexSession && $officeForCalc) {
                 $targetMins    = (int) ($officeForCalc->flex_target_minutes ?? 480);
                 $breakMins     = (int) ($scheduleForCalc['break_minutes'] ?? $officeForCalc->break_minutes ?? 60);
-                $checkInWib    = Carbon::parse($attendance->check_in_time)->setTimezone('Asia/Jakarta');
-                $flexWorkStart = $this->resolveWorkStart($checkInWib, $scheduleForCalc, $attDate, $attendance->user, $attendance);
+                $checkInLocal  = Carbon::parse($attendance->check_in_time)->setTimezone($tz);
+                $flexWorkStart = $this->resolveWorkStart($checkInLocal, $scheduleForCalc, $attDate, $attendance->user, $attendance, $tz);
                 $flexTargetEnd = $flexWorkStart->copy()->addMinutes($targetMins + $breakMins);
 
                 if ($flexTargetEnd->greaterThan($workEnd)) {
@@ -155,9 +181,9 @@ class AutoCheckoutCommand extends Command
             // Jam checkout di-clamp ke JADWAL TARGET (jam pulang + grace), bukan jam eksekusi,
             // agar presensi basi (server sempat mati) tidak mencatat kerja/lembur palsu
             // selama rentang server mati.
-            if ($nowWib->gte($autoCheckoutTime)) {
-                $effectiveCheckOut = $nowWib->lt($autoCheckoutTime->copy()->addMinutes(5))
-                    ? $nowWib   // masih dalam interval cek normal → pakai waktu nyata
+            if ($nowInstant->gte($autoCheckoutTime)) {
+                $effectiveCheckOut = $nowInstant->lt($autoCheckoutTime->copy()->addMinutes(5))
+                    ? $nowInstant   // masih dalam interval cek normal → pakai waktu nyata
                     : $autoCheckoutTime; // presensi basi / catch-up → pakai jadwal target
 
                 // Kasus patologis: check-in terjadi SETELAH batas auto-checkout jadwal
@@ -166,14 +192,20 @@ class AutoCheckoutCommand extends Command
                 // SEBELUM check-in (menit kerja negatif); memakai jam eksekusi untuk
                 // record basi justru menciptakan lembur ribuan menit. Solusi: tutup tepat
                 // di jam check-in tanpa lembur — data tetap tertutup, tanpa angka fiktif.
-                $checkInWib = Carbon::parse($attendance->check_in_time);
+                //
+                // setTimezone($tz) di sini TIDAK mengubah hasil perbandingan
+                // (lessThan membandingkan instan absolut), tapi membuat zona
+                // $effectiveCheckOut konsisten dengan $workEnd — sebelumnya baris
+                // ini satu-satunya yang mem-parse check_in_time tanpa setTimezone,
+                // berbeda dari baris flexitime di atas.
+                $checkInLocal = Carbon::parse($attendance->check_in_time)->setTimezone($tz);
                 $skipOvertime = false;
-                if ($effectiveCheckOut->lessThan($checkInWib)) {
-                    $effectiveCheckOut = $checkInWib;
+                if ($effectiveCheckOut->lessThan($checkInLocal)) {
+                    $effectiveCheckOut = $checkInLocal;
                     $skipOvertime      = true;
                 }
 
-                $this->doAutoCheckout($attendance, $officeForCalc, $attDate, $effectiveCheckOut, $skipOvertime, $scheduleForCalc);
+                $this->doAutoCheckout($attendance, $officeForCalc, $attDate, $effectiveCheckOut, $skipOvertime, $scheduleForCalc, $tz);
                 $totalAutoCheckout++;
                 continue;
             }
@@ -181,8 +213,8 @@ class AutoCheckoutCommand extends Command
             // Sudah lewat batas reminder (tapi belum waktunya auto-checkout) → kirim reminder.
             // Reminder untuk record basi tidak relevan lagi (batas sudah lewat) — hanya kirim
             // bila auto-checkout memang masih di depan.
-            if ($nowWib->gte($reminderTime)) {
-                $this->sendCheckoutReminder($attendance, $autoCheckoutTime, $graceMins);
+            if ($nowInstant->gte($reminderTime)) {
+                $this->sendCheckoutReminder($attendance, $autoCheckoutTime, $graceMins, $tz);
                 $totalReminder++;
             }
         }
@@ -194,10 +226,14 @@ class AutoCheckoutCommand extends Command
     }
 
     // ─── Kirim push notification reminder checkout ────────────────────────────
-    private function sendCheckoutReminder(Attendance $attendance, Carbon $autoCheckoutTime, int $graceMins): void
+    //     $tz = zona cabang record ini. Jam & labelnya WAJIB sepasang: menulis jam
+    //     WITA dengan label "WIB" lebih menyesatkan daripada tidak ada label.
+    private function sendCheckoutReminder(Attendance $attendance, Carbon $autoCheckoutTime, int $graceMins, ?string $tz = null): void
     {
         $user    = $attendance->user;
-        $waktu   = $autoCheckoutTime->copy()->setTimezone('Asia/Jakarta')->format('H:i');
+        $tz      = Timezone::normalize($tz ?? $attendance->snap_timezone);
+        $waktu   = $autoCheckoutTime->copy()->setTimezone($tz)->format('H:i');
+        $zona    = Timezone::label($tz);
 
         // Cegah kirim reminder lebih dari sekali (cek di cache/DB)
         $cacheKey = "checkout_reminder_{$attendance->id}";
@@ -208,7 +244,7 @@ class AutoCheckoutCommand extends Command
         cache()->put($cacheKey, true, now()->addMinutes(25));
 
         $title = '⏰ Jangan Lupa Checkout!';
-        $body  = "Kamu belum checkout. Sistem akan otomatis checkout pukul {$waktu} WIB jika tidak segera checkout.";
+        $body  = "Kamu belum checkout. Sistem akan otomatis checkout pukul {$waktu} {$zona} jika tidak segera checkout.";
 
         // Push notification FCM
         if ($user && $user->fcm_token) {
@@ -247,7 +283,9 @@ class AutoCheckoutCommand extends Command
     //            bukan tanggal hari ini. Penting untuk resolveSchedule() yang benar.
     // $schedule = jadwal acuan perhitungan — snapshot check-in bila ada, selain itu
     //             hasil resolveSchedule() live (baris lama). Null → resolve di sini.
-    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $attDate, Carbon $checkOutTime, bool $skipOvertime = false, ?array $schedule = null): void
+    // $tz       = zona bisnis cabang record ini (dari handle()). Null → diturunkan
+    //             ulang di sini agar method tetap bisa dipanggil mandiri.
+    private function doAutoCheckout(Attendance $attendance, AttendanceSetting $office, string $attDate, Carbon $checkOutTime, bool $skipOvertime = false, ?array $schedule = null, ?string $tz = null): void
     {
         $user = $attendance->user;
 
@@ -260,10 +298,28 @@ class AutoCheckoutCommand extends Command
                 : null;
         }
 
+        $tz = Timezone::normalize(
+            $tz ?? $schedule['timezone'] ?? $attendance->snap_timezone ?? $office->timezone
+        );
+
+        // ATURAN DUPLIKASI SENGAJA (2026-10-06) — JANGAN ganti dengan
+        // App\Services\Attendance\AttendanceRecalculator tanpa PR khusus.
+        //
+        // checkOut() manual & koreksi manual HRD memakai AttendanceRecalculator.
+        // Command ini TETAP memakai salinannya sendiri karena semantiknya beda:
+        //   1. calculateOvertime() di sini membaca $office->overtime_enabled,
+        //      sedangkan service membaca $user->overtime_enabled lebih dulu.
+        //   2. $schedule di sini boleh NULL (karyawan terhapus) — service butuh array.
+        //   3. Command ini TIDAK PERNAH memasang status 'early_leave'; sistem tidak
+        //      boleh menuduh karyawan pulang awal saat justru lupa checkout.
+        // Mengalihkannya ke service = perubahan perilaku (nilai lembur/gaji), bukan
+        // refactor. Bila blok hitung di bawah diubah, cermin perubahannya di
+        // AttendanceRecalculator::recalculate() agar tidak drift.
+
         // Hitung jam kerja dari jam JADWAL masuk (bukan jam check-in).
         // Konsisten dengan manual checkOut() di AttendanceController.
-        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate, $attendance->user, $attendance);
-        $workMinutes = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone('Asia/Jakarta')));
+        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate, $attendance->user, $attendance, $tz);
+        $workMinutes = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone($tz)));
 
         // Potong jam istirahat jika bekerja >= 5 jam (300 menit) sesuai UU 13/2003
         $breakMinutes = (int) ($schedule['break_minutes'] ?? 60);
@@ -280,7 +336,7 @@ class AutoCheckoutCommand extends Command
         // $skipOvertime: checkout patologis (ditutup tepat di jam check-in) → tanpa lembur.
         $overtimeMinutes = $skipOvertime
             ? 0
-            : $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking, $attendance->user, $attendance);
+            : $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking, $attendance->user, $attendance, $tz);
 
         $attendance->update([
             'check_out_time'   => $checkOutTime,
@@ -309,10 +365,13 @@ class AutoCheckoutCommand extends Command
         ]);
 
         // Notifikasi ke karyawan bahwa ia sudah di-auto-checkout
-        $jamOut  = $checkOutTime->copy()->setTimezone('Asia/Jakarta')->format('H:i');
+        // Jam & label zona WAJIB sepasang — karyawan cabang Jayapura harus melihat
+        // jam WIT-nya sendiri, bukan jam WIB yang tidak cocok dengan jam di ponselnya.
+        $jamOut  = $checkOutTime->copy()->setTimezone($tz)->format('H:i');
+        $zona    = Timezone::label($tz);
         $msgUser = $overtimeMinutes > 0
-            ? "Anda telah di-checkout otomatis pukul {$jamOut} WIB. Lembur {$this->formatMinutes($overtimeMinutes)} terdeteksi — silakan ajukan via aplikasi jika ingin diklaim."
-            : "Anda telah di-checkout otomatis pukul {$jamOut} WIB.";
+            ? "Anda telah di-checkout otomatis pukul {$jamOut} {$zona}. Lembur {$this->formatMinutes($overtimeMinutes)} terdeteksi — silakan ajukan via aplikasi jika ingin diklaim."
+            : "Anda telah di-checkout otomatis pukul {$jamOut} {$zona}.";
         if ($user && $user->fcm_token) {
             $this->fcm->send($user->fcm_token, '🔔 Auto-Checkout', $msgUser, [
                 'type'          => 'auto_checkout',
@@ -408,8 +467,11 @@ class AutoCheckoutCommand extends Command
         int $workMinutes,
         bool $isNationalNonWorking,
         ?User $user = null,
-        ?Attendance $attendance = null
+        ?Attendance $attendance = null,
+        ?string $tz = null
     ): int {
+        $tz = Timezone::normalize($tz ?? $schedule['timezone'] ?? $office->timezone);
+
         if (! $office->overtime_enabled) {
             return 0;
         }
@@ -452,10 +514,13 @@ class AutoCheckoutCommand extends Command
 
         // Shift lintas hari (cross-day): jam pulang berada di HARI BERIKUTNYA.
         $jamPulangDate = ($schedule && ! empty($schedule['is_cross_day']) && ! $schedule['is_off'])
-            ? Carbon::parse($date, 'Asia/Jakarta')->addDay()->toDateString()
+            ? Carbon::parse($date, $tz)->addDay()->toDateString()
             : $date;
 
-        $jamPulang = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, 'Asia/Jakarta');
+        // "17:00" di sini berarti 17:00 JAM CABANG. greaterThan()/diffInMinutes()
+        // membandingkan instan absolut, jadi zona $checkOutTime tidak perlu diubah —
+        // yang menentukan hasil hanyalah zona pembangunan $jamPulang ini.
+        $jamPulang = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, $tz);
         $lewat     = $checkOutTime->greaterThan($jamPulang)
             ? (int) $jamPulang->diffInMinutes($checkOutTime)
             : 0;
@@ -480,28 +545,37 @@ class AutoCheckoutCommand extends Command
     //     Jika check-in sebelum jadwal → titik awal = jadwal (tidak ada bonus jam).
     //     Jika check-in terlambat     → titik awal = jam check-in aktual.
     //     Khusus flexitime: titik awal = jam check-in aktual (dibatasi paling awal jam jendela kedatangan).
-    private function resolveWorkStart(Carbon $checkInTime, ?array $schedule, string $date, ?User $user = null, ?Attendance $attendance = null): Carbon
+    //     $tz = zona bisnis cabang record ini. Null → diturunkan dari $schedule/kantor
+    //           agar method tetap aman dipanggil mandiri.
+    private function resolveWorkStart(Carbon $checkInTime, ?array $schedule, string $date, ?User $user = null, ?Attendance $attendance = null, ?string $tz = null): Carbon
     {
-        $checkInWib = $checkInTime->copy()->setTimezone('Asia/Jakarta');
+        $tz = Timezone::normalize(
+            $tz ?? $schedule['timezone'] ?? ($schedule['office'] ?? $user?->office)?->timezone
+        );
+
+        // Carbon yang dikembalikan bernuansa zona cabang: pemanggil memakainya untuk
+        // diff menit kerja (instan absolut, aman) DAN sebagai batas jam dinding
+        // ($arrivalStart/$workStart) yang WAJIB dibangun di zona cabang.
+        $checkInLocal = $checkInTime->copy()->setTimezone($tz);
 
         $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) ($user && $user->flexitime_enabled);
         if ($isFlex) {
             $office = $schedule['office'] ?? $user?->office;
             $arrivalStartStr = ! empty($office?->flex_arrival_start) ? substr((string) $office->flex_arrival_start, 0, 5) : '07:00';
-            $arrivalStart = Carbon::parse($date . ' ' . $arrivalStartStr, 'Asia/Jakarta');
+            $arrivalStart = Carbon::parse($date . ' ' . $arrivalStartStr, $tz);
 
-            return $checkInWib->lessThan($arrivalStart) ? $arrivalStart : $checkInWib;
+            return $checkInLocal->lessThan($arrivalStart) ? $arrivalStart : $checkInLocal;
         }
 
         $workStartStr = $schedule['work_start_time'] ?? null;
 
         if (! $workStartStr) {
-            return $checkInWib;
+            return $checkInLocal;
         }
 
-        $workStart  = Carbon::parse($date . ' ' . $workStartStr, 'Asia/Jakarta');
+        $workStart  = Carbon::parse($date . ' ' . $workStartStr, $tz);
 
-        return $checkInWib->greaterThan($workStart) ? $checkInWib : $workStart;
+        return $checkInLocal->greaterThan($workStart) ? $checkInLocal : $workStart;
     }
 }
 
