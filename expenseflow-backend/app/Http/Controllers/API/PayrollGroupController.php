@@ -65,6 +65,12 @@ class PayrollGroupController extends Controller
                 Rule::unique('payroll_groups', 'code')->where(fn ($q) => $q->where('company_id', $companyId)),
             ],
             'description' => 'nullable|string|max:2000',
+            // Pengaturan tanggal (2026-10-12). 0 = akhir bulan, 1-31 = tanggal
+            // tetap (di-clamp ke panjang bulan oleh PayrollPeriodResolver),
+            // tidak dikirim/NULL = belum diatur → bulan kalender penuh.
+            'cutoff_day'           => 'nullable|integer|min:0|max:31',
+            'payment_day'          => 'nullable|integer|min:0|max:31',
+            'payment_month_offset' => 'nullable|integer|min:0|max:1',
             'is_active'   => 'boolean',
         ]);
 
@@ -73,6 +79,9 @@ class PayrollGroupController extends Controller
             'name'        => trim($validated['name']),
             'code'        => isset($validated['code']) ? strtoupper(trim($validated['code'])) : null,
             'description' => $validated['description'] ?? null,
+            'cutoff_day'  => $validated['cutoff_day'] ?? null,
+            'payment_day' => $validated['payment_day'] ?? null,
+            'payment_month_offset' => (int) ($validated['payment_month_offset'] ?? 0),
             'is_active'   => $validated['is_active'] ?? true,
         ]);
 
@@ -116,16 +125,38 @@ class PayrollGroupController extends Controller
                     ->ignore($group->id),
             ],
             'description' => 'nullable|string|max:2000',
+            // Sama dengan store(): 0 = akhir bulan, 1-31 = tanggal tetap.
+            'cutoff_day'           => 'nullable|integer|min:0|max:31',
+            'payment_day'          => 'nullable|integer|min:0|max:31',
+            'payment_month_offset' => 'nullable|integer|min:0|max:1',
             'is_active'   => 'boolean',
         ]);
 
         $old = $group->toArray();
-        $group->update([
+
+        // SENGAJA memakai array_key_exists, bukan `?? null` seperti field lain di
+        // method ini: frontend grup payroll belum mengenal ketiga kolom tanggal
+        // (lihat doc/kekurangnAttendance.md #27). Kalau pakai `?? null`, setiap
+        // penyuntingan nama/deskripsi grup dari form lama akan DIAM-DIAM
+        // menghapus pengaturan cut-off HRD dan menggeser jendela presensi
+        // seluruh batch berikutnya. Key yang tidak dikirim = tidak diubah;
+        // mengirim null secara eksplisit tetap bisa mengosongkan.
+        $dates = [];
+        foreach (['cutoff_day', 'payment_day', 'payment_month_offset'] as $field) {
+            if (array_key_exists($field, $validated)) {
+                $dates[$field] = $validated[$field];
+            }
+        }
+        if (array_key_exists('payment_month_offset', $dates)) {
+            $dates['payment_month_offset'] = (int) ($dates['payment_month_offset'] ?? 0);
+        }
+
+        $group->update(array_merge([
             'name'        => trim($validated['name']),
             'code'        => isset($validated['code']) ? strtoupper(trim($validated['code'])) : null,
             'description' => $validated['description'] ?? null,
             'is_active'   => $validated['is_active'] ?? $group->is_active,
-        ]);
+        ], $dates));
 
         AuditLogger::log(
             action: 'PAYROLL_GROUP_UPDATED',

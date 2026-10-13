@@ -470,4 +470,22 @@ class PayrollTest extends TestCase
         $this->assertTrue($steps->isNotEmpty());
         $this->assertTrue($steps->contains(fn ($s) => ($s['step_code'] ?? null) === 'BPJS_KES'));
     }
+
+    public function test_payslip_populates_working_days_on_calculation(): void
+    {
+        $runId = $this->createRun();
+        $this->calculate($runId);
+
+        $budiSlip = Payslip::where('payroll_id', $runId)->where('user_id', $this->budi->id)->first();
+        $this->assertNotNull($budiSlip);
+        $this->assertNotNull($budiSlip->working_days);
+        $this->assertGreaterThan(0, $budiSlip->working_days);
+
+        // Verifikasi pada respons endpoint detail payslip dashboard
+        $res = $this->actingAs($this->finance, 'sanctum')
+            ->getJson("/api/v1/dashboard/payroll/payslips/{$budiSlip->id}")
+            ->assertOk();
+
+        $res->assertJsonPath('data.payslip.working_days', $budiSlip->working_days);
+    }
 }

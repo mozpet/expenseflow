@@ -5,10 +5,12 @@ namespace App\Console\Commands;
 use App\Models\AttendanceSetting;
 use App\Models\LeaveBalance;
 use App\Models\User;
+use App\Services\Attendance\LeavePeriodCloser;
 use App\Services\FcmService;
 use App\Support\Timezone;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 
 /**
  * ResetLeaveBalances — reset otomatis saldo cuti tahunan (ulang tiap 1 tahun).
@@ -40,6 +42,19 @@ use Illuminate\Support\Carbon;
  * Kolom leave_balances.year SENGAJA tetap memakai zona penyimpanan: ia adalah
  * tahun buku perusahaan yang dipakai sebagai kunci baris bersama oleh approveLeave,
  * listAllUsers, dan saldo mobile. Hanya tanggal anniversary yang bersifat lokal.
+ *
+ * CARRY-OVER & PENCAIRAN (2026-10-13): sisa cuti tidak lagi otomatis hangus.
+ * Takdirnya diputuskan LeaveCarryOverCalculator sesuai dua checkbox kantor dan
+ * dijalankan LeavePeriodCloser (termasuk menerbitkan penyesuaian payroll untuk
+ * hari yang dicairkan). Command ini TIDAK mengandung aturannya sendiri — jalur
+ * reset manual HRD memakai kelas yang sama agar keduanya tidak pernah
+ * menghasilkan angka berbeda untuk karyawan yang sama.
+ *
+ * Command ini juga menggugurkan hari bawaan yang kedaluwarsa untuk SELURUH
+ * kantor setiap jam, bukan hanya kantor yang sedang anniversary: tanggal
+ * kedaluwarsa carry-over jatuh di tengah periode (praktik umum "wajib
+ * dihabiskan paling lambat 31 Maret"), sehingga tidak ada peristiwa reset yang
+ * bisa menanganinya.
  */
 class ResetLeaveBalancesCommand extends Command
 {
@@ -62,13 +77,38 @@ class ResetLeaveBalancesCommand extends Command
         // (konsisten dgn semantik catch-up); tahun-tahun berikutnya reset tepat di tanggalnya.
         $offices = AttendanceSetting::whereNotNull('leave_reset_date')->get();
 
+        // Pengguguran hari bawaan yang kedaluwarsa — dijalankan LEBIH DULU dan
+        // TANPA bergantung pada ada/tidaknya kantor berjadwal reset. Kantor yang
+        // mencabut leave_reset_date-nya tetap punya karyawan dengan hari bawaan
+        // yang harus gugur pada tanggalnya.
+        //
+        // Memakai tanggal zona penyimpanan, bukan per-cabang: perbandingannya
+        // "< tanggal kedaluwarsa" (bukan "<="), jadi hari bawaan tetap bisa
+        // dipakai sepanjang tanggal kedaluwarsanya dan baru gugur pada hari
+        // berikutnya. Selisih zona antar cabang hanya menggeser JAM penggugurannya
+        // di hari berikutnya itu, tidak pernah memakan hari yang masih jadi hak.
+        $expiry = LeavePeriodCloser::expireCarryOver(Carbon::today(Timezone::storage()));
+        if ($expiry['processed'] > 0) {
+            $this->info(sprintf(
+                '%d saldo bawaan cuti ditutup masa berlakunya: %d hari dicairkan = Rp%s '
+                . '(menunggu batch payroll berikutnya), %d hari hangus.',
+                $expiry['processed'],
+                $expiry['encashed_days'],
+                number_format($expiry['encashed_amount'], 0, ',', '.'),
+                $expiry['forfeited_days']
+            ));
+        }
+
         if ($offices->isEmpty()) {
             $this->info('Tidak ada kantor dengan jadwal reset saldo cuti.');
             return self::SUCCESS;
         }
 
-        $totalOffices = 0;
-        $totalUsers   = 0;
+        $totalOffices  = 0;
+        $totalUsers    = 0;
+        $totalCarried  = 0;
+        $totalEncashed = 0;
+        $totalCashOut  = 0.0;
 
         foreach ($offices as $office) {
             // Tanggal "hari ini" menurut jam dinding kantor ini sendiri.
@@ -152,46 +192,63 @@ class ResetLeaveBalancesCommand extends Command
                     ];
                 }
 
-                // 1. Simpan Snapshot / Arsip ke tabel leave_balance_histories
-                \App\Models\LeaveBalanceHistory::create([
-                    'user_id'               => $userId,
-                    'company_id'            => $office->company_id,
-                    'attendance_setting_id' => $office->id,
-                    'period_label'          => 'Periode s/d ' . $anniversary->translatedFormat('d M Y'),
-                    'period_start'          => $anniversary->copy()->subYear()->addDay()->toDateString(),
-                    'period_end'            => $anniversary->copy()->subDay()->toDateString(),
-                    'reset_date'            => $anniversary->toDateString(),
-                    'cuti_quota'            => $cutiQuota,
-                    'cuti_used'             => $cutiUsed,
-                    'cuti_remaining'        => $cutiRemaining,
-                    'izin_sakit_used'       => $izinUsed,
-                    'leave_types_snapshot'  => !empty($typesSnapshot) ? $typesSnapshot : null,
-                    'notes'                 => "Reset tahunan jadwal kantor {$office->office_name}",
-                ]);
+                // Keputusan atas sisa cuti: dibawa / dicairkan / hangus, beserta
+                // penerbitan penyesuaian payroll bila ada yang dicairkan.
+                // Satu transaksi PER KARYAWAN: bila satu karyawan gagal, uang
+                // yang sudah diterbitkan untuknya ikut dibatalkan, tetapi
+                // karyawan lain yang sudah selesai tidak ditarik ulang.
+                $closure = DB::transaction(function () use (
+                    $existingCuti, $existingIzin, $otherBalances, $enabledTypeSettings,
+                    $office, $anniversary, $userId, $cutiQuota, $cutiUsed, $cutiRemaining,
+                    $izinUsed, $typesSnapshot
+                ) {
+                    $result = LeavePeriodCloser::close($existingCuti, $office, $anniversary);
 
-                // 2. Reset saldo cuti tahunan (kuota baru dari kantor, pemakaian 0)
-                $existingCuti->update([
-                    'quota' => $office->default_leave_quota,
-                    'used'  => 0,
-                ]);
+                    // 1. Simpan Snapshot / Arsip ke tabel leave_balance_histories
+                    \App\Models\LeaveBalanceHistory::create(array_merge([
+                        'user_id'               => $userId,
+                        'company_id'            => $office->company_id,
+                        'attendance_setting_id' => $office->id,
+                        'period_label'          => 'Periode s/d ' . $anniversary->translatedFormat('d M Y'),
+                        'period_start'          => $anniversary->copy()->subYear()->addDay()->toDateString(),
+                        'period_end'            => $anniversary->copy()->subDay()->toDateString(),
+                        'reset_date'            => $anniversary->toDateString(),
+                        'cuti_quota'            => $cutiQuota,
+                        'cuti_used'             => $cutiUsed,
+                        'cuti_remaining'        => $cutiRemaining,
+                        'izin_sakit_used'       => $izinUsed,
+                        'leave_types_snapshot'  => !empty($typesSnapshot) ? $typesSnapshot : null,
+                        'notes'                 => "Reset tahunan jadwal kantor {$office->office_name}",
+                    ], $result['history_fields']));
 
-                // 3. Reset saldo izin & sakit menjadi 0 untuk periode baru
-                if ($existingIzin) {
-                    $existingIzin->update([
-                        'used' => 0,
-                    ]);
-                }
+                    // 2. Reset saldo cuti tahunan — kuota baru kantor DITAMBAH hari
+                    //    bawaan (bila kebijakan carry-over kantor mengizinkan).
+                    $existingCuti->update($result['balance_updates']);
 
-                // 4. Reset saldo jenis cuti tambahan yang aktif di kantor ini
-                foreach ($otherBalances as $typeKey => $bal) {
-                    $setting = $enabledTypeSettings->get($typeKey);
-                    if ($setting) {
-                        $bal->update([
-                            'quota' => $setting->quota_days,
-                            'used'  => 0,
+                    // 3. Reset saldo izin & sakit menjadi 0 untuk periode baru
+                    if ($existingIzin) {
+                        $existingIzin->update([
+                            'used' => 0,
                         ]);
                     }
-                }
+
+                    // 4. Reset saldo jenis cuti tambahan yang aktif di kantor ini
+                    foreach ($otherBalances as $typeKey => $bal) {
+                        $setting = $enabledTypeSettings->get($typeKey);
+                        if ($setting) {
+                            $bal->update([
+                                'quota' => $setting->quota_days,
+                                'used'  => 0,
+                            ]);
+                        }
+                    }
+
+                    return $result;
+                });
+
+                $totalCarried  += (int) $closure['decision']['carried_over_days'];
+                $totalEncashed += (int) $closure['decision']['encashed_days'];
+                $totalCashOut  += (float) $closure['decision']['encashment_amount'];
 
                 $resetCount++;
             }
@@ -207,6 +264,16 @@ class ResetLeaveBalancesCommand extends Command
         }
 
         $this->info("Selesai: {$totalOffices} kantor, {$totalUsers} saldo cuti di-reset.");
+
+        if ($totalCarried > 0 || $totalEncashed > 0) {
+            $this->info(sprintf(
+                'Carry-over: %d hari dibawa. Pencairan: %d hari = Rp%s (menunggu batch payroll berikutnya).',
+                $totalCarried,
+                $totalEncashed,
+                number_format($totalCashOut, 0, ',', '.')
+            ));
+        }
+
         return self::SUCCESS;
     }
 }

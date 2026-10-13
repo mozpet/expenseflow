@@ -23,13 +23,22 @@ class PayrollGroup extends Model
         'name',
         'code',
         'description',
+        // Pengaturan tanggal (2026-10-12): sumber default rentang cut-off presensi
+        // & rencana tanggal gajian untuk batch yang memakai grup ini.
+        // NULL = belum diatur → bulan kalender penuh; 0 = akhir bulan; 1-31 = tanggal tetap.
+        'cutoff_day',
+        'payment_day',
+        'payment_month_offset', // 0 = gajian bulan periode, 1 = bulan berikutnya
         'is_active',
     ];
 
     protected function casts(): array
     {
         return [
-            'is_active' => 'boolean',
+            'cutoff_day'           => 'integer',
+            'payment_day'          => 'integer',
+            'payment_month_offset' => 'integer',
+            'is_active'            => 'boolean',
         ];
     }
 

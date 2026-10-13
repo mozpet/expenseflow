@@ -5,9 +5,10 @@ namespace App\Console\Commands;
 use App\Http\Controllers\API\ShiftController;
 use App\Models\Attendance;
 use App\Models\AttendanceSetting;
-use App\Models\OvertimeApproval;
-use App\Models\User;
+use App\Services\Attendance\AutoCheckoutCalculator;
+use App\Services\Attendance\MissedCheckoutFineCalculator;
 use App\Services\FcmService;
+use App\Support\Duration;
 use App\Support\Timezone;
 use Illuminate\Console\Command;
 use Illuminate\Support\Carbon;
@@ -53,10 +54,16 @@ class AutoCheckoutCommand extends Command
 
     private FcmService $fcm;
 
-    public function __construct(FcmService $fcm)
+    // Rumus jam kerja & lembur versi auto-checkout. Semantiknya SENGAJA berbeda
+    // dari AttendanceRecalculator (lihat docblock service-nya) -- karena itu ia
+    // punya service sendiri, bukan salinan privat di command ini seperti dulu.
+    private AutoCheckoutCalculator $calc;
+
+    public function __construct(FcmService $fcm, AutoCheckoutCalculator $calc)
     {
         parent::__construct();
-        $this->fcm = $fcm;
+        $this->fcm  = $fcm;
+        $this->calc = $calc;
     }
 
     public function handle(): int
@@ -166,7 +173,7 @@ class AutoCheckoutCommand extends Command
                 $targetMins    = (int) ($officeForCalc->flex_target_minutes ?? 480);
                 $breakMins     = (int) ($scheduleForCalc['break_minutes'] ?? $officeForCalc->break_minutes ?? 60);
                 $checkInLocal  = Carbon::parse($attendance->check_in_time)->setTimezone($tz);
-                $flexWorkStart = $this->resolveWorkStart($checkInLocal, $scheduleForCalc, $attDate, $attendance->user, $attendance, $tz);
+                $flexWorkStart = $this->calc->resolveWorkStart($checkInLocal, $scheduleForCalc, $attDate, $attendance->user, $attendance, $tz);
                 $flexTargetEnd = $flexWorkStart->copy()->addMinutes($targetMins + $breakMins);
 
                 if ($flexTargetEnd->greaterThan($workEnd)) {
@@ -302,23 +309,28 @@ class AutoCheckoutCommand extends Command
             $tz ?? $schedule['timezone'] ?? $attendance->snap_timezone ?? $office->timezone
         );
 
-        // ATURAN DUPLIKASI SENGAJA (2026-10-06) — JANGAN ganti dengan
-        // App\Services\Attendance\AttendanceRecalculator tanpa PR khusus.
+        // ATURAN DUPLIKASI SENGAJA (2026-10-06, direfaktor 2026-10-12) — JANGAN ganti
+        // dengan App\Services\Attendance\AttendanceRecalculator tanpa PR khusus.
         //
         // checkOut() manual & koreksi manual HRD memakai AttendanceRecalculator.
-        // Command ini TETAP memakai salinannya sendiri karena semantiknya beda:
+        // Command ini memakai AutoCheckoutCalculator (dulu salinan privat di berkas
+        // ini sendiri) karena semantiknya beda:
         //   1. calculateOvertime() di sini membaca $office->overtime_enabled,
         //      sedangkan service membaca $user->overtime_enabled lebih dulu.
         //   2. $schedule di sini boleh NULL (karyawan terhapus) — service butuh array.
-        //   3. Command ini TIDAK PERNAH memasang status 'early_leave'; sistem tidak
-        //      boleh menuduh karyawan pulang awal saat justru lupa checkout.
-        // Mengalihkannya ke service = perubahan perilaku (nilai lembur/gaji), bukan
-        // refactor. Bila blok hitung di bawah diubah, cermin perubahannya di
-        // AttendanceRecalculator::recalculate() agar tidak drift.
+        //   3. Command ini TIDAK PERNAH memasang status 'early_leave' atas inisiatif
+        //      sendiri; sistem tidak boleh menuduh karyawan pulang awal saat justru
+        //      lupa checkout. SATU-SATUNYA pengecualian (2026-10-11): kantor yang
+        //      secara eksplisit memilih missed_checkout_penalty_mode =
+        //      'mark_early_leave' — di situ HRD sendiri yang memutuskan bahwa lupa
+        //      check-out diperlakukan sebagai pulang cepat.
+        // Mengalihkannya ke AttendanceRecalculator = perubahan perilaku (nilai
+        // lembur/gaji), bukan refactor. Bila rumus di AutoCheckoutCalculator diubah,
+        // cermin perubahannya di AttendanceRecalculator::recalculate() agar tidak drift.
 
         // Hitung jam kerja dari jam JADWAL masuk (bukan jam check-in).
         // Konsisten dengan manual checkOut() di AttendanceController.
-        $workStart   = $this->resolveWorkStart($attendance->check_in_time, $schedule, $attDate, $attendance->user, $attendance, $tz);
+        $workStart   = $this->calc->resolveWorkStart($attendance->check_in_time, $schedule, $attDate, $attendance->user, $attendance, $tz);
         $workMinutes = max(0, (int) $workStart->diffInMinutes($checkOutTime->copy()->setTimezone($tz)));
 
         // Potong jam istirahat jika bekerja >= 5 jam (300 menit) sesuai UU 13/2003
@@ -330,15 +342,19 @@ class AutoCheckoutCommand extends Command
         // Tentukan hari libur/weekend menurut kalender (libur nasional/weekend).
         // Dipakai untuk field is_holiday — samakan persis dengan checkOut() manual.
         // Pass user_id agar cuti bersama yang di-decline tidak dianggap hari libur.
-        $isNationalNonWorking = $this->isNonWorkingDay($attDate, $attendance->company_id, $attendance->user_id);
+        $isNationalNonWorking = $this->calc->isNonWorkingDay($attDate, $attendance->company_id, $attendance->user_id);
 
         // Hitung overtime (sadar shift) — angka lembur konsisten dengan checkOut manual.
         // $skipOvertime: checkout patologis (ditutup tepat di jam check-in) → tanpa lembur.
         $overtimeMinutes = $skipOvertime
             ? 0
-            : $this->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking, $attendance->user, $attendance, $tz);
+            : $this->calc->calculateOvertime($office, $schedule, $attDate, $checkOutTime, $workMinutes, $isNationalNonWorking, $attendance->user, $attendance, $tz);
 
-        $attendance->update([
+        // Denda lupa check-out (2026-10-11) — konfigurasi dari snapshot saat check-in.
+        // Baris tanpa snapshot (sebelum fitur) → mode 'none', tanpa denda.
+        $missed = MissedCheckoutFineCalculator::calculate($attendance->missedCheckoutFineConfig());
+
+        $updateData = [
             'check_out_time'   => $checkOutTime,
             'check_out_lat'    => $attendance->check_in_lat,    // pakai lokasi check-in karena tidak ada GPS
             'check_out_lng'    => $attendance->check_in_lng,
@@ -348,7 +364,23 @@ class AutoCheckoutCommand extends Command
             'is_holiday'       => $isNationalNonWorking,
             'auto_checkout_at' => $checkOutTime,
             'is_auto_checkout' => true,
-        ]);
+            'missed_checkout_fine_amount' => $missed['fine_amount'] > 0 ? $missed['fine_amount'] : null,
+        ];
+
+        // Mode 'mark_early_leave': tandai pulang cepat TANPA denda rupiah, dan hanya
+        // di hari kerja efektif — sama seperti checkOut() manual, hari libur/shift off
+        // tidak mengenal konsep pulang cepat. Status 'absent' (ditetapkan HRD) tidak
+        // ditimpa; status yang lebih berat tidak boleh diringankan oleh perintah ini.
+        if (
+            $missed['mark_early_leave']
+            && ! $isNationalNonWorking
+            && empty($schedule['is_off'])
+            && $attendance->status !== 'absent'
+        ) {
+            $updateData['status'] = 'early_leave';
+        }
+
+        $attendance->update($updateData);
 
         $attendance->refresh();
 
@@ -369,8 +401,11 @@ class AutoCheckoutCommand extends Command
         // jam WIT-nya sendiri, bukan jam WIB yang tidak cocok dengan jam di ponselnya.
         $jamOut  = $checkOutTime->copy()->setTimezone($tz)->format('H:i');
         $zona    = Timezone::label($tz);
+        // Format "Xj Ym" dipakai dua kali di bawah (notifikasi karyawan & baris log);
+        // formatnya hidup di App\\Support\\Duration agar sama dengan payload API presensi.
+        $fmtLembur = Duration::formatMinutes($overtimeMinutes);
         $msgUser = $overtimeMinutes > 0
-            ? "Anda telah di-checkout otomatis pukul {$jamOut} {$zona}. Lembur {$this->formatMinutes($overtimeMinutes)} terdeteksi — silakan ajukan via aplikasi jika ingin diklaim."
+            ? "Anda telah di-checkout otomatis pukul {$jamOut} {$zona}. Lembur {$fmtLembur} terdeteksi — silakan ajukan via aplikasi jika ingin diklaim."
             : "Anda telah di-checkout otomatis pukul {$jamOut} {$zona}.";
         if ($user && $user->fcm_token) {
             $this->fcm->send($user->fcm_token, '🔔 Auto-Checkout', $msgUser, [
@@ -398,184 +433,6 @@ class AutoCheckoutCommand extends Command
             ]);
         }
 
-        $this->line("  Auto-Checkout → {$user?->name} (attendance #{$attendance->id}) | lembur: {$this->formatMinutes($overtimeMinutes)}");
-    }
-
-    // ─── Helper: apakah tanggal hari libur / weekend ──────────────────────────
-    // Bug #3 Fix: Cuti bersama (is_collective=true) hanya dianggap libur bagi karyawan
-    // yang ACCEPTED. Karyawan yang declined tetap masuk kerja hari itu seperti biasa.
-    // SHIFT-AWARE FIX: weekend global tidak otomatis libur bila jadwal shift efektif
-    // karyawan menandai hari itu MASUK (resolveSchedule is_off=false) — dan sebaliknya,
-    // hari kerja kantor yang libur menurut shift tetap dianggap libur.
-    private function isNonWorkingDay(string $date, ?int $companyId, ?int $userId = null): bool
-    {
-        // Cek jadwal shift efektif dulu (sudah dipanggil caller dengan tanggal yang sama)
-        if ($userId) {
-            $userModel = User::find($userId);
-            if ($userModel) {
-                $schedule = ShiftController::resolveSchedule($userModel, $date);
-                if ($schedule['source'] !== 'none') {
-                    return (bool) $schedule['is_off'];
-                }
-                // Tanpa shift & tanpa kantor → jatuh ke cek kalender di bawah
-            }
-        }
-
-        if (Carbon::parse($date)->isWeekend()) {
-            return true;
-        }
-
-        $matchingHolidays = DB::table('holidays')
-            ->whereDate('date', $date)
-            ->where(function ($q) use ($companyId) {
-                $q->whereNull('company_id')->orWhere('company_id', $companyId);
-            })
-            ->get(['id', 'is_collective']);
-
-        foreach ($matchingHolidays as $holiday) {
-            // Untuk cuti bersama: hanya anggap libur jika karyawan memang ACCEPTED.
-            if ($holiday->is_collective && $userId) {
-                $accepted = DB::table('leave_requests')
-                    ->where('holiday_id', $holiday->id)
-                    ->where('user_id', $userId)
-                    ->where('collective_status', 'accepted')
-                    ->exists();
-                if ($accepted) {
-                    return true;
-                }
-                // Declined / pending → bukan libur untuk karyawan ini
-                continue;
-            }
-
-            // Libur nasional atau libur perusahaan biasa → libur untuk semua
-            return true;
-        }
-
-        return false;
-    }
-
-    // ─── Helper: hitung menit lembur (sadar shift, sama dengan AttendanceController) ───────
-    //     $schedule = hasil ShiftController::resolveSchedule() atau null (fallback kantor).
-    //     - Shift menandai hari ini libur (is_off) → seluruh menit kerja jadi lembur.
-    //     - Tanpa shift & hari libur nasional/weekend → seluruh menit kerja jadi lembur.
-    //     - Hari kerja efektif → lembur dihitung setelah jam pulang yang berlaku (shift/kantor).
-    private function calculateOvertime(
-        AttendanceSetting $office,
-        ?array $schedule,
-        string $date,
-        Carbon $checkOutTime,
-        int $workMinutes,
-        bool $isNationalNonWorking,
-        ?User $user = null,
-        ?Attendance $attendance = null,
-        ?string $tz = null
-    ): int {
-        $tz = Timezone::normalize($tz ?? $schedule['timezone'] ?? $office->timezone);
-
-        if (! $office->overtime_enabled) {
-            return 0;
-        }
-
-        $minOvertime = (int) ($office->min_overtime_minutes ?? 30);
-
-        // Kasus 1: jadwal shift menandai hari ini libur → seluruh menit kerja jadi lembur,
-        //          asal mencapai min_overtime_minutes (anti-noise, konsisten dgn checkOut manual)
-        if ($schedule && $schedule['is_off']) {
-            $full = max(0, $workMinutes);
-
-            return $full >= $minOvertime ? $full : 0;
-        }
-
-        // Kasus 2: tanpa shift (pakai default kantor) & hari ini libur nasional/weekend
-        $pakaiDefaultKantor = ! $schedule || $schedule['source'] === 'office';
-        if ($pakaiDefaultKantor && $isNationalNonWorking) {
-            $full = max(0, $workMinutes);
-
-            return $full >= $minOvertime ? $full : 0;
-        }
-
-        // Kasus 2.5: Karyawan dengan jam kerja fleksibel (flexitime)
-        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) ($user && $user->flexitime_enabled);
-        if ($isFlex) {
-            $targetMins = (int) ($office->flex_target_minutes ?? 480);
-            $lewat = max(0, $workMinutes - $targetMins);
-
-            return $lewat >= $minOvertime ? $lewat : 0;
-        }
-
-        // Kasus 3: hari kerja efektif → lembur setelah jam pulang yang berlaku
-        $jamPulangStr = ($schedule && $schedule['work_end_time'])
-            ? $schedule['work_end_time']
-            : $office->work_end_time;
-
-        if (! $jamPulangStr) {
-            return 0;
-        }
-
-        // Shift lintas hari (cross-day): jam pulang berada di HARI BERIKUTNYA.
-        $jamPulangDate = ($schedule && ! empty($schedule['is_cross_day']) && ! $schedule['is_off'])
-            ? Carbon::parse($date, $tz)->addDay()->toDateString()
-            : $date;
-
-        // "17:00" di sini berarti 17:00 JAM CABANG. greaterThan()/diffInMinutes()
-        // membandingkan instan absolut, jadi zona $checkOutTime tidak perlu diubah —
-        // yang menentukan hasil hanyalah zona pembangunan $jamPulang ini.
-        $jamPulang = Carbon::parse($jamPulangDate . ' ' . $jamPulangStr, $tz);
-        $lewat     = $checkOutTime->greaterThan($jamPulang)
-            ? (int) $jamPulang->diffInMinutes($checkOutTime)
-            : 0;
-
-        return $lewat >= (int) $office->min_overtime_minutes ? $lewat : 0;
-    }
-
-    // ─── Helper: format menit → "Xj Ym" ──────────────────────────────────────
-    private function formatMinutes(int $minutes): string
-    {
-        if ($minutes <= 0) {
-            return '0j';
-        }
-        $jam  = intdiv($minutes, 60);
-        $sisa = $minutes % 60;
-        return $sisa === 0 ? "{$jam}j" : "{$jam}j {$sisa}m";
-    }
-
-    // ─── Helper: tentukan titik awal perhitungan jam kerja ───────────────────
-    //     Sama persis dengan resolveWorkStart() di AttendanceController.
-    //     Jam kerja dihitung mulai dari jam JADWAL masuk, bukan jam check-in.
-    //     Jika check-in sebelum jadwal → titik awal = jadwal (tidak ada bonus jam).
-    //     Jika check-in terlambat     → titik awal = jam check-in aktual.
-    //     Khusus flexitime: titik awal = jam check-in aktual (dibatasi paling awal jam jendela kedatangan).
-    //     $tz = zona bisnis cabang record ini. Null → diturunkan dari $schedule/kantor
-    //           agar method tetap aman dipanggil mandiri.
-    private function resolveWorkStart(Carbon $checkInTime, ?array $schedule, string $date, ?User $user = null, ?Attendance $attendance = null, ?string $tz = null): Carbon
-    {
-        $tz = Timezone::normalize(
-            $tz ?? $schedule['timezone'] ?? ($schedule['office'] ?? $user?->office)?->timezone
-        );
-
-        // Carbon yang dikembalikan bernuansa zona cabang: pemanggil memakainya untuk
-        // diff menit kerja (instan absolut, aman) DAN sebagai batas jam dinding
-        // ($arrivalStart/$workStart) yang WAJIB dibangun di zona cabang.
-        $checkInLocal = $checkInTime->copy()->setTimezone($tz);
-
-        $isFlex = $attendance ? $attendance->isFlexitimeSession($user) : (bool) ($user && $user->flexitime_enabled);
-        if ($isFlex) {
-            $office = $schedule['office'] ?? $user?->office;
-            $arrivalStartStr = ! empty($office?->flex_arrival_start) ? substr((string) $office->flex_arrival_start, 0, 5) : '07:00';
-            $arrivalStart = Carbon::parse($date . ' ' . $arrivalStartStr, $tz);
-
-            return $checkInLocal->lessThan($arrivalStart) ? $arrivalStart : $checkInLocal;
-        }
-
-        $workStartStr = $schedule['work_start_time'] ?? null;
-
-        if (! $workStartStr) {
-            return $checkInLocal;
-        }
-
-        $workStart  = Carbon::parse($date . ' ' . $workStartStr, $tz);
-
-        return $checkInLocal->greaterThan($workStart) ? $checkInLocal : $workStart;
+        $this->line("  Auto-Checkout → {$user?->name} (attendance #{$attendance->id}) | lembur: {$fmtLembur}");
     }
 }
-

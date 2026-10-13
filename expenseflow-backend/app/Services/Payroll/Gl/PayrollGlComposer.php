@@ -444,6 +444,13 @@ class PayrollGlComposer
             'severance_uph',
             'severance_pkwt',
             'severance_separation' => 'expense_severance',
+            // Peraturan Denda & Bonus Kantor (2026-10-11).
+            'night_shift',
+            'perfect_attendance' => 'expense_attendance_incentive',
+            // Carry-over & pencairan sisa cuti (2026-10-13). Dipisah dari
+            // expense_adjustment meski mekanismenya PayrollAdjustment: asalnya
+            // kebijakan cuti kantor, bukan koreksi gaji.
+            'leave_encashment'   => 'expense_leave_encashment',
             default      => 'expense_salary', // basic, fixed (tunjangan tetap), dll.
         };
     }
@@ -455,6 +462,13 @@ class PayrollGlComposer
             'tax'   => 'payable_pph21',
             'bpjs'  => 'payable_bpjs_employee',
             'loan'  => 'receivable_loan',
+            // Peraturan Denda & Bonus Kantor (2026-10-11). Source 'attendance'
+            // (potongan ketidakhadiran & keterlambatan) TIDAK dipindah ke sini
+            // agar jurnal periode lampau tidak berubah.
+            'early_leave',
+            'alpha_penalty',
+            'missed_checkout',
+            'unpaid_leave' => 'payable_attendance_penalty',
             default => 'payable_other', // fixed(potongan), attendance, adjustment(potongan), dll.
         };
     }

@@ -13,6 +13,20 @@ import {
   ShieldCheck,
   HelpCircle,
   Briefcase,
+  Coins,
+  Award,
+  DollarSign,
+  AlertOctagon,
+  Sparkles,
+  CheckCircle2,
+  Moon,
+  FileText,
+  UserX,
+  TrendingDown,
+  Gift,
+  Check,
+  ChevronRight,
+  ArrowRight,
 } from 'lucide-react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -150,6 +164,12 @@ const OfficesTab: React.FC<{
     default_leave_quota: 12,
     leave_multi_approval_enabled: true,
     leave_reset_date: '',
+    leave_carry_over_enabled: false,
+    leave_carry_over_max_days: '' as number | '',
+    leave_carry_over_expiry_months: '' as number | '',
+    leave_encashment_enabled: false,
+    leave_encashment_rate_per_day: '' as number | '',
+    leave_encashment_max_days: '' as number | '',
     custom_schedules: {} as Record<number, { start: string; end: string; break_minutes?: number | '' }>,
     // ─── Jam Kerja Fleksibel (Flexitime) Cabang ───
     flex_arrival_start: '07:00',
@@ -157,8 +177,33 @@ const OfficesTab: React.FC<{
     flex_core_start: '10:00',
     flex_core_end: '15:00',
     flex_target_minutes: 480,
+    // ─── Denda & Sanksi Tambahan (Enterprise UI/UX) ───
+    // Mode default WAJIB sama dengan default kolom di backend ('none' /
+    // 'prorata' untuk alpha). Kalau form dibuka dengan mode berbayar tapi
+    // nominalnya kosong, backend menolak penyimpanan kantor baru.
+    early_leave_fine_mode: 'none' as 'none' | 'per_minute' | 'flat' | 'prorata',
+    early_leave_fine_amount: '' as number | '',
+    early_leave_fine_max: '' as number | '',
+    alpha_penalty_mode: 'prorata' as 'none' | 'prorata' | 'prorata_plus_fine',
+    alpha_fine_flat: '' as number | '',
+    alpha_sp_threshold: 3,
+    unpaid_leave_penalty_mode: 'none' as 'none' | 'prorata' | 'flat',
+    unpaid_leave_fine_flat: '' as number | '',
+    missed_checkout_penalty_mode: 'none' as 'none' | 'flat_fine' | 'mark_early_leave',
+    missed_checkout_fine_amount: '' as number | '',
+    // ─── Bonus & Insentif Tambahan (Enterprise UI/UX) ───
+    perfect_attendance_bonus_enabled: false,
+    perfect_attendance_bonus_amount: '' as number | '',
+    perfect_attendance_allow_leave: true,
+    daily_allowance_enabled: false,
+    daily_meal_allowance: '' as number | '',
+    daily_transport_allowance: '' as number | '',
+    daily_allowance_min_hours: 4,
+    night_shift_bonus_enabled: false,
+    night_shift_bonus_amount: '' as number | '',
   };
   const [showForm, setShowForm] = useState(false);
+  const [activeModalTab, setActiveModalTab] = useState<'profile' | 'attendance' | 'penalties_bonuses'>('profile');
   const [editId, setEditId] = useState<number | null>(null);
   const [form, setForm] = useState<any>(empty);
   const [saving, setSaving] = useState(false);
@@ -205,12 +250,19 @@ const OfficesTab: React.FC<{
     flex_core_end: 'Jam Inti Flexitime (Selesai)',
     flex_target_minutes: 'Target Durasi Flexitime',
     timezone: 'Zona Waktu Kantor',
+    leave_carry_over_enabled: 'Regulasi Bawa Sisa Cuti (Carry-Over)',
+    leave_carry_over_max_days: 'Batas Maksimal Hari Carry-Over',
+    leave_carry_over_expiry_months: 'Masa Berlaku Hari Bawaan (Bulan)',
+    leave_encashment_enabled: 'Pencairan Sisa Cuti ke Uang',
+    leave_encashment_rate_per_day: 'Nominal Rupiah Pencairan per Hari',
+    leave_encashment_max_days: 'Pagu Hari Pencairan ke Uang',
   };
 
   const openAdd = () => {
     setForm(empty);
     setEditId(null);
     setShowForm(true);
+    setActiveModalTab('profile');
     setValidationError(null);
     setConfirmReset(null);
     setOriginalLeaveReset('');
@@ -222,6 +274,7 @@ const OfficesTab: React.FC<{
   const openEdit = (o: any) => {
     const isEarlyLeaveEnabled = o.early_leave_tolerance_minutes !== null && o.early_leave_tolerance_minutes !== undefined;
     setForm({
+      ...empty,
       office_name: o.office_name ?? '',
       office_latitude: o.office_latitude ?? '',
       office_longitude: o.office_longitude ?? '',
@@ -255,6 +308,12 @@ const OfficesTab: React.FC<{
       default_leave_quota: o.default_leave_quota ?? 12,
       leave_multi_approval_enabled: o.leave_multi_approval_enabled !== false,
       leave_reset_date: o.leave_reset_date ? String(o.leave_reset_date).slice(0, 5) : '',
+      leave_carry_over_enabled: Boolean(o.leave_carry_over_enabled),
+      leave_carry_over_max_days: o.leave_carry_over_max_days != null ? Number(o.leave_carry_over_max_days) : '',
+      leave_carry_over_expiry_months: o.leave_carry_over_expiry_months != null ? Number(o.leave_carry_over_expiry_months) : '',
+      leave_encashment_enabled: Boolean(o.leave_encashment_enabled),
+      leave_encashment_rate_per_day: o.leave_encashment_rate_per_day != null ? Number(o.leave_encashment_rate_per_day) : '',
+      leave_encashment_max_days: o.leave_encashment_max_days != null ? Number(o.leave_encashment_max_days) : '',
       custom_schedules: o.custom_schedules ?? {},
       // Flexitime fields
       flex_arrival_start: o.flex_arrival_start ? String(o.flex_arrival_start).slice(0, 5) : '07:00',
@@ -262,10 +321,31 @@ const OfficesTab: React.FC<{
       flex_core_start: o.flex_core_start ? String(o.flex_core_start).slice(0, 5) : '10:00',
       flex_core_end: o.flex_core_end ? String(o.flex_core_end).slice(0, 5) : '15:00',
       flex_target_minutes: o.flex_target_minutes !== undefined && o.flex_target_minutes !== null ? Number(o.flex_target_minutes) : 480,
+      // Enterprise defaults or saved extra
+      early_leave_fine_mode: o.early_leave_fine_mode ?? 'none',
+      early_leave_fine_amount: o.early_leave_fine_amount ?? '',
+      early_leave_fine_max: o.early_leave_fine_max ?? '',
+      alpha_penalty_mode: o.alpha_penalty_mode ?? 'prorata',
+      alpha_fine_flat: o.alpha_fine_flat ?? '',
+      alpha_sp_threshold: o.alpha_sp_threshold ?? 3,
+      unpaid_leave_penalty_mode: ['none', 'prorata', 'flat'].includes(o.unpaid_leave_penalty_mode) ? o.unpaid_leave_penalty_mode : 'none',
+      unpaid_leave_fine_flat: o.unpaid_leave_fine_flat ?? '',
+      missed_checkout_penalty_mode: o.missed_checkout_penalty_mode ?? 'none',
+      missed_checkout_fine_amount: o.missed_checkout_fine_amount ?? '',
+      perfect_attendance_bonus_enabled: o.perfect_attendance_bonus_enabled ?? false,
+      perfect_attendance_bonus_amount: o.perfect_attendance_bonus_amount ?? '',
+      perfect_attendance_allow_leave: o.perfect_attendance_allow_leave ?? true,
+      daily_allowance_enabled: o.daily_allowance_enabled ?? false,
+      daily_meal_allowance: o.daily_meal_allowance ?? '',
+      daily_transport_allowance: o.daily_transport_allowance ?? '',
+      daily_allowance_min_hours: o.daily_allowance_min_hours ?? 4,
+      night_shift_bonus_enabled: o.night_shift_bonus_enabled ?? false,
+      night_shift_bonus_amount: o.night_shift_bonus_amount ?? '',
     });
     setOriginalLeaveReset(o.leave_reset_date ? String(o.leave_reset_date).slice(0, 5) : '');
     setEditId(o.id);
     setShowForm(true);
+    setActiveModalTab('profile');
     setValidationError(null);
     setConfirmReset(null);
     setDangerousFields(null);
@@ -386,6 +466,86 @@ const OfficesTab: React.FC<{
       return 'Saldo cuti default maksimal 365 hari.';
     }
 
+    // 8. Kebijakan Bawa Sisa Cuti & Pencairan ke Uang — 7 guard, URUTANNYA
+    //    SENGAJA SAMA dengan validateLeavePolicyAmounts() di backend supaya
+    //    pesan pertama yang dilihat HRD di sini identik dengan 422 yang akan
+    //    dikembalikan server bila validasi klien ini terlewati.
+    //
+    //    MODEL 2026-10-14 (dibalik): uang pencairan BERSUMBER dari hari BAWAAN,
+    //    bukan dari kelebihan batas. Hari di atas batas carry-over hangus
+    //    permanen dan TIDAK PERNAH menjadi uang.
+    const carryOn = !!form.leave_carry_over_enabled;
+    const cashOn = !!form.leave_encashment_enabled;
+    const expiryEmpty =
+      form.leave_carry_over_expiry_months === '' || form.leave_carry_over_expiry_months == null;
+
+    // Guard 1 — carry-over aktif tanpa batas hari tidak membawa apa pun.
+    if (carryOn) {
+      const carryMax = Number(form.leave_carry_over_max_days);
+      if (form.leave_carry_over_max_days === '' || isNaN(carryMax) || carryMax <= 0) {
+        return 'Fitur bawa sisa cuti (carry-over) yang diaktifkan wajib mengisi batas jumlah hari yang boleh dibawa, lebih dari 0 hari.';
+      }
+    }
+
+    // Guard 2 — pencairan tanpa tarif: HRD menyangka pencairan sudah terbuka
+    // padahal sisa cuti karyawan tetap hangus. Guard terpenting di blok ini.
+    if (cashOn) {
+      const cashRate = Number(form.leave_encashment_rate_per_day);
+      if (form.leave_encashment_rate_per_day === '' || isNaN(cashRate) || cashRate <= 0) {
+        return 'Fitur pencairan sisa cuti yang diaktifkan wajib mengisi nominal rupiah per hari, lebih dari 0. Tanpa nominal, sisa cuti karyawan tetap hangus.';
+      }
+    }
+
+    // Guard 2b — pencairan hanya berlaku atas hari BAWAAN. Tanpa carry-over
+    // tidak ada hari bawaan, sehingga kebijakan pencairannya mati total.
+    if (cashOn && !carryOn) {
+      return 'Pencairan sisa cuti hanya berlaku atas hari cuti yang dibawa ke periode berikutnya (carry-over), yaitu hari bawaan yang masa berlakunya habis tanpa terpakai. Aktifkan fitur carry-over terlebih dahulu, atau matikan pencairan.';
+    }
+
+    // Guard 2c — pemicu pencairan adalah peristiwa KEDALUWARSA hari bawaan.
+    // Tanpa masa berlaku tidak ada peristiwa itu, dan uangnya tidak akan
+    // pernah terbit meski tarifnya sudah terisi.
+    if (cashOn && expiryEmpty) {
+      return 'Fitur pencairan membutuhkan masa berlaku cuti bawaan, karena yang dicairkan adalah hari bawaan yang masa berlakunya habis. Isi 0 bulan agar langsung dicairkan pada tanggal reset, atau isi jumlah bulan agar karyawan diberi kesempatan memakainya sebagai cuti lebih dahulu.';
+    }
+
+    // Guard 3 — nominal/batas tersimpan tanpa kebijakan yang mengaktifkannya
+    // adalah tampilan menyesatkan di form kantor.
+    if (!cashOn && form.leave_encashment_rate_per_day !== '' && form.leave_encashment_rate_per_day != null && Number(form.leave_encashment_rate_per_day) > 0) {
+      return 'Nominal pencairan sisa cuti terisi tetapi fitur pencairannya tidak diaktifkan. Centang fitur pencairan, atau kosongkan nominalnya.';
+    }
+    if (!carryOn && form.leave_carry_over_max_days !== '' && form.leave_carry_over_max_days != null && Number(form.leave_carry_over_max_days) > 0) {
+      return 'Batas hari bawa sisa cuti terisi tetapi fitur carry-over tidak diaktifkan. Centang fitur carry-over, atau kosongkan batas harinya.';
+    }
+
+    // Guard 4 — batas di atas kuota tahunan tidak akan pernah tercapai; biasanya
+    // tanda HRD salah membaca satuan kolom.
+    // CATATAN: batas SAMA DENGAN kuota kini SAH. Guard lama "batas >= kuota
+    // mematikan pencairan" DICABUT 2026-10-14 — uang tidak lagi berasal dari
+    // sisa yang tidak dibawa, jadi membawa seluruh kuota lalu mencairkannya
+    // adalah kebijakan yang wajar.
+    if (leaveQuota > 0) {
+      if (carryOn && Number(form.leave_carry_over_max_days) > leaveQuota) {
+        return `Batas hari cuti yang dibawa (${Number(form.leave_carry_over_max_days)} hari) melebihi saldo cuti default kantor (${leaveQuota} hari), sehingga batas itu tidak akan pernah tercapai.`;
+      }
+      if (cashOn && form.leave_encashment_max_days !== '' && form.leave_encashment_max_days != null && Number(form.leave_encashment_max_days) > leaveQuota) {
+        return `Batas hari cuti yang dapat dicairkan (${Number(form.leave_encashment_max_days)} hari) melebihi saldo cuti default kantor (${leaveQuota} hari), sehingga batas itu tidak akan pernah tercapai.`;
+      }
+    }
+
+    // Rentang masa berlaku: 0 SAH (takdir diputuskan di tanggal reset), 24 maks.
+    if (!expiryEmpty) {
+      const expMonths = Number(form.leave_carry_over_expiry_months);
+      if (isNaN(expMonths) || expMonths < 0 || expMonths > 24) {
+        return 'Masa berlaku hari bawaan (carry-over) harus antara 0 sampai 24 bulan. Isi 0 agar takdir hari bawaan diputuskan tepat di tanggal reset.';
+      }
+    }
+
+    // Guard 5 — masa berlaku menggantung tanpa carry-over.
+    if (!carryOn && !expiryEmpty) {
+      return 'Masa berlaku cuti bawaan hanya berlaku bila fitur carry-over diaktifkan. Kosongkan masa berlaku atau aktifkan fitur carry-over.';
+    }
+
     // Validasi typo AM/PM
     const checkAmPmTypo = (start: string, end: string, label: string) => {
       const [sH] = start.split(':').map(Number);
@@ -474,6 +634,13 @@ const OfficesTab: React.FC<{
     await doSave();
   };
 
+  /** '' / null / NaN → null; sisanya angka. Dipakai nominal denda & bonus. */
+  const nullableNum = (v: number | '' | null | undefined): number | null => {
+    if (v === '' || v === null || v === undefined) return null;
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const doSave = async (confirmDangerous: boolean = false) => {
     setConfirmReset(null);
     setSaving(true);
@@ -521,6 +688,12 @@ const OfficesTab: React.FC<{
         default_leave_quota: Number(form.default_leave_quota ?? 12),
         leave_multi_approval_enabled: form.leave_multi_approval_enabled !== false,
         leave_reset_date: form.leave_reset_date ? form.leave_reset_date : null,
+        leave_carry_over_enabled: Boolean(form.leave_carry_over_enabled),
+        leave_carry_over_max_days: form.leave_carry_over_enabled && form.leave_carry_over_max_days !== '' && form.leave_carry_over_max_days != null ? Number(form.leave_carry_over_max_days) : null,
+        leave_carry_over_expiry_months: form.leave_carry_over_enabled && form.leave_carry_over_expiry_months !== '' && form.leave_carry_over_expiry_months != null ? Number(form.leave_carry_over_expiry_months) : null,
+        leave_encashment_enabled: Boolean(form.leave_encashment_enabled),
+        leave_encashment_rate_per_day: form.leave_encashment_enabled && form.leave_encashment_rate_per_day !== '' && form.leave_encashment_rate_per_day != null ? Number(form.leave_encashment_rate_per_day) : null,
+        leave_encashment_max_days: form.leave_encashment_enabled && form.leave_encashment_max_days !== '' && form.leave_encashment_max_days != null ? Number(form.leave_encashment_max_days) : null,
         // collective_leave_policy: dihapus — hardcode 'block' sejak 2026-08-20
         custom_schedules: (() => {
           const cleaned: Record<number, { start: string; end: string; break_minutes?: number }> = {};
@@ -539,6 +712,26 @@ const OfficesTab: React.FC<{
           });
           return cleaned;
         })(),
+        // ─── Peraturan Denda & Bonus Kantor (2026-10-11) ───────────────────
+        // Nominal dikirim null bila kosong agar backend menyimpan NULL (fitur
+        // mati), bukan 0 — 0 berarti "mode aktif dengan denda nol" yang justru
+        // ditolak validator. Nominal yang mode-nya tidak membutuhkannya juga
+        // dikirim null supaya nilai lama tidak menggantung di database.
+        early_leave_fine_mode: form.early_leave_fine_mode || 'none',
+        early_leave_fine_amount: ['per_minute', 'flat'].includes(form.early_leave_fine_mode) ? nullableNum(form.early_leave_fine_amount) : null,
+        early_leave_fine_max: ['per_minute', 'flat'].includes(form.early_leave_fine_mode) ? nullableNum(form.early_leave_fine_max) : null,
+        alpha_penalty_mode: form.alpha_penalty_mode || 'prorata',
+        alpha_fine_flat: form.alpha_penalty_mode === 'prorata_plus_fine' ? nullableNum(form.alpha_fine_flat) : null,
+        alpha_sp_threshold: Number(form.alpha_sp_threshold ?? 3),
+        unpaid_leave_penalty_mode: form.unpaid_leave_penalty_mode || 'none',
+        unpaid_leave_fine_flat: form.unpaid_leave_penalty_mode === 'flat' ? nullableNum(form.unpaid_leave_fine_flat) : null,
+        missed_checkout_penalty_mode: form.missed_checkout_penalty_mode || 'none',
+        missed_checkout_fine_amount: form.missed_checkout_penalty_mode === 'flat_fine' ? nullableNum(form.missed_checkout_fine_amount) : null,
+        perfect_attendance_bonus_enabled: !!form.perfect_attendance_bonus_enabled,
+        perfect_attendance_bonus_amount: form.perfect_attendance_bonus_enabled ? nullableNum(form.perfect_attendance_bonus_amount) : null,
+        perfect_attendance_allow_leave: form.perfect_attendance_allow_leave !== false,
+        night_shift_bonus_enabled: !!form.night_shift_bonus_enabled,
+        night_shift_bonus_amount: form.night_shift_bonus_enabled ? nullableNum(form.night_shift_bonus_amount) : null,
       };
       // Gerbang backend: perubahan field berbahaya wajib menyertakan frasa konfirmasi
       if (editId && confirmDangerous) payload.confirm_dangerous = 'SIMPAN';
@@ -709,6 +902,41 @@ const OfficesTab: React.FC<{
                       : ' · tanpa reset otomatis'}
                   </span>
                 </span>
+                <span className="col-span-2 flex items-center gap-1.5 flex-wrap text-[11px]">
+                  <Coins className="w-3.5 h-3.5 text-teal-600 shrink-0" />
+                  <span className="text-slate-500">Kebijakan Sisa Cuti:</span>
+                  {o.leave_carry_over_enabled ? (
+                    <span className="px-1.5 py-0.5 rounded bg-teal-50 dark:bg-teal-950/40 text-teal-700 dark:text-teal-300 font-semibold border border-teal-200 dark:border-teal-800/40">
+                      {/* Sengaja membandingkan ke null, BUKAN memeriksa truthiness:
+                          0 bulan adalah setelan paling berdampak uang (hari bawaan
+                          langsung dicairkan/hangus di tanggal reset) dan `x ? ... : ''`
+                          akan menyembunyikannya sama sekali. */}
+                      Bawa Maks {o.leave_carry_over_max_days} hr
+                      {o.leave_carry_over_expiry_months == null
+                        ? ' (tanpa kedaluwarsa)'
+                        : Number(o.leave_carry_over_expiry_months) === 0
+                          ? ' (0 bln → di tanggal reset)'
+                          : ` (${o.leave_carry_over_expiry_months} bln)`}
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-500">
+                      Tanpa Carry-Over
+                    </span>
+                  )}
+                  {o.leave_encashment_enabled ? (
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 font-semibold border border-emerald-200 dark:border-emerald-800/40">
+                      Cair Rp{Number(o.leave_encashment_rate_per_day || 0).toLocaleString('id-ID')}/hr
+                      {/* Pagu 0 ≠ tanpa pagu: 0 berarti tidak ada hari yang boleh dicairkan. */}
+                      {o.leave_encashment_max_days == null
+                        ? ' (tanpa pagu)'
+                        : ` (pagu ${o.leave_encashment_max_days} hr)`}
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300">
+                      {o.leave_carry_over_enabled ? 'Tanpa Pencairan' : 'Sisa Cuti Hangus'}
+                    </span>
+                  )}
+                </span>
                 <span className="col-span-2 flex items-center gap-1">
                   <Clock className="w-3 h-3 text-cyan-500" />
                   Flexitime:{' '}
@@ -784,175 +1012,233 @@ const OfficesTab: React.FC<{
               </div>
             )}
 
-            <div className="space-y-4 text-xs">
-                {/* Section 1: Informasi Kantor & Lokasi */}
-                <div className="p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 space-y-3">
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                    <div className="md:col-span-2 space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
-                        Nama Kantor <span className="text-rose-500 font-bold">*</span>
-                      </label>
-                      <input
-                        type="text"
-                        value={form.office_name}
-                        onChange={(e) => {
-                          setForm({ ...form, office_name: e.target.value });
-                          if (validationError) setValidationError(null);
-                        }}
-                        required
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                        placeholder="cth: Kantor Pusat / Cabang Jakarta"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
-                        Radius Presensi (m) <span className="text-rose-500 font-bold">*</span>
-                      </label>
-                      <input
-                        type="number"
-                        min={10}
-                        max={5000}
-                        value={form.radius_meters}
-                        onChange={(e) => {
-                          setForm({ ...form, radius_meters: e.target.value });
-                          if (validationError) setValidationError(null);
-                        }}
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                        placeholder="100"
-                      />
-                    </div>
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
-                      Titik Koordinat Kantor (GPS) <span className="text-rose-500 font-bold">*</span>
-                    </label>
-                    <LocationPicker
-                      lat={form.office_latitude}
-                      lng={form.office_longitude}
-                      onChange={(lat, lng) => {
-                        setForm({ ...form, office_latitude: lat, office_longitude: lng });
-                        if (validationError) setValidationError(null);
-                      }}
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
-                      Zona Waktu Kantor <span className="text-rose-500 font-bold">*</span>
-                    </label>
-                    <select
-                      value={form.timezone || 'Asia/Jakarta'}
-                      onChange={(e) => {
-                        setForm({ ...form, timezone: e.target.value });
-                        if (validationError) setValidationError(null);
-                      }}
-                      className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                    >
-                      <option value="Asia/Jakarta">WIB — Asia/Jakarta (UTC+7)</option>
-                      <option value="Asia/Makassar">WITA — Asia/Makassar (UTC+8)</option>
-                      <option value="Asia/Jayapura">WIT — Asia/Jayapura (UTC+9)</option>
-                    </select>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
-                        Jam Masuk Default <span className="text-rose-500 font-bold">*</span>
-                      </label>
-                      <input
-                        type="time"
-                        value={form.work_start_time}
-                        onChange={(e) => {
-                          setForm({ ...form, work_start_time: e.target.value });
-                          if (validationError) setValidationError(null);
-                        }}
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
-                        Jam Pulang Default <span className="text-rose-500 font-bold">*</span>
-                      </label>
-                      <input
-                        type="time"
-                        value={form.work_end_time}
-                        onChange={(e) => {
-                          setForm({ ...form, work_end_time: e.target.value });
-                          if (validationError) setValidationError(null);
-                        }}
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block" title="Durasi istirahat (contoh 60 menit)">
-                        Durasi Istirahat (Menit) <span className="text-slate-400 font-normal">(Std 60)</span>
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={240}
-                        placeholder="60"
-                        value={form.break_minutes ?? 60}
-                        onChange={(e) => {
-                          setForm({ ...form, break_minutes: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0) });
-                          if (validationError) setValidationError(null);
-                        }}
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                </div>
+            {/* Tab Navigation dalam Modal Cabang */}
+            <div className="flex items-center gap-1.5 p-1 bg-slate-100 dark:bg-slate-800/80 rounded-xl border border-slate-200/80 dark:border-slate-700/80 overflow-x-auto">
+              <button
+                type="button"
+                onClick={() => setActiveModalTab('profile')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+                  activeModalTab === 'profile'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs border border-slate-200/60 dark:border-slate-700'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <Building2 className="w-4 h-4" />
+                <span>Profil & Jadwal</span>
+              </button>
 
-                {/* Section 2: Hari Kerja & Jam Khusus */}
-                <div className="space-y-2">
-                  <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between mb-1">
-                    <span className="flex items-center gap-2">
-                      <CalendarDays className="w-4 h-4 text-indigo-500" />
-                      Hari Kerja & Jam per Hari <span className="text-rose-500 font-bold">*</span>
-                      <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-semibold ${
-                        form.enforce_weekly_hours && calculatedWeeklyHours > Number(form.max_weekly_hours)
-                          ? 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400'
-                          : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
-                      }`}>
-                        Total: {calculatedWeeklyHours.toFixed(1)} jam/mgg
-                      </span>
-                    </span>
-                    {(form.work_days as number[]).length > 6 && (
-                      <span className="text-rose-600 bg-rose-50 dark:bg-rose-900/30 dark:text-rose-400 px-2 py-0.5 rounded flex items-center gap-1 leading-none text-[10px] font-semibold">
-                        <AlertTriangle className="w-3.5 h-3.5" /> Maks 6 hari kerja
-                      </span>
-                    )}
-                  </label>
-                  
+              <div className="h-5 w-px bg-slate-300 dark:bg-slate-700 shrink-0 mx-0.5" />
+
+              <button
+                type="button"
+                onClick={() => setActiveModalTab('attendance')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 ${
+                  activeModalTab === 'attendance'
+                    ? 'bg-white dark:bg-slate-900 text-indigo-600 dark:text-indigo-400 shadow-xs border border-slate-200/60 dark:border-slate-700'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <Clock className="w-4 h-4" />
+                <span>Kebijakan Presensi & Alur</span>
+              </button>
+
+              <div className="h-5 w-px bg-slate-300 dark:bg-slate-700 shrink-0 mx-0.5" />
+
+              <button
+                type="button"
+                onClick={() => setActiveModalTab('penalties_bonuses')}
+                className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all shrink-0 relative ${
+                  activeModalTab === 'penalties_bonuses'
+                    ? 'bg-amber-500 text-white shadow-xs font-bold'
+                    : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200'
+                }`}
+              >
+                <Coins className={`w-4 h-4 ${activeModalTab === 'penalties_bonuses' ? 'text-white' : 'text-amber-500'}`} />
+                <span>Denda & Bonus (Peraturan Kantor)</span>
+                <span className={`text-[9px] px-1.5 py-0.5 rounded-full font-bold uppercase tracking-wider ${
+                  activeModalTab === 'penalties_bonuses'
+                    ? 'bg-white/25 text-white'
+                    : 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300'
+                }`}>
+                  Baru
+                </span>
+              </button>
+            </div>
+
+            <div className="space-y-4 text-xs">
+              {/* ═══════════════════════════════════════════════════════════ */}
+              {/* TAB 1: PROFIL & JADWAL KERJA                                */}
+              {/* ═══════════════════════════════════════════════════════════ */}
+              {activeModalTab === 'profile' && (
+                <div className="space-y-4 animate-in fade-in duration-150">
+                  {/* Section 1: Informasi Kantor & Lokasi */}
+                  <div className="p-4 rounded-xl border border-slate-200/80 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 space-y-3">
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                      <div className="md:col-span-2 space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                          Nama Kantor <span className="text-rose-500 font-bold">*</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={form.office_name}
+                          onChange={(e) => {
+                            setForm({ ...form, office_name: e.target.value });
+                            if (validationError) setValidationError(null);
+                          }}
+                          required
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                          placeholder="cth: Kantor Pusat / Cabang Jakarta"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                          Radius Presensi (m) <span className="text-rose-500 font-bold">*</span>
+                        </label>
+                        <input
+                          type="number"
+                          min={10}
+                          max={5000}
+                          value={form.radius_meters}
+                          onChange={(e) => {
+                            setForm({ ...form, radius_meters: e.target.value });
+                            if (validationError) setValidationError(null);
+                          }}
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                          placeholder="100"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                        Titik Koordinat Kantor (GPS) <span className="text-rose-500 font-bold">*</span>
+                      </label>
+                      <LocationPicker
+                        lat={form.office_latitude}
+                        lng={form.office_longitude}
+                        onChange={(lat, lng) => {
+                          setForm({ ...form, office_latitude: lat, office_longitude: lng });
+                          if (validationError) setValidationError(null);
+                        }}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                        Zona Waktu Kantor <span className="text-rose-500 font-bold">*</span>
+                      </label>
+                      <select
+                        value={form.timezone || 'Asia/Jakarta'}
+                        onChange={(e) => {
+                          setForm({ ...form, timezone: e.target.value });
+                          if (validationError) setValidationError(null);
+                        }}
+                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                      >
+                        <option value="Asia/Jakarta">WIB — Asia/Jakarta (UTC+7)</option>
+                        <option value="Asia/Makassar">WITA — Asia/Makassar (UTC+8)</option>
+                        <option value="Asia/Jayapura">WIT — Asia/Jayapura (UTC+9)</option>
+                      </select>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                          Jam Masuk Default <span className="text-rose-500 font-bold">*</span>
+                        </label>
+                        <input
+                          type="time"
+                          value={form.work_start_time}
+                          onChange={(e) => {
+                            setForm({ ...form, work_start_time: e.target.value });
+                            if (validationError) setValidationError(null);
+                          }}
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                          Jam Pulang Default <span className="text-rose-500 font-bold">*</span>
+                        </label>
+                        <input
+                          type="time"
+                          value={form.work_end_time}
+                          onChange={(e) => {
+                            setForm({ ...form, work_end_time: e.target.value });
+                            if (validationError) setValidationError(null);
+                          }}
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block" title="Durasi istirahat (contoh 60 menit)">
+                          Durasi Istirahat (Menit) <span className="text-slate-400 font-normal">(Std 60)</span>
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={240}
+                          placeholder="60"
+                          value={form.break_minutes ?? 60}
+                          onChange={(e) => {
+                            setForm({ ...form, break_minutes: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0) });
+                            if (validationError) setValidationError(null);
+                          }}
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 focus:ring-1 focus:ring-indigo-500 focus:outline-none"
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Section 2: Hari Kerja & Jam Khusus */}
                   <div className="space-y-2">
-                    {['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map((name, idx) => {
-                      const active = (form.work_days as number[]).includes(idx);
-                      const hasCustom = !!form.custom_schedules[idx];
-                      const isExpanded = expandedDays.includes(idx);
-                      
-                      return (
-                        <div key={idx} className={`border rounded-xl overflow-hidden transition ${active ? 'border-indigo-200 dark:border-indigo-800/50 bg-indigo-50/20 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/20'}`}>
-                          {/* Header Hari */}
-                          <div className="p-3 flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const days = active
-                                    ? (form.work_days as number[]).filter((d: number) => d !== idx)
-                                    : [...(form.work_days as number[]), idx].sort();
-                                  
-                                  const newCustom = { ...form.custom_schedules };
-                                  if (active) {
-                                    delete newCustom[idx];
-                                    setExpandedDays(prev => prev.filter(d => d !== idx));
-                                  }
-                                  
-                                  setForm({ ...form, work_days: days, custom_schedules: newCustom });
-                                }}
-                                className={`w-10 h-6 rounded-full transition-colors relative ${active ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-600'}`}
-                              >
-                                <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${active ? 'left-5' : 'left-1'}`} />
-                              </button>
-                                  <div className="flex flex-col">
+                    <label className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between mb-1">
+                      <span className="flex items-center gap-2">
+                        <CalendarDays className="w-4 h-4 text-indigo-500" />
+                        Hari Kerja & Jam per Hari <span className="text-rose-500 font-bold">*</span>
+                        <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-semibold ${
+                          form.enforce_weekly_hours && calculatedWeeklyHours > Number(form.max_weekly_hours)
+                            ? 'bg-rose-100 text-rose-600 dark:bg-rose-900/40 dark:text-rose-400'
+                            : 'bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                        }`}>
+                          Total: {calculatedWeeklyHours.toFixed(1)} jam/mgg
+                        </span>
+                      </span>
+                      {(form.work_days as number[]).length > 6 && (
+                        <span className="text-rose-600 bg-rose-50 dark:bg-rose-900/30 dark:text-rose-400 px-2 py-0.5 rounded flex items-center gap-1 leading-none text-[10px] font-semibold">
+                          <AlertTriangle className="w-3.5 h-3.5" /> Maks 6 hari kerja
+                        </span>
+                      )}
+                    </label>
+                    
+                    <div className="space-y-2">
+                      {['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'].map((name, idx) => {
+                        const active = (form.work_days as number[]).includes(idx);
+                        const hasCustom = !!form.custom_schedules[idx];
+                        const isExpanded = expandedDays.includes(idx);
+                        
+                        return (
+                          <div key={idx} className={`border rounded-xl overflow-hidden transition ${active ? 'border-indigo-200 dark:border-indigo-800/50 bg-indigo-50/20 dark:bg-indigo-900/10' : 'border-slate-200 dark:border-slate-700 bg-slate-50/50 dark:bg-slate-800/20'}`}>
+                            {/* Header Hari */}
+                            <div className="p-3 flex items-center justify-between">
+                              <div className="flex items-center gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const days = active
+                                      ? (form.work_days as number[]).filter((d: number) => d !== idx)
+                                      : [...(form.work_days as number[]), idx].sort();
+                                    
+                                    const newCustom = { ...form.custom_schedules };
+                                    if (active) {
+                                      delete newCustom[idx];
+                                      setExpandedDays(prev => prev.filter(d => d !== idx));
+                                    }
+                                    
+                                    setForm({ ...form, work_days: days, custom_schedules: newCustom });
+                                  }}
+                                  className={`w-10 h-6 rounded-full transition-colors relative ${active ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-600'}`}
+                                >
+                                  <span className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${active ? 'left-5' : 'left-1'}`} />
+                                </button>
+                                <div className="flex flex-col">
                                   <span className={`text-sm font-semibold ${active ? 'text-indigo-900 dark:text-indigo-300' : 'text-slate-500'}`}>{name}</span>
                                   {active && (
                                     <div className="flex items-center gap-1.5 mt-0.5">
@@ -1095,363 +1381,231 @@ const OfficesTab: React.FC<{
                               </div>
                             )}
                           </div>
-                      );
-                    })}
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Navigasi Next Tab */}
+                  <div className="flex justify-end pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setActiveModalTab('attendance')}
+                      className="flex items-center gap-2 px-4 py-2 bg-indigo-50 dark:bg-indigo-950/40 hover:bg-indigo-100 dark:hover:bg-indigo-900/60 text-indigo-700 dark:text-indigo-300 rounded-xl font-semibold text-xs transition"
+                    >
+                      <span>Lanjut: Kebijakan Presensi & Alur</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
                   </div>
                 </div>
+              )}
 
-                {/* Section 3: Toleransi & Aturan Presensi */}
-                <div className="space-y-3 pt-2">
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 block">Toleransi Telat (menit)</label>
-                      <input 
-                        type="number" 
-                        min={0}
-                        value={form.late_tolerance_minutes} 
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value);
-                          setForm({ ...form, late_tolerance_minutes: isNaN(val) ? '' : Math.max(0, val) });
-                        }} 
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono" 
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 block">
-                        Batas Waktu Presensi Telat (menit)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={1440}
-                        value={form.late_checkin_cutoff_minutes ?? ''}
-                        onChange={(e) => {
-                          const val = parseInt(e.target.value);
-                          setForm({ ...form, late_checkin_cutoff_minutes: isNaN(val) ? '' : Math.max(0, val) });
-                        }}
-                        placeholder="Kosongkan = tidak ada batas"
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
-                      />
-                      <p className="text-[9px] text-slate-400">
-                        Contoh: 120 menit → presensi ditutup 2 jam setelah jam masuk. Kosongkan = bebas.
+              {/* ═══════════════════════════════════════════════════════════ */}
+              {/* TAB 2: KEBIJAKAN PRESENSI & ALUR (ATTENDANCE POLICY)        */}
+              {/* ═══════════════════════════════════════════════════════════ */}
+              {activeModalTab === 'attendance' && (
+                <div className="space-y-4 animate-in fade-in duration-150">
+                  {/* Info Banner Relokasi Denda & Lembur */}
+                  <div className="p-3 bg-amber-50 dark:bg-amber-950/30 border border-amber-200/80 dark:border-amber-900/60 rounded-xl flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <div className="p-1.5 bg-amber-100 dark:bg-amber-900/60 text-amber-700 dark:text-amber-300 rounded-lg shrink-0">
+                        <Coins className="w-4 h-4" />
+                      </div>
+                      <p className="text-[11px] text-amber-800 dark:text-amber-200">
+                        Aturan <strong>Denda Keterlambatan</strong> & <strong>Upah Lembur</strong> kini berada di tab khusus <b>Denda & Bonus (Peraturan Kantor)</b>.
                       </p>
                     </div>
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-slate-400 block">
-                        Window WFH (menit sebelum jam masuk)
-                      </label>
-                      <input
-                        type="number"
-                        min={0}
-                        max={720}
-                        value={form.wfh_checkin_window_minutes ?? ''}
-                        onChange={(e) => setForm({ ...form, wfh_checkin_window_minutes: e.target.value })}
-                        placeholder="Kosongkan = bebas"
-                        className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
-                      />
-                      <p className="text-[9px] text-slate-400">
-                        Kosongkan untuk tidak dibatasi waktu WFH.
-                      </p>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveModalTab('penalties_bonuses')}
+                      className="px-2.5 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-[10px] font-bold shrink-0 shadow-xs"
+                    >
+                      Buka Tab Denda & Bonus →
+                    </button>
                   </div>
 
-                  {/* Denda keterlambatan */}
-                  <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-3">
-                    <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                      <Clock className="w-3.5 h-3.5 text-red-500" /> Denda Keterlambatan
-                    </span>
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  {/* Section Toleransi & Cutoff Masuk */}
+                  <div className="space-y-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 block">Denda per Menit (Rp)</label>
-                        <input
-                          type="number"
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">Toleransi Telat (menit)</label>
+                        <input 
+                          type="number" 
                           min={0}
-                          step={100}
-                          value={form.late_fine_per_minute ?? ''}
-                          onChange={(e) => setForm({ ...form, late_fine_per_minute: e.target.value })}
-                          placeholder="Kosongkan = tanpa denda"
-                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                          value={form.late_tolerance_minutes} 
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            setForm({ ...form, late_tolerance_minutes: isNaN(val) ? '' : Math.max(0, val) });
+                          }} 
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono" 
                         />
                       </div>
                       <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 block">Denda Maksimum per Hari (Rp)</label>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1000}
-                          value={form.late_fine_max_per_day ?? ''}
-                          onChange={(e) => setForm({ ...form, late_fine_max_per_day: e.target.value })}
-                          placeholder="Kosongkan = tanpa batas"
-                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-1.5">
-                      <label className="text-[10px] font-bold text-slate-400 block">Keterlambatan mulai dihitung</label>
-                      <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
-                        <input
-                          type="radio"
-                          name="late_count_mode"
-                          checked={form.late_count_mode === 'after_work_start'}
-                          onChange={() => setForm({ ...form, late_count_mode: 'after_work_start' })}
-                          className="mt-0.5"
-                        />
-                        <span>
-                          <b>Setelah jam masuk</b> — dalam toleransi tidak dicatat telat sama sekali; begitu lewat toleransi,
-                          telat dihitung sejak jam masuk (jam masuk 08:00, toleransi 15 mnt: 08:12 aman, 08:16 langsung telat 16 menit).
-                        </span>
-                      </label>
-                      <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
-                        <input
-                          type="radio"
-                          name="late_count_mode"
-                          checked={form.late_count_mode !== 'after_work_start'}
-                          onChange={() => setForm({ ...form, late_count_mode: 'after_tolerance' })}
-                          className="mt-0.5"
-                        />
-                        <span>
-                          <b>Setelah toleransi telat</b> — hanya kelebihan dari toleransi yang dihitung
-                          (08:16 dengan toleransi 15 mnt = telat 1 menit).
-                        </span>
-                      </label>
-                    </div>
-                    <p className="text-[9px] text-slate-400">
-                      Denda tersimpan per presensi dan otomatis dipotong dari slip gaji (Potongan Keterlambatan).
-                    </p>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                    {/* Lembur */}
-                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
-                      <label className="flex items-center justify-between gap-3 cursor-pointer">
-                        <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-orange-500" /> Hitung lembur otomatis
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={!!form.overtime_enabled}
-                          onChange={(e) => setForm({ ...form, overtime_enabled: e.target.checked })}
-                          className="w-4 h-4 accent-orange-600"
-                        />
-                      </label>
-                      {form.overtime_enabled && (
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 block">Ambang minimal lembur (menit)</label>
-                          <input
-                            type="number"
-                            min={0}
-                            max={480}
-                            value={form.min_overtime_minutes}
-                            onChange={(e) => setForm({ ...form, min_overtime_minutes: e.target.value })}
-                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
-                          />
-                          <p className="text-[9px] text-slate-400">
-                            Lembur dihitung jika lewat jam pulang ≥ ambang ini.
-                          </p>
-                        </div>
-                      )}
-                      {form.overtime_enabled && (
-                        <div className="space-y-1.5 pt-2 border-t border-slate-200 dark:border-slate-700/80">
-                          <label className="text-[10px] font-bold text-slate-400 block">Aturan upah lembur</label>
-                          <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
-                            <input
-                              type="radio"
-                              name="overtime_rule"
-                              checked={form.overtime_rule !== 'custom'}
-                              onChange={() => setForm({ ...form, overtime_rule: 'government' })}
-                              className="mt-0.5"
-                            />
-                            <span>
-                              <b>Aturan pemerintah (PP 35/2021)</b> — upah/173 per jam; jam pertama x1,5, berikutnya x2,
-                              hari libur x2. Muncul di slip sebagai "Tunjangan Lembur".
-                            </span>
-                          </label>
-                          <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
-                            <input
-                              type="radio"
-                              name="overtime_rule"
-                              checked={form.overtime_rule === 'custom'}
-                              onChange={() => setForm({ ...form, overtime_rule: 'custom' })}
-                              className="mt-0.5"
-                            />
-                            <span>
-                              <b>Aturan sendiri</b> — tarif tetap per jam/menit lembur, sama untuk semua hari.
-                              Muncul di slip sebagai "Bonus Lembur".
-                            </span>
-                          </label>
-                          {form.overtime_rule === 'custom' && (
-                            <div className="space-y-2 pl-6">
-                              <div className="grid grid-cols-2 gap-2">
-                                <div className="space-y-1">
-                                  <label className="text-[10px] font-bold text-slate-400 block">Nominal bonus (Rp)</label>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    step={500}
-                                    value={form.overtime_rate_amount ?? ''}
-                                    onChange={(e) => setForm({ ...form, overtime_rate_amount: e.target.value })}
-                                    placeholder="mis. 20000"
-                                    className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
-                                  />
-                                </div>
-                                <div className="space-y-1">
-                                  <label className="text-[10px] font-bold text-slate-400 block">Satuan</label>
-                                  <select
-                                    value={form.overtime_rate_unit}
-                                    onChange={(e) => setForm({ ...form, overtime_rate_unit: e.target.value })}
-                                    className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs"
-                                  >
-                                    <option value="hour">Per jam</option>
-                                    <option value="minute">Per menit</option>
-                                  </select>
-                                </div>
-                              </div>
-                              <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
-                                <input
-                                  type="checkbox"
-                                  checked={form.overtime_rate_taxable !== false}
-                                  onChange={(e) => setForm({ ...form, overtime_rate_taxable: e.target.checked })}
-                                  className="w-4 h-4 accent-orange-600"
-                                />
-                                Kena pajak (masuk dasar bruto PPh21)
-                              </label>
-                              <p className="text-[9px] text-amber-600 dark:text-amber-400">
-                                Jangan membuat komponen gaji lembur lagi di Penggajian agar lembur tidak dibayar ganda.
-                              </p>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Pulang Awal */}
-                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
-                      <label className="flex items-center justify-between gap-3 cursor-pointer">
-                        <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-violet-500" /> Deteksi pulang awal
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={!!form.early_leave_enabled}
-                          onChange={(e) => setForm({ ...form, early_leave_enabled: e.target.checked })}
-                          className="w-4 h-4 accent-violet-600"
-                        />
-                      </label>
-                      {form.early_leave_enabled && (
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 block">
-                            Toleransi pulang awal (menit sebelum jam pulang)
-                          </label>
-                          <input
-                            type="number"
-                            min={0}
-                            max={480}
-                            value={form.early_leave_tolerance_minutes}
-                            onChange={(e) => setForm({ ...form, early_leave_tolerance_minutes: e.target.value })}
-                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
-                          />
-                          <p className="text-[9px] text-slate-400">
-                            Check-out &gt; ambang ini ditandai Pulang Awal.
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
-                    {/* Batas Jam Kerja */}
-                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
-                      <label className="flex items-center justify-between gap-3 cursor-pointer">
-                        <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-indigo-500" /> Batas jam/minggu
-                          <span className="text-[9px] font-normal text-slate-400 normal-case">(UU 13/2003)</span>
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={!!form.enforce_weekly_hours}
-                          onChange={(e) => setForm({ ...form, enforce_weekly_hours: e.target.checked })}
-                          className="w-4 h-4 accent-indigo-600"
-                        />
-                      </label>
-                      {form.enforce_weekly_hours ? (
-                        <div className="space-y-1">
-                          <label className="text-[10px] font-bold text-slate-400 block">
-                            Maksimal jam kerja per minggu
-                          </label>
-                          <input
-                            type="number"
-                            min={40}
-                            max={168}
-                            value={form.max_weekly_hours}
-                            onChange={(e) => setForm({ ...form, max_weekly_hours: e.target.value })}
-                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
-                          />
-                          <p className="text-[9px] text-slate-400">
-                            Standar UU: 40 jam/minggu.
-                          </p>
-                        </div>
-                      ) : (
-                        <p className="text-[9px] text-slate-400">
-                          Nonaktif — boleh melebihi 40 jam/minggu.
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Notice Shift */}
-                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
-                      <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 block">
-                        Minimum Notice Perubahan Shift (H-N Hari)
-                      </span>
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 block">
-                          Notice perubahan jadwal (hari)
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                          Batas Waktu Presensi Telat (menit)
                         </label>
                         <input
                           type="number"
                           min={0}
-                          max={14}
-                          value={form.shift_notice_days ?? 0}
-                          onChange={(e) => setForm({ ...form, shift_notice_days: Math.max(0, parseInt(e.target.value) || 0) })}
-                          className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                          max={1440}
+                          value={form.late_checkin_cutoff_minutes ?? ''}
+                          onChange={(e) => {
+                            const val = parseInt(e.target.value);
+                            setForm({ ...form, late_checkin_cutoff_minutes: isNaN(val) ? '' : Math.max(0, val) });
+                          }}
+                          placeholder="Kosongkan = tidak ada batas"
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
                         />
                         <p className="text-[9px] text-slate-400">
-                          0 = bebas. Peringatan jika ubah shift &lt; N hari sebelum berlaku.
+                          Contoh: 120 menit → presensi ditutup 2 jam setelah jam masuk. Kosongkan = bebas.
+                        </p>
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                          Window WFH (menit sebelum jam masuk)
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          max={720}
+                          value={form.wfh_checkin_window_minutes ?? ''}
+                          onChange={(e) => setForm({ ...form, wfh_checkin_window_minutes: e.target.value })}
+                          placeholder="Kosongkan = bebas"
+                          className="w-full p-2.5 border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-800/20 text-slate-800 dark:text-slate-100 font-mono"
+                        />
+                        <p className="text-[9px] text-slate-400">
+                          Kosongkan untuk tidak dibatasi waktu WFH.
                         </p>
                       </div>
                     </div>
 
-                    {/* Jeda Minimal Check-out (Cooldown Buffer) */}
-                    <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2 col-span-1 md:col-span-2">
-                      <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
-                        <Clock className="w-3.5 h-3.5 text-amber-500" /> Jeda Minimal Check-out (Anti Salah Pencet)
-                      </span>
-                      <div className="space-y-1">
-                        <label className="text-[10px] font-bold text-slate-400 block">
-                          Durasi jeda minimal setelah check-in (menit)
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                      {/* Pulang Awal (Toleransi & Deteksi) */}
+                      <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                        <label className="flex items-center justify-between gap-3 cursor-pointer">
+                          <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-violet-500" /> Deteksi pulang awal
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={!!form.early_leave_enabled}
+                            onChange={(e) => setForm({ ...form, early_leave_enabled: e.target.checked })}
+                            className="w-4 h-4 accent-violet-600"
+                          />
                         </label>
-                        <div className="flex items-center gap-2">
+                        {form.early_leave_enabled && (
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-400 block">
+                              Toleransi pulang awal (menit sebelum jam pulang)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              max={480}
+                              value={form.early_leave_tolerance_minutes}
+                              onChange={(e) => setForm({ ...form, early_leave_tolerance_minutes: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                            />
+                            <p className="text-[9px] text-slate-400">
+                              Check-out &gt; ambang ini ditandai Pulang Awal. (Aturan denda denda pulang cepat dapat diatur di tab Denda & Bonus).
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Batas Jam Kerja */}
+                      <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                        <label className="flex items-center justify-between gap-3 cursor-pointer">
+                          <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                            <Clock className="w-3.5 h-3.5 text-indigo-500" /> Batas jam/minggu
+                            <span className="text-[9px] font-normal text-slate-400 normal-case">(UU 13/2003)</span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={!!form.enforce_weekly_hours}
+                            onChange={(e) => setForm({ ...form, enforce_weekly_hours: e.target.checked })}
+                            className="w-4 h-4 accent-indigo-600"
+                          />
+                        </label>
+                        {form.enforce_weekly_hours ? (
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-400 block">
+                              Maksimal jam kerja per minggu
+                            </label>
+                            <input
+                              type="number"
+                              min={40}
+                              max={168}
+                              value={form.max_weekly_hours}
+                              onChange={(e) => setForm({ ...form, max_weekly_hours: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                            />
+                            <p className="text-[9px] text-slate-400">
+                              Standar UU: 40 jam/minggu.
+                            </p>
+                          </div>
+                        ) : (
+                          <p className="text-[9px] text-slate-400">
+                            Nonaktif — boleh melebihi 40 jam/minggu.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                      {/* Notice Shift */}
+                      <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                        <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 block">
+                          Minimum Notice Perubahan Shift (H-N Hari)
+                        </span>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 block">
+                            Notice perubahan jadwal (hari)
+                          </label>
                           <input
                             type="number"
                             min={0}
-                            max={480}
-                            value={form.min_checkout_interval_minutes}
-                            onChange={(e) => setForm({ ...form, min_checkout_interval_minutes: e.target.value })}
-                            className="w-40 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
-                            placeholder="10"
+                            max={14}
+                            value={form.shift_notice_days ?? 0}
+                            onChange={(e) => setForm({ ...form, shift_notice_days: Math.max(0, parseInt(e.target.value) || 0) })}
+                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
                           />
-                          <span className="text-xs text-slate-500">menit</span>
+                          <p className="text-[9px] text-slate-400">
+                            0 = bebas. Peringatan jika ubah shift &lt; N hari sebelum berlaku.
+                          </p>
                         </div>
-                        <p className="text-[10px] text-slate-400">
-                          Mencegah karyawan langsung check-out detik berikutnya setelah check-in (default: 10 menit). Isi 0 untuk menonaktifkan.
-                        </p>
+                      </div>
+
+                      {/* Jeda Minimal Check-out (Cooldown Buffer) */}
+                      <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2">
+                        <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
+                          <Clock className="w-3.5 h-3.5 text-amber-500" /> Jeda Minimal Check-out (Anti Salah Pencet)
+                        </span>
+                        <div className="space-y-1">
+                          <label className="text-[10px] font-bold text-slate-400 block">
+                            Durasi jeda minimal setelah check-in (menit)
+                          </label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="number"
+                              min={0}
+                              max={480}
+                              value={form.min_checkout_interval_minutes}
+                              onChange={(e) => setForm({ ...form, min_checkout_interval_minutes: e.target.value })}
+                              className="w-32 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                              placeholder="10"
+                            />
+                            <span className="text-xs text-slate-500">menit</span>
+                          </div>
+                          <p className="text-[10px] text-slate-400">
+                            Mencegah karyawan langsung check-out detik berikutnya setelah check-in (default: 10 menit).
+                          </p>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
 
-                {/* Section 4: Auto-Checkout */}
-                <div className="pt-2">
-                  {/* Auto-Checkout Presensi Mobile */}
+                  {/* Section: Auto-Checkout */}
                   <div className="p-3.5 rounded-xl border border-slate-200 dark:border-slate-700/80 bg-slate-50/50 dark:bg-slate-800/20 space-y-2.5">
                     <span className="text-[11px] font-bold text-slate-600 dark:text-slate-300 flex items-center gap-1.5">
                       <Clock className="w-3.5 h-3.5 text-emerald-500" /> Auto-Checkout Presensi Mobile
@@ -1484,196 +1638,1184 @@ const OfficesTab: React.FC<{
                       Dihitung dari jam pulang. Auto-checkout wajib &gt; reminder.
                     </p>
                   </div>
-                </div>
 
-                {/* Section 5: Jam Kerja Fleksibel (Flexitime Cabang) */}
-                <div className="p-4 rounded-xl border border-cyan-200/80 dark:border-cyan-800/60 bg-cyan-50/30 dark:bg-cyan-950/20 space-y-3">
-                  <div className="flex items-start gap-2.5">
-                    <div className="p-1.5 bg-cyan-100 dark:bg-cyan-900/50 text-cyan-700 dark:text-cyan-300 rounded-lg shrink-0 mt-0.5">
-                      <Clock className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-cyan-900 dark:text-cyan-200">
-                        Parameter Jam Kerja Fleksibel (Flexitime Cabang)
-                      </h4>
-                      <p className="text-[11px] text-cyan-700 dark:text-cyan-300/80 leading-relaxed mt-0.5">
-                        Konfigurasi ini berlaku khusus bagi karyawan yang opsi <strong>Flexitime</strong>-nya diaktifkan pada daftar karyawan. Karyawan non-flex tetap mengikuti jam kantor standar.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                    {/* Window Datang */}
-                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-2">
-                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">
-                        Window Kedatangan Bebas
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <span className="text-[9px] text-slate-400 block mb-1">Mulai Dari</span>
-                          <input
-                            type="time"
-                            value={form.flex_arrival_start}
-                            onChange={(e) => setForm({ ...form, flex_arrival_start: e.target.value })}
-                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
-                          />
-                        </div>
-                        <div>
-                          <span className="text-[9px] text-slate-400 block mb-1">Batas Akhir</span>
-                          <input
-                            type="time"
-                            value={form.flex_arrival_end}
-                            onChange={(e) => setForm({ ...form, flex_arrival_end: e.target.value })}
-                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
-                          />
-                        </div>
+                  {/* Section: Jam Kerja Fleksibel (Flexitime Cabang) */}
+                  <div className="p-4 rounded-xl border border-cyan-200/80 dark:border-cyan-800/60 bg-cyan-50/30 dark:bg-cyan-950/20 space-y-3">
+                    <div className="flex items-start gap-2.5">
+                      <div className="p-1.5 bg-cyan-100 dark:bg-cyan-900/50 text-cyan-700 dark:text-cyan-300 rounded-lg shrink-0 mt-0.5">
+                        <Clock className="w-4 h-4" />
                       </div>
-                      <p className="text-[9px] text-slate-400">
-                        Check-in sebelum batas akhir (+ toleransi) dihitung Hadir (Present).
-                      </p>
-                    </div>
-
-                    {/* Core Hours */}
-                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-2">
-                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">
-                        Jam Inti Wajib Hadir (Core Hours)
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <span className="text-[9px] text-slate-400 block mb-1">Mulai</span>
-                          <input
-                            type="time"
-                            value={form.flex_core_start}
-                            onChange={(e) => setForm({ ...form, flex_core_start: e.target.value })}
-                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
-                          />
-                        </div>
-                        <div>
-                          <span className="text-[9px] text-slate-400 block mb-1">Selesai</span>
-                          <input
-                            type="time"
-                            value={form.flex_core_end}
-                            onChange={(e) => setForm({ ...form, flex_core_end: e.target.value })}
-                            className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
-                          />
-                        </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-cyan-900 dark:text-cyan-200">
+                          Parameter Jam Kerja Fleksibel (Flexitime Cabang)
+                        </h4>
+                        <p className="text-[11px] text-cyan-700 dark:text-cyan-300/80 leading-relaxed mt-0.5">
+                          Konfigurasi ini berlaku khusus bagi karyawan yang opsi <strong>Flexitime</strong>-nya diaktifkan pada daftar karyawan.
+                        </p>
                       </div>
-                      <p className="text-[9px] text-slate-400">
-                        Check-out sebelum jam inti selesai terhitung Pulang Cepat (Early Leave).
-                      </p>
                     </div>
-                  </div>
 
-                  {/* Target Durasi Kerja Harian */}
-                  <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
-                        Target Durasi Kerja Harian
-                      </label>
-                      <span className="text-[10px] font-mono font-bold text-cyan-600 dark:text-cyan-400">
-                        {Math.floor((Number(form.flex_target_minutes) || 480) / 60)} Jam {((Number(form.flex_target_minutes) || 480) % 60) > 0 ? `${(Number(form.flex_target_minutes) || 480) % 60} Menit` : ''} kerja
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <input
-                        type="number"
-                        min={60}
-                        max={1440}
-                        step={15}
-                        value={form.flex_target_minutes}
-                        onChange={(e) => setForm({ ...form, flex_target_minutes: e.target.value === '' ? '' : Math.max(60, parseInt(e.target.value) || 0) })}
-                        className="w-36 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
-                      />
-                      <span className="text-xs text-slate-500">menit (default: 480 = 8 jam kerja bersih)</span>
-                    </div>
-                    <p className="text-[9px] text-slate-400">
-                      Sistem menghitung target pulang = jam check-in + target durasi + istirahat ({form.break_minutes ?? 60} mnt).
-                    </p>
-                  </div>
-                </div>
-
-                {/* Section 6: Alur Persetujuan Bertingkat (Multi-Level Approval) */}
-                <div className="p-4 rounded-xl border border-indigo-200/80 dark:border-indigo-800/60 bg-indigo-50/30 dark:bg-indigo-950/20 space-y-3">
-                  <div className="flex items-start gap-2.5">
-                    <div className="p-1.5 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 rounded-lg shrink-0 mt-0.5">
-                      <ShieldCheck className="w-4 h-4" />
-                    </div>
-                    <div>
-                      <h4 className="text-xs font-bold text-indigo-900 dark:text-indigo-200">
-                        Alur Persetujuan Bertingkat (Approval Workflow Cabang)
-                      </h4>
-                      <p className="text-[11px] text-indigo-700 dark:text-indigo-300/80 leading-relaxed mt-0.5">
-                        Tentukan apakah pengajuan lembur dan cuti/izin di kantor ini memerlukan verifikasi atasan langsung (Supervisor) sebelum disetujui HRD, atau langsung diproses dalam 1 tahap oleh HRD.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
-                    {/* Toggle Lembur Multi-Approval */}
-                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-indigo-100 dark:border-indigo-900/50 space-y-2">
-                      <label className="flex items-start justify-between gap-3 cursor-pointer">
-                        <div className="space-y-0.5">
-                          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
-                            <Clock className="w-3.5 h-3.5 text-orange-500" /> Approval Lembur Bertingkat
-                          </span>
-                          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
-                            {form.overtime_multi_approval_enabled
-                              ? 'Aktif: Wajib diverifikasi Supervisor (Tahap 1), lalu disetujui HRD (Tahap 2).'
-                              : 'Nonaktif: Pengajuan langsung ke HRD untuk persetujuan 1 tahap (cocok untuk cabang ramping).'
-                            }
-                          </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                      {/* Window Datang */}
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-2">
+                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">
+                          Window Kedatangan Bebas
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <span className="text-[9px] text-slate-400 block mb-1">Mulai Dari</span>
+                            <input
+                              type="time"
+                              value={form.flex_arrival_start}
+                              onChange={(e) => setForm({ ...form, flex_arrival_start: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[9px] text-slate-400 block mb-1">Batas Akhir</span>
+                            <input
+                              type="time"
+                              value={form.flex_arrival_end}
+                              onChange={(e) => setForm({ ...form, flex_arrival_end: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                            />
+                          </div>
                         </div>
-                        <input
-                          type="checkbox"
-                          checked={!!form.overtime_multi_approval_enabled}
-                          onChange={(e) => setForm({ ...form, overtime_multi_approval_enabled: e.target.checked })}
-                          className="w-4 h-4 accent-indigo-600 mt-1 cursor-pointer"
-                        />
-                      </label>
-                      <div className="pt-1">
-                        <span className={`inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-full border ${
-                          form.overtime_multi_approval_enabled
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800'
-                            : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800'
-                        }`}>
-                          {form.overtime_multi_approval_enabled ? '✓ Alur 2 Tahap (SPV ➔ HRD)' : '⚡ Langsung HRD (1 Tahap)'}
+                        <p className="text-[9px] text-slate-400">
+                          Check-in sebelum batas akhir (+ toleransi) dihitung Hadir (Present).
+                        </p>
+                      </div>
+
+                      {/* Core Hours */}
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-2">
+                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 block">
+                          Jam Inti Wajib Hadir (Core Hours)
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <span className="text-[9px] text-slate-400 block mb-1">Mulai</span>
+                            <input
+                              type="time"
+                              value={form.flex_core_start}
+                              onChange={(e) => setForm({ ...form, flex_core_start: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                            />
+                          </div>
+                          <div>
+                            <span className="text-[9px] text-slate-400 block mb-1">Selesai</span>
+                            <input
+                              type="time"
+                              value={form.flex_core_end}
+                              onChange={(e) => setForm({ ...form, flex_core_end: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs font-mono"
+                            />
+                          </div>
+                        </div>
+                        <p className="text-[9px] text-slate-400">
+                          Check-out sebelum jam inti selesai terhitung Pulang Cepat.
+                        </p>
+                      </div>
+                    </div>
+
+                    {/* Target Durasi Kerja Harian */}
+                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-cyan-100 dark:border-cyan-900/50 space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300">
+                          Target Durasi Kerja Harian
+                        </label>
+                        <span className="text-[10px] font-mono font-bold text-cyan-600 dark:text-cyan-400">
+                          {Math.floor((Number(form.flex_target_minutes) || 480) / 60)} Jam {((Number(form.flex_target_minutes) || 480) % 60) > 0 ? `${(Number(form.flex_target_minutes) || 480) % 60} Menit` : ''} kerja
                         </span>
                       </div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min={60}
+                          max={1440}
+                          step={15}
+                          value={form.flex_target_minutes}
+                          onChange={(e) => setForm({ ...form, flex_target_minutes: e.target.value === '' ? '' : Math.max(60, parseInt(e.target.value) || 0) })}
+                          className="w-36 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                        />
+                        <span className="text-xs text-slate-500">menit (default: 480 = 8 jam kerja bersih)</span>
+                      </div>
+                      <p className="text-[9px] text-slate-400">
+                        Sistem menghitung target pulang = jam check-in + target durasi + istirahat ({form.break_minutes ?? 60} mnt).
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Section: Alur Persetujuan Bertingkat (Multi-Approval Workflow) */}
+                  <div className="p-4 rounded-xl border border-indigo-200/80 dark:border-indigo-800/60 bg-indigo-50/30 dark:bg-indigo-950/20 space-y-3">
+                    <div className="flex items-start gap-2.5">
+                      <div className="p-1.5 bg-indigo-100 dark:bg-indigo-900/50 text-indigo-700 dark:text-indigo-300 rounded-lg shrink-0 mt-0.5">
+                        <ShieldCheck className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-indigo-900 dark:text-indigo-200">
+                          Alur Persetujuan Bertingkat (Approval Workflow Cabang)
+                        </h4>
+                        <p className="text-[11px] text-indigo-700 dark:text-indigo-300/80 leading-relaxed mt-0.5">
+                          Tentukan apakah pengajuan lembur dan cuti/izin di kantor ini memerlukan verifikasi atasan langsung (Supervisor) sebelum disetujui HRD, atau langsung diproses dalam 1 tahap oleh HRD.
+                        </p>
+                      </div>
                     </div>
 
-                    {/* Toggle Izin & Cuti Multi-Approval */}
-                    <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-indigo-100 dark:border-indigo-900/50 space-y-2">
-                      <label className="flex items-start justify-between gap-3 cursor-pointer">
-                        <div className="space-y-0.5">
-                          <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
-                            <CalendarDays className="w-3.5 h-3.5 text-teal-500" /> Approval Cuti & Izin Bertingkat
-                          </span>
-                          <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
-                            {form.leave_multi_approval_enabled
-                              ? 'Aktif: Wajib diverifikasi Supervisor (Tahap 1), lalu diputuskan HRD (Tahap 2).'
-                              : 'Nonaktif: Pengajuan langsung ke HRD untuk persetujuan 1 tahap & potong kuota langsung.'
-                            }
-                          </p>
-                        </div>
-                        <input
-                          type="checkbox"
-                          checked={!!form.leave_multi_approval_enabled}
-                          onChange={(e) => setForm({ ...form, leave_multi_approval_enabled: e.target.checked })}
-                          className="w-4 h-4 accent-indigo-600 mt-1 cursor-pointer"
-                        />
-                      </label>
-                      <div className="pt-1">
-                        <span className={`inline-flex items-center gap-1 text-[9px] font-semibold px-2 py-0.5 rounded-full border ${
-                          form.leave_multi_approval_enabled
-                            ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-400 dark:border-emerald-800'
-                            : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/40 dark:text-amber-400 dark:border-amber-800'
-                        }`}>
-                          {form.leave_multi_approval_enabled ? '✓ Alur 2 Tahap (SPV ➔ HRD)' : '⚡ Langsung HRD (1 Tahap)'}
-                        </span>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+                      {/* Toggle Lembur Multi-Approval */}
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-indigo-100 dark:border-indigo-900/50 space-y-2">
+                        <label className="flex items-start justify-between gap-3 cursor-pointer">
+                          <div className="space-y-0.5">
+                            <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                              <Clock className="w-3.5 h-3.5 text-orange-500" /> Approval Lembur Bertingkat
+                            </span>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
+                              {form.overtime_multi_approval_enabled
+                                ? 'Aktif: Wajib diverifikasi Supervisor (Tahap 1), lalu disetujui HRD (Tahap 2).'
+                                : 'Nonaktif: Pengajuan langsung ke HRD untuk persetujuan 1 tahap.'
+                              }
+                            </p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={!!form.overtime_multi_approval_enabled}
+                            onChange={(e) => setForm({ ...form, overtime_multi_approval_enabled: e.target.checked })}
+                            className="w-4 h-4 accent-indigo-600 mt-1 cursor-pointer"
+                          />
+                        </label>
+                      </div>
+
+                      {/* Toggle Izin & Cuti Multi-Approval */}
+                      <div className="p-3 bg-white dark:bg-slate-900 rounded-xl border border-indigo-100 dark:border-indigo-900/50 space-y-2">
+                        <label className="flex items-start justify-between gap-3 cursor-pointer">
+                          <div className="space-y-0.5">
+                            <span className="text-[11px] font-bold text-slate-700 dark:text-slate-200 flex items-center gap-1.5">
+                              <CalendarDays className="w-3.5 h-3.5 text-teal-500" /> Approval Cuti & Izin Bertingkat
+                            </span>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
+                              {form.leave_multi_approval_enabled
+                                ? 'Aktif: Wajib diverifikasi Supervisor (Tahap 1), lalu diputuskan HRD (Tahap 2).'
+                                : 'Nonaktif: Pengajuan langsung ke HRD untuk persetujuan 1 tahap.'
+                              }
+                            </p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={!!form.leave_multi_approval_enabled}
+                            onChange={(e) => setForm({ ...form, leave_multi_approval_enabled: e.target.checked })}
+                            className="w-4 h-4 accent-indigo-600 mt-1 cursor-pointer"
+                          />
+                        </label>
                       </div>
                     </div>
                   </div>
-              </div>
+
+                  {/* Section: Kebijakan Sisa Cuti Tahunan (Carry-Over & Pencairan ke Uang) */}
+                  <div className="p-4 rounded-xl border border-teal-200/80 dark:border-teal-800/60 bg-teal-50/30 dark:bg-teal-950/20 space-y-3.5">
+                    <div className="flex items-start gap-2.5">
+                      <div className="p-1.5 bg-teal-100 dark:bg-teal-900/50 text-teal-700 dark:text-teal-300 rounded-lg shrink-0 mt-0.5">
+                        <CalendarDays className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-teal-900 dark:text-teal-200 flex items-center gap-1.5">
+                          <span>Kebijakan Sisa Cuti Tahunan (Carry-Over &amp; Pencairan ke Uang)</span>
+                          <span className="text-[10px] font-normal text-teal-600 dark:text-teal-400 bg-teal-100/70 dark:bg-teal-900/50 px-2 py-0.5 rounded-full font-sans">
+                            Siklus Reset Kantor
+                          </span>
+                        </h4>
+                        <p className="text-[11px] text-teal-700 dark:text-teal-300/80 leading-relaxed mt-0.5">
+                          Atur regulasi perlakuan sisa cuti tahunan saat tanggal reset tiba. Jika kedua opsi dinonaktifkan, seluruh sisa cuti otomatis hangus.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5 pt-1">
+                      {/* Checkbox 1: Carry-Over */}
+                      <div className={`p-3.5 bg-white dark:bg-slate-900 rounded-xl border transition-all ${
+                        form.leave_carry_over_enabled
+                          ? 'border-teal-300 dark:border-teal-700 ring-1 ring-teal-200/50 dark:ring-teal-900/40 shadow-xs'
+                          : 'border-slate-200 dark:border-slate-800 opacity-90'
+                      }`}>
+                        <label className="flex items-start justify-between gap-3 cursor-pointer">
+                          <div className="space-y-0.5">
+                            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                              <CheckCircle2 className={`w-3.5 h-3.5 ${form.leave_carry_over_enabled ? 'text-teal-600 dark:text-teal-400' : 'text-slate-400'}`} />
+                              Bawa Sisa Cuti (Carry-Over)
+                            </span>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
+                              Izinkan sisa cuti periode lama dibawa ke periode baru sebagai kuota tambahan.
+                              Hari di <em>atas</em> batas yang Anda tetapkan hangus permanen — tidak dibawa, tidak diuangkan.
+                            </p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={!!form.leave_carry_over_enabled}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              // Perhatikan: masa berlaku TIDAK boleh dipulihkan lewat `|| 3`.
+                              // Nilai 0 ("cair/hangus di tanggal reset") itu falsy, jadi `||`
+                              // akan menukarnya diam-diam menjadi 3 bulan.
+                              const keepExpiry =
+                                form.leave_carry_over_expiry_months === '' || form.leave_carry_over_expiry_months == null
+                                  ? 3
+                                  : form.leave_carry_over_expiry_months;
+                              setForm({
+                                ...form,
+                                leave_carry_over_enabled: checked,
+                                leave_carry_over_max_days: checked ? (form.leave_carry_over_max_days || 6) : '',
+                                leave_carry_over_expiry_months: checked ? keepExpiry : '',
+                                // Uang pencairan BERSUMBER dari hari bawaan. Mematikan
+                                // carry-over tanpa mematikan pencairan adalah konfigurasi
+                                // yang ditolak backend (422), jadi jangan sampai tersimpan.
+                                ...(checked
+                                  ? {}
+                                  : {
+                                      leave_encashment_enabled: false,
+                                      leave_encashment_rate_per_day: '',
+                                      leave_encashment_max_days: '',
+                                    }),
+                              });
+                            }}
+                            className="w-4 h-4 accent-teal-600 mt-1 cursor-pointer"
+                          />
+                        </label>
+
+                        {form.leave_carry_over_enabled && (
+                          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2.5 animate-in fade-in duration-150">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                                <span>Batas Maksimal Hari Dibawa <span className="text-rose-500">*</span></span>
+                                <span className="text-[9px] text-slate-400 font-normal">Maks {form.default_leave_quota || 12} hari</span>
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={form.default_leave_quota || 365}
+                                  value={form.leave_carry_over_max_days}
+                                  onChange={(e) => setForm({ ...form, leave_carry_over_max_days: e.target.value === '' ? '' : Math.max(1, parseInt(e.target.value) || 0) })}
+                                  placeholder="cth: 6"
+                                  className="w-28 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs font-bold"
+                                />
+                                <span className="text-xs text-slate-500">hari cuti</span>
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                                <span>Masa Berlaku Hari Bawaan {form.leave_encashment_enabled && <span className="text-rose-500">*</span>}</span>
+                                <span className="text-[9px] text-slate-400 font-normal">0–24 bln{form.leave_encashment_enabled ? ' (wajib)' : ' (opsional)'}</span>
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={24}
+                                  value={form.leave_carry_over_expiry_months}
+                                  onChange={(e) => {
+                                    // min 0, BUKAN 1: "0 bulan" adalah satu-satunya cara
+                                    // meminta hari bawaan dicairkan/digugurkan tepat di
+                                    // tanggal reset. Clamp ke 1 akan menyembunyikan
+                                    // separuh fitur dari HRD.
+                                    const raw = e.target.value;
+                                    setForm({
+                                      ...form,
+                                      leave_carry_over_expiry_months:
+                                        raw === '' ? '' : Math.min(24, Math.max(0, parseInt(raw) || 0)),
+                                    });
+                                  }}
+                                  placeholder="cth: 3"
+                                  className="w-28 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                                />
+                                <span className="text-xs text-slate-500">
+                                  {Number(form.leave_carry_over_expiry_months) === 0 && form.leave_carry_over_expiry_months !== ''
+                                    ? 'bulan → takdirnya diputuskan tepat di tanggal reset'
+                                    : 'bulan sejak reset (cth: 3 bln → habis 31 Mar)'}
+                                </span>
+                              </div>
+                              <p className="text-[9px] text-slate-400 leading-relaxed">
+                                <strong className="text-slate-500 dark:text-slate-300">0</strong> = hari bawaan tidak diberi waktu dipakai, takdirnya selesai di tanggal reset
+                                ({form.leave_encashment_enabled ? 'langsung dicairkan jadi uang' : 'langsung hangus'}).{' '}
+                                <strong className="text-slate-500 dark:text-slate-300">N bulan</strong> = masih bisa dipakai sebagai cuti selama N bulan, lalu sisanya
+                                {form.leave_encashment_enabled ? ' dicairkan' : ' hangus'} di tanggal kedaluwarsa.{' '}
+                                {form.leave_encashment_enabled
+                                  ? <strong className="text-emerald-600 dark:text-emerald-400">Wajib diisi selama pencairan aktif — pemicu uangnya adalah peristiwa kedaluwarsa ini.</strong>
+                                  : <><strong className="text-slate-500 dark:text-slate-300">Kosong</strong> = hari bawaan tidak pernah kedaluwarsa (tidak bisa dipasangkan dengan pencairan).</>}
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Checkbox 2: Encashment */}
+                      <div className={`p-3.5 bg-white dark:bg-slate-900 rounded-xl border transition-all ${
+                        form.leave_encashment_enabled
+                          ? 'border-emerald-300 dark:border-emerald-700 ring-1 ring-emerald-200/50 dark:ring-emerald-900/40 shadow-xs'
+                          : 'border-slate-200 dark:border-slate-800 opacity-90'
+                      }`}>
+                        <label className="flex items-start justify-between gap-3 cursor-pointer">
+                          <div className="space-y-0.5">
+                            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+                              <Coins className={`w-3.5 h-3.5 ${form.leave_encashment_enabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400'}`} />
+                              Pencairan Sisa Cuti ke Uang (Encashment)
+                            </span>
+                            <p className="text-[10px] text-slate-500 dark:text-slate-400 leading-normal">
+                              Konversi hari cuti <em>bawaan</em> yang masa berlakunya habis menjadi uang tunai,
+                              otomatis masuk ke batch payroll berikutnya. Butuh carry-over aktif &amp; masa berlaku terisi.
+                            </p>
+                          </div>
+                          <input
+                            type="checkbox"
+                            checked={!!form.leave_encashment_enabled}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              // Menyalakan pencairan berarti menyalakan prasyaratnya juga:
+                              // tanpa carry-over tidak ada hari bawaan untuk dibayar, dan
+                              // tanpa masa berlaku tidak ada peristiwa yang memicu uangnya.
+                              // Keduanya ditolak backend, jadi diisi di sini agar HRD tidak
+                              // bertemu 422 untuk hal yang bisa disimpulkan sendiri.
+                              const prasyarat =
+                                checked && !form.leave_carry_over_enabled
+                                  ? {
+                                      leave_carry_over_enabled: true,
+                                      leave_carry_over_max_days: form.leave_carry_over_max_days || 6,
+                                    }
+                                  : {};
+                              const expiryKosong =
+                                form.leave_carry_over_expiry_months === '' || form.leave_carry_over_expiry_months == null;
+                              setForm({
+                                ...form,
+                                ...prasyarat,
+                                leave_encashment_enabled: checked,
+                                leave_encashment_rate_per_day: checked ? (form.leave_encashment_rate_per_day || 150000) : '',
+                                leave_encashment_max_days: checked ? form.leave_encashment_max_days : '',
+                                ...(checked && expiryKosong ? { leave_carry_over_expiry_months: 3 } : {}),
+                              });
+                            }}
+                            className="w-4 h-4 accent-emerald-600 mt-1 cursor-pointer"
+                          />
+                        </label>
+
+                        {form.leave_encashment_enabled && (
+                          <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2.5 animate-in fade-in duration-150">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                                <span>Nominal Pencairan per Hari <span className="text-rose-500">*</span></span>
+                                <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-semibold">Terkoneksi ke Payroll</span>
+                              </label>
+                              <div className="relative">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">Rp</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  value={form.leave_encashment_rate_per_day}
+                                  onChange={(e) => setForm({ ...form, leave_encashment_rate_per_day: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0) })}
+                                  placeholder="150000"
+                                  className="w-full pl-9 pr-3 py-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs font-bold"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-600 dark:text-slate-300 flex items-center justify-between">
+                                <span>Pagu Hari yang Boleh Dicairkan</span>
+                                <span className="text-[9px] text-slate-400 font-normal">Kosongkan = Tanpa Pagu</span>
+                              </label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={form.default_leave_quota || 365}
+                                  value={form.leave_encashment_max_days}
+                                  onChange={(e) => setForm({ ...form, leave_encashment_max_days: e.target.value === '' ? '' : Math.max(0, parseInt(e.target.value) || 0) })}
+                                  placeholder="Tanpa pagu"
+                                  className="w-32 p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-slate-50 dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                                />
+                                <span className="text-xs text-slate-500">hari</span>
+                              </div>
+                              <p className="text-[9px] text-slate-400">
+                                0 = tidak ada hari dicairkan; kosong = seluruh sisa yang memenuhi syarat dicairkan.
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Banner Matriks Kebijakan Cerdas */}
+                    <div className="p-3 bg-white/80 dark:bg-slate-900/80 rounded-xl border border-teal-100 dark:border-teal-900/50 text-xs space-y-1.5">
+                      <p className="font-bold text-teal-800 dark:text-teal-300 flex items-center gap-1.5 text-[11px]">
+                        <Sparkles className="w-3.5 h-3.5 text-teal-600 dark:text-teal-400 shrink-0" />
+                        Panduan Alokasi Sisa Cuti:
+                      </p>
+                      {(() => {
+                        // Simulasi mengikuti urutan keputusan backend
+                        // (LeaveCarryOverCalculator::decide):
+                        //   dibawa = min(sisa, batas bawa) -> kelebihannya HANGUS permanen
+                        //   lalu hari bawaan itu yang menjadi satu-satunya sumber uang.
+                        const carryOn = !!form.leave_carry_over_enabled;
+                        const cashOn = !!form.leave_encashment_enabled;
+                        const expiryRaw = form.leave_carry_over_expiry_months;
+                        const expiryEmpty = expiryRaw === '' || expiryRaw == null;
+                        const expMonths = expiryEmpty ? null : Number(expiryRaw);
+                        const kuota = Number(form.default_leave_quota) || 12;
+                        const batas = Math.min(Number(form.leave_carry_over_max_days) || 0, kuota);
+                        const rate = Number(form.leave_encashment_rate_per_day) || 0;
+                        const pagu =
+                          form.leave_encashment_max_days === '' || form.leave_encashment_max_days == null
+                            ? null
+                            : Number(form.leave_encashment_max_days);
+
+                        // Contoh: seluruh kuota masih utuh di tanggal reset.
+                        const sisa = kuota;
+                        const dibawa = carryOn ? Math.min(sisa, batas) : 0;
+                        const hangusKelebihan = sisa - dibawa;
+                        const bisaCair = cashOn ? (pagu === null ? dibawa : Math.min(dibawa, pagu)) : 0;
+                        const rupiah = bisaCair * rate;
+                        const fmt = (n: number) => Number(n || 0).toLocaleString('id-ID');
+
+                        let judul: string;
+                        let isi: React.ReactNode;
+
+                        if (!carryOn && !cashOn) {
+                          judul = 'Perilaku Standar — semua hangus';
+                          isi = (
+                            <>
+                              Kedua fitur nonaktif. Seluruh sisa cuti karyawan pada tanggal reset{' '}
+                              <strong>hangus</strong>, tanpa ada hari yang dibawa maupun dicairkan menjadi uang.
+                            </>
+                          );
+                        } else if (!carryOn && cashOn) {
+                          // Ditolak backend (422). Hanya mungkin terlihat pada data lama.
+                          judul = 'Konfigurasi tidak sah';
+                          isi = (
+                            <>
+                              Pencairan aktif tanpa carry-over. Uang pencairan bersumber dari hari cuti{' '}
+                              <em>bawaan</em>, jadi tanpa carry-over tidak ada hari yang bisa dibayar — server akan
+                              menolak kombinasi ini. Nyalakan carry-over, atau matikan pencairan.
+                            </>
+                          );
+                        } else if (!cashOn) {
+                          judul = 'Carry-Over Aktif — tanpa pencairan, tidak ada uang terbit';
+                          isi = (
+                            <>
+                              Dari contoh sisa <strong>{sisa} hari</strong>: <strong>{dibawa} hari</strong> dibawa ke
+                              periode baru sebagai kuota tambahan
+                              {hangusKelebihan > 0 ? (
+                                <>
+                                  , dan <strong>{hangusKelebihan} hari</strong> kelebihan di atas batas{' '}
+                                  <strong>hangus permanen</strong>
+                                </>
+                              ) : null}
+                              .{' '}
+                              {expiryEmpty ? (
+                                <>Hari bawaan itu <strong>tidak pernah kedaluwarsa</strong> — berlaku sepanjang periode baru.</>
+                              ) : expMonths === 0 ? (
+                                <>
+                                  Masa berlaku 0 bulan tanpa pencairan berarti {dibawa} hari bawaan itu{' '}
+                                  <strong>ikut hangus di tanggal reset</strong> (total hangus {sisa} hari). Isi masa
+                                  berlaku lebih dari 0, atau nyalakan pencairan, bila itu bukan maksud Anda.
+                                </>
+                              ) : (
+                                <>
+                                  Hari bawaan hanya bisa dipakai sebagai cuti selama <strong>{expMonths} bulan</strong>{' '}
+                                  sejak tanggal reset; yang belum terpakai sampai tanggal itu <strong>hangus</strong>{' '}
+                                  (tidak menjadi uang, karena pencairan nonaktif).
+                                </>
+                              )}
+                            </>
+                          );
+                        } else if (expMonths === 0) {
+                          judul = 'Cair di Tanggal Reset';
+                          isi = (
+                            <>
+                              Dari contoh sisa <strong>{sisa} hari</strong>: <strong>{dibawa} hari</strong> masuk
+                              hitungan bawaan
+                              {hangusKelebihan > 0 ? (
+                                <>
+                                  , <strong>{hangusKelebihan} hari</strong> kelebihan di atas batas{' '}
+                                  <strong>hangus permanen</strong> — tidak pernah menjadi uang
+                                </>
+                              ) : null}
+                              . Karena masa berlaku <strong>0 bulan</strong>, hari bawaan tidak diberi waktu untuk
+                              dipakai: takdirnya diputuskan tepat di tanggal reset →{' '}
+                              <strong>
+                                {bisaCair} hari dicairkan = Rp {fmt(rupiah)}
+                              </strong>
+                              {pagu !== null && dibawa > bisaCair ? (
+                                <> (pagu {pagu} hari; {dibawa - bisaCair} hari sisanya hangus)</>
+                              ) : null}
+                              , diterbitkan sebagai <code>PayrollAdjustment</code> yang menunggu batch penggajian
+                              berikutnya.
+                            </>
+                          );
+                        } else {
+                          judul = `Cair ${expMonths} Bulan Setelah Reset`;
+                          isi = (
+                            <>
+                              Dari contoh sisa <strong>{sisa} hari</strong>: <strong>{dibawa} hari</strong> dibawa ke
+                              periode baru
+                              {hangusKelebihan > 0 ? (
+                                <>
+                                  , <strong>{hangusKelebihan} hari</strong> kelebihan di atas batas{' '}
+                                  <strong>hangus permanen</strong> — tidak pernah menjadi uang
+                                </>
+                              ) : null}
+                              . Di tanggal reset <strong>belum ada rupiah yang terbit</strong>: karyawan masih memegang{' '}
+                              {dibawa} hari itu sebagai hak cuti selama <strong>{expMonths} bulan</strong>. Yang belum
+                              terpakai sampai tanggal kedaluwarsa itulah yang dicairkan — maksimal{' '}
+                              <strong>
+                                {bisaCair} hari = Rp {fmt(rupiah)}
+                              </strong>
+                              {pagu !== null && dibawa > bisaCair ? (
+                                <> (pagu {pagu} hari; selebihnya hangus)</>
+                              ) : null}
+                              .
+                            </>
+                          );
+                        }
+
+                        return (
+                          <p className="text-[11px] text-slate-600 dark:text-slate-300 leading-relaxed">
+                            <strong
+                              className={
+                                !carryOn && cashOn
+                                  ? 'text-rose-600 dark:text-rose-400'
+                                  : 'text-slate-800 dark:text-slate-100'
+                              }
+                            >
+                              {judul}:
+                            </strong>{' '}
+                            {isi}
+                          </p>
+                        );
+                      })()}
+                    </div>
+                  </div>
+
+                  {/* Navigasi Tab */}
+                  <div className="flex justify-between items-center pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setActiveModalTab('profile')}
+                      className="px-3 py-1.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 font-medium text-xs transition"
+                    >
+                      ← Kembali ke Profil & Jadwal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveModalTab('penalties_bonuses')}
+                      className="flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white rounded-xl font-bold text-xs transition shadow-xs"
+                    >
+                      <span>Lanjut: Denda & Bonus Kantor</span>
+                      <ArrowRight className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ═══════════════════════════════════════════════════════════ */}
+              {/* TAB 3: DENDA & BONUS (PERATURAN KANTOR)                     */}
+              {/* ═══════════════════════════════════════════════════════════ */}
+              {activeModalTab === 'penalties_bonuses' && (
+                <div className="space-y-5 animate-in fade-in duration-150">
+                  {/* ───────────────────────────────────────────────────────────── */}
+                  {/* BAGIAN 1: SANKSI & PEMOTONGAN DISIPLIN (DEDUCTIONS)           */}
+                  {/* ───────────────────────────────────────────────────────────── */}
+                  <div className="space-y-3">
+                    <div className="flex items-center gap-2 border-b border-rose-100 dark:border-rose-950/60 pb-2">
+                      <div className="p-1 bg-rose-100 dark:bg-rose-950/50 text-rose-600 dark:text-rose-400 rounded-lg">
+                        <TrendingDown className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-rose-900 dark:text-rose-200">
+                          1. Sanksi & Pemotongan Disipliner Kehadiran (Penalties & Deductions)
+                        </h4>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                          Dikenakan pada presensi harian atau dipotong otomatis pada slip gaji bulanan (Payroll).
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      {/* CARD 1: Denda Keterlambatan */}
+                      <div className="p-4 rounded-xl border border-red-200/90 dark:border-red-900/60 bg-red-50/20 dark:bg-red-950/20 space-y-3 relative overflow-hidden">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-red-500 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Denda Keterlambatan (Late In)
+                              </span>
+                              <span className="text-[10px] text-slate-400">Tersambung ke Database & Slip Gaji</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Denda per Menit (Rp)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              step={100}
+                              value={form.late_fine_per_minute ?? ''}
+                              onChange={(e) => setForm({ ...form, late_fine_per_minute: e.target.value })}
+                              placeholder="Kosongkan = tanpa denda"
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Denda Maksimum/Hari (Rp)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              step={1000}
+                              value={form.late_fine_max_per_day ?? ''}
+                              onChange={(e) => setForm({ ...form, late_fine_max_per_day: e.target.value })}
+                              placeholder="Kosongkan = tanpa batas"
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5 pt-1 border-t border-red-100 dark:border-red-900/30">
+                          <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                            Metode Perhitungan Menit Telat:
+                          </label>
+                          <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-700 dark:text-slate-300">
+                            <input
+                              type="radio"
+                              name="late_count_mode"
+                              checked={form.late_count_mode !== 'after_work_start'}
+                              onChange={() => setForm({ ...form, late_count_mode: 'after_tolerance' })}
+                              className="mt-0.5 accent-red-600"
+                            />
+                            <span>
+                              <b>Setelah Toleransi Telat</b> (Contoh: Jam 08:00, toleransi 15 mnt, masuk 08:20 = dihitung telat 5 menit).
+                            </span>
+                          </label>
+                          <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-700 dark:text-slate-300">
+                            <input
+                              type="radio"
+                              name="late_count_mode"
+                              checked={form.late_count_mode === 'after_work_start'}
+                              onChange={() => setForm({ ...form, late_count_mode: 'after_work_start' })}
+                              className="mt-0.5 accent-red-600"
+                            />
+                            <span>
+                              <b>Dihitung Sejak Jam Masuk</b> (Jika melebihi toleransi, langsung dihitung sejak 08:00 = telat 20 menit).
+                            </span>
+                          </label>
+                        </div>
+
+                        {/* Interactive Live Simulation Box */}
+                        {Number(form.late_fine_per_minute) > 0 && (
+                          <div className="p-2.5 rounded-lg bg-red-100/60 dark:bg-red-950/60 border border-red-200 dark:border-red-900 text-[10px] text-red-900 dark:text-red-200 space-y-1">
+                            <div className="flex items-center gap-1 font-bold">
+                              <Sparkles className="w-3.5 h-3.5 text-red-600" /> Simulasi Denda (Telat 25 Menit):
+                            </div>
+                            <p>
+                              Toleransi: {form.late_tolerance_minutes || 0} mnt · 
+                              Menit dihitung: {form.late_count_mode === 'after_work_start' ? '25 mnt' : `${Math.max(0, 25 - Number(form.late_tolerance_minutes || 0))} mnt`} · 
+                              Estimasi Denda: <strong>Rp {
+                                Math.min(
+                                  (form.late_count_mode === 'after_work_start' ? 25 : Math.max(0, 25 - Number(form.late_tolerance_minutes || 0))) * Number(form.late_fine_per_minute || 0),
+                                  form.late_fine_max_per_day ? Number(form.late_fine_max_per_day) : Infinity
+                                ).toLocaleString('id-ID')
+                              }</strong>
+                            </p>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* CARD 2: Denda Pulang Cepat (Early Leave) */}
+                      <div className="p-4 rounded-xl border border-violet-200/90 dark:border-violet-900/60 bg-violet-50/20 dark:bg-violet-950/20 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-violet-500 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Sanksi & Denda Pulang Cepat (Early Leave)
+                              </span>
+                              <span className="text-[10px] text-slate-400">Check-out mendahului jam pulang tanpa izin</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Skema Pemotongan Pulang Cepat
+                            </label>
+                            <select
+                              value={form.early_leave_fine_mode || 'none'}
+                              onChange={(e) => setForm({ ...form, early_leave_fine_mode: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs"
+                            >
+                              <option value="none">Tanpa Denda (Hanya status peringatan di presensi)</option>
+                              <option value="per_minute">Denda Nominal per Menit Mendahului Jam Pulang</option>
+                              <option value="flat">Denda Flat per Insiden Pulang Cepat</option>
+                              <option value="prorata">Prorata Potong Jam Kerja Efektif di Payroll</option>
+                            </select>
+                          </div>
+
+                          {form.early_leave_fine_mode && form.early_leave_fine_mode !== 'none' && form.early_leave_fine_mode !== 'prorata' && (
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 animate-in fade-in">
+                              <div className="space-y-1">
+                                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                  {form.early_leave_fine_mode === 'per_minute' ? 'Nominal / Menit (Rp)' : 'Nominal Flat / Insiden (Rp)'}
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={500}
+                                  value={form.early_leave_fine_amount ?? ''}
+                                  onChange={(e) => setForm({ ...form, early_leave_fine_amount: e.target.value })}
+                                  placeholder="cth: 1000 atau 25000"
+                                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                  Maksimal Denda/Hari (Rp)
+                                </label>
+                                <input
+                                  type="number"
+                                  min={0}
+                                  step={1000}
+                                  value={form.early_leave_fine_max ?? ''}
+                                  onChange={(e) => setForm({ ...form, early_leave_fine_max: e.target.value })}
+                                  placeholder="Kosongkan = tanpa batas"
+                                  className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="p-2.5 rounded-lg bg-violet-50 dark:bg-violet-950/40 border border-violet-100 dark:border-violet-900/40 text-[10px] text-violet-800 dark:text-violet-300">
+                            Toleransi pulang awal saat ini: <strong>{form.early_leave_tolerance_minutes ?? 30} menit</strong> sebelum jam pulang kantor. Karyawan yang pulang melewati batas ini otomatis tercatat di log audit.
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* CARD 3: Sanksi Mangkir / Alpha (Unexcused Absence) */}
+                      <div className="p-4 rounded-xl border border-rose-200/90 dark:border-rose-900/60 bg-rose-50/20 dark:bg-rose-950/20 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <UserX className="w-4 h-4 text-rose-600 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Sanksi Mangkir / Alpha (Tanpa Keterangan)
+                              </span>
+                              <span className="text-[10px] text-slate-400">Tidak hadir tanpa izin resmi / surat dokter</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Formula Pemotongan Gaji Pokok
+                            </label>
+                            <select
+                              value={form.alpha_penalty_mode || 'prorata'}
+                              onChange={(e) => setForm({ ...form, alpha_penalty_mode: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs"
+                            >
+                              <option value="prorata">Prorata Harian Standar (Gaji Pokok / Jumlah Hari Kerja)</option>
+                              <option value="prorata_plus_fine">Prorata Harian + Denda Disiplin Flat Pembinaan</option>
+                              <option value="none">Tanpa Potongan Gaji Pokok (Hanya Peringatan)</option>
+                            </select>
+                          </div>
+
+                          {form.alpha_penalty_mode === 'prorata_plus_fine' && (
+                            <div className="space-y-1 pt-1 animate-in fade-in">
+                              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                Denda Flat Tambahan Pembinaan (Rp per hari Alpha)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                step={5000}
+                                value={form.alpha_fine_flat ?? ''}
+                                onChange={(e) => setForm({ ...form, alpha_fine_flat: e.target.value })}
+                                placeholder="cth: 50000"
+                                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* CARD 4: Kebijakan Potongan Izin Pribadi */}
+                      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/20 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <FileText className="w-4 h-4 text-indigo-500 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Izin Pribadi
+                              </span>
+                              <span className="text-[10px] text-slate-400">Aturan ketidakhadiran berizin non-kuota cuti</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="space-y-2.5">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Skema Potongan Izin Pribadi
+                            </label>
+                            <select
+                              value={form.unpaid_leave_penalty_mode || 'flat'}
+                              onChange={(e) => setForm({ ...form, unpaid_leave_penalty_mode: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs"
+                            >
+                              <option value="flat">Potongan Nominal Flat Sekali Izin</option>
+                              <option value="prorata">Prorata Gaji Pokok Harian (Gaji Pokok / Jumlah Hari Kerja)</option>
+                              <option value="none">Bebas Potongan (Kompensasi Penuh Perusahaan)</option>
+                            </select>
+                          </div>
+
+                          {(form.unpaid_leave_penalty_mode === 'flat' || !form.unpaid_leave_penalty_mode) && (
+                            <div className="space-y-1 pt-1 animate-in fade-in">
+                              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                Nominal Potongan Sekali Izin (Rp)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                step={5000}
+                                value={form.unpaid_leave_fine_flat ?? ''}
+                                onChange={(e) => setForm({ ...form, unpaid_leave_fine_flat: e.target.value })}
+                                placeholder="cth: 50000"
+                                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* CARD 5: Denda Lupa Check-Out / Missed Punch */}
+                      <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/20 space-y-3 col-span-1 md:col-span-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <AlertOctagon className="w-4 h-4 text-amber-500 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Denda Lupa Check-Out / Missed Punch (Anti Lupa Presensi)
+                              </span>
+                              <span className="text-[10px] text-slate-400">Penanganan karyawan yang hanya check-in masuk tetapi lupa check-out pulang</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+                          <div className="space-y-1">
+                            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Sanksi Saat Terkena Auto-Checkout Malam
+                            </label>
+                            <select
+                              value={form.missed_checkout_penalty_mode || 'none'}
+                              onChange={(e) => setForm({ ...form, missed_checkout_penalty_mode: e.target.value })}
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 text-xs"
+                            >
+                              <option value="none">Bebas Denda (Sistem menutup otomatis tanpa sanksi finansial)</option>
+                              <option value="flat_fine">Denda Administrasi Lupa Check-out</option>
+                              <option value="mark_early_leave">Otomatis Ditandai Pulang Cepat (Potong Toleransi Minimum)</option>
+                            </select>
+                          </div>
+
+                          {form.missed_checkout_penalty_mode === 'flat_fine' && (
+                            <div className="space-y-1 animate-in fade-in">
+                              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                Denda Administrasi Flat (Rp per kejadian)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                step={1000}
+                                value={form.missed_checkout_fine_amount ?? ''}
+                                onChange={(e) => setForm({ ...form, missed_checkout_fine_amount: e.target.value })}
+                                placeholder="cth: 15000"
+                                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                              />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ───────────────────────────────────────────────────────────── */}
+                  {/* BAGIAN 2: ATURAN UPAH LEMBUR & BONUS INSENTIF                 */}
+                  {/* ───────────────────────────────────────────────────────────── */}
+                  <div className="space-y-3 pt-2">
+                    <div className="flex items-center gap-2 border-b border-emerald-100 dark:border-emerald-950/60 pb-2">
+                      <div className="p-1 bg-emerald-100 dark:bg-emerald-950/50 text-emerald-600 dark:text-emerald-400 rounded-lg">
+                        <Coins className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-emerald-900 dark:text-emerald-200">
+                          2. Kompensasi Lembur & Insentif Kehadiran (Allowances, Bonuses & Incentives)
+                        </h4>
+                        <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                          Penghargaan kedisiplinan dan upah lembur resmi yang ditambahkan ke pendapatan slip gaji.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                      {/* CARD 1: Aturan Upah Lembur */}
+                      <div className="p-4 rounded-xl border border-orange-200/90 dark:border-orange-900/60 bg-orange-50/20 dark:bg-orange-950/20 space-y-3 relative overflow-hidden">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <Clock className="w-4 h-4 text-orange-500 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Aturan Upah Lembur (Overtime Rate)
+                              </span>
+                              <span className="text-[10px] text-slate-400">Tersambung ke Database & Slip Gaji</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <label className="flex items-center justify-between gap-3 cursor-pointer p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-orange-100 dark:border-orange-900/40">
+                          <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                            Aktifkan Perhitungan Lembur Otomatis
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={!!form.overtime_enabled}
+                            onChange={(e) => setForm({ ...form, overtime_enabled: e.target.checked })}
+                            className="w-4 h-4 accent-orange-600 cursor-pointer"
+                          />
+                        </label>
+
+                        {form.overtime_enabled && (
+                          <div className="space-y-3 animate-in fade-in">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                Ambang Minimal Lembur (menit lewat jam pulang)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                max={480}
+                                value={form.min_overtime_minutes}
+                                onChange={(e) => setForm({ ...form, min_overtime_minutes: e.target.value })}
+                                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                              />
+                            </div>
+
+                            <div className="space-y-1.5 pt-1 border-t border-orange-100 dark:border-orange-900/30">
+                              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                Formula Aturan Upah Lembur:
+                              </label>
+                              <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-700 dark:text-slate-300">
+                                <input
+                                  type="radio"
+                                  name="overtime_rule"
+                                  checked={form.overtime_rule !== 'custom'}
+                                  onChange={() => setForm({ ...form, overtime_rule: 'government' })}
+                                  className="mt-0.5 accent-orange-600"
+                                />
+                                <span>
+                                  <b>Aturan Pemerintah (PP 35/2021)</b> — Formula Depnaker (Upah/173: Jam ke-1 x1,5, Jam ke-2 dst x2, Libur x2-x4). Dicatat sebagai <em>"Tunjangan Lembur"</em>.
+                                </span>
+                              </label>
+                              <label className="flex items-start gap-2 cursor-pointer text-[11px] text-slate-700 dark:text-slate-300">
+                                <input
+                                  type="radio"
+                                  name="overtime_rule"
+                                  checked={form.overtime_rule === 'custom'}
+                                  onChange={() => setForm({ ...form, overtime_rule: 'custom' })}
+                                  className="mt-0.5 accent-orange-600"
+                                />
+                                <span>
+                                  <b>Aturan Sendiri (Custom Enterprise Rate)</b> — Tarif tetap nominal flat per jam/menit lembur. Dicatat sebagai <em>"Bonus Lembur"</em>.
+                                </span>
+                              </label>
+
+                              {form.overtime_rule === 'custom' && (
+                                <div className="space-y-2 p-3 rounded-lg bg-white dark:bg-slate-800 border border-orange-200 dark:border-orange-800 mt-2 animate-in fade-in">
+                                  <div className="grid grid-cols-2 gap-2">
+                                    <div className="space-y-1">
+                                      <label className="text-[10px] font-bold text-slate-400 block">Nominal Bonus (Rp)</label>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        step={500}
+                                        value={form.overtime_rate_amount ?? ''}
+                                        onChange={(e) => setForm({ ...form, overtime_rate_amount: e.target.value })}
+                                        placeholder="cth: 25000"
+                                        className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                                      />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <label className="text-[10px] font-bold text-slate-400 block">Satuan</label>
+                                      <select
+                                        value={form.overtime_rate_unit}
+                                        onChange={(e) => setForm({ ...form, overtime_rate_unit: e.target.value })}
+                                        className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-slate-800 dark:text-slate-100 text-xs"
+                                      >
+                                        <option value="hour">Per jam</option>
+                                        <option value="minute">Per menit</option>
+                                      </select>
+                                    </div>
+                                  </div>
+                                  <label className="flex items-center gap-2 cursor-pointer text-[11px] text-slate-600 dark:text-slate-300">
+                                    <input
+                                      type="checkbox"
+                                      checked={form.overtime_rate_taxable !== false}
+                                      onChange={(e) => setForm({ ...form, overtime_rate_taxable: e.target.checked })}
+                                      className="w-4 h-4 accent-orange-600 rounded"
+                                    />
+                                    Kena pajak (masuk dasar bruto PPh21)
+                                  </label>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* CARD 2: Insentif Kehadiran Penuh / Uang Kerajinan */}
+                      <div className="p-4 rounded-xl border border-emerald-200/90 dark:border-emerald-900/60 bg-emerald-50/20 dark:bg-emerald-950/20 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <Award className="w-4 h-4 text-emerald-600 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Insentif Kehadiran Penuh / Uang Kerajinan
+                              </span>
+                              <span className="text-[10px] text-slate-400">Bonus ekstra bagi karyawan 100% disiplin</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <label className="flex items-center justify-between gap-3 cursor-pointer p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-emerald-100 dark:border-emerald-900/40">
+                          <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                            Aktifkan Bonus Bulanan Kehadiran Penuh
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={!!form.perfect_attendance_bonus_enabled}
+                            onChange={(e) => setForm({ ...form, perfect_attendance_bonus_enabled: e.target.checked })}
+                            className="w-4 h-4 accent-emerald-600 cursor-pointer"
+                          />
+                        </label>
+
+                        {form.perfect_attendance_bonus_enabled && (
+                          <div className="space-y-2.5 animate-in fade-in">
+                            <div className="space-y-1">
+                              <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                                Nominal Insentif Bulanan (Rp)
+                              </label>
+                              <input
+                                type="number"
+                                min={0}
+                                step={10000}
+                                value={form.perfect_attendance_bonus_amount ?? ''}
+                                onChange={(e) => setForm({ ...form, perfect_attendance_bonus_amount: e.target.value })}
+                                placeholder="cth: 250000"
+                                className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                              />
+                            </div>
+
+                            <div className="p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-emerald-100 dark:border-emerald-900/40 space-y-1.5 text-[10px] text-slate-600 dark:text-slate-300">
+                              <div className="font-bold text-emerald-700 dark:text-emerald-400 flex items-center gap-1">
+                                <CheckCircle2 className="w-3.5 h-3.5" /> Kriteria Otomatis:
+                              </div>
+                              <ul className="list-disc pl-4 space-y-0.5 text-slate-600 dark:text-slate-400">
+                                <li>0 Hari Telat Datang (dalam 1 periode cut-off)</li>
+                                <li>0 Hari Pulang Cepat</li>
+                                <li>0 Hari Alpha / Mangkir / Izin Pribadi</li>
+                              </ul>
+                              <label className="flex items-center gap-1.5 cursor-pointer pt-1 text-slate-700 dark:text-slate-200">
+                                <input
+                                  type="checkbox"
+                                  checked={form.perfect_attendance_allow_leave !== false}
+                                  onChange={(e) => setForm({ ...form, perfect_attendance_allow_leave: e.target.checked })}
+                                  className="w-3.5 h-3.5 accent-emerald-600 rounded"
+                                />
+                                Cuti Tahunan resmi tidak menggugurkan bonus
+                              </label>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+
+                      {/* CARD 3: Premi Shift Malam / Shift Khusus */}
+                      <div className="p-4 rounded-xl border border-indigo-200/90 dark:border-indigo-900/60 bg-indigo-50/20 dark:bg-indigo-950/20 space-y-3">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <Moon className="w-4 h-4 text-indigo-600 shrink-0" />
+                            <div>
+                              <span className="text-xs font-bold text-slate-800 dark:text-slate-100 block">
+                                Premi Shift Malam (Night Shift Allowance)
+                              </span>
+                              <span className="text-[10px] text-slate-400">Tambahan insentif shift lintas hari / malam hari</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <label className="flex items-center justify-between gap-3 cursor-pointer p-2.5 rounded-lg bg-white dark:bg-slate-800 border border-indigo-100 dark:border-indigo-900/40">
+                          <span className="text-xs font-bold text-slate-700 dark:text-slate-200">
+                            Aktifkan Insentif Tambahan Shift Malam
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={!!form.night_shift_bonus_enabled}
+                            onChange={(e) => setForm({ ...form, night_shift_bonus_enabled: e.target.checked })}
+                            className="w-4 h-4 accent-indigo-600 cursor-pointer"
+                          />
+                        </label>
+
+                        {form.night_shift_bonus_enabled && (
+                          <div className="space-y-1 animate-in fade-in">
+                            <label className="text-[10px] font-bold text-slate-500 dark:text-slate-400 block">
+                              Insentif Ekstra per Shift Malam (Rp)
+                            </label>
+                            <input
+                              type="number"
+                              min={0}
+                              step={5000}
+                              value={form.night_shift_bonus_amount ?? ''}
+                              onChange={(e) => setForm({ ...form, night_shift_bonus_amount: e.target.value })}
+                              placeholder="cth: 35000"
+                              className="w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-800 text-slate-800 dark:text-slate-100 font-mono text-xs"
+                            />
+                            <p className="text-[9px] text-slate-400">
+                              Otomatis diberikan untuk jadwal shift yang melewati pukul 22:00 atau bertanda cross-day.
+                            </p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Navigasi Footer Tab */}
+                  <div className="flex justify-between items-center pt-2 border-t border-slate-100 dark:border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => setActiveModalTab('attendance')}
+                      className="px-3 py-1.5 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 font-medium text-xs transition"
+                    >
+                      ← Kembali ke Kebijakan Presensi
+                    </button>
+                    <span className="text-[11px] text-slate-400">
+                      Klik <b>Simpan Pengaturan</b> di bawah untuk menyimpan perubahan kantor.
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex gap-2.5 pt-3 border-t border-slate-100 dark:border-slate-800">
@@ -1761,6 +2903,17 @@ const OfficesTab: React.FC<{
                     <li key={f}>{DANGEROUS_LABELS[f] ?? f}</li>
                   ))}
                 </ul>
+                {dangerousFields.some(f => f.startsWith('leave_encashment_') || f.startsWith('leave_carry_over_')) && (
+                  <div className="p-3 mb-3 bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/40 rounded-xl text-xs text-rose-800 dark:text-rose-200">
+                    <p className="font-bold flex items-center gap-1.5 mb-1">
+                      <AlertOctagon className="w-4 h-4 text-rose-600 dark:text-rose-400 shrink-0" />
+                      Dampak Finansial &amp; Hak Cuti Karyawan
+                    </p>
+                    <p className="text-[11px] leading-relaxed">
+                      Perubahan tarif atau aktivasi pencairan cuti akan <strong>menerbitkan PayrollAdjustment (uang)</strong> — saat masa berlaku hari bawaan berakhir: <strong>tepat di tanggal reset</strong> bila masa berlaku diisi 0 bulan, atau <strong>di tanggal kedaluwarsa</strong> bila diisi N bulan. Hari cuti di <strong>atas</strong> batas carry-over selalu hangus permanen dan tidak pernah menjadi uang. Mematikan carry-over juga mematikan pencairan dan menghanguskan sisa cuti bawaan karyawan.
+                    </p>
+                  </div>
+                )}
                 <p className="text-slate-600 dark:text-slate-300 text-sm mb-4 leading-relaxed">
                   Ini mengubah cara sistem menghitung telat, lembur, dan auto-checkout untuk karyawan yang <strong>belum check-in hari ini</strong> dan <strong>seluruh presensi esok hari</strong>. Karyawan yang sudah check-in tetap memakai aturan saat mereka masuk tadi.
                 </p>

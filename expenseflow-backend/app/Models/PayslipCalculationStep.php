@@ -46,6 +46,28 @@ class PayslipCalculationStep extends Model
     public const STEP_PPH26     = 'PPH26';     // pemotongan PPh 26 (20% / tarif P3B)
     public const STEP_CURRENCY  = 'CURRENCY';  // konversi valuta asing → Rupiah (kurs terkunci)
 
+    // ── Peraturan Denda & Bonus Kantor (2026-10-11) ───────────────────────────
+    // Enam kebijakan dari sub-tab "Denda & Bonus" pengaturan kantor. Dipisah
+    // per kode (bukan satu STEP_PENALTY gabungan) supaya karyawan bisa melihat
+    // dasar tiap potongan dan HRD bisa menelusuri satu kebijakan tanpa membaca
+    // payload gabungan.
+    public const STEP_EARLY_LEAVE_PENALTY  = 'EARLY_LEAVE_PENALTY';  // denda/prorata pulang cepat
+    public const STEP_ALPHA_PENALTY        = 'ALPHA_PENALTY';        // sanksi mangkir (alpha)
+    public const STEP_UNPAID_LEAVE_PENALTY = 'UNPAID_LEAVE_PENALTY'; // potongan izin pribadi tanpa upah
+    public const STEP_MISSED_CHECKOUT      = 'MISSED_CHECKOUT';      // denda lupa check-out
+    public const STEP_PERFECT_ATTENDANCE   = 'PERFECT_ATTENDANCE';   // insentif kehadiran penuh
+    public const STEP_NIGHT_SHIFT_BONUS    = 'NIGHT_SHIFT_BONUS';    // premi shift malam
+
+    // ── Carry-over & pencairan sisa cuti tahunan (2026-10-13) ────────────────
+    // Pencairan sisa cuti sampai ke slip sebagai PayrollAdjustment (lihat
+    // LeavePeriodCloser), jadi secara mekanis ia bisa saja ikut STEP_ADJUSTMENT.
+    // Diberi kode sendiri karena asalnya berbeda secara material: bukan koreksi
+    // manual yang diputuskan seseorang untuk satu slip, melainkan konsekuensi
+    // otomatis dari kebijakan cuti kantor pada tanggal reset. Karyawan yang
+    // bertanya "potongan/tambahan apa ini" harus menemukan jawaban cuti, bukan
+    // "koreksi manual" yang tidak pernah ada orang membuatnya.
+    public const STEP_LEAVE_ENCASHMENT     = 'LEAVE_ENCASHMENT';     // pencairan sisa cuti tahunan
+
     protected $fillable = [
         'payslip_id',
         'step_code',

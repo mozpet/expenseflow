@@ -14,14 +14,21 @@ class LeaveBalance extends Model
         'leave_type',
         'quota',
         'used',
+        // Bagian dari `quota` yang merupakan bawaan periode lalu, bukan saldo
+        // terpisah — lihat migrasi 2026_10_13_000002. Karena itu getRemaining
+        // di bawah tetap (quota - used) dan tidak perlu menambahkannya.
+        'carried_over_quota',
+        'carry_over_expired_at',
     ];
 
     protected function casts(): array
     {
         return [
-            'year'  => 'integer',
-            'quota' => 'integer',
-            'used'  => 'integer',
+            'year'                  => 'integer',
+            'quota'                 => 'integer',
+            'used'                  => 'integer',
+            'carried_over_quota'    => 'integer',
+            'carry_over_expired_at' => 'date',
         ];
     }
 

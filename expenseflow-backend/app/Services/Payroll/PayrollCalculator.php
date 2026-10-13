@@ -2,6 +2,7 @@
 
 namespace App\Services\Payroll;
 
+use App\Models\AttendanceSetting;
 use App\Models\EmployeeLoan;
 use App\Models\EmployeeTaxPeriodTotal;
 use App\Models\Payroll;
@@ -12,11 +13,14 @@ use App\Models\PayslipItem;
 use App\Models\Receipt;
 use App\Models\SalaryComponent;
 use App\Models\User;
+use App\Services\Attendance\AttendancePolicyCalculator;
+use App\Services\Attendance\EarlyLeaveFineCalculator;
 use App\Services\Payroll\Currency\CurrencyConverter;
 use App\Services\Payroll\Formula\FormulaEngine;
 use App\Services\Payroll\Formula\FormulaException;
 use App\Services\Payroll\Tax\FinalTaxCalculator;
 use Carbon\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -69,6 +73,17 @@ class PayrollCalculator
             'receipt_reimbursement' => false, // default OFF: cegah dobel bayar dgn modul Struk
             'loan_installment'      => true,
             'adjustments'           => true,  // penyesuaian/koreksi retroaktif approved (Fase 3)
+            // Peraturan denda & bonus kantor (2026-10-11). Default ON: besarannya
+            // sudah dikunci nol oleh konfigurasi cabang (mode 'none'/nominal NULL),
+            // jadi kantor yang belum mengisi kebijakan tetap berperilaku seperti
+            // sebelum fitur ini ada. Flag ini untuk mematikan seluruh modul, bukan
+            // untuk mengatur besarannya.
+            'early_leave_penalty'   => true,  // denda/potongan pulang cepat
+            'alpha_penalty'         => true,  // sanksi mangkir (gerbang potongan absen)
+            'unpaid_leave_penalty'  => true,  // potongan izin pribadi
+            'missed_checkout_penalty' => true, // denda lupa check-out
+            'perfect_attendance_bonus' => true, // insentif kehadiran penuh
+            'night_shift_bonus'     => true,  // premi shift malam
             'working_days_divisor'  => self::DEFAULT_WORKING_DAYS,
         ];
     }
@@ -85,10 +100,23 @@ class PayrollCalculator
 
         $year = (int) $payroll->period_year;
         $month = (int) $payroll->period_month;
-        $periodStart = Carbon::create($year, $month, 1)->startOfDay();
-        $periodEnd = $periodStart->copy()->endOfMonth();
+
+        // JENDELA PRESENSI: ikut rentang cut-off batch (2026-10-12).
+        // Diambil dari Payroll::periodRange() — satu-satunya pembaca rentang yang
+        // sah. Jangan pernah menurunkan ulang dari period_month/period_year di
+        // sini: dulu itulah penyebab periode terkunci kaku tanggal 1-akhir bulan.
+        [$periodStart, $periodEnd] = $payroll->periodRange();
         $periodEndDate = $periodEnd->toDateString();
-        $onDate = $periodEndDate;
+
+        // PENANGGALAN EFEKTIF & STATUTORI: TIDAK ikut cut-off.
+        // Tetap akhir bulan kalender period_month/period_year agar gaji pokok
+        // berlaku (activeSalaryOn), komponen tetap/formula (effective_date),
+        // kurs valas, BPJS, PPh 21 TER, dan cicilan kasbon tidak bergeser hanya
+        // karena jendela presensi menyeberang batas bulan. Untuk periode
+        // bulan-kalender $onDate === $periodEndDate, sehingga pemisahan ini nol
+        // perubahan angka bagi seluruh batch yang sudah ada.
+        $onDateCarbon = Carbon::create($year, $month, 1)->endOfMonth()->startOfDay();
+        $onDate = $onDateCarbon->toDateString();
 
         // Hapus payslip lama (idempoten). Item ikut terhapus (cascade).
         $payroll->payslips()->delete();
@@ -111,6 +139,33 @@ class PayrollCalculator
         }
 
         $users = $this->eligibleUsers($payroll);
+
+        // Peta hari kerja + kebijakan denda/bonus per cabang (anti N+1).
+        // Kolom kebijakan ikut diambil karena tiga kebijakan (alpha, izin pribadi,
+        // insentif kehadiran penuh) bersifat PER-PERIODE: tidak punya snapshot per
+        // baris presensi, jadi payroll membacanya dari konfigurasi cabang.
+        $officesById = AttendanceSetting::query()
+            ->when($payroll->company_id, fn ($q) => $q->where('company_id', $payroll->company_id))
+            ->get([
+                'id', 'work_days',
+                'alpha_penalty_mode', 'alpha_fine_flat', 'alpha_sp_threshold',
+                'unpaid_leave_penalty_mode', 'unpaid_leave_fine_flat',
+                'perfect_attendance_bonus_enabled', 'perfect_attendance_bonus_amount',
+                'perfect_attendance_allow_leave',
+            ])
+            ->keyBy('id');
+
+        // Daftar libur resmi dalam periode untuk seluruh batch (anti N+1).
+        // Cuti bersama (is_collective=true) dikecualikan karena bukan libur otomatis nasional.
+        $periodHolidays = DB::table('holidays')
+            ->whereBetween('date', [$periodStart->toDateString(), $periodEndDate])
+            ->where('is_collective', false)
+            ->where(function ($q) use ($payroll) {
+                if ($payroll->company_id) {
+                    $q->whereNull('company_id')->orWhere('company_id', $payroll->company_id);
+                }
+            })
+            ->get(['date', 'attendance_setting_id']);
 
         // Peta penyesuaian yang siap diklaim (approved & belum terpakai) per karyawan.
         $adjustmentsByUser = collect();
@@ -137,7 +192,9 @@ class PayrollCalculator
         $count = 0;
 
         foreach ($users as $user) {
-            $salary = $user->activeSalaryOn($periodEndDate);
+            // $onDate (akhir bulan kalender), BUKAN akhir cut-off: gaji pokok yang
+            // berlaku ditentukan bulan penggajian, bukan jendela presensinya.
+            $salary = $user->activeSalaryOn($onDate);
             if (! $salary) {
                 continue; // Tanpa gaji pokok efektif → tidak diikutkan payroll.
             }
@@ -182,7 +239,9 @@ class PayrollCalculator
             $fixedEarnings = 0.0;    // hanya tunjangan tetap KENA PAJAK (basis lembur & pajak)
             $fixedEarningsAll = 0.0; // seluruh tunjangan tetap (basis upah BPJS)
             $componentValues = [];   // KODE komponen tetap → nominal (leaf untuk formula DSL, Fase 6)
-            foreach ($this->fixedComponents($user, $periodEndDate) as $row) {
+            // $onDate: penanggalan efektif komponen (effective_date/end_date)
+            // mengikuti bulan kalender, bukan jendela cut-off presensi.
+            foreach ($this->fixedComponents($user, $onDate) as $row) {
                 $isEarning = $row->type === 'earning';
                 $items[] = $this->item(
                     $row->name,
@@ -211,14 +270,67 @@ class PayrollCalculator
             $bpjsWageBase = $basic + $fixedEarningsAll;
 
             // Prakomputasi kehadiran: dipakai potongan absen (langkah 5) DAN konteks
-            // formula DSL (PRESENT_DAYS / ABSENT_DAYS). Selalu dihitung agar formula
+            // formula DSL (PRESENT_DAYS / ABSENT_DAYS / WORKING_DAYS). Selalu dihitung agar formula
             // tidak bergantung pada urutan langkah maupun flag attendance_deduction.
             [$absentDays, $presentDays] = $this->attendanceDays($user, $periodStart, $periodEnd);
+            $workingDays = $this->periodWorkingDays(
+                $user,
+                $periodStart,
+                $periodEnd,
+                $officesById,
+                $periodHolidays,
+                $options,
+                $opt,
+                $presentDays,
+                $absentDays
+            );
+
+            // Prakomputasi peraturan denda & bonus kantor (2026-10-11).
+            //
+            // Diletakkan SEBELUM langkah 3 karena dua di antaranya (premi shift
+            // malam & insentif kehadiran penuh) adalah EARNING yang wajib sudah
+            // masuk $items sebelum bruto dihitung, dan insentif kehadiran penuh
+            // butuh seluruh hitungan hari (telat, pulang cepat, alpha, izin)
+            // sekaligus — termasuk hitungan yang baru dipakai di langkah 5.
+            //
+            // Upah sehari memakai divisor yang SAMA dengan potongan
+            // ketidakhadiran lama ($opt['working_days_divisor']), bukan
+            // $workingDays: semua potongan prorata harus memakai satu penyebut,
+            // kalau tidak dua potongan di slip yang sama akan memakai nilai
+            // "sehari" yang berbeda dan tidak bisa dijelaskan ke karyawan.
+            $policyOffice = $user->attendance_setting_id
+                ? $officesById->get($user->attendance_setting_id)
+                : null;
+            $policy          = AttendancePolicyCalculator::configFromOffice($policyOffice);
+            $policyAgg       = $this->penaltyBonusAggregates($user, $periodStart, $periodEnd);
+            $policyDivisor   = max(1, (int) $opt['working_days_divisor']);
+            $policyDailyWage = $basic / $policyDivisor;
+
+            // Izin pribadi: dibutuhkan potongan izin (langkah 5e) MAUPUN kriteria
+            // insentif kehadiran penuh, jadi di-query sekali untuk keduanya.
+            $unpaidLeave = ['days' => 0, 'incidents' => 0];
+            if ($opt['unpaid_leave_penalty'] || $opt['perfect_attendance_bonus']) {
+                $unpaidLeave = $this->approvedLeaveDays($user, $periodStart, $periodEnd, ['izin']);
+            }
+
+            // Cuti tahunan & sakit berizin hanya relevan bila kantor memilih
+            // perfect_attendance_allow_leave = false. Query-nya dilewati kalau
+            // tidak dipakai agar batch besar tidak memikul biaya sia-sia.
+            $paidLeaveDays = 0;
+            if (
+                $opt['perfect_attendance_bonus']
+                && $policy['perfect_bonus_enabled']
+                && ! $policy['perfect_allow_leave']
+            ) {
+                $paidLeaveDays = $this->approvedLeaveDays(
+                    $user, $periodStart, $periodEnd, ['cuti', 'sakit']
+                )['days'];
+            }
 
             // 3) Tunjangan lembur (PP 35/2021)
             $overtimeHours = 0.0;
             if ($opt['overtime']) {
-                $ot = $this->overtimePay($user, $year, $month, $monthlyWageBase);
+                $ot = $this->overtimePay($user, $periodStart, $periodEnd, $monthlyWageBase);
                 $overtimeHours = $ot['government_hours'];
 
                 // Aturan pemerintah (PP 35/2021) — "Tunjangan Lembur"
@@ -319,6 +431,15 @@ class PayrollCalculator
             if ($adjustmentsEnabled && $adjustmentsByUser->has($user->id)) {
                 $adjEarning = 0.0;
                 $adjDeduction = 0.0;
+                // Pencairan sisa cuti tahunan (2026-10-13) dipisah dari agregat
+                // penyesuaian manual. Baris slipnya tetap dibentuk di loop yang
+                // sama (mekanismenya memang PayrollAdjustment), tetapi jejak
+                // perhitungannya memakai langkah sendiri agar karyawan melihat
+                // dasar cuti — bukan "koreksi manual" yang tak pernah dibuat
+                // siapa pun — dan HRD bisa merekonsiliasinya dengan agregat
+                // riwayat saldo cuti (total_encashment_amount).
+                $encashAmount = 0.0;
+                $encashRefs   = [];
                 foreach ($adjustmentsByUser->get($user->id) as $adj) {
                     $isEarn = $adj->type === PayrollAdjustment::TYPE_EARNING;
                     $items[] = $this->item(
@@ -327,13 +448,20 @@ class PayrollCalculator
                         (float) $adj->amount,
                         $isEarn ? (bool) $adj->is_taxable : false,
                         false,
-                        'adjustment',
+                        $adj->isLeaveEncashment() ? 'leave_encashment' : 'adjustment',
                         $sort++,
                         refType: PayrollAdjustment::class,
                         refId: (int) $adj->id,
                         notes: $adj->reason,
                     );
-                    if ($isEarn) {
+                    if ($adj->isLeaveEncashment()) {
+                        $encashAmount += (float) $adj->amount;
+                        $encashRefs[]  = [
+                            'adjustment_id' => (int) $adj->id,
+                            'amount'        => round((float) $adj->amount, 2),
+                            'reason'        => $adj->reason,
+                        ];
+                    } elseif ($isEarn) {
                         $adjEarning += (float) $adj->amount;
                     } else {
                         $adjDeduction += (float) $adj->amount;
@@ -346,18 +474,92 @@ class PayrollCalculator
                         'adjustment_deduction' => round($adjDeduction, 2),
                     ], $adjEarning - $adjDeduction, 'Koreksi/penyesuaian manual');
                 }
+                if ($encashAmount > 0) {
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_LEAVE_ENCASHMENT, [
+                        'encashment_count' => count($encashRefs),
+                        'adjustments'      => $encashRefs,
+                    ], $encashAmount, 'Pencairan sisa cuti tahunan (kebijakan kantor, objek PPh 21)');
+                }
             }
 
             // 4c) Komponen bertipe FORMULA (Fase 6 §6.A — DSL aman, dievaluasi FormulaEngine).
             //     Disisipkan SEBELUM penghitungan bruto agar earning formula yang kena pajak
             //     otomatis ikut ke bruto/taxableGross/PPh21. Formula TIDAK memengaruhi basis
             //     upah BPJS/lembur (konservatif, seperti penyesuaian): basis itu sudah dikunci.
+            //     $onDateCarbon/$onDate (akhir bulan kalender), BUKAN rentang cut-off:
+            //     dua argumen ini hanya untuk penanggalan efektif komponen &
+            //     TENURE_MONTHS. Variabel presensi DSL (PRESENT_DAYS/ABSENT_DAYS/
+            //     WORKING_DAYS) sudah dihitung dari rentang cut-off di atas.
             $this->applyFormulaComponents(
-                $user, $periodEnd, $periodEndDate, $opt,
+                $user, $onDateCarbon, $onDate, $opt,
                 $basic, $fixedEarnings, $fixedEarningsAll, $overtimeHours,
-                $absentDays, $presentDays, $componentValues,
+                $absentDays, $presentDays, $workingDays, $componentValues,
                 $items, $calcSteps, $sort,
             );
+
+            // 4d) Premi shift malam (2026-10-11) — dijumlah dari nilai yang sudah
+            //     dibekukan per presensi saat check-in (snap_night_shift_bonus_*).
+            //     EARNING kena pajak: tunjangan teratur sehubungan dengan pekerjaan,
+            //     objek PPh 21 seperti tunjangan lembur. Harus berada SEBELUM
+            //     perhitungan bruto di bawah.
+            if ($opt['night_shift_bonus'] && $policyAgg['night_shift_bonus'] > 0) {
+                $nightBonus = round($policyAgg['night_shift_bonus']);
+                $items[] = $this->item(
+                    'Premi Shift Malam',
+                    PayslipItem::TYPE_EARNING,
+                    $nightBonus,
+                    true,
+                    false,
+                    'night_shift',
+                    $sort++,
+                    notes: $policyAgg['night_shift_days'] . ' shift malam',
+                );
+                $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_NIGHT_SHIFT_BONUS, [
+                    'night_shift_days' => $policyAgg['night_shift_days'],
+                    'frozen_total'     => round($policyAgg['night_shift_bonus'], 2),
+                ], $nightBonus, 'Peraturan kantor: premi shift malam');
+            }
+
+            // 4e) Insentif kehadiran penuh / uang kerajinan (2026-10-11).
+            //     Satu-satunya komponen yang menilai SELURUH periode sekaligus,
+            //     karena itu dihitung dari konfigurasi cabang yang hidup (bukan
+            //     snapshot presensi) dan dibekukan oleh batch payroll ini.
+            //     EARNING kena pajak: tunjangan/bonus kehadiran = objek PPh 21.
+            if ($opt['perfect_attendance_bonus']) {
+                $perfect = AttendancePolicyCalculator::perfectAttendanceBonus(
+                    $presentDays,
+                    $policyAgg['late_days'],
+                    // Status, bukan menit: baris 'mark_early_leave' (lupa
+                    // check-out) juga menggugurkan kehadiran penuh.
+                    $policyAgg['early_leave_status_days'],
+                    $absentDays,
+                    $unpaidLeave['days'],
+                    $paidLeaveDays,
+                    $policy,
+                );
+                if ($perfect['eligible'] && $perfect['amount'] > 0) {
+                    $perfectAmount = round($perfect['amount']);
+                    $items[] = $this->item(
+                        'Insentif Kehadiran Penuh',
+                        PayslipItem::TYPE_EARNING,
+                        $perfectAmount,
+                        true,
+                        false,
+                        'perfect_attendance',
+                        $sort++,
+                        notes: $presentDays . ' hari hadir, tanpa telat/pulang cepat/alpha/izin',
+                    );
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_PERFECT_ATTENDANCE, [
+                        'present_days'      => $presentDays,
+                        'late_days'         => $policyAgg['late_days'],
+                        'early_leave_days'  => $policyAgg['early_leave_status_days'],
+                        'alpha_days'        => $absentDays,
+                        'unpaid_leave_days' => $unpaidLeave['days'],
+                        'paid_leave_days'   => $paidLeaveDays,
+                        'allow_leave'       => $policy['perfect_allow_leave'],
+                    ], $perfectAmount, 'Peraturan kantor: insentif kehadiran penuh');
+                }
+            }
 
             // Hitung bruto & bruto kena pajak dari earning yang sudah terkumpul.
             $grossEarning = 0.0;
@@ -378,11 +580,34 @@ class PayrollCalculator
                 'overtime_hours'         => $overtimeHours,
             ], $grossEarning);
 
-            // 5) Potongan ketidakhadiran (Presensi) — hari sudah diprakomputasi di atas.
+            // 5) Potongan ketidakhadiran / sanksi mangkir (alpha) — hari sudah
+            //    diprakomputasi di atas ($absentDays = status 'absent' non-libur).
+            //
+            //    SANKSI MANGKIR MENJADI GERBANG langkah ini, bukan langkah
+            //    terpisah: 'prorata' (default & perilaku lama) berarti potongan
+            //    prorata gaji pokok, yang NILAINYA IDENTIK dengan potongan
+            //    ketidakhadiran yang sudah ada sejak Fase 1. Kalau sanksi mangkir
+            //    dibuat sebagai baris slip sendiri, prorata-nya akan terpotong
+            //    dua kali. Jadi:
+            //      prorata           → persis seperti sebelumnya (1 baris).
+            //      prorata_plus_fine → baris prorata + 1 baris denda disiplin.
+            //      none              → TIDAK ada potongan gaji pokok sama sekali
+            //                          (kantor hanya memberi Surat Peringatan).
+            //
+            //    $opt['alpha_penalty'] = false mematikan modul baru dan
+            //    mengembalikan perilaku lama (selalu prorata), bukan 'none'.
+            $alphaMode = $opt['alpha_penalty']
+                ? $policy['alpha_mode']
+                : AttendancePolicyCalculator::ALPHA_PRORATA;
+
             if ($opt['attendance_deduction'] && $absentDays > 0) {
-                $divisor = max(1, (int) $opt['working_days_divisor']);
-                $dailyWage = $basic / $divisor;
-                $deduction = round($dailyWage * $absentDays);
+                $alpha = AttendancePolicyCalculator::alphaPenalty(
+                    $absentDays,
+                    $policyDailyWage,
+                    ['alpha_mode' => $alphaMode] + $policy,
+                );
+
+                $deduction = round($alpha['prorata']);
                 if ($deduction > 0) {
                     $items[] = $this->item(
                         'Potongan Ketidakhadiran',
@@ -392,13 +617,40 @@ class PayrollCalculator
                         false,
                         'attendance',
                         $sort++,
-                        notes: $absentDays . ' hari × (gaji pokok / ' . $divisor . ')',
+                        notes: $absentDays . ' hari × (gaji pokok / ' . $policyDivisor . ')',
                     );
                     $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_ATTENDANCE, [
                         'absent_days' => $absentDays,
-                        'divisor'     => $divisor,
-                        'daily_wage'  => round($dailyWage, 2),
+                        'divisor'     => $policyDivisor,
+                        'daily_wage'  => round($policyDailyWage, 2),
+                        'alpha_mode'  => $alphaMode,
                     ], $deduction, 'PP 35/2021');
+                }
+
+                // Denda disiplin flat per hari alpha — HANYA pada mode
+                // prorata_plus_fine. Baris terpisah supaya karyawan melihat
+                // potongan gaji dan sanksi disiplin sebagai dua hal berbeda.
+                $alphaFine = round($alpha['fine']);
+                if ($alphaFine > 0) {
+                    $items[] = $this->item(
+                        'Denda Mangkir',
+                        PayslipItem::TYPE_DEDUCTION,
+                        $alphaFine,
+                        false,
+                        false,
+                        'alpha_penalty',
+                        $sort++,
+                        notes: $absentDays . ' hari alpha × Rp'
+                            . number_format($policy['alpha_fine_flat'], 0, ',', '.'),
+                    );
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_ALPHA_PENALTY, [
+                        'alpha_days'           => $absentDays,
+                        'fine_flat_per_day'    => round($policy['alpha_fine_flat'], 2),
+                        'sp_threshold'         => $policy['alpha_sp_threshold'],
+                        // Informatif untuk HRD: ambang Surat Peringatan terlampaui.
+                        // TIDAK memotong rupiah apa pun.
+                        'needs_warning_letter' => $alpha['needs_warning_letter'],
+                    ], $alphaFine, 'Peraturan kantor: sanksi mangkir');
                 }
             }
 
@@ -426,6 +678,111 @@ class PayrollCalculator
                         'late_days'    => (int) $lateRow->days,
                         'late_minutes' => (int) $lateRow->minutes,
                     ], $lateFine, 'Kebijakan perusahaan');
+                }
+            }
+
+            // 5c) Potongan pulang cepat (2026-10-11).
+            //     Dua sumber rupiah yang DIJUMLAHKAN dalam satu baris slip:
+            //       a. denda per_minute/flat yang sudah dibekukan di presensi;
+            //       b. prorata upah per jam untuk baris bermode 'prorata',
+            //          yang nominalnya memang baru bisa dihitung di sini karena
+            //          butuh gaji pokok.
+            //     Keduanya tidak akan pernah tumpang tindih pada baris presensi
+            //     yang sama: satu baris hanya punya satu snap mode.
+            if ($opt['early_leave_penalty'] && $policyAgg['early_leave_minutes'] > 0) {
+                $earlyProrata = AttendancePolicyCalculator::earlyLeaveProrata(
+                    $policyAgg['early_leave_prorata_minutes'],
+                    $policyDailyWage,
+                );
+                $earlyTotal = round($policyAgg['early_leave_fine'] + $earlyProrata);
+
+                if ($earlyTotal > 0) {
+                    $items[] = $this->item(
+                        'Potongan Pulang Cepat',
+                        PayslipItem::TYPE_DEDUCTION,
+                        $earlyTotal,
+                        false,
+                        false,
+                        'early_leave',
+                        $sort++,
+                        notes: $policyAgg['early_leave_days'] . ' hari pulang cepat, total '
+                            . $policyAgg['early_leave_minutes'] . ' menit',
+                    );
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_EARLY_LEAVE_PENALTY, [
+                        'early_leave_days'    => $policyAgg['early_leave_days'],
+                        'early_leave_minutes' => $policyAgg['early_leave_minutes'],
+                        // Denda yang sudah dibekukan per presensi (per_minute/flat).
+                        'frozen_fine'         => round($policyAgg['early_leave_fine'], 2),
+                        // Bagian prorata: menitnya dibekukan, rupiahnya dihitung di sini.
+                        'prorata_days'        => $policyAgg['early_leave_prorata_days'],
+                        'prorata_minutes'     => $policyAgg['early_leave_prorata_minutes'],
+                        'prorata_amount'      => $earlyProrata,
+                        'daily_wage'          => round($policyDailyWage, 2),
+                        'hours_per_day'       => AttendancePolicyCalculator::HOURS_PER_DAY,
+                    ], $earlyTotal, 'Peraturan kantor: sanksi pulang cepat');
+                }
+            }
+
+            // 5d) Denda lupa check-out / missed punch (2026-10-11) — sudah
+            //     dibekukan AutoCheckoutCommand saat menutup presensi.
+            //     Mode 'mark_early_leave' tidak pernah mengisi
+            //     missed_checkout_fine_amount (nol rupiah) — ia hanya menandai
+            //     status, dan sanksinya berupa gugurnya insentif kehadiran
+            //     penuh. Jadi dua mode itu tidak mungkin dobel potong.
+            if ($opt['missed_checkout_penalty'] && $policyAgg['missed_checkout_fine'] > 0) {
+                $missedFine = round($policyAgg['missed_checkout_fine']);
+                if ($missedFine > 0) {
+                    $items[] = $this->item(
+                        'Denda Lupa Check-Out',
+                        PayslipItem::TYPE_DEDUCTION,
+                        $missedFine,
+                        false,
+                        false,
+                        'missed_checkout',
+                        $sort++,
+                        notes: $policyAgg['missed_checkout_days'] . ' hari tanpa check-out manual',
+                    );
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_MISSED_CHECKOUT, [
+                        'missed_checkout_days' => $policyAgg['missed_checkout_days'],
+                        'frozen_total'         => round($policyAgg['missed_checkout_fine'], 2),
+                    ], $missedFine, 'Peraturan kantor: denda lupa check-out');
+                }
+            }
+
+            // 5e) Potongan izin pribadi tanpa upah (2026-10-11).
+            //     Hanya leave_type 'izin' yang approved. Cuti tahunan & sakit
+            //     berizin TIDAK pernah dipotong di sini: keduanya dibayar penuh
+            //     (cuti memotong kuota, bukan upah).
+            if ($opt['unpaid_leave_penalty'] && ($unpaidLeave['days'] > 0 || $unpaidLeave['incidents'] > 0)) {
+                $unpaid = AttendancePolicyCalculator::unpaidLeavePenalty(
+                    $unpaidLeave['days'],
+                    $unpaidLeave['incidents'],
+                    $policyDailyWage,
+                    $policy,
+                );
+                $unpaidAmount = round($unpaid['amount']);
+                if ($unpaidAmount > 0) {
+                    $items[] = $this->item(
+                        'Potongan Izin Pribadi',
+                        PayslipItem::TYPE_DEDUCTION,
+                        $unpaidAmount,
+                        false,
+                        false,
+                        'unpaid_leave',
+                        $sort++,
+                        notes: $unpaid['mode'] === AttendancePolicyCalculator::UNPAID_PRORATA
+                            ? $unpaidLeave['days'] . ' hari izin × (gaji pokok / ' . $policyDivisor . ')'
+                            : $unpaidLeave['incidents'] . ' pengajuan izin × Rp'
+                                . number_format($policy['unpaid_leave_fine_flat'], 0, ',', '.'),
+                    );
+                    $calcSteps[] = $this->calcStep(PayslipCalculationStep::STEP_UNPAID_LEAVE_PENALTY, [
+                        'mode'       => $unpaid['mode'],
+                        'days'       => $unpaidLeave['days'],
+                        'incidents'  => $unpaidLeave['incidents'],
+                        'unit_count' => $unpaid['unit_count'],
+                        'daily_wage' => round($policyDailyWage, 2),
+                        'fine_flat'  => round($policy['unpaid_leave_fine_flat'], 2),
+                    ], $unpaidAmount, 'Peraturan kantor: potongan izin pribadi');
                 }
             }
 
@@ -586,7 +943,8 @@ class PayrollCalculator
                 $grossEarning, $taxableGross, $pph21,
                 $bpjsCompanyTotal, $bpjsEmployeeTotal, $deductionTotal, $net,
                 $ptkpStatus, $absentDays, $presentDays, $overtimeHours, $items, $calcSteps,
-                $payCurrency, $fxRate
+                $payCurrency, $fxRate,
+                $workingDays
             );
 
             // Konsolidasi masa pajak (untuk rekonsiliasi tahunan & Bukti Potong 1721-A1).
@@ -716,6 +1074,12 @@ class PayrollCalculator
      * di sini). Kegagalan satu komponen bersifat non-fatal: dicatat sebagai jejak
      * FORMULA_ERROR dan nilainya dianggap 0, slip lain tetap terhitung.
      *
+     * $onDateCarbon/$onDate adalah akhir bulan KALENDER periode (2026-10-12),
+     * bukan akhir rentang cut-off presensi: keduanya hanya dipakai untuk
+     * penanggalan efektif komponen (effective_date/end_date) dan TENURE_MONTHS.
+     * Variabel presensi (PRESENT_DAYS/ABSENT_DAYS/WORKING_DAYS) dikirim sebagai
+     * angka yang sudah dihitung pemanggil dari rentang cut-off.
+     *
      * @param array<string, bool|int>    $opt
      * @param array<string, float>       $componentValues  KODE komponen tetap → nominal
      * @param array<int, array<string, mixed>> $items       (by-ref) baris slip
@@ -724,8 +1088,8 @@ class PayrollCalculator
      */
     private function applyFormulaComponents(
         User $user,
-        Carbon $periodEnd,
-        string $periodEndDate,
+        Carbon $onDateCarbon,
+        string $onDate,
         array $opt,
         float $basic,
         float $fixedEarnings,
@@ -733,12 +1097,13 @@ class PayrollCalculator
         float $overtimeHours,
         int $absentDays,
         int $presentDays,
+        int $workingDays,
         array $componentValues,
         array &$items,
         array &$calcSteps,
         int &$sort,
     ): void {
-        $formulaComponents = $this->formulaComponents($user, $periodEndDate);
+        $formulaComponents = $this->formulaComponents($user, $onDate);
         if ($formulaComponents->isEmpty()) {
             return;
         }
@@ -760,9 +1125,9 @@ class PayrollCalculator
         $context['GROSS_TAXABLE']       = $grossTaxableSnapshot;
         $context['PRESENT_DAYS']        = (float) $presentDays;
         $context['ABSENT_DAYS']         = (float) $absentDays;
-        $context['WORKING_DAYS']        = (float) max(1, (int) $opt['working_days_divisor']);
+        $context['WORKING_DAYS']        = (float) $workingDays;
         $context['OVERTIME_HOURS']      = $overtimeHours;
-        $context['TENURE_MONTHS']       = (float) $this->tenureMonths($user, $periodEnd);
+        $context['TENURE_MONTHS']       = (float) $this->tenureMonths($user, $onDateCarbon);
         $context['UMR_AMOUNT']          = 0.0; // belum ada sumber UMR per wilayah — placeholder aman.
 
         // Peta KODE → formula + metadata komponen (by KODE) untuk penyusunan urutan.
@@ -845,21 +1210,22 @@ class PayrollCalculator
     }
 
     /**
-     * Masa kerja dalam bulan penuh hingga akhir periode. 0 bila joined_date kosong
-     * atau berada di masa depan relatif periode.
+     * Masa kerja dalam bulan penuh hingga $onDate (akhir bulan KALENDER periode,
+     * bukan akhir cut-off presensi — masa kerja adalah penanggalan efektif).
+     * 0 bila joined_date kosong atau berada di masa depan relatif periode.
      */
-    private function tenureMonths(User $user, Carbon $periodEnd): int
+    private function tenureMonths(User $user, Carbon $onDate): int
     {
         $joined = $user->joined_date;
         if (! $joined) {
             return 0;
         }
         $joinedDate = $joined instanceof Carbon ? $joined : Carbon::parse((string) $joined);
-        if ($joinedDate->greaterThan($periodEnd)) {
+        if ($joinedDate->greaterThan($onDate)) {
             return 0;
         }
 
-        return (int) abs($joinedDate->diffInMonths($periodEnd));
+        return (int) abs($joinedDate->diffInMonths($onDate));
     }
 
     /** Potong teks panjang untuk catatan/jejak (cegah payload jejak membengkak). */
@@ -879,18 +1245,22 @@ class PayrollCalculator
      *  - 'custom' → menit disetujui × tarif per menit yang ditetapkan HRD di kantor
      *    (tarif per jam dibagi 60). Satu tarif untuk hari kerja & libur.
      *
+     * RENTANG DITERIMA SEBAGAI PARAMETER (2026-10-12). Sebelumnya method ini
+     * menurunkan sendiri tanggal 1 s/d akhir bulan dari ($year, $month) —
+     * derivasi KEDUA yang independen dari calculate(), sehingga jam lembur
+     * adalah satu-satunya agregat presensi yang tidak bisa mengikuti cut-off.
+     * $year/$month sengaja TIDAK lagi masuk ke sini agar derivasi liar seperti
+     * itu tidak bisa muncul kembali tanpa mengubah tanda tangan.
+     *
      * @return array{government_pay: float, government_hours: float, custom: array<int, array{pay: float, hours: float, taxable: bool, rates: array<int, string>}>}
      */
-    private function overtimePay(User $user, int $year, int $month, float $monthlyWageBase): array
+    private function overtimePay(User $user, Carbon $periodStart, Carbon $periodEnd, float $monthlyWageBase): array
     {
-        $start = Carbon::create($year, $month, 1)->toDateString();
-        $end = Carbon::create($year, $month, 1)->endOfMonth()->toDateString();
-
         $rows = DB::table('overtime_approvals as o')
             ->join('attendances as a', 'a.id', '=', 'o.attendance_id')
             ->where('o.user_id', $user->id)
             ->where('o.status', 'approved')
-            ->whereBetween('a.date', [$start, $end])
+            ->whereBetween('a.date', [$periodStart->toDateString(), $periodEnd->toDateString()])
             ->get([
                 'o.overtime_minutes', 'a.is_holiday',
                 'a.snap_overtime_rule', 'a.snap_overtime_rate_amount',
@@ -980,6 +1350,170 @@ class PayrollCalculator
             ->count();
 
         return [$absent, $present];
+    }
+
+    /**
+     * Agregat denda & bonus yang sudah DIBEKUKAN di baris presensi periode ini
+     * (2026-10-11). Nilainya tidak dihitung ulang di payroll: rupiahnya sudah
+     * dikunci saat check-in/check-out memakai snapshot kebijakan kantor, sehingga
+     * HRD yang mengubah tarif di tengah bulan tidak mengubah presensi yang sudah
+     * terjadi — doktrin yang sama dengan denda keterlambatan.
+     *
+     * late_days ikut diambil di sini (bukan dari blok 5b) karena insentif
+     * kehadiran penuh butuh jumlah HARI telat walau denda telatnya Rp0.
+     *
+     * Satu-satunya nilai yang TIDAK dibekukan adalah menit pulang cepat bermode
+     * 'prorata': rupiahnya butuh gaji pokok, yang sengaja tidak pernah dibaca
+     * lapisan presensi. Menitnya saja yang dibekukan, konversi ke rupiah
+     * dilakukan di sini — karena itu menit prorata dipisah dari menit total.
+     *
+     * early_leave_days (menit > 0) dan early_leave_status_days (status =
+     * 'early_leave') SENGAJA dipisah. Keduanya hampir selalu sama, kecuali pada
+     * mode missed_checkout 'mark_early_leave': AutoCheckoutCommand menandai
+     * statusnya tanpa menit — karyawan tidak benar-benar pulang cepat, ia hanya
+     * lupa check-out. Baris seperti itu tidak boleh dipotong rupiah (dipakai
+     * early_leave_days), tetapi tetap menggugurkan insentif kehadiran penuh
+     * (dipakai early_leave_status_days).
+     *
+     * @return array{
+     *     early_leave_days: int, early_leave_status_days: int,
+     *     early_leave_minutes: int, early_leave_fine: float,
+     *     early_leave_prorata_days: int, early_leave_prorata_minutes: int,
+     *     missed_checkout_days: int, missed_checkout_fine: float,
+     *     night_shift_days: int, night_shift_bonus: float, late_days: int
+     * }
+     */
+    private function penaltyBonusAggregates(User $user, Carbon $start, Carbon $end): array
+    {
+        $prorata = EarlyLeaveFineCalculator::MODE_PRORATA;
+
+        $row = DB::table('attendances')
+            ->where('user_id', $user->id)
+            ->whereBetween('date', [$start->toDateString(), $end->toDateString()])
+            ->selectRaw(
+                'COUNT(CASE WHEN early_leave_minutes > 0 THEN 1 END) as early_leave_days,'
+                . " COUNT(CASE WHEN status = 'early_leave' THEN 1 END) as early_leave_status_days,"
+                . ' COALESCE(SUM(early_leave_minutes), 0) as early_leave_minutes,'
+                . ' COALESCE(SUM(early_leave_fine_amount), 0) as early_leave_fine,'
+                . ' COUNT(CASE WHEN early_leave_minutes > 0 AND snap_early_leave_fine_mode = ? THEN 1 END) as early_leave_prorata_days,'
+                . ' COALESCE(SUM(CASE WHEN snap_early_leave_fine_mode = ? THEN early_leave_minutes ELSE 0 END), 0) as early_leave_prorata_minutes,'
+                . ' COUNT(CASE WHEN missed_checkout_fine_amount > 0 THEN 1 END) as missed_checkout_days,'
+                . ' COALESCE(SUM(missed_checkout_fine_amount), 0) as missed_checkout_fine,'
+                . ' COUNT(CASE WHEN night_shift_bonus_amount > 0 THEN 1 END) as night_shift_days,'
+                . ' COALESCE(SUM(night_shift_bonus_amount), 0) as night_shift_bonus,'
+                . " COUNT(CASE WHEN status = 'late' THEN 1 END) as late_days",
+                [$prorata, $prorata]
+            )
+            ->first();
+
+        return [
+            'early_leave_days'            => (int) ($row->early_leave_days ?? 0),
+            'early_leave_status_days'     => (int) ($row->early_leave_status_days ?? 0),
+            'early_leave_minutes'         => (int) ($row->early_leave_minutes ?? 0),
+            'early_leave_fine'            => (float) ($row->early_leave_fine ?? 0),
+            'early_leave_prorata_days'    => (int) ($row->early_leave_prorata_days ?? 0),
+            'early_leave_prorata_minutes' => (int) ($row->early_leave_prorata_minutes ?? 0),
+            'missed_checkout_days'        => (int) ($row->missed_checkout_days ?? 0),
+            'missed_checkout_fine'        => (float) ($row->missed_checkout_fine ?? 0),
+            'night_shift_days'            => (int) ($row->night_shift_days ?? 0),
+            'night_shift_bonus'           => (float) ($row->night_shift_bonus ?? 0),
+            'late_days'                   => (int) ($row->late_days ?? 0),
+        ];
+    }
+
+    /**
+     * Hari & jumlah pengajuan cuti/izin APPROVED yang jatuh di dalam periode.
+     *
+     * Dihitung dari IRISAN rentang pengajuan dengan periode payroll, bukan dari
+     * total_days: pengajuan izin 28 Jan–3 Feb hanya boleh memotong gaji Januari
+     * sebanyak hari yang benar-benar jatuh di Januari.
+     *
+     * Hari non-kerja di dalam rentang TIDAK disaring di sini. Izin yang
+     * mengandung akhir pekan memang menghasilkan hari kalender, tetapi presensi
+     * karyawan di hari itu juga tidak diharapkan — kantor yang ingin memotong
+     * per hari kerja efektif sebaiknya memakai mode 'flat' (per pengajuan).
+     *
+     * @param array<int, string> $types Nilai leave_requests.leave_type.
+     * @return array{days: int, incidents: int}
+     */
+    private function approvedLeaveDays(User $user, Carbon $start, Carbon $end, array $types): array
+    {
+        $rows = DB::table('leave_requests')
+            ->where('user_id', $user->id)
+            ->where('status', 'approved')
+            ->whereIn('leave_type', $types)
+            ->where('start_date', '<=', $end->toDateString())
+            ->where('end_date', '>=', $start->toDateString())
+            ->get(['start_date', 'end_date', 'half_day_session']);
+
+        $days = 0;
+        foreach ($rows as $row) {
+            $from = Carbon::parse($row->start_date)->startOfDay()->max($start->copy()->startOfDay());
+            $to   = Carbon::parse($row->end_date)->startOfDay()->min($end->copy()->startOfDay());
+            if ($to->lessThan($from)) {
+                continue;
+            }
+            // Izin setengah hari tetap dihitung 1 hari: pembulatan ke atas
+            // menghindari potongan pecahan hari yang tidak bisa diaudit HRD.
+            $days += (int) $from->diffInDays($to) + 1;
+        }
+
+        return ['days' => $days, 'incidents' => $rows->count()];
+    }
+
+    /**
+     * Hitung total hari kerja seharusnya dalam periode untuk seorang karyawan.
+     * 1. Jika opsi working_days_divisor ditentukan secara khusus oleh pemanggil (bukan default 21),
+     *    hormati nilai tersebut.
+     * 2. Hitung hari kerja kalender berdasarkan jadwal kerja cabang (default Senin-Jumat)
+     *    dikurangi hari libur resmi yang berlaku bagi cabang/perusahaan tersebut.
+     * 3. Pastikan tidak kurang dari realisasi kehadiran (present + absent).
+     */
+    private function periodWorkingDays(
+        User $user,
+        Carbon $start,
+        Carbon $end,
+        Collection $officesById,
+        Collection $holidays,
+        array $rawOptions,
+        array $opt,
+        int $presentDays = 0,
+        int $absentDays = 0,
+    ): int {
+        // Jika opsi working_days_divisor ditentukan secara khusus oleh pemanggil
+        if (isset($rawOptions['working_days_divisor']) && (int) $rawOptions['working_days_divisor'] > 0) {
+            return max($presentDays + $absentDays, (int) $rawOptions['working_days_divisor']);
+        }
+
+        $office = $user->attendance_setting_id ? $officesById->get($user->attendance_setting_id) : null;
+        $workDays = $office?->work_days ?? [1, 2, 3, 4, 5];
+        if (! is_array($workDays) || empty($workDays)) {
+            $workDays = [1, 2, 3, 4, 5];
+        }
+        $workDaysMap = array_flip(array_map('intval', $workDays));
+
+        $userOfficeId = $user->attendance_setting_id;
+        $userHolidayDates = [];
+        foreach ($holidays as $h) {
+            if ($h->attendance_setting_id === null || (int) $h->attendance_setting_id === (int) $userOfficeId) {
+                $userHolidayDates[substr((string) $h->date, 0, 10)] = true;
+            }
+        }
+
+        $count = 0;
+        $cur = $start->copy();
+        while ($cur->lte($end)) {
+            $dow = $cur->dayOfWeek; // 0=Sunday, 1=Monday, ..., 6=Saturday
+            $ds = $cur->toDateString();
+            if (isset($workDaysMap[$dow]) && ! isset($userHolidayDates[$ds])) {
+                $count++;
+            }
+            $cur->addDay();
+        }
+
+        $base = $count > 0 ? $count : (int) ($opt['working_days_divisor'] ?? self::DEFAULT_WORKING_DAYS);
+
+        return max($base, $presentDays + $absentDays);
     }
 
     /**
@@ -1271,6 +1805,7 @@ class PayrollCalculator
         array $calcSteps = [],
         string $currency = CurrencyConverter::BASE,
         float $exchangeRate = 1.0,
+        ?int $workingDays = null,
     ): Payslip {
         $rate = $exchangeRate > 0 ? $exchangeRate : 1.0;
 
@@ -1306,7 +1841,7 @@ class PayrollCalculator
             'bpjs_employee_total' => round($bpjsEmployeeTotal, 2),
             'total_deduction'     => round($deductionTotal, 2),
             'net'                 => round($net, 2),
-            'working_days'        => null,
+            'working_days'        => $workingDays,
             'present_days'        => $presentDays,
             'absent_days'         => $absentDays,
             'overtime_hours'      => $overtimeHours,

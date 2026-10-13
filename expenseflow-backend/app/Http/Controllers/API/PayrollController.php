@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\EmployeeLoan;
 use App\Models\Payroll;
 use App\Models\PayrollAdjustment;
+use App\Models\PayrollGroup;
 use App\Models\PayslipItem;
 use App\Models\Receipt;
 use App\Models\Role;
@@ -13,11 +14,13 @@ use App\Models\User;
 use App\Services\AuditLogger;
 use App\Services\FcmService;
 use App\Services\Payroll\PayrollCalculator;
+use App\Services\Payroll\PayrollPeriodResolver;
 use App\Services\Payroll\Severance\SeveranceCalculatorService;
 use App\Services\Payroll\Thr\ThrCalculatorService;
 use App\Services\PayrollAuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Log;
@@ -44,6 +47,7 @@ class PayrollController extends Controller
         private readonly PayrollCalculator $calculator,
         private readonly ThrCalculatorService $thrCalculator,
         private readonly SeveranceCalculatorService $severanceCalculator,
+        private readonly PayrollPeriodResolver $periodResolver,
     ) {
     }
 
@@ -55,6 +59,173 @@ class PayrollController extends Controller
     private function periodLabel(int $month, int $year): string
     {
         return (self::MONTHS_ID[$month] ?? $month) . ' ' . $year;
+    }
+
+    /**
+     * Aturan validasi tiga input tanggal periode (2026-10-12) — dipakai store() & update().
+     *
+     * Ketiganya WAJIB nullable: seluruh pemanggil lama (14 berkas test, frontend
+     * yang belum diperbarui) hanya mengirim period_month + period_year dan harus
+     * tetap berjalan dengan rentang hasil resolusi otomatis.
+     *
+     * Urutan start/end TIDAK divalidasi di sini (bukan `after_or_equal`): bila
+     * hanya satu dari keduanya dikirim, aturan itu menghasilkan pesan teknis yang
+     * membingungkan. Urutan ditegakkan buildPeriodDates() dengan pesan Indonesia.
+     */
+    private function periodDateRules(): array
+    {
+        return [
+            'period_start_date'    => 'nullable|date_format:Y-m-d',
+            'period_end_date'      => 'nullable|date_format:Y-m-d',
+            'planned_payment_date' => 'nullable|date_format:Y-m-d',
+        ];
+    }
+
+    /**
+     * Predikat RUANG-LINGKUP batch, NULL-aware.
+     *
+     * Disamakan persis dengan guard duplikat periode di store(): NULL pada
+     * attendance_setting_id / payroll_group_id berarti "seluruh perusahaan", dan
+     * karena MySQL menganggap NULL distinct, perbandingan harus eksplisit
+     * whereNull — bukan `where(col, null)` yang selalu menghasilkan false.
+     */
+    private function scopePeriodQuery($query, int $companyId, string $runType, ?int $branchId, ?int $groupId)
+    {
+        return $query
+            ->where('company_id', $companyId)
+            ->where('run_type', $runType)
+            ->when($branchId === null, fn ($q) => $q->whereNull('attendance_setting_id'))
+            ->when($branchId !== null, fn ($q) => $q->where('attendance_setting_id', $branchId))
+            ->when($groupId === null, fn ($q) => $q->whereNull('payroll_group_id'))
+            ->when($groupId !== null, fn ($q) => $q->where('payroll_group_id', $groupId));
+    }
+
+    /**
+     * SATU-SATUNYA tempat rentang cut-off final ditentukan & diuji (2026-10-12).
+     *
+     * $base   = tanggal hasil resolusi otomatis (store) atau rentang tersimpan
+     *           batch yang sedang diedit (update).
+     * $input  = payload HRD; key yang TIDAK dikirim berarti "pakai $base".
+     *
+     * Dipakai store() dan update() agar tidak ada satu pun jalur masuk yang
+     * melewati guard — rentang yang salah menggeser angka gaji seluruh batch.
+     *
+     * @param  array{period_start_date:string,period_end_date:string,planned_payment_date:?string}  $base
+     * @return array{error: ?JsonResponse, dates: array<string,?string>, warnings: list<string>}
+     */
+    private function buildPeriodDates(
+        array $base,
+        array $input,
+        int $companyId,
+        string $runType,
+        ?int $branchId,
+        ?int $groupId,
+        ?int $ignoreId = null,
+    ): array {
+        $warnings = [];
+        $fail = fn (string $message): array => [
+            'error'    => response()->json(['message' => $message], 422),
+            'dates'    => $base,
+            'warnings' => [],
+        ];
+
+        $hasStart = ($input['period_start_date'] ?? null) !== null;
+        $hasEnd   = ($input['period_end_date'] ?? null) !== null;
+
+        // GUARD 1 — override berpasangan. Menerima satu sisi saja berarti
+        // mencampur tanggal manual dengan tanggal otomatis secara senyap, dan
+        // HRD tidak akan pernah tahu jendela presensi mana yang akhirnya dipakai.
+        if ($hasStart !== $hasEnd) {
+            return $fail('Tanggal mulai dan tanggal selesai cut-off presensi harus diisi berpasangan.');
+        }
+
+        $dates = [
+            'period_start_date'    => $hasStart ? $input['period_start_date'] : $base['period_start_date'],
+            'period_end_date'      => $hasEnd ? $input['period_end_date'] : $base['period_end_date'],
+            'planned_payment_date' => array_key_exists('planned_payment_date', $input)
+                ? $input['planned_payment_date']
+                : ($base['planned_payment_date'] ?? null),
+        ];
+
+        $start = Carbon::parse($dates['period_start_date'])->startOfDay();
+        $end   = Carbon::parse($dates['period_end_date'])->startOfDay();
+
+        // GUARD 2 — urutan.
+        if ($end->lt($start)) {
+            return $fail('Tanggal selesai cut-off presensi tidak boleh lebih awal dari tanggal mulai.');
+        }
+
+        // GUARD 3 — panjang rentang wajar. Batas atas 62 hari memberi ruang
+        // periode catch-up dua bulan tanpa membuka rentang absurd (mis. salah
+        // ketik tahun) yang akan menarik presensi bertahun-tahun ke satu slip.
+        $lengthDays = $start->diffInDays($end) + 1;
+        if ($lengthDays < PayrollPeriodResolver::MIN_RANGE_DAYS || $lengthDays > PayrollPeriodResolver::MAX_RANGE_DAYS) {
+            return $fail(
+                "Rentang cut-off presensi tidak wajar ({$lengthDays} hari). Panjang yang diizinkan "
+                . PayrollPeriodResolver::MIN_RANGE_DAYS . '-' . PayrollPeriodResolver::MAX_RANGE_DAYS . ' hari.'
+            );
+        }
+
+        // GUARD 4 — rencana gajian. Sebelum rentang MULAI = mustahil (menggaji
+        // periode yang belum dimulai) → tolak. Sebelum rentang SELESAI hanya
+        // diperingatkan: "gajian dimajukan" justru permintaan eksplisit HRD.
+        if ($dates['planned_payment_date'] !== null) {
+            $pay = Carbon::parse($dates['planned_payment_date'])->startOfDay();
+
+            if ($pay->lt($start)) {
+                return $fail('Rencana tanggal gajian tidak boleh lebih awal dari tanggal mulai cut-off presensi.');
+            }
+
+            if ($pay->lt($end)) {
+                $warnings[] = 'Rencana tanggal gajian (' . $pay->toDateString() . ') jatuh sebelum cut-off presensi selesai ('
+                    . $end->toDateString() . '). Presensi setelah tanggal gajian tetap dihitung pada periode ini.';
+            }
+        }
+
+        // GUARD 5 — tumpang-tindih dalam lingkup sama → 422 (keputusan produk #4).
+        // Semua status dihitung, termasuk `rejected`, karena calculate()
+        // menghidupkannya kembali menjadi draft sehingga ia tetap bisa membayar.
+        $clash = $this->scopePeriodQuery(Payroll::query(), $companyId, $runType, $branchId, $groupId)
+            ->when($ignoreId !== null, fn ($q) => $q->where('id', '!=', $ignoreId))
+            ->whereNotNull('period_start_date')
+            ->whereNotNull('period_end_date')
+            ->where('period_start_date', '<=', $end->toDateString())
+            ->where('period_end_date', '>=', $start->toDateString())
+            ->orderBy('period_start_date')
+            ->first(['id', 'period_label', 'period_start_date', 'period_end_date', 'status']);
+
+        if ($clash) {
+            $clashStart = Carbon::parse($clash->period_start_date)->toDateString();
+            $clashEnd   = Carbon::parse($clash->period_end_date)->toDateString();
+
+            // Pesan WAJIB menyebut id + label batch penghalang: tanpa itu HRD
+            // tidak tahu batch mana yang harus dihapus/diedit lebih dulu.
+            return $fail(
+                "Rentang cut-off presensi bertumpang-tindih dengan batch payroll #{$clash->id} ({$clash->period_label}, "
+                . "{$clashStart} s/d {$clashEnd}, status {$clash->status}). Hapus atau ubah batch tersebut terlebih dahulu."
+            );
+        }
+
+        // PERINGATAN CELAH (non-blocking, keputusan produk #4): ada hari presensi
+        // di antara batch terakhir dan batch ini yang tidak akan pernah terbayar.
+        $previous = $this->scopePeriodQuery(Payroll::query(), $companyId, $runType, $branchId, $groupId)
+            ->when($ignoreId !== null, fn ($q) => $q->where('id', '!=', $ignoreId))
+            ->whereNotNull('period_end_date')
+            ->where('period_end_date', '<', $start->toDateString())
+            ->orderByDesc('period_end_date')
+            ->first(['id', 'period_label', 'period_end_date']);
+
+        if ($previous) {
+            $expectedStart = Carbon::parse($previous->period_end_date)->startOfDay()->addDay();
+            if ($start->gt($expectedStart)) {
+                $gapDays = $expectedStart->diffInDays($start);
+                $warnings[] = "Ada celah {$gapDays} hari antara batch #{$previous->id} ({$previous->period_label}, selesai "
+                    . Carbon::parse($previous->period_end_date)->toDateString() . ') dan periode ini yang mulai '
+                    . $start->toDateString() . '. Presensi pada celah tersebut tidak akan terbayar pada batch mana pun.';
+            }
+        }
+
+        return ['error' => null, 'dates' => $dates, 'warnings' => $warnings];
     }
 
     /**
@@ -195,7 +366,7 @@ class PayrollController extends Controller
             'run_type'              => ['nullable', Rule::in(Payroll::RUN_TYPES)],
             'is_year_end'           => 'boolean',
             'notes'                 => 'nullable|string|max:1000',
-        ]);
+        ] + $this->periodDateRules());
 
         $month    = (int) $validated['period_month'];
         $year     = (int) $validated['period_year'];
@@ -229,6 +400,28 @@ class PayrollController extends Controller
             ], 422);
         }
 
+        // RENTANG CUT-OFF PRESENSI & RENCANA GAJIAN (2026-10-12).
+        // Diisi otomatis dari pengaturan grup payroll; batch tanpa grup jatuh ke
+        // bulan kalender penuh (keputusan produk #2 — perilaku lama, nol regresi).
+        $group = $groupId !== null
+            ? PayrollGroup::where('company_id', $companyId)->find($groupId)
+            : null;
+
+        $resolved = $this->periodResolver->resolveForGroup($year, $month, $group);
+
+        $period = $this->buildPeriodDates(
+            base: $resolved,
+            input: $validated,
+            companyId: $companyId,
+            runType: $runType,
+            branchId: $branchId,
+            groupId: $groupId,
+        );
+
+        if ($period['error'] !== null) {
+            return $period['error'];
+        }
+
         $payroll = Payroll::create([
             'company_id'            => $companyId,
             'attendance_setting_id' => $branchId,
@@ -236,6 +429,9 @@ class PayrollController extends Controller
             'payroll_group_id'      => $groupId,
             'period_month'          => $month,
             'period_year'           => $year,
+            'period_start_date'     => $period['dates']['period_start_date'],
+            'period_end_date'       => $period['dates']['period_end_date'],
+            'planned_payment_date'  => $period['dates']['planned_payment_date'],
             'period_label'          => $this->periodLabel($month, $year),
             'is_year_end'           => $isYearEnd,
             'status'                => Payroll::STATUS_DRAFT,
@@ -253,12 +449,181 @@ class PayrollController extends Controller
             newValues: $payroll->toArray(),
         );
 
+        // Rentang diikutkan ke rantai hash SHA-256: jendela presensi menentukan
+        // angka gaji, jadi perubahannya harus tamper-evident sama seperti status.
         $this->payrollChainLog($payroll, 'PAYROLL_RUN_CREATED', [
-            'status'       => $payroll->status,
-            'period_label' => $payroll->period_label,
+            'status'               => $payroll->status,
+            'period_label'         => $payroll->period_label,
+            'period_start_date'    => $period['dates']['period_start_date'],
+            'period_end_date'      => $period['dates']['period_end_date'],
+            'planned_payment_date' => $period['dates']['planned_payment_date'],
         ]);
 
-        return response()->json(['message' => 'Batch payroll dibuat.', 'data' => $payroll], 201);
+        return response()->json([
+            'message'  => 'Batch payroll dibuat.',
+            'data'     => $payroll,
+            'warnings' => $period['warnings'],
+            'meta'     => ['period_source' => $resolved['source']],
+        ], 201);
+    }
+
+    /**
+     * PUT /dashboard/payroll/runs/{payroll}
+     *
+     * KOREKSI RENTANG CUT-OFF & RENCANA GAJIAN BATCH YANG SUDAH DIBUAT (2026-10-12).
+     *
+     * Permintaan "tetap bisa diedit manual oleh HRD jika ada libur panjang atau
+     * gajian ingin dimajukan" tidak cukup dipenuhi di modal pembuatan saja —
+     * libur panjang biasanya baru diketahui setelah batch draft dibuat.
+     *
+     * Yang BOLEH diubah hanya tiga tanggal itu + notes. period_month/period_year/
+     * run_type/cabang/grup adalah IDENTITAS batch sekaligus kunci pajak
+     * (employee_tax_period_totals.tax_month) — mengubahnya lewat endpoint ini
+     * akan memindahkan akumulasi PPh 21 tanpa jejak; buat batch baru untuk itu.
+     */
+    public function update(Request $request, Payroll $payroll): JsonResponse
+    {
+        $user = $request->user();
+        if (! $user->hasPermission(Role::MODULE_PAYROLL, 'manage')) {
+            return $this->deny();
+        }
+        if ((int) $payroll->company_id !== (int) $user->company_id) {
+            return response()->json(['message' => 'Batch payroll tidak ditemukan.'], 404);
+        }
+        // Status yang sama dengan destroy(): approved & paid terkunci permanen —
+        // slip sudah terbit, jendela presensinya tidak boleh bergerak lagi.
+        if (! in_array($payroll->status, [Payroll::STATUS_DRAFT, Payroll::STATUS_CALCULATED, Payroll::STATUS_REJECTED], true)) {
+            return response()->json([
+                'message' => 'Batch yang sudah diajukan/disetujui/dibayar tidak dapat diubah periodenya.',
+            ], 422);
+        }
+
+        $validated = $request->validate([
+            'notes' => 'nullable|string|max:1000',
+        ] + $this->periodDateRules());
+
+        [$currentStart, $currentEnd] = $payroll->periodRange();
+
+        $period = $this->buildPeriodDates(
+            base: [
+                'period_start_date'    => $currentStart->toDateString(),
+                'period_end_date'      => $currentEnd->toDateString(),
+                'planned_payment_date' => $payroll->planned_payment_date
+                    ? Carbon::parse($payroll->planned_payment_date)->toDateString()
+                    : null,
+            ],
+            input: $validated,
+            companyId: (int) $payroll->company_id,
+            runType: (string) $payroll->run_type,
+            branchId: $payroll->attendance_setting_id !== null ? (int) $payroll->attendance_setting_id : null,
+            groupId: $payroll->payroll_group_id !== null ? (int) $payroll->payroll_group_id : null,
+            ignoreId: (int) $payroll->id, // dirinya sendiri bukan tumpang-tindih
+        );
+
+        if ($period['error'] !== null) {
+            return $period['error'];
+        }
+
+        $rangeChanged = $period['dates']['period_start_date'] !== $currentStart->toDateString()
+            || $period['dates']['period_end_date'] !== $currentEnd->toDateString();
+
+        $old = $payroll->only([
+            'period_start_date', 'period_end_date', 'planned_payment_date', 'notes', 'status',
+        ]);
+
+        $changes = [
+            'period_start_date'    => $period['dates']['period_start_date'],
+            'period_end_date'      => $period['dates']['period_end_date'],
+            'planned_payment_date' => $period['dates']['planned_payment_date'],
+        ];
+
+        if (array_key_exists('notes', $validated)) {
+            $changes['notes'] = $validated['notes'];
+        }
+
+        // PENGAMAN TERPENTING DI METHOD INI: slip yang sudah dihitung memakai
+        // rentang LAMA. submit() hanya mensyaratkan status `calculated`, jadi tanpa
+        // reset ini batch bisa langsung diajukan & disetujui — menerbitkan gaji
+        // dari jendela presensi yang sudah tidak berlaku. Payslip TIDAK dihapus
+        // (merusak data yang mungkin sedang ditinjau); calculate() sudah idempoten.
+        if ($rangeChanged && $payroll->status === Payroll::STATUS_CALCULATED) {
+            $changes['status']        = Payroll::STATUS_DRAFT;
+            $changes['calculated_at'] = null;
+        }
+
+        $payroll->update($changes);
+        $payroll->refresh();
+
+        AuditLogger::log(
+            action: 'PAYROLL_RUN_PERIOD_UPDATED',
+            description: "Memperbarui periode batch payroll {$payroll->period_label}: "
+                . "{$changes['period_start_date']} s/d {$changes['period_end_date']}",
+            category: AuditLogger::CATEGORY_FINANCE,
+            severity: AuditLogger::SEVERITY_INFO,
+            entityType: 'Payroll',
+            entityId: $payroll->id,
+            oldValues: $old,
+            newValues: $changes,
+        );
+
+        $this->payrollChainLog($payroll, 'PAYROLL_RUN_PERIOD_UPDATED', [
+            'status'               => $payroll->status,
+            'period_start_date'    => $changes['period_start_date'],
+            'period_end_date'      => $changes['period_end_date'],
+            'planned_payment_date' => $changes['planned_payment_date'],
+        ]);
+
+        $message = 'Periode batch payroll diperbarui.';
+        if ($rangeChanged && $old['status'] === Payroll::STATUS_CALCULATED) {
+            $message .= ' Rentang presensi berubah, status dikembalikan ke draft — batch wajib dihitung ulang.';
+        }
+
+        return response()->json([
+            'message'  => $message,
+            'data'     => $payroll,
+            'warnings' => $period['warnings'],
+        ]);
+    }
+
+    /**
+     * GET /dashboard/payroll/period-preview
+     *
+     * Pratinjau rentang cut-off & rencana gajian untuk modal "Buat Periode Payroll".
+     *
+     * Endpoint ini ada justru agar frontend TIDAK menduplikasi aturan resolusi
+     * (clamping bulan pendek, offset bulan gajian, arti nilai 0) di TypeScript
+     * lalu menyimpang dari backend. Satu sumber kebenaran: PayrollPeriodResolver.
+     */
+    public function periodPreview(Request $request): JsonResponse
+    {
+        $user = $request->user();
+        if (! $user->hasPermission(Role::MODULE_PAYROLL, 'read')) {
+            return $this->deny();
+        }
+
+        $companyId = (int) $user->company_id;
+
+        $validated = $request->validate([
+            'period_month'     => 'required|integer|min:1|max:12',
+            'period_year'      => 'required|integer|min:2020|max:2100',
+            'payroll_group_id' => [
+                'nullable', 'integer',
+                Rule::exists('payroll_groups', 'id')->where(fn ($q) => $q->where('company_id', $companyId)),
+            ],
+        ]);
+
+        $groupId = $validated['payroll_group_id'] ?? null;
+        $group   = $groupId !== null
+            ? PayrollGroup::where('company_id', $companyId)->find($groupId)
+            : null;
+
+        $resolved = $this->periodResolver->resolveForGroup(
+            (int) $validated['period_year'],
+            (int) $validated['period_month'],
+            $group,
+        );
+
+        return response()->json(['data' => $resolved]);
     }
 
     /** GET /dashboard/payroll/runs/{payroll} */
@@ -308,6 +673,15 @@ class PayrollController extends Controller
             'receipt_reimbursement' => 'boolean',
             'loan_installment'      => 'boolean',
             'adjustments'           => 'boolean',
+            // Peraturan denda & bonus kantor (2026-10-11). Semua default ON;
+            // flag ini hanya untuk MEMATIKAN modulnya pada satu batch — besaran
+            // tetap diatur di pengaturan kantor, bukan di sini.
+            'early_leave_penalty'      => 'boolean',
+            'alpha_penalty'            => 'boolean',
+            'unpaid_leave_penalty'     => 'boolean',
+            'missed_checkout_penalty'  => 'boolean',
+            'perfect_attendance_bonus' => 'boolean',
+            'night_shift_bonus'        => 'boolean',
             'working_days_divisor'  => 'nullable|integer|min:1|max:31',
         ]);
 

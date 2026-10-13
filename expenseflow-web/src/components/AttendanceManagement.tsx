@@ -48,6 +48,9 @@ import {
   ShieldCheck,
   BookOpen,
   Infinity,
+  ArrowRightLeft,
+  Banknote,
+  Coins,
 } from 'lucide-react';
 import { attendanceApi } from '../services/endpoints';
 import { ApiError, getRetryAfterSeconds, invalidateCache, onDataVersionChange } from '../services/api';
@@ -55,7 +58,7 @@ import { useDebounce } from '../hooks/useDebounce';
 import { useAuth } from '../auth/AuthContext';
 import CustomDatePicker from './CustomDatePicker';
 import { ConfirmationDialog } from './ConfirmationDialog';
-import type { LeaveTypeSettingItem } from '../types';
+import type { LeaveTypeSettingItem, LeaveBalanceHistoryItem } from '../types';
 
 export const LEAVE_TYPE_LABELS: Record<string, string> = {
   cuti: 'Cuti Tahunan',
@@ -965,18 +968,33 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   // Sub-tab & history state untuk Saldo Cuti
   const [balanceSubTab, setBalanceSubTab] = useState<'active' | 'history' | 'leave_types'>('active');
-  const [balanceHistories, setBalanceHistories] = useState<any[]>([]);
+  const [balanceHistories, setBalanceHistories] = useState<LeaveBalanceHistoryItem[]>([]);
   const [balanceHistoryStats, setBalanceHistoryStats] = useState<{
     total_records: number;
     total_cuti_used: number;
     total_cuti_remaining: number;
     total_izin_sakit_used: number;
+    total_carried_over_days?: number;
+    total_encashed_days?: number;
+    total_encashment_amount?: number;
   } | null>(null);
   const [balanceHistoryOfficeFilter, setBalanceHistoryOfficeFilter] = useState('');
   const [balanceHistoryYearFilter, setBalanceHistoryYearFilter] = useState('');
   const [balanceHistorySearch, setBalanceHistorySearch] = useState('');
   const [balanceHistoryLoading, setBalanceHistoryLoading] = useState(false);
   const [resetOfficeModal, setResetOfficeModal] = useState<{ id: number; name: string; quota: number; resetDate: string } | null>(null);
+  const [resetSummaryModal, setResetSummaryModal] = useState<{
+    officeName: string;
+    resetCount: number;
+    message: string;
+    summary: {
+      carried_over_days: number;
+      encashed_days: number;
+      encashment_amount: number;
+      carry_over_enabled: boolean;
+      encashment_enabled: boolean;
+    } | null;
+  } | null>(null);
   const [isResettingOffice, setIsResettingOffice] = useState(false);
 
   // State ekspansi jenis cuti tambahan per user & modal edit saldo
@@ -1011,6 +1029,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       officeDefault: number;
       isOfficeDisabled?: boolean;
       isUnlimited?: boolean;
+      carried_over_quota?: number;
+      carry_over_expired_at?: string | null;
     }>;
     originalBalancesMap: Record<string, number>;
     leavesHistory: any[];
@@ -1024,6 +1044,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
   // Modal rincian snapshot cuti tambahan periode lalu
   const [viewingSnapshotHistory, setViewingSnapshotHistory] = useState<any | null>(null);
+  // Modal rincian snapshot kebijakan cuti (carry-over & pencairan) periode lalu
+  const [viewingPolicySnapshot, setViewingPolicySnapshot] = useState<LeaveBalanceHistoryItem | null>(null);
 
   // State untuk sub-tab "Pengaturan Jenis Cuti Kantor"
   const [leaveTypeOfficeId, setLeaveTypeOfficeId] = useState<string>('');
@@ -1279,6 +1301,14 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
       onAddAuditLog('Reset Saldo Cuti', `Manual reset kantor ${officeName}: ${res.reset_count} karyawan`, 'bg-amber-500');
       onAddNotification('success', 'Reset Saldo Berhasil', res.message || `Saldo cuti kantor ${officeName} berhasil di-reset.`);
       setResetOfficeModal(null);
+      if (res?.carry_over_summary) {
+        setResetSummaryModal({
+          officeName,
+          resetCount: Number(res.reset_count || 0),
+          message: res.message || `Saldo cuti kantor ${officeName} berhasil di-reset.`,
+          summary: res.carry_over_summary,
+        });
+      }
       await Promise.all([loadBalances(), loadBalanceHistories()]);
     } catch (e) {
       reportApiError(e, `Gagal me-reset saldo kantor ${officeName}.`);
@@ -1463,7 +1493,16 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
     initialTab: 'matrix' | 'history' = 'matrix'
   ) => {
     const userBalances = balances.filter(b => b.user_id === userId);
-    const balanceMap: Record<string, { quota: number; used: number; remaining: number; officeDefault: number; isOfficeDisabled: boolean; isUnlimited: boolean }> = {};
+    const balanceMap: Record<string, {
+      quota: number;
+      used: number;
+      remaining: number;
+      officeDefault: number;
+      isOfficeDisabled: boolean;
+      isUnlimited: boolean;
+      carried_over_quota?: number;
+      carry_over_expired_at?: string | null;
+    }> = {};
     const originalMap: Record<string, number> = {};
 
     const userProfileForEligibility = {
@@ -1503,6 +1542,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
         officeDefault,
         isOfficeDisabled,
         isUnlimited,
+        carried_over_quota: type === 'cuti' && found?.carried_over_quota !== undefined ? Number(found.carried_over_quota) : undefined,
+        carry_over_expired_at: type === 'cuti' ? (found?.carry_over_expired_at ?? null) : null,
       };
       originalMap[type] = remaining;
     });
@@ -2010,15 +2051,37 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
   // sumber selisih gaji yang tidak terdeteksi.
   // ═══════════════════════════════════════════════════════════════════
 
-  /** Periode "YYYY-MM" yang slip gajinya sudah approved/paid → koreksi ditolak server. */
+  /** Jendela cut-off nyata tiap batch payroll approved/paid (presisi per-hari). */
+  const lockedRanges = useMemo<Array<{ start: string; end: string; payroll_id: number; status: string; period_label: string }>>(
+    () => (Array.isArray((report as any)?.locked_ranges) ? (report as any).locked_ranges : []),
+    [report]
+  );
+
+  /** Periode "YYYY-MM" yang slip gajinya sudah approved/paid (fallback kompatibilitas). */
   const lockedPeriods: string[] = useMemo(
     () => (Array.isArray((report as any)?.locked_periods) ? (report as any).locked_periods : []),
     [report]
   );
 
+  const getLockingRange = useCallback(
+    (date?: string | null) => {
+      if (!date) return undefined;
+      const d = String(date).slice(0, 10);
+      return lockedRanges.find((r) => d >= r.start && d <= r.end);
+    },
+    [lockedRanges]
+  );
+
   const isPeriodLocked = useCallback(
-    (date?: string | null) => !!date && lockedPeriods.includes(String(date).slice(0, 7)),
-    [lockedPeriods]
+    (date?: string | null) => {
+      if (!date) return false;
+      const d = String(date).slice(0, 10);
+      if (lockedRanges.length > 0) {
+        return lockedRanges.some((r) => d >= r.start && d <= r.end);
+      }
+      return lockedPeriods.includes(d.slice(0, 7));
+    },
+    [lockedRanges, lockedPeriods]
   );
 
   /** "2026-10-06T08:05:00+07:00" atau "08:05:00" → "08:05" untuk <input type="time"> (string parsing murni tanpa new Date() agar tidak tergeser zona laptop HRD). */
@@ -3902,6 +3965,17 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                         {cuti.remaining}
                                         <span className="text-[10px] font-normal text-slate-400 ml-1">/ {cuti.quota} hari sisa</span>
                                       </p>
+                                      {Number(cuti.carried_over_quota || 0) > 0 && (
+                                        <div className="flex items-center gap-1.5 py-0.5 px-1.5 rounded-md bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/40 text-[10px] text-indigo-700 dark:text-indigo-300">
+                                          <ArrowRightLeft className="w-3 h-3 text-indigo-500 shrink-0" />
+                                          <span className="font-semibold">{cuti.carried_over_quota} hr carry-over</span>
+                                          {cuti.carry_over_expired_at && (
+                                            <span className="text-[9px] text-indigo-500 dark:text-indigo-400">
+                                              (exp {fmtDate(cuti.carry_over_expired_at)})
+                                            </span>
+                                          )}
+                                        </div>
+                                      )}
                                       <div className="w-full h-1.5 bg-slate-200 dark:bg-slate-700 rounded-full overflow-hidden">
                                         <div
                                           className={`h-full rounded-full transition-all ${progressColor(cuti.remaining, cuti.quota)}`}
@@ -4160,8 +4234,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
           {balanceSubTab === 'history' && (
             <div className="space-y-4">
               {/* Top KPI Cards */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5 space-y-1">
                   <div className="flex items-center justify-between">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Catatan</p>
                     <Archive className="w-3.5 h-3.5 text-indigo-500" />
@@ -4172,9 +4246,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </p>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5 space-y-1">
                   <div className="flex items-center justify-between">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Cuti Terpakai Lalu</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Cuti Terpakai</p>
                     <CalendarCheck className="w-3.5 h-3.5 text-teal-500" />
                   </div>
                   <p className="text-lg font-extrabold text-teal-600 dark:text-teal-400">
@@ -4183,9 +4257,9 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </p>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5 space-y-1">
                   <div className="flex items-center justify-between">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Sisa Cuti Hangus</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Sisa Cuti</p>
                     <Clock className="w-3.5 h-3.5 text-amber-500" />
                   </div>
                   <p className="text-lg font-extrabold text-amber-600 dark:text-amber-400">
@@ -4194,7 +4268,39 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   </p>
                 </div>
 
-                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-4 space-y-1">
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Hari Dibawa</p>
+                    <ArrowRightLeft className="w-3.5 h-3.5 text-indigo-500" />
+                  </div>
+                  <p className="text-lg font-extrabold text-indigo-600 dark:text-indigo-400">
+                    {balanceHistoryStats?.total_carried_over_days ?? balanceHistories.reduce((s, h) => s + (h.carried_over_days || 0), 0)}
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">hari</span>
+                  </p>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Hari Dicairkan</p>
+                    <Banknote className="w-3.5 h-3.5 text-emerald-500" />
+                  </div>
+                  <p className="text-lg font-extrabold text-emerald-600 dark:text-emerald-400">
+                    {balanceHistoryStats?.total_encashed_days ?? balanceHistories.reduce((s, h) => s + (h.encashed_days || 0), 0)}
+                    <span className="text-[10px] font-normal text-slate-400 ml-1">hari</span>
+                  </p>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5 space-y-1">
+                  <div className="flex items-center justify-between">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Biaya Pencairan</p>
+                    <Coins className="w-3.5 h-3.5 text-teal-500" />
+                  </div>
+                  <p className="text-base font-extrabold text-teal-600 dark:text-teal-400 truncate" title={`Rp ${Number(balanceHistoryStats?.total_encashment_amount ?? balanceHistories.reduce((s, h) => s + (Number(h.encashment_amount) || 0), 0)).toLocaleString('id-ID')}`}>
+                    Rp {Number(balanceHistoryStats?.total_encashment_amount ?? balanceHistories.reduce((s, h) => s + (Number(h.encashment_amount) || 0), 0)).toLocaleString('id-ID')}
+                  </p>
+                </div>
+
+                <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-2xl p-3.5 space-y-1">
                   <div className="flex items-center justify-between">
                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Izin/Sakit Lalu</p>
                     <ClipboardList className="w-3.5 h-3.5 text-purple-500" />
@@ -4253,7 +4359,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                   <button
                     onClick={() => loadBalanceHistories(true)}
                     disabled={balanceHistoryLoading}
-                    className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition disabled:opacity-50"
+                    className="p-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition disabled:opacity-50 cursor-pointer"
                     title="Segarkan Riwayat"
                   >
                     <RefreshCw className={`w-3.5 h-3.5 ${balanceHistoryLoading ? 'animate-spin' : ''}`} />
@@ -4271,22 +4377,23 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                         <th className="py-3 px-3 font-semibold">Kantor Cabang</th>
                         <th className="py-3 px-3 font-semibold">Periode Siklus</th>
                         <th className="py-3 px-3 font-semibold text-center">Cuti Tahunan (Awal / Terpakai / Sisa)</th>
-                        <th className="py-3 px-3 font-semibold text-center">Izin &amp; Sakit Terpakai</th>
+                        <th className="py-3 px-3 font-semibold">Alokasi Sisa Cuti</th>
+                        <th className="py-3 px-3 font-semibold text-center">Izin &amp; Sakit</th>
                         <th className="py-3 px-3 font-semibold">Tanggal Reset</th>
-                        <th className="py-3 px-3 font-semibold text-right">Status / Keterangan</th>
+                        <th className="py-3 px-3 font-semibold text-right">Status / Dokumen Snapshot</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-50 dark:divide-slate-800/60">
                       {balanceHistoryLoading ? (
                         <tr>
-                          <td colSpan={7} className="text-center py-12 text-slate-400">
+                          <td colSpan={8} className="text-center py-12 text-slate-400">
                             <Loader2 className="w-5 h-5 animate-spin mx-auto mb-2 text-indigo-500" />
                             Memuat riwayat saldo cuti...
                           </td>
                         </tr>
                       ) : balanceHistories.length === 0 ? (
                         <tr>
-                          <td colSpan={7} className="text-center py-12 text-slate-400 space-y-2">
+                          <td colSpan={8} className="text-center py-12 text-slate-400 space-y-2">
                             <Archive className="w-8 h-8 mx-auto text-slate-300 dark:text-slate-600" />
                             <p className="font-semibold text-slate-600 dark:text-slate-300">Belum ada riwayat saldo periode sebelumnya.</p>
                             <p className="text-[11px] text-slate-400 max-w-md mx-auto">
@@ -4295,7 +4402,7 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                           </td>
                         </tr>
                       ) : (
-                        balanceHistories.map((h: any) => (
+                        balanceHistories.map((h: LeaveBalanceHistoryItem) => (
                           <tr key={h.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/30 transition-colors">
                             <td className="py-3 px-3.5">
                               <p className="font-semibold text-slate-800 dark:text-slate-100">{h.user_name}</p>
@@ -4323,8 +4430,39 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 <span className="text-slate-300">/</span>
                                 <span className="text-teal-600 dark:text-teal-400 font-bold" title="Cuti Terpakai">{h.cuti_used} terpakai</span>
                                 <span className="text-slate-300">/</span>
-                                <span className="text-amber-600 dark:text-amber-400 font-semibold" title="Sisa Cuti Hangus">{h.cuti_remaining} sisa</span>
+                                <span className="text-amber-600 dark:text-amber-400 font-semibold" title="Sisa Cuti">{h.cuti_remaining} sisa</span>
                               </div>
+                            </td>
+                            <td className="py-3 px-3">
+                              {h.remaining_outcome_label ? (
+                                <div className="space-y-1">
+                                  <p className="text-[11px] font-medium text-slate-700 dark:text-slate-300">
+                                    {h.remaining_outcome_label}
+                                  </p>
+                                  <div className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                                    {h.carried_over_days > 0 && (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300 border border-indigo-100 dark:border-indigo-900/40 font-mono">
+                                        <ArrowRightLeft className="w-2.5 h-2.5" />
+                                        {h.carried_over_days} hr bawa
+                                        {h.carry_over_expired_at && ` (exp ${fmtDate(h.carry_over_expired_at)})`}
+                                      </span>
+                                    )}
+                                    {h.encashed_days > 0 && (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-100 dark:border-emerald-900/40 font-mono">
+                                        <Banknote className="w-2.5 h-2.5" />
+                                        {h.encashed_days} hr cair (Rp {Number(h.encashment_amount || 0).toLocaleString('id-ID')})
+                                      </span>
+                                    )}
+                                    {h.forfeited_days > 0 && (
+                                      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border border-amber-100 dark:border-amber-900/40 font-mono">
+                                        {h.forfeited_days} hr hangus
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              ) : (
+                                <span className="text-slate-400 text-[11px] italic">—</span>
+                              )}
                             </td>
                             <td className="py-3 px-3 text-center">
                               <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-purple-50 dark:bg-purple-950/30 text-purple-700 dark:text-purple-300 text-[11px] font-bold">
@@ -4339,8 +4477,18 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                 <CheckCircle2 className="w-3 h-3" />
                                 Telah Di-reset
                               </span>
-                              {h.leave_types_snapshot && typeof h.leave_types_snapshot === 'object' && Object.keys(h.leave_types_snapshot).length > 0 && (
-                                <div className="mt-1">
+                              <div className="mt-1 flex flex-col items-end gap-1">
+                                {h.policy_snapshot && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setViewingPolicySnapshot(h)}
+                                    className="inline-flex items-center gap-1 text-[10px] font-bold text-teal-600 dark:text-teal-400 hover:text-teal-700 dark:hover:text-teal-300 hover:underline cursor-pointer"
+                                  >
+                                    <ShieldCheck className="w-3 h-3" />
+                                    Snapshot Kebijakan Cuti
+                                  </button>
+                                )}
+                                {h.leave_types_snapshot && typeof h.leave_types_snapshot === 'object' && Object.keys(h.leave_types_snapshot).length > 0 && (
                                   <button
                                     type="button"
                                     onClick={() => setViewingSnapshotHistory(h)}
@@ -4349,8 +4497,8 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                     <FileText className="w-3 h-3" />
                                     Snapshot Cuti Khusus
                                   </button>
-                                </div>
-                              )}
+                                )}
+                              </div>
                               {h.notes && (
                                 <p className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[200px] ml-auto" title={h.notes}>
                                   {h.notes}
@@ -4564,31 +4712,6 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                       </p>
                     )}
                   </div>
-                </div>
-
-                {/* Switch Multi-Approval (Atasan -> HRD) */}
-                <div className="pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
-                  <div>
-                    <p className="text-xs font-bold text-slate-700 dark:text-slate-200">
-                      Persetujuan Berjenjang (Multi-Level Approval Cuti)
-                    </p>
-                    <p className="text-[10px] text-slate-400">
-                      Pengajuan izin &amp; cuti harus disetujui Atasan Langsung (SPV) terlebih dahulu sebelum diproses final oleh HRD
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setLeaveTypeOfficeMultiApproval(!leaveTypeOfficeMultiApproval)}
-                    className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors cursor-pointer ${
-                      leaveTypeOfficeMultiApproval ? 'bg-indigo-600' : 'bg-slate-300 dark:bg-slate-700'
-                    }`}
-                  >
-                    <span
-                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
-                        leaveTypeOfficeMultiApproval ? 'translate-x-4' : 'translate-x-1'
-                      }`}
-                    />
-                  </button>
                 </div>
               </div>
 
@@ -5305,11 +5428,12 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
 
                                   // Periode payroll approved/paid: tombol non-aktif TANPA harus
                                   // gagal dulu di server (locked_periods dikirim di envelope laporan).
-                                  const locked = isPeriodLocked(r.date);
+                                  const lockingRange = getLockingRange(r.date);
+                                  const locked = !!lockingRange || isPeriodLocked(r.date);
                                   if (locked) {
                                     return (
                                       <span
-                                        title="Payroll periode ini sudah disetujui/dibayarkan — presensi bulan tersebut tidak bisa dikoreksi lagi."
+                                        title={lockingRange ? `Presensi tanggal ${r.date} terkunci oleh batch payroll #${lockingRange.payroll_id} (${lockingRange.period_label}, status: ${lockingRange.status}). Rentang: ${lockingRange.start} s/d ${lockingRange.end}.` : 'Payroll periode ini sudah disetujui/dibayarkan — presensi tanggal ini tidak bisa dikoreksi lagi.'}
                                         className="inline-flex items-center justify-center p-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-400 dark:text-slate-600 cursor-not-allowed"
                                       >
                                         <Lock className="w-3.5 h-3.5" />
@@ -6457,10 +6581,17 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
                                         <CalendarDays className="w-3.5 h-3.5" />
                                       </div>
                                       <div className="min-w-0">
-                                        <div className="flex items-center gap-1.5">
+                                        <div className="flex items-center gap-1.5 flex-wrap">
                                           <p className={`font-bold text-xs ${!isEligible ? 'text-slate-400 dark:text-slate-500 line-through decoration-slate-300 dark:decoration-slate-600' : 'text-slate-800 dark:text-slate-100'}`}>
                                             {isIzin ? 'Izin' : label}
                                           </p>
+                                          {leaveType === 'cuti' && Number(item.carried_over_quota || 0) > 0 && (
+                                            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-semibold bg-indigo-50 text-indigo-700 dark:bg-indigo-950/60 dark:text-indigo-300 border border-indigo-200/80 dark:border-indigo-800">
+                                              <ArrowRightLeft className="w-2.5 h-2.5" />
+                                              {item.carried_over_quota} hr carry-over
+                                              {item.carry_over_expired_at && ` (exp ${fmtDate(item.carry_over_expired_at)})`}
+                                            </span>
+                                          )}
                                           {isOfficeDisabled ? (
                                             <span className="text-[9px] font-semibold px-1.5 py-0.5 rounded bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300">
                                               Off Kantor
@@ -7223,6 +7354,319 @@ export const AttendanceManagement: React.FC<Props> = ({ onAddAuditLog, onAddNoti
               <button
                 type="button"
                 onClick={() => setViewingSnapshotHistory(null)}
+                className="px-4 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Ringkasan Hasil Reset Manual Saldo Kantor (Carry-Over & Pencairan) ── */}
+      {resetSummaryModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-gradient-to-r from-teal-500/10 via-indigo-500/10 to-transparent">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-teal-500 text-white shadow-md shadow-teal-500/20">
+                  <CheckCircle2 className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                    Hasil Reset Saldo Cuti Kantor
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    {resetSummaryModal.officeName} • {resetSummaryModal.resetCount} Karyawan Diproses
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setResetSummaryModal(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4 text-xs">
+              <div className="p-3 rounded-2xl bg-slate-50 dark:bg-slate-800/40 border border-slate-100 dark:border-slate-800 space-y-1">
+                <p className="font-semibold text-slate-700 dark:text-slate-200">
+                  {resetSummaryModal.message}
+                </p>
+                <p className="text-[11px] text-slate-500 dark:text-slate-400">
+                  Siklus berjalan telah diarsipkan ke <strong>Riwayat Saldo Sebelumnya</strong> dan kuota berjalan telah diperbarui sesuai standar kantor serta kebijakan sisa cuti.
+                </p>
+              </div>
+
+              {/* Status Kebijakan Kantor */}
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between">
+                  <span className="text-slate-500">Kebijakan Carry-Over:</span>
+                  <span className={`font-bold px-2 py-0.5 rounded text-[10px] ${
+                    resetSummaryModal.summary?.carry_over_enabled
+                      ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
+                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                  }`}>
+                    {resetSummaryModal.summary?.carry_over_enabled ? 'Aktif' : 'Nonaktif'}
+                  </span>
+                </div>
+                <div className="p-2.5 rounded-xl border border-slate-100 dark:border-slate-800 bg-white dark:bg-slate-900 flex items-center justify-between">
+                  <span className="text-slate-500">Pencairan ke Uang:</span>
+                  <span className={`font-bold px-2 py-0.5 rounded text-[10px] ${
+                    resetSummaryModal.summary?.encashment_enabled
+                      ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                      : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                  }`}>
+                    {resetSummaryModal.summary?.encashment_enabled ? 'Aktif' : 'Nonaktif'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Stat Cards Breakdown */}
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3.5 rounded-2xl bg-indigo-50/60 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 text-center space-y-1">
+                  <p className="text-[10px] font-bold text-indigo-500 uppercase tracking-wider flex items-center justify-center gap-1">
+                    <ArrowRightLeft className="w-3 h-3" />
+                    Hari Dibawa
+                  </p>
+                  <p className="text-xl font-extrabold text-indigo-700 dark:text-indigo-300">
+                    {resetSummaryModal.summary?.carried_over_days ?? 0}
+                    <span className="text-xs font-normal text-indigo-500 ml-1">hari</span>
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Ditambahkan ke kuota periode baru
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-emerald-50/60 dark:bg-emerald-950/30 border border-emerald-100 dark:border-emerald-900/40 text-center space-y-1">
+                  <p className="text-[10px] font-bold text-emerald-500 uppercase tracking-wider flex items-center justify-center gap-1">
+                    <Banknote className="w-3 h-3" />
+                    Hari Dicairkan
+                  </p>
+                  <p className="text-xl font-extrabold text-emerald-700 dark:text-emerald-300">
+                    {resetSummaryModal.summary?.encashed_days ?? 0}
+                    <span className="text-xs font-normal text-emerald-500 ml-1">hari</span>
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Dikonversi jadi penyesuaian gaji
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-2xl bg-teal-50/60 dark:bg-teal-950/30 border border-teal-100 dark:border-teal-900/40 text-center space-y-1">
+                  <p className="text-[10px] font-bold text-teal-500 uppercase tracking-wider flex items-center justify-center gap-1">
+                    <Coins className="w-3 h-3" />
+                    Dana Pencairan
+                  </p>
+                  <p className="text-base font-extrabold text-teal-700 dark:text-teal-300 truncate" title={`Rp ${Number(resetSummaryModal.summary?.encashment_amount ?? 0).toLocaleString('id-ID')}`}>
+                    Rp {Number(resetSummaryModal.summary?.encashment_amount ?? 0).toLocaleString('id-ID')}
+                  </p>
+                  <p className="text-[10px] text-slate-500 dark:text-slate-400">
+                    Tercatat di payroll bulan berjalan
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/30 border border-amber-200/60 dark:border-amber-900/40 text-[11px] text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                <Info className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+                <p>
+                  <strong>Invarian Sisa Cuti:</strong> Hari cuti yang dibawa <em>tidak pernah dicairkan ganda</em>. Sisa cuti di luar kuota yang dibawa maupun dicairkan telah hangus sesuai regulasi.
+                </p>
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  setResetSummaryModal(null);
+                  setBalanceSubTab('history');
+                  loadBalanceHistories(true);
+                }}
+                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300 transition cursor-pointer"
+              >
+                <History className="w-3.5 h-3.5" />
+                <span>Lihat di Riwayat Saldo &rarr;</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setResetSummaryModal(null)}
+                className="px-4 py-2 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-sm transition cursor-pointer"
+              >
+                Tutup Ringkasan
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal Rincian Snapshot Kebijakan Cuti Periode Lampau ── */}
+      {viewingPolicySnapshot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/60 backdrop-blur-xs">
+          <div className="bg-white dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded-3xl shadow-2xl max-w-xl w-full overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            {/* Header */}
+            <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-xl bg-teal-50 dark:bg-teal-950/50 text-teal-600 dark:text-teal-400">
+                  <ShieldCheck className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 dark:text-slate-100">
+                    Snapshot Kebijakan Sisa Cuti
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    Aturan kantor yang dibekukan saat reset saldo periode {viewingPolicySnapshot.period_label}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setViewingPolicySnapshot(null)}
+                className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Body */}
+            <div className="p-6 space-y-4 text-xs">
+              {/* Profil & Periode */}
+              <div className="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-2xl border border-slate-100 dark:border-slate-800 space-y-1">
+                <div className="flex items-center justify-between">
+                  <p className="font-bold text-slate-800 dark:text-slate-100 text-sm">
+                    {viewingPolicySnapshot.user_name}
+                  </p>
+                  <span className="font-mono text-[10px] text-slate-400">
+                    {viewingPolicySnapshot.employee_code}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 text-[11px] text-slate-400 flex-wrap">
+                  <span>{viewingPolicySnapshot.office_name}</span>
+                  <span>•</span>
+                  <span>Reset: {viewingPolicySnapshot.reset_date_formatted || fmtDate(viewingPolicySnapshot.reset_date)}</span>
+                </div>
+              </div>
+
+              {/* Hasil Eksekusi untuk Karyawan ini */}
+              <div className="p-3.5 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/30 border border-indigo-100 dark:border-indigo-900/40 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-500">
+                    Hasil Pembagian Sisa Cuti Karyawan
+                  </span>
+                  <span className="font-mono text-xs font-bold text-slate-700 dark:text-slate-200">
+                    Sisa: {viewingPolicySnapshot.cuti_remaining} hari
+                  </span>
+                </div>
+                <p className="text-xs font-semibold text-slate-800 dark:text-slate-100">
+                  "{viewingPolicySnapshot.remaining_outcome_label || '—'}"
+                </p>
+                <div className="grid grid-cols-3 gap-2 pt-1 font-mono text-center">
+                  <div className="bg-white/80 dark:bg-slate-900/80 p-2 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
+                    <p className="text-[10px] text-slate-400">Dibawa</p>
+                    <p className="text-sm font-bold text-indigo-600 dark:text-indigo-400">
+                      {viewingPolicySnapshot.carried_over_days} hr
+                    </p>
+                    {viewingPolicySnapshot.carry_over_expired_at && (
+                      <p className="text-[9px] text-slate-400 truncate">exp {fmtDate(viewingPolicySnapshot.carry_over_expired_at)}</p>
+                    )}
+                  </div>
+                  <div className="bg-white/80 dark:bg-slate-900/80 p-2 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
+                    <p className="text-[10px] text-slate-400">Dicairkan</p>
+                    <p className="text-sm font-bold text-emerald-600 dark:text-emerald-400">
+                      {viewingPolicySnapshot.encashed_days} hr
+                    </p>
+                    <p className="text-[9px] text-slate-400 truncate">
+                      Rp {Number(viewingPolicySnapshot.encashment_amount || 0).toLocaleString('id-ID')}
+                    </p>
+                  </div>
+                  <div className="bg-white/80 dark:bg-slate-900/80 p-2 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
+                    <p className="text-[10px] text-slate-400">Hangus</p>
+                    <p className="text-sm font-bold text-amber-600 dark:text-amber-400">
+                      {viewingPolicySnapshot.forfeited_days} hr
+                    </p>
+                    <p className="text-[9px] text-slate-400 truncate">tidak dibawa/cair</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Rincian Konfigurasi Kantor yang Dibekukan */}
+              {viewingPolicySnapshot.policy_snapshot && (
+                <div className="border border-slate-100 dark:border-slate-800 rounded-2xl overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
+                  <div className="p-3 bg-slate-50/60 dark:bg-slate-800/40 font-bold text-slate-700 dark:text-slate-200 text-xs flex items-center justify-between">
+                    <span>Parameter Kebijakan Kantor Saat Reset</span>
+                    <span className="text-[10px] text-slate-400 font-normal">Freeze Snapshot</span>
+                  </div>
+
+                  {/* Carry Over Policy */}
+                  <div className="p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                        <ArrowRightLeft className="w-3.5 h-3.5 text-indigo-500" />
+                        1. Hak Bawa Sisa Cuti (Carry-Over)
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        viewingPolicySnapshot.policy_snapshot.carry_over_enabled
+                          ? 'bg-indigo-50 text-indigo-700 dark:bg-indigo-950/50 dark:text-indigo-300'
+                          : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                      }`}>
+                        {viewingPolicySnapshot.policy_snapshot.carry_over_enabled ? 'Aktif' : 'Nonaktif'}
+                      </span>
+                    </div>
+                    {viewingPolicySnapshot.policy_snapshot.carry_over_enabled ? (
+                      <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 dark:text-slate-400 pt-1">
+                        <div>Batas Maksimal Bawa: <strong className="text-slate-700 dark:text-slate-200">{viewingPolicySnapshot.policy_snapshot.carry_over_max_days} hari</strong></div>
+                        <div>Masa Berlaku: <strong className="text-slate-700 dark:text-slate-200">{viewingPolicySnapshot.policy_snapshot.carry_over_expiry_months ? `${viewingPolicySnapshot.policy_snapshot.carry_over_expiry_months} bulan` : 'Tanpa kedaluwarsa'}</strong></div>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-slate-400 italic">Sisa cuti tidak dialihkan ke periode berikutnya.</p>
+                    )}
+                  </div>
+
+                  {/* Encashment Policy */}
+                  <div className="p-3 space-y-1.5">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                        <Banknote className="w-3.5 h-3.5 text-emerald-500" />
+                        2. Pencairan Sisa Cuti ke Uang (Encashment)
+                      </span>
+                      <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                        viewingPolicySnapshot.policy_snapshot.encashment_enabled
+                          ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                          : 'bg-slate-100 text-slate-500 dark:bg-slate-800 dark:text-slate-400'
+                      }`}>
+                        {viewingPolicySnapshot.policy_snapshot.encashment_enabled ? 'Aktif' : 'Nonaktif'}
+                      </span>
+                    </div>
+                    {viewingPolicySnapshot.policy_snapshot.encashment_enabled ? (
+                      <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-500 dark:text-slate-400 pt-1">
+                        <div>Tarif per Hari: <strong className="text-slate-700 dark:text-slate-200">Rp {Number(viewingPolicySnapshot.policy_snapshot.encashment_rate_per_day || 0).toLocaleString('id-ID')}</strong></div>
+                        <div>Pagu Pencairan: <strong className="text-slate-700 dark:text-slate-200">{viewingPolicySnapshot.policy_snapshot.encashment_max_days ? `${viewingPolicySnapshot.policy_snapshot.encashment_max_days} hari` : 'Tanpa batas (semua sisa)'}</strong></div>
+                      </div>
+                    ) : (
+                      <p className="text-[11px] text-slate-400 italic">Pencairan sisa cuti ke uang dinonaktifkan.</p>
+                    )}
+                  </div>
+
+                  {/* Audit Protection Note */}
+                  <div className="p-3 bg-slate-50/40 dark:bg-slate-800/20 text-[10px] text-slate-400 flex items-center justify-between">
+                    <span>Hard cap sistem: <strong>{viewingPolicySnapshot.policy_snapshot.hard_cap_days ?? 60} hari</strong></span>
+                    {viewingPolicySnapshot.policy_snapshot.duplicate_encashment_blocked && (
+                      <span className="text-rose-500 font-bold">⚠️ Blokir pencairan ganda aktif</span>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-6 py-3 border-t border-slate-100 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-900/50 flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setViewingPolicySnapshot(null)}
                 className="px-4 py-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer"
               >
                 Tutup

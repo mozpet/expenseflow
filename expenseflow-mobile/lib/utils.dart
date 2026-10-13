@@ -94,3 +94,34 @@ String formatDateTimeIndonesian(dynamic date, [String? timezoneLabel]) {
   return '${dt.day} ${months[dt.month]} ${dt.year}, $hour:$min$tzSuffix';
 }
 
+/// Mengubah string tanggal reset kantor (format MM-DD atau YYYY-MM-DD) menjadi format deskriptif.
+/// Contoh: "12-01" -> "1 Desember", "01-01" -> "1 Januari"
+String formatResetDate(String? dateStr) {
+  if (dateStr == null || dateStr.trim().isEmpty) return '-';
+  final trimmed = dateStr.trim();
+  final parts = trimmed.split('-');
+  if (parts.length == 2) {
+    final int? month = int.tryParse(parts[0]);
+    final int? day = int.tryParse(parts[1]);
+    if (month != null && day != null && month >= 1 && month <= 12) {
+      const months = [
+        'Januari',
+        'Februari',
+        'Maret',
+        'April',
+        'Mei',
+        'Juni',
+        'Juli',
+        'Agustus',
+        'September',
+        'Oktober',
+        'November',
+        'Desember',
+      ];
+      return '$day ${months[month - 1]}';
+    }
+  } else if (parts.length == 3) {
+    return formatDateIndonesian(trimmed);
+  }
+  return trimmed;
+}

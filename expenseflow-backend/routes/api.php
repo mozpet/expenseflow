@@ -373,10 +373,16 @@ Route::prefix('v1')->group(function () {
             Route::post('/loans/{loan}/approve', [EmployeeLoanController::class, 'approve'])->middleware('throttle:actions');
             Route::post('/loans/{loan}/cancel', [EmployeeLoanController::class, 'cancel'])->middleware('throttle:actions');
 
+            // Pratinjau rentang cut-off presensi & rencana tanggal gajian untuk
+            // modal "Buat Periode Payroll" (satu sumber kebenaran: PayrollPeriodResolver).
+            Route::get('/period-preview', [PayrollController::class, 'periodPreview']);
+
             // Batch proses payroll (draft → calculated → submitted → approved → paid)
             Route::get('/runs', [PayrollController::class, 'index']);
             Route::post('/runs', [PayrollController::class, 'store'])->middleware('throttle:actions');
             Route::get('/runs/{payroll}', [PayrollController::class, 'show']);
+            // Koreksi rentang cut-off / rencana gajian batch draft-calculated-rejected
+            Route::put('/runs/{payroll}', [PayrollController::class, 'update'])->middleware('throttle:actions');
             Route::post('/runs/{payroll}/calculate', [PayrollController::class, 'calculate'])->middleware('throttle:heavy');
             Route::post('/runs/{payroll}/submit', [PayrollController::class, 'submit'])->middleware('throttle:actions');
             Route::post('/runs/{payroll}/approve', [PayrollController::class, 'approve'])->middleware('throttle:actions');

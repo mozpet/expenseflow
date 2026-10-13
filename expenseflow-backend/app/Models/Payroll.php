@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Carbon;
 
 class Payroll extends Model
 {
@@ -36,6 +37,12 @@ class Payroll extends Model
         'payroll_group_id',   // opsional: batasi batch ke anggota satu grup payroll
         'period_month',
         'period_year',
+        // Rentang cut-off presensi & rencana gajian (2026-10-12). Diisi otomatis
+        // dari pengaturan grup payroll, boleh ditimpa manual oleh HRD.
+        // HANYA mengatur agregat presensi — pajak/BPJS/kasbon tetap bulan kalender.
+        'period_start_date',
+        'period_end_date',
+        'planned_payment_date',
         'period_label',
         'is_year_end',
         'exchange_rates',     // snapshot kurs valas {KODE: kurs ke IDR} saat batch dihitung
@@ -66,6 +73,9 @@ class Payroll extends Model
         return [
             'period_month'    => 'integer',
             'period_year'     => 'integer',
+            'period_start_date'    => 'date:Y-m-d',
+            'period_end_date'      => 'date:Y-m-d',
+            'planned_payment_date' => 'date:Y-m-d',
             'payroll_group_id' => 'integer',
             'is_year_end'     => 'boolean',
             'exchange_rates'  => 'array',
@@ -88,6 +98,39 @@ class Payroll extends Model
     public function isLocked(): bool
     {
         return in_array($this->status, [self::STATUS_APPROVED, self::STATUS_PAID], true);
+    }
+
+    /**
+     * RENTANG JENDELA PRESENSI BATCH INI (2026-10-12).
+     *
+     * SEMUA pembaca rentang WAJIB lewat sini — jangan pernah menurunkan sendiri
+     * dari period_month/period_year. Itu justru bug yang dibereskan fitur ini:
+     * dulu PayrollCalculator dan overtimePay() masing-masing menurunkan
+     * Carbon::create($year,$month,1)->endOfMonth() secara terpisah.
+     *
+     * Fallback ke bulan kalender saat kolom NULL bukan hiasan: seeder
+     * (PayrollDummyDataSeeder) dan data lama membuat baris langsung tanpa lewat
+     * controller, jadi rentangnya bisa kosong.
+     *
+     * Yang dikembalikan hanya untuk agregat presensi. Penanggalan efektif &
+     * statutori (activeSalaryOn, kurs, BPJS, PPh 21, kasbon) tetap memakai akhir
+     * bulan kalender period_month/period_year — lihat PayrollCalculator::calculate().
+     *
+     * @return array{0: Carbon, 1: Carbon} [mulai 00:00, selesai 00:00]
+     */
+    public function periodRange(): array
+    {
+        $fallbackStart = Carbon::create((int) $this->period_year, (int) $this->period_month, 1)->startOfDay();
+
+        $start = $this->period_start_date
+            ? Carbon::parse($this->period_start_date)->startOfDay()
+            : $fallbackStart->copy();
+
+        $end = $this->period_end_date
+            ? Carbon::parse($this->period_end_date)->startOfDay()
+            : $fallbackStart->copy()->endOfMonth()->startOfDay();
+
+        return [$start, $end];
     }
 
     public function company(): BelongsTo

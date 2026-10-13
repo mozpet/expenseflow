@@ -18,10 +18,19 @@ use App\Models\ShiftSchedule;
 use App\Models\User;
 use App\Models\Payroll;
 use App\Models\UserShift;
+use App\Services\Attendance\AttendancePolicyCalculator;
 use App\Services\Attendance\AttendanceRecalculator;
+use App\Services\Attendance\EarlyLeaveFineCalculator;
 use App\Services\Attendance\LateFineCalculator;
+use App\Services\Attendance\LeaveApprovalGate;
+use App\Services\Attendance\LeaveCarryOverCalculator;
+use App\Services\Attendance\LeavePeriodCloser;
+use App\Services\Attendance\MissedCheckoutFineCalculator;
+use App\Services\Attendance\NightShiftBonusCalculator;
+use App\Services\Attendance\OvertimeApprovalGate;
 use App\Services\FcmService;
 use App\Services\LocationService;
+use App\Support\Duration;
 use App\Support\Timezone;
 use Illuminate\Http\Exceptions\HttpResponseException;
 use Illuminate\Http\JsonResponse;
@@ -110,8 +119,13 @@ class AttendanceController extends Controller
             'collective_leave_cancelled'  => 'Cuti Bersama Dibatalkan',
             'collective_leave_h7_reminder' => 'Pilih Cuti Bersama',
             'overtime_pending'           => 'Pengajuan Lembur Masuk',
-            'overtime_approved'          => 'Lembur Disetujui',
-            'overtime_rejected'          => 'Lembur Ditolak',
+            'overtime_approved'          => '✅ Lembur Disetujui',
+            'overtime_rejected'          => '❌ Lembur Ditolak',
+            'leave_requested'            => '📋 Pengajuan Izin/Cuti Baru',
+            'leave_requested_spv'        => '📋 Pengajuan Izin/Cuti Baru',
+            'leave_pending_hrd'          => '📋 Pengajuan Izin/Cuti Menunggu Persetujuan HRD',
+            'leave_spv_approved'         => '⏳ Tahap 1 Disetujui (SPV)',
+            'personal_leave_cancelled'   => 'Pengajuan Cuti Dibatalkan',
             'leave_approved'             => 'Pengajuan Cuti Disetujui',
             'leave_rejected'             => 'Pengajuan Cuti Ditolak',
             'leave_quota_adjusted'       => 'Perubahan Jatah Cuti',
@@ -365,15 +379,6 @@ class AttendanceController extends Controller
         return $schedule;
     }
 
-    // ─── Helper: tentukan titik awal perhitungan jam kerja ────────────
-    //     Delegasi ke AttendanceRecalculator agar checkOut(), AutoCheckoutCommand
-    //     dan koreksi manual HRD memakai satu rumus yang sama.
-    private function resolveWorkStart(Carbon $checkInTime, array $schedule, string $date, ?User $user = null, ?Attendance $attendance = null): Carbon
-    {
-        return app(AttendanceRecalculator::class)
-            ->resolveWorkStart($checkInTime, $schedule, $date, $user, $attendance);
-    }
-
     // ─── Helper: tentukan status hadir/telat berdasarkan jam kerja ────
     //     Mempertimbangkan shift aktif karyawan; fallback ke kantor default.
     //     Mendukung jam kerja fleksibel (flexitime & core hours) jika user->flexitime_enabled.
@@ -439,6 +444,46 @@ class AttendanceController extends Controller
         );
     }
 
+    // ─── Helper: menit & denda pulang cepat (2026-10-11) ───────────────
+    //     Dipanggil HANYA bila AttendanceRecalculator sudah menyatakan
+    //     is_early_leave = true, sehingga seluruh gerbang hari libur / shift off /
+    //     fitur dimatikan sudah tersaring di satu tempat (checkEarlyLeave) dan
+    //     tidak perlu digandakan di sini. Konfigurasi datang dari snapshot
+    //     saat check-in, bukan setting live.
+    private function calculateEarlyLeaveFine(
+        Carbon $checkOutTime,
+        array $schedule,
+        string $scheduleDate,
+        bool $flexitime,
+        ?int $workMinutes,
+        array $config,
+    ): array {
+        $office = $schedule['office'] ?? null;
+        $tz     = Timezone::normalize($schedule['timezone'] ?? null);
+
+        if ($flexitime) {
+            return EarlyLeaveFineCalculator::calculateFlexitime(
+                $checkOutTime,
+                ! empty($office?->flex_core_end) ? substr((string) $office->flex_core_end, 0, 5) : null,
+                $scheduleDate,
+                $tz,
+                $workMinutes,
+                (int) ($office?->flex_target_minutes ?? 480),
+                (int) ($office?->early_leave_tolerance_minutes ?? 0),
+                $config,
+            );
+        }
+
+        return EarlyLeaveFineCalculator::calculate(
+            $checkOutTime,
+            $schedule['work_end_time'] ?? null,
+            $scheduleDate,
+            $tz,
+            $config,
+            (bool) ($schedule['is_cross_day'] ?? false),
+        );
+    }
+
     // Hanya cuti yang punya kuota. Izin & sakit tidak terbatas, hanya dihitung.
     private const DEFAULT_LEAVE_QUOTA = ['cuti' => 12];
 
@@ -446,27 +491,6 @@ class AttendanceController extends Controller
     // (umur = satu request). Saat generate cuti bersama, countWorkingDays() dipanggil
     // per karyawan dengan rentang & filter identik → query libur/off-map hanya 1x.
     private array $workingDatesCache = [];
-
-    // ─── Helper: kuota cuti default berdasarkan kantor user ────
-    //     Kuota diambil dari attendance_settings.default_leave_quota kantor karyawan
-    //     (attendance_setting_id); fallback ke kantor pertama perusahaan, lalu ke 12
-    //     (nilai lama) bila perusahaan belum punya kantor sama sekali.
-    public static function defaultLeaveQuota(?int $companyId, ?int $userId = null): int
-    {
-        $office = null;
-        if ($userId && $companyId) {
-            $office = AttendanceSetting::where('company_id', $companyId)
-                ->whereIn('id', function ($q) use ($userId) {
-                    $q->select('attendance_setting_id')->from('users')->where('id', $userId);
-                })
-                ->first();
-        }
-        if (! $office && $companyId) {
-            $office = AttendanceSetting::where('company_id', $companyId)->orderBy('id')->first();
-        }
-
-        return $office?->default_leave_quota ?? self::DEFAULT_LEAVE_QUOTA['cuti'];
-    }
 
     // ─── Helper: Master Katalog Jenis Cuti ───────────────────
     public static function leaveTypeCatalog(): array
@@ -907,7 +931,8 @@ class AttendanceController extends Controller
     //     valid diperiksa dua alokasi:
     //       - hari kerja SEBELUM tanggal reset  → dibatasi sisa saldo berjalan (quota - used)
     //       - hari kerja PADA/SETELAH reset     → dibatasi kuota baru hasil reset
-    //         (= default_leave_quota kantor, karena reset menset used = 0)
+    //         (= default_leave_quota kantor, karena reset menset used = 0,
+    //          DITAMBAH hari bawaan bila kebijakan carry-over kantor aktif)
     //     Contoh: reset 10 Juni, sisa saldo 2 hari, ajukan 8–11 Juni (4 hari kerja):
     //     8–9 butuh 2 ≤ sisa 2 ✓ dan 10–11 butuh 2 ≤ kuota baru ✓ → DIPERBOLEHKAN.
     //
@@ -1030,22 +1055,46 @@ class AttendanceController extends Controller
             }
         }
         $result['anniversary'] = $pivotStr;
-        $result['fresh_quota'] = (int) $office->default_leave_quota;
+
+        // Kuota periode baru = standar kantor + hari yang AKAN dibawa reset nanti.
+        //
+        // Hari bawaan wajib ikut dihitung di sini, bukan hanya di saat reset:
+        // bila kantor mengaktifkan carry-over, karyawan dengan sisa 5 hari dan
+        // batas bawa 5 hari memang berhak atas standar+5 setelah anniversary.
+        // Tanpa penambahan ini, pengajuan yang melintasi tanggal reset ditolak
+        // 422 atas kuota yang beberapa hari kemudian benar-benar ia miliki —
+        // padahal validator inilah satu-satunya yang menilai hari setelah pivot.
+        //
+        // Dasar perhitungannya adalah sisa saldo pada SAAT reset, yaitu sisa
+        // sekarang DIKURANGI hari kerja sebelum pivot pada pengajuan ini
+        // sendiri (hari-hari itu akan terpakai lebih dulu). Mengabaikan
+        // pengurangan tersebut akan menjanjikan hari bawaan yang justru habis
+        // dipakai oleh pengajuan yang sedang dinilai.
+        $freshQuota = (int) $office->default_leave_quota;
+
+        $config = LeaveCarryOverCalculator::configFromOffice($office);
+        if ($config['carry_over_enabled'] && $config['carry_over_max_days'] > 0) {
+            $currentCuti = LeaveBalance::where('user_id', $user->id)
+                ->where('year', (int) now(Timezone::storage())->year)
+                ->where('leave_type', 'cuti')
+                ->first();
+
+            $remainingAtReset = $currentCuti
+                ? max(0, (int) $currentCuti->quota - (int) $currentCuti->used - $result['days_before'])
+                : 0;
+
+            if ($remainingAtReset > 0) {
+                $projection  = LeaveCarryOverCalculator::decide($remainingAtReset, $config, $pivot);
+                $freshQuota  = LeaveCarryOverCalculator::newPeriodQuota(
+                    $freshQuota,
+                    (int) $projection['carried_over_days']
+                );
+            }
+        }
+
+        $result['fresh_quota'] = $freshQuota;
 
         return $result;
-    }
-
-    // ─── Helper: format menit → "Xj Ym" ──────────────────────────
-    private function formatMinutes(?int $minutes): string
-    {
-        $m = (int) $minutes;
-        if ($m <= 0) {
-            return '0j';
-        }
-        $jam = intdiv($m, 60);
-        $sisa = $m % 60;
-
-        return $sisa === 0 ? "{$jam}j" : "{$jam}j {$sisa}m";
     }
 
     // ═══════════════════════════════════════════════════════════
@@ -1761,78 +1810,8 @@ class AttendanceController extends Controller
 
         // ── STEP 1: SPV APPROVAL ──
         if ($step === 'spv') {
-            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
-
-            $hasSpvPermission = $actor->hasPermission(Role::MODULE_LEAVE, 'spv');
-
-            // Otorisasi Atasan Langsung & Divisi
-            $targetUser = $leave->user;
-            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
-            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
-
-            // Override darurat Tahap 1 hanya untuk Admin & Super Admin. HRD (Level 2) WAJIB menunggu SPV.
-            $isAdminBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
-            $isHrdLevelOnly = ! $isAdminBypass && (
-                in_array($userRoleCode, ['hrd'], true)
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage')
-            );
-
-            $isSpvOrAbove = $isHrdLevelOnly
-                ? ($isDirectManager || $hasSupervisorPosition)
-                : ($isDirectManager
-                    || $hasSpvPermission
-                    || $hasSupervisorPosition
-                    || $actor->isSupervisor()
-                    || $isAdminBypass);
-
-            if (! $isSpvOrAbove && $isHrdLevelOnly) {
-                return response()->json([
-                    'message' => 'Pengajuan cuti/izin ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
-                    'code'    => 'WAITING_SPV_APPROVAL',
-                ], 403);
-            }
-
-            if (! $isSpvOrAbove) {
-                return response()->json([
-                    'message' => 'Persetujuan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
-                    'code'    => 'SPV_REQUIRED',
-                ], 403);
-            }
-
-            // Jika karyawan belum memiliki manager_id yang ditunjuk:
-            // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
-            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV perusahaan
-            $isSameDivisionSpv = false;
-            if (! $targetUser?->manager_id) {
-                if ($targetUser?->division_id) {
-                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
-                } else {
-                    $isSameDivisionSpv = true;
-                }
-            }
-
-            // Bypass darurat: hanya Super Admin & Admin jika Atasan Langsung berhalangan/cuti
-            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminBypass) {
-                if ($isHrdLevelOnly) {
-                    return response()->json([
-                        'message' => 'Pengajuan cuti/izin ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
-                        'code'    => 'WAITING_SPV_APPROVAL',
-                    ], 403);
-                }
-                if ($targetUser?->manager_id) {
-                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
-                    return response()->json([
-                        'message' => "Persetujuan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
-                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
-                    ], 403);
-                }
-
-                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
-                return response()->json([
-                    'message' => "Persetujuan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
-                    'code'    => 'SPV_DIVISION_REQUIRED',
-                ], 403);
+            if ($denial = app(LeaveApprovalGate::class)->authorizeSpvStep($actor, $leave->user, 'Persetujuan')) {
+                return response()->json($denial, 403);
             }
 
             $spvNotes = $validated['notes'] ?? $validated['spv_notes'] ?? null;
@@ -1875,34 +1854,15 @@ class AttendanceController extends Controller
                     'total_days' => $leave->total_days,
                     'spv_name'   => $actor->name,
                 ], 'leave_request', $leave->id);
-
-                $hrdUser = User::find($hrdId);
-                if ($hrdUser && $hrdUser->fcm_token) {
-                    $this->sendFcmPush(
-                        $hrdUser->fcm_token,
-                        '📋 Pengajuan Izin/Cuti Menunggu Persetujuan HRD',
-                        "Pengajuan {$leave->leave_type} {$employee?->name} telah disetujui SPV ({$actor->name}) dan menunggu persetujuan HRD.",
-                        ['type' => 'leave_pending_hrd', 'leave_id' => (string) $leave->id]
-                    );
-                }
             }
 
-            // Notifikasi & push ke karyawan bahwa SPV sudah approve
+            // Notifikasi ke karyawan bahwa SPV sudah approve
             $this->notifyUser($leave->user_id, 'leave_spv_approved', [
                 'message'    => "Pengajuan {$leave->leave_type} Anda telah disetujui oleh Atasan ({$actor->name}) dan sedang menunggu persetujuan akhir HRD.",
                 'leave_id'   => $leave->id,
                 'leave_type' => $leave->leave_type,
                 'spv_name'   => $actor->name,
             ], 'leave_request', $leave->id);
-
-            if ($employee && $employee->fcm_token) {
-                $this->sendFcmPush(
-                    $employee->fcm_token,
-                    '⏳ Tahap 1 Disetujui (SPV)',
-                    "Pengajuan {$leave->leave_type} Anda telah disetujui oleh {$actor->name} dan diteruskan ke HRD.",
-                    ['type' => 'leave_spv_approved', 'leave_id' => (string) $leave->id]
-                );
-            }
 
             return response()->json([
                 'message' => 'Persetujuan tahap 1 (SPV) berhasil. Pengajuan cuti/izin diteruskan ke HRD.',
@@ -1914,17 +1874,8 @@ class AttendanceController extends Controller
 
         // ── STEP 2: HRD FINAL APPROVAL ──
         if ($step === 'hrd') {
-            $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
-
-            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
-
-            if (! $isHrdOrAdmin) {
-                return response()->json([
-                    'message' => 'Persetujuan tahap akhir cuti/izin hanya dapat dilakukan oleh HRD atau Admin (memerlukan wewenang Level 2: HRD).',
-                    'code'    => 'HRD_REQUIRED',
-                ], 403);
+            if ($denial = app(LeaveApprovalGate::class)->authorizeHrdStep($actor, 'Persetujuan')) {
+                return response()->json($denial, 403);
             }
 
             // DB Transaction untuk kunci leave_request dan potong saldo atomik
@@ -2091,30 +2042,21 @@ class AttendanceController extends Controller
                 ->whereIn('type', ['leave_requested', 'leave_requested_spv', 'leave_pending_hrd'])
                 ->delete();
 
+            $leaveLabel = match ($leave->leave_type) {
+                'cuti'  => 'Cuti',
+                'izin'  => 'Izin',
+                'sakit' => 'Sakit',
+                'wfh'   => 'WFH',
+                default => config("leave_types.catalog.{$leave->leave_type}.label", ucfirst($leave->leave_type)),
+            };
+
             $this->notifyUser($leave->user_id, 'leave_approved', [
+                'title'      => "✅ {$leaveLabel} Disetujui",
                 'message'    => "Permintaan {$leave->leave_type} Anda telah disetujui sepenuhnya oleh HRD.",
                 'leave_id'   => $leave->id,
                 'leave_type' => $leave->leave_type,
                 'status'     => 'approved',
             ], 'leave_request', $leave->id);
-
-            // Kirim push notification FCM ke karyawan
-            $employee = User::find($leave->user_id);
-            if ($employee && $employee->fcm_token) {
-                $leaveLabel = match ($leave->leave_type) {
-                    'cuti'  => 'Cuti',
-                    'izin'  => 'Izin',
-                    'sakit' => 'Sakit',
-                    'wfh'   => 'WFH',
-                    default => config("leave_types.catalog.{$leave->leave_type}.label", ucfirst($leave->leave_type)),
-                };
-                $this->sendFcmPush(
-                    $employee->fcm_token,
-                    "✅ {$leaveLabel} Disetujui",
-                    "Permintaan {$leave->leave_type} Anda (#{$leave->id}) telah disetujui oleh HRD.",
-                    ['type' => 'leave_approved', 'leave_id' => (string) $leave->id]
-                );
-            }
 
             return response()->json([
                 'message' => 'Permintaan berhasil disetujui.',
@@ -2182,73 +2124,10 @@ class AttendanceController extends Controller
         }
 
         $step = $leave->current_step ?: 'spv';
-        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
 
         if ($step === 'spv') {
-            $hasSpvPermission = $actor->hasPermission(Role::MODULE_LEAVE, 'spv');
-            $targetUser = $leave->user;
-            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
-            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
-
-            // Override darurat Tahap 1 hanya untuk Admin & Super Admin. HRD (Level 2) WAJIB menunggu SPV.
-            $isAdminBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
-            $isHrdLevelOnly = ! $isAdminBypass && (
-                in_array($userRoleCode, ['hrd'], true)
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage')
-            );
-
-            $isSpvOrAbove = $isHrdLevelOnly
-                ? ($isDirectManager || $hasSupervisorPosition)
-                : ($isDirectManager
-                    || $hasSpvPermission
-                    || $hasSupervisorPosition
-                    || $actor->isSupervisor()
-                    || $isAdminBypass);
-
-            if (! $isSpvOrAbove && $isHrdLevelOnly) {
-                return response()->json([
-                    'message' => 'Penolakan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan Langsung. HRD baru dapat memproses setelah SPV menyetujui.',
-                    'code'    => 'WAITING_SPV_APPROVAL',
-                ], 403);
-            }
-
-            if (! $isSpvOrAbove) {
-                return response()->json([
-                    'message' => 'Penolakan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
-                    'code'    => 'SPV_REQUIRED',
-                ], 403);
-            }
-
-            $isSameDivisionSpv = false;
-            if (! $targetUser?->manager_id) {
-                if ($targetUser?->division_id) {
-                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
-                } else {
-                    $isSameDivisionSpv = true;
-                }
-            }
-
-            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminBypass) {
-                if ($isHrdLevelOnly) {
-                    return response()->json([
-                        'message' => 'Penolakan tahap pertama cuti/izin harus dilakukan oleh SPV/Atasan Langsung. HRD baru dapat memproses setelah SPV menyetujui.',
-                        'code'    => 'WAITING_SPV_APPROVAL',
-                    ], 403);
-                }
-                if ($targetUser?->manager_id) {
-                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
-                    return response()->json([
-                        'message' => "Penolakan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
-                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
-                    ], 403);
-                }
-
-                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
-                return response()->json([
-                    'message' => "Penolakan tahap 1 cuti/izin harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
-                    'code'    => 'SPV_DIVISION_REQUIRED',
-                ], 403);
+            if ($denial = app(LeaveApprovalGate::class)->authorizeSpvStep($actor, $leave->user, 'Penolakan')) {
+                return response()->json($denial, 403);
             }
 
             // approved_by/approved_at adalah jejak PERSETUJUAN tahap akhir. Penolakan SPV
@@ -2263,18 +2142,8 @@ class AttendanceController extends Controller
                 'notes'            => $reason,
             ]);
         } else {
-            // Guard harus IDENTIK dengan approveLeave(): pencocokan nama peran secara
-            // substring ('hr' cocok dengan 'HRGA Support') memberi wewenang tahap akhir
-            // ke peran yang tidak punya izin modul cuti sama sekali.
-            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'hrd')
-                || $actor->hasPermission(Role::MODULE_LEAVE, 'manage');
-
-            if (! $isHrdOrAdmin) {
-                return response()->json([
-                    'message' => 'Penolakan tahap akhir cuti/izin hanya dapat dilakukan oleh HRD atau Admin (memerlukan wewenang Level 2: HRD).',
-                    'code'    => 'HRD_REQUIRED',
-                ], 403);
+            if ($denial = app(LeaveApprovalGate::class)->authorizeHrdStep($actor, 'Penolakan')) {
+                return response()->json($denial, 403);
             }
 
             $leave->update([
@@ -2324,16 +2193,6 @@ class AttendanceController extends Controller
             'status'           => 'rejected',
             'rejection_reason' => $reason,
         ], 'leave_request', $leave->id);
-
-        $employee = $leave->user ?: User::find($leave->user_id);
-        if ($employee && $employee->fcm_token) {
-            $this->sendFcmPush(
-                $employee->fcm_token,
-                "❌ {$leaveTypeLabel} Ditolak",
-                "Permintaan {$leave->leave_type} Anda ditolak oleh {$byLabel}. Alasan: {$reason}",
-                ['type' => 'leave_rejected', 'leave_id' => (string) $leave->id]
-            );
-        }
 
         return response()->json([
             'message' => 'Permintaan berhasil ditolak.',
@@ -2908,7 +2767,8 @@ class AttendanceController extends Controller
         // baru cutinya non-aktif. Kuota default kantor dikirim sebagai REFERENSI
         // (office_default_quota) agar HRD tahu nilai wajar saat mau mengaktifkan.\
         // Preload kantor sekali untuk menghitung kuota referensi tanpa N+1
-        // (meniru logika defaultLeaveQuota: kantor milik user → fallback kantor pertama).
+        // (kantor milik user → fallback kantor pertama perusahaan). Logika ini dulu
+        // juga ada di helper defaultLeaveQuota(); helper itu sudah mati & dihapus 2026-10-12.
         $officesForQuota = AttendanceSetting::whereIn('company_id', $users->pluck('company_id')->filter()->unique())
             ->orderBy('id')
             ->get(['id', 'company_id', 'default_leave_quota']);
@@ -2993,8 +2853,16 @@ class AttendanceController extends Controller
                     if ($existing = $userBalances->firstWhere('leave_type', 'cuti')) {
                         $used = (int) $existing->used;
                         $quota = (! $isEnabledInOffice && $used === 0) ? 0 : (int) $existing->quota;
-                        if ($isEnabledInOffice && $refQuota > 0 && $quota > $refQuota) {
-                            $quota = max($used, $refQuota);
+                        // Hari bawaan periode lalu adalah BAGIAN dari quota (lihat
+                        // migrasi 2026_10_13_000002), jadi batas atas yang sah =
+                        // standar kantor + hari bawaan. Tanpa penambahan ini, clamp
+                        // di bawah akan MENGHAPUS hari bawaan beberapa saat setelah
+                        // reset menuliskannya — karyawan kehilangan hak cuti hanya
+                        // karena HRD membuka tab Saldo Cuti.
+                        $carried  = (int) ($existing->carried_over_quota ?? 0);
+                        $maxQuota = $refQuota > 0 ? $refQuota + $carried : 0;
+                        if ($isEnabledInOffice && $maxQuota > 0 && $quota > $maxQuota) {
+                            $quota = max($used, $maxQuota);
                             if ($quota !== (int) $existing->quota) {
                                 $existing->update(['quota' => $quota]);
                             }
@@ -3006,6 +2874,11 @@ class AttendanceController extends Controller
                             'remaining'            => max(0, $quota - $used),
                             'active'               => $isCutiEnabled && ($quota > 0 || $used > 0),
                             'office_default_quota' => $refQuota,
+                            // Transparansi asal kuota: HRD harus bisa melihat bahwa
+                            // 18 hari itu = 12 standar + 6 bawaan, beserta batas
+                            // waktu pemakaian bawaannya.
+                            'carried_over_quota'    => $carried,
+                            'carry_over_expired_at' => $existing->carry_over_expired_at?->toDateString(),
                         ]);
                     } else {
                         $balances->push($common + [
@@ -3015,6 +2888,11 @@ class AttendanceController extends Controller
                             'remaining'            => 0,
                             'active'               => false,
                             'office_default_quota' => $refQuota,
+                            // Bentuk payload dijaga seragam dengan cabang di atas:
+                            // frontend tidak perlu membedakan baris saldo yang sudah
+                            // ada dan yang belum untuk membaca kolom bawaan.
+                            'carried_over_quota'    => 0,
+                            'carry_over_expired_at' => null,
                         ]);
                     }
                 } elseif ($type === 'izin') {
@@ -3217,8 +3095,13 @@ class AttendanceController extends Controller
 
             $officeSetting = $this->getLeaveTypeSettingForUser($target, $type);
             $targetOffice = $target->attendance_setting_id ? AttendanceSetting::find($target->attendance_setting_id) : null;
+            // Hari bawaan periode lalu menaikkan batas sah kuota karyawan ini:
+            // ia memang berhak atas lebih dari standar kantor. Tanpa penambahan
+            // ini, HRD yang menyimpan saldo karyawan ber-carry-over akan ditolak
+            // 422 atas angka yang justru ditulis sistem sendiri saat reset.
+            $carriedOver = $existing ? (int) ($existing->carried_over_quota ?? 0) : 0;
             $officeLimit = $type === 'cuti'
-                ? (int) ($targetOffice?->default_leave_quota ?? self::DEFAULT_LEAVE_QUOTA['cuti'])
+                ? (int) ($targetOffice?->default_leave_quota ?? self::DEFAULT_LEAVE_QUOTA['cuti']) + $carriedOver
                 : ($officeSetting ? (int) $officeSetting->quota_days : (int) ($catalog[$type]['default_quota_days'] ?? 0));
 
             $oldQuota = $existing ? (int) $existing->quota : $officeLimit;
@@ -3240,8 +3123,15 @@ class AttendanceController extends Controller
             // Validasi sisa saldo (remaining) tidak boleh melebihi standar kantor
             $computedRemaining = $quota - $usedCount;
             if ($officeLimit > 0 && $computedRemaining > $officeLimit) {
+                // Batas yang disebut menyertakan hari bawaan bila ada, agar HRD
+                // tidak bingung melihat angka batas yang lebih besar dari kuota
+                // default kantor di form pengaturan.
+                $limitText = $carriedOver > 0
+                    ? "{$officeLimit} hari = standar kantor + {$carriedOver} hari bawaan periode lalu"
+                    : "{$officeLimit} hari";
+
                 return response()->json([
-                    'message' => "Sisa saldo {$typeLabel} untuk {$target->name} ({$computedRemaining} hari) tidak boleh melebihi standar kantor ({$officeLimit} hari).",
+                    'message' => "Sisa saldo {$typeLabel} untuk {$target->name} ({$computedRemaining} hari) tidak boleh melebihi standar kantor ({$limitText}).",
                 ], 422);
             }
 
@@ -3442,15 +3332,49 @@ class AttendanceController extends Controller
                 'leave_types_snapshot'  => $h->leave_types_snapshot,
                 'notes'                 => $h->notes,
                 'created_at'            => $h->created_at?->toDateTimeString(),
+
+                // ── Takdir sisa cuti periode ini ─────────────────────────────
+                // cuti_remaining = carried_over_days + encashed_days + forfeited_days.
+                // Ketiganya DIKEMBALIKAN SEKALIGUS dan apa adanya (bukan hanya
+                // yang bukan nol): inilah satu-satunya tempat karyawan maupun
+                // auditor bisa melihat ke mana sisa cutinya pergi, dan nol yang
+                // eksplisit ("0 hari hangus") adalah informasi, bukan ketiadaan.
+                'carried_over_days'        => (int) $h->carried_over_days,
+                'carry_over_expired_at'    => $h->carry_over_expired_at?->toDateString(),
+                'encashed_days'            => (int) $h->encashed_days,
+                'encashment_rate_per_day'  => $h->encashment_rate_per_day !== null
+                    ? (float) $h->encashment_rate_per_day
+                    : null,
+                'encashment_amount'        => $h->encashment_amount !== null
+                    ? (float) $h->encashment_amount
+                    : null,
+                'encashment_adjustment_id' => $h->encashment_adjustment_id,
+                'forfeited_days'           => (int) $h->forfeited_days,
+                // Kebijakan kantor PADA SAAT penutupan, bukan kebijakan hari ini:
+                // HRD yang mengubah tarif bulan depan tidak boleh membuat riwayat
+                // lama tampak dihitung dengan tarif baru.
+                'policy_snapshot'          => $h->policy_snapshot,
+                // Satu kalimat siap tampil agar web & mobile tidak masing-masing
+                // menerjemahkan kombinasi tiga angka di atas menjadi narasi.
+                'remaining_outcome_label'  => $this->historyOutcomeLabel($h),
             ];
         });
 
         // Summary stats
+        //
+        // Agregat carry-over/pencairan/hangus dihitung dari koleksi yang SUDAH
+        // difilter (kantor, tahun, pencarian), sehingga HRD yang memfilter satu
+        // cabang melihat biaya pencairan cabang itu saja — angka inilah yang
+        // dicocokkan dengan baris "Pencairan Sisa Cuti Tahunan" di payroll.
         $stats = [
             'total_records'          => $histories->count(),
             'total_cuti_used'        => $histories->sum('cuti_used'),
             'total_cuti_remaining'   => $histories->sum('cuti_remaining'),
             'total_izin_sakit_used'  => $histories->sum('izin_sakit_used'),
+            'total_carried_over_days'  => $histories->sum('carried_over_days'),
+            'total_encashed_days'      => $histories->sum('encashed_days'),
+            'total_encashment_amount'  => round((float) $histories->sum('encashment_amount'), 2),
+            'total_forfeited_days'     => $histories->sum('forfeited_days'),
         ];
 
         return response()->json([
@@ -3501,7 +3425,10 @@ class AttendanceController extends Controller
             ->get()
             ->keyBy('leave_type');
 
-        $resetCount = 0;
+        $resetCount    = 0;
+        $totalCarried  = 0;
+        $totalEncashed = 0;
+        $totalCashOut  = 0.0;
         foreach ($userIds as $userId) {
             $existingCuti = LeaveBalance::where('user_id', $userId)
                 ->where('year', $year)
@@ -3540,66 +3467,122 @@ class AttendanceController extends Controller
                 ];
             }
 
-            // 1. Simpan Snapshot / Arsip ke tabel leave_balance_histories
-            \App\Models\LeaveBalanceHistory::create([
-                'user_id'               => $userId,
-                'company_id'            => $office->company_id,
-                'attendance_setting_id' => $office->id,
-                'period_label'          => 'Periode s/d ' . $today->translatedFormat('d M Y'),
-                'period_start'          => $today->copy()->subYear()->addDay()->toDateString(),
-                'period_end'            => $today->toDateString(),
-                'reset_date'            => $today->toDateString(),
-                'cuti_quota'            => $cutiQuota,
-                'cuti_used'             => $cutiUsed,
-                'cuti_remaining'        => $cutiRemaining,
-                'izin_sakit_used'       => $izinUsed,
-                'leave_types_snapshot'  => !empty($typesSnapshot) ? $typesSnapshot : null,
-                'notes'                 => "Reset manual oleh {$actor->name}",
-            ]);
+            // Keputusan atas sisa cuti karyawan ini: berapa dibawa ke periode
+            // baru, berapa dicairkan jadi uang, berapa hangus — beserta
+            // penerbitan penyesuaian payroll-nya. Aturannya tidak ditulis di
+            // sini: LeaveCarryOverCalculator yang memutuskan dan LeavePeriodCloser
+            // yang menjalankan, sama persis dengan jalur reset otomatis
+            // (ResetLeaveBalancesCommand). Dua jalur yang menuliskan angka
+            // berbeda untuk karyawan yang sama adalah bug termahal di modul ini.
+            //
+            // Satu transaksi PER KARYAWAN: kegagalan di tengah tidak boleh
+            // menyisakan penyesuaian gaji yang sudah terbit tanpa baris riwayat
+            // yang mempertanggungjawabkannya (dan sebaliknya).
+            $closure = DB::transaction(function () use (
+                $existingCuti, $existingIzin, $otherBalances, $enabledTypeSettings,
+                $office, $today, $actor, $userId, $cutiQuota, $cutiUsed,
+                $cutiRemaining, $izinUsed, $typesSnapshot
+            ) {
+                $result = LeavePeriodCloser::close($existingCuti, $office, $today, $actor);
 
-            // 2. Reset saldo cuti tahunan
-            $existingCuti->update([
-                'quota' => $office->default_leave_quota,
-                'used'  => 0,
-            ]);
+                // 1. Simpan Snapshot / Arsip ke tabel leave_balance_histories
+                \App\Models\LeaveBalanceHistory::create(array_merge([
+                    'user_id'               => $userId,
+                    'company_id'            => $office->company_id,
+                    'attendance_setting_id' => $office->id,
+                    'period_label'          => 'Periode s/d ' . $today->translatedFormat('d M Y'),
+                    'period_start'          => $today->copy()->subYear()->addDay()->toDateString(),
+                    'period_end'            => $today->toDateString(),
+                    'reset_date'            => $today->toDateString(),
+                    'cuti_quota'            => $cutiQuota,
+                    'cuti_used'             => $cutiUsed,
+                    'cuti_remaining'        => $cutiRemaining,
+                    'izin_sakit_used'       => $izinUsed,
+                    'leave_types_snapshot'  => !empty($typesSnapshot) ? $typesSnapshot : null,
+                    'notes'                 => "Reset manual oleh {$actor->name}",
+                ], $result['history_fields']));
 
-            // 3. Reset saldo izin & sakit
-            if ($existingIzin) {
-                $existingIzin->update([
-                    'used' => 0,
-                ]);
-            }
+                // 2. Reset saldo cuti tahunan — kuota kantor + hari bawaan
+                $existingCuti->update($result['balance_updates']);
 
-            // 4. Reset saldo jenis cuti tambahan yang aktif di kantor ini
-            foreach ($otherBalances as $typeKey => $bal) {
-                $setting = $enabledTypeSettings->get($typeKey);
-                if ($setting) {
-                    $bal->update([
-                        'quota' => $setting->quota_days,
-                        'used'  => 0,
+                // 3. Reset saldo izin & sakit
+                if ($existingIzin) {
+                    $existingIzin->update([
+                        'used' => 0,
                     ]);
-                } else {
-                    $bal->update(['used' => 0]);
                 }
-            }
+
+                // 4. Reset saldo jenis cuti tambahan yang aktif di kantor ini
+                foreach ($otherBalances as $typeKey => $bal) {
+                    $setting = $enabledTypeSettings->get($typeKey);
+                    if ($setting) {
+                        $bal->update([
+                            'quota' => $setting->quota_days,
+                            'used'  => 0,
+                        ]);
+                    } else {
+                        $bal->update(['used' => 0]);
+                    }
+                }
+
+                return $result;
+            });
+
+            $totalCarried  += (int) $closure['decision']['carried_over_days'];
+            $totalEncashed += (int) $closure['decision']['encashed_days'];
+            $totalCashOut  += (float) $closure['decision']['encashment_amount'];
 
             $resetCount++;
         }
 
         $office->update(['last_leave_reset_on' => $today->toDateString()]);
 
+        // Jejak audit menyebut rupiah yang diterbitkan secara eksplisit: reset
+        // saldo cuti kini bisa menerbitkan pembayaran, dan tindakan yang
+        // memindahkan uang harus terbaca sebagai tindakan yang memindahkan uang.
+        $auditDetail = "Reset saldo cuti & izin/sakit kantor {$office->office_name} ({$resetCount} karyawan)";
+        if ($totalCarried > 0) {
+            $auditDetail .= ", {$totalCarried} hari dibawa ke periode baru";
+        }
+        if ($totalEncashed > 0) {
+            $auditDetail .= sprintf(
+                ', %d hari dicairkan = Rp%s',
+                $totalEncashed,
+                number_format($totalCashOut, 0, ',', '.')
+            );
+        }
+
         $this->logActivity(
             $actor->id,
             $office->company_id,
             'leave_balances_reset',
-            "Reset saldo cuti & izin/sakit kantor {$office->office_name} ({$resetCount} karyawan)",
+            $auditDetail,
             'attendance_setting',
             $office->id
         );
 
+        $message = "Berhasil me-reset dan mengarsipkan saldo {$resetCount} karyawan kantor {$office->office_name}.";
+        if ($totalEncashed > 0) {
+            $message .= sprintf(
+                ' Pencairan sisa cuti Rp%s (%d hari) diterbitkan sebagai penyesuaian gaji '
+                . 'dan akan cair pada batch payroll berikutnya sesuai tanggal gajian grup karyawan.',
+                number_format($totalCashOut, 0, ',', '.'),
+                $totalEncashed
+            );
+        }
+
         return response()->json([
-            'message'     => "Berhasil me-reset dan mengarsipkan saldo {$resetCount} karyawan kantor {$office->office_name}.",
+            'message'     => $message,
             'reset_count' => $resetCount,
+            // Ringkasan keputusan kebijakan agar frontend bisa menampilkan
+            // dampak reset tanpa membuka tab riwayat satu per satu.
+            'carry_over_summary' => [
+                'carried_over_days' => $totalCarried,
+                'encashed_days'     => $totalEncashed,
+                'encashment_amount' => round($totalCashOut, 2),
+                'carry_over_enabled' => (bool) $office->leave_carry_over_enabled,
+                'encashment_enabled' => (bool) $office->leave_encashment_enabled,
+            ],
         ]);
     }
 
@@ -3797,7 +3780,7 @@ class AttendanceController extends Controller
             ],
             'overtime' => [
                 'minutes' => $overtimeMinutes,
-                'hours'   => $this->formatMinutes($overtimeMinutes),
+                'hours'   => Duration::formatMinutes($overtimeMinutes),
             ],
             'by_type' => [
                 'onsite' => (int) ($typeCounts['onsite'] ?? 0),
@@ -4588,8 +4571,17 @@ class AttendanceController extends Controller
             // Periode gaji ("YYYY-MM") yang sudah approved/paid → presensi di bulan
             // itu tidak boleh dikoreksi. Dikirim agar tombol koreksi di web langsung
             // non-aktif, bukan baru gagal setelah HRD mengisi form.
+            //
+            // Sejak cut-off presensi bisa menyeberang bulan (2026-10-12), kunci ini
+            // hanya memuat bulan yang terkunci PENUH. Pakai `locked_ranges` di
+            // bawah untuk penonaktifan presisi per-hari; `locked_periods`
+            // dipertahankan agar frontend lama tidak rusak.
             'locked_periods'   => app(\App\Services\Attendance\PayrollPeriodLock::class)
                 ->lockedPeriods($companyId, $startDate, $endDate, $actor->allowedBranchIds()),
+            // Jendela cut-off nyata tiap batch terkunci: [{start, end, payroll_id,
+            // status, period_label}]. Sumber kebenaran untuk UI koreksi presensi.
+            'locked_ranges'    => app(\App\Services\Attendance\PayrollPeriodLock::class)
+                ->lockedRanges($companyId, $startDate, $endDate, $actor->allowedBranchIds()),
             'report'  => [
                 'data'         => $result['data'],
                 'current_page' => $result['current_page'],
@@ -4658,7 +4650,7 @@ class AttendanceController extends Controller
                 $jamKerja = $mins !== null
                     ? floor($mins / 60) . 'j ' . ($mins % 60) . 'm'
                     : '-';
-                $lembur = $this->formatMinutes((int) ($r['overtime_minutes'] ?? 0));
+                $lembur = Duration::formatMinutes((int) ($r['overtime_minutes'] ?? 0));
                 $dateExport = $r['is_cross_day'] && $r['checkout_date']
                     ? Carbon::parse($r['date'])->format('d M') . ' - ' . Carbon::parse($r['checkout_date'])->format('d M Y')
                     : Carbon::parse($r['date'])->format('d M Y');
@@ -5047,7 +5039,7 @@ class AttendanceController extends Controller
                 }
                 if ($spanMinutes > 20 * 60) {
                     throw new HttpResponseException(response()->json([
-                        'message'      => 'Durasi presensi ' . $this->formatMinutes($spanMinutes) . ' melebihi batas wajar 20 jam. Periksa kembali jam masuk & jam pulang yang Anda isi.',
+                        'message'      => 'Durasi presensi ' . Duration::formatMinutes($spanMinutes) . ' melebihi batas wajar 20 jam. Periksa kembali jam masuk & jam pulang yang Anda isi.',
                         'span_minutes' => $spanMinutes,
                     ], 422));
                 }
@@ -5239,10 +5231,68 @@ class AttendanceController extends Controller
                 }
             }
 
-            // Status absent tidak boleh menyisakan jam kerja/lembur menggantung.
+            // ─── Menit & denda pulang cepat: aturan gerbang sama dengan denda telat
+            //     (snapshot wajib ada, kecuali baris baru yang baru saja dibekukan).
+            //     Patokannya STATUS FINAL hasil resolusi di atas: bila status akhir
+            //     bukan 'early_leave' — entah karena sistem tidak melihat pulang cepat
+            //     atau karena HRD membebaskannya — kolom dinolkan, tidak dibiarkan
+            //     membawa denda lama.
+            if ($attendance->snap_early_leave_tolerance_minutes !== null || ! $existing) {
+                $finalStatus = $derived['status'] ?? $attendance->status;
+
+                if ($finalStatus === 'early_leave' && $attendance->check_out_time) {
+                    $earlyFine = $this->calculateEarlyLeaveFine(
+                        Carbon::parse($attendance->check_out_time)->setTimezone($tz),
+                        $schedule,
+                        $date,
+                        $attendance->isFlexitimeSession($employee),
+                        $derived['work_minutes'] ?? null,
+                        $attendance->earlyLeaveFineConfig(),
+                    );
+                    // HRD menetapkan 'early_leave' secara eksplisit pada jam pulang yang
+                    // menurut jadwal normal: tidak ada menit yang bisa dihitung, dan
+                    // denda rupiah tanpa dasar menit tidak boleh dikarang.
+                    $derived['early_leave_minutes']     = $earlyFine['early_leave_minutes'] ?: null;
+                    $derived['early_leave_fine_amount'] = $earlyFine['early_leave_fine_amount'];
+                } else {
+                    $derived['early_leave_minutes']     = null;
+                    $derived['early_leave_fine_amount'] = 0;
+                }
+            }
+
+            // ─── Premi shift malam: baris backfill HRD tidak pernah melewati
+            //     checkIn(), jadi preminya diturunkan di sini dari snapshot yang
+            //     baru dibekukan. Baris yang sudah ada TIDAK dihitung ulang —
+            //     preminya sudah beku sejak check-in, dan koreksi jam tidak
+            //     mengubah fakta bahwa jadwalnya shift malam.
+            if (! $existing && ($derived['status'] ?? null) !== 'absent') {
+                $nightBonus = NightShiftBonusCalculator::calculate(
+                    $schedule['work_start_time'] ?? null,
+                    (bool) ($schedule['is_cross_day'] ?? false),
+                    (bool) ($schedule['is_off'] ?? false),
+                    $attendance->nightShiftBonusConfig(),
+                );
+                $derived['night_shift_bonus_amount'] = $nightBonus > 0 ? $nightBonus : null;
+            }
+
+            // ─── Denda lupa check-out: koreksi manual HRD berarti presensi sudah
+            //     ditangani manusia. Begitu jam pulang diisi/diperbaiki HRD, dasar
+            //     "lupa check-out" hilang → denda dihapus. Bila baris masih bertanda
+            //     auto-checkout dan HRD tidak mengubah jam pulangnya, denda dibiarkan.
+            if ($attendance->missed_checkout_fine_amount !== null && ! $attendance->is_auto_checkout) {
+                $derived['missed_checkout_fine_amount'] = null;
+            }
+
+            // Status absent tidak boleh menyisakan jam kerja/lembur/denda menggantung.
             if (($derived['status'] ?? $attendance->status) === 'absent') {
                 $derived['work_minutes']     = null;
                 $derived['overtime_minutes'] = 0;
+                // Karyawan yang dinyatakan alpha tidak mungkin "pulang cepat" atau
+                // "lupa check-out"; sanksinya diambil dari kebijakan alpha di payroll.
+                $derived['early_leave_minutes']         = null;
+                $derived['early_leave_fine_amount']     = 0;
+                $derived['missed_checkout_fine_amount'] = null;
+                $derived['night_shift_bonus_amount']    = null;
             }
 
             // ─── Rekonsiliasi pengajuan lembur yang sudah ada ───────────────
@@ -5255,7 +5305,7 @@ class AttendanceController extends Controller
 
             if ($approval && $approval->status === 'approved' && (int) $approval->overtime_minutes !== $newOvertime) {
                 throw new HttpResponseException(response()->json([
-                    'message'                   => 'Lembur ' . $this->formatMinutes((int) $approval->overtime_minutes) . ' pada tanggal ini SUDAH DISETUJUI, sedangkan koreksi ini mengubahnya menjadi ' . $this->formatMinutes($newOvertime) . '. Tolak dulu persetujuan lembur tersebut di menu Approval Lembur, lalu ulangi koreksi ini.',
+                    'message'                   => 'Lembur ' . Duration::formatMinutes((int) $approval->overtime_minutes) . ' pada tanggal ini SUDAH DISETUJUI, sedangkan koreksi ini mengubahnya menjadi ' . Duration::formatMinutes($newOvertime) . '. Tolak dulu persetujuan lembur tersebut di menu Approval Lembur, lalu ulangi koreksi ini.',
                     'overtime_conflict'         => true,
                     'overtime_approval_id'      => $approval->id,
                     'approved_overtime_minutes' => (int) $approval->overtime_minutes,
@@ -5443,6 +5493,21 @@ class AttendanceController extends Controller
             // leave_reset_date = anniversary 'MM-DD' (tanpa tahun, ulang tiap tahun).
             'default_leave_quota'            => "{$req}|integer|min:0|max:365",
             'leave_reset_date'               => 'sometimes|nullable|date_format:m-d',
+            // ─── Carry-over & pencairan sisa cuti (2026-10-13) ───────────────
+            // Dua checkbox independen; konsistensi checkbox↔nominal dijaga
+            // validateLeavePolicyAmounts() karena menuntut nilai EFEKTIF
+            // (payload ditimpa ke nilai tersimpan), bukan payload saja.
+            'leave_carry_over_enabled'         => 'sometimes|boolean',
+            'leave_carry_over_max_days'        => 'sometimes|nullable|integer|min:0|max:'
+                . LeaveCarryOverCalculator::MAX_POLICY_DAYS,
+            // min:0 — 0 BULAN adalah nilai yang sah dan berarti "hari bawaan
+            // tidak diberi waktu untuk dipakai, cairkan di tanggal reset".
+            // Berbeda dari NULL yang berarti "tidak pernah kedaluwarsa".
+            'leave_carry_over_expiry_months'   => 'sometimes|nullable|integer|min:0|max:24',
+            'leave_encashment_enabled'         => 'sometimes|boolean',
+            'leave_encashment_rate_per_day'    => 'sometimes|nullable|numeric|min:0|max:100000000',
+            'leave_encashment_max_days'        => 'sometimes|nullable|integer|min:0|max:'
+                . LeaveCarryOverCalculator::MAX_POLICY_DAYS,
             // Kebijakan saldo cuti bersama TIDAK DIPAKAI lagi (di-hardcode 'block' sejak 2026-08-20)
             // Validasi custom_schedules (override per hari)
             'custom_schedules'                 => 'sometimes|nullable|array',
@@ -5458,6 +5523,23 @@ class AttendanceController extends Controller
             // Konfigurasi Alur Persetujuan Bertingkat Cabang (Multi-Approval Workflow)
             'overtime_multi_approval_enabled'  => 'sometimes|boolean',
             'leave_multi_approval_enabled'     => 'sometimes|boolean',
+            // ─── Peraturan Denda & Bonus Kantor (2026-10-11) ────────────────
+            // Semua nominal nullable: NULL/0 = tanpa denda/bonus.
+            'early_leave_fine_mode'            => 'sometimes|nullable|string|in:none,per_minute,flat,prorata',
+            'early_leave_fine_amount'          => 'sometimes|nullable|numeric|min:0|max:100000000',
+            'early_leave_fine_max'             => 'sometimes|nullable|numeric|min:0|max:1000000000',
+            'alpha_penalty_mode'               => 'sometimes|nullable|string|in:prorata,prorata_plus_fine,none',
+            'alpha_fine_flat'                  => 'sometimes|nullable|numeric|min:0|max:100000000',
+            'alpha_sp_threshold'               => 'sometimes|nullable|integer|min:0|max:31',
+            'unpaid_leave_penalty_mode'        => 'sometimes|nullable|string|in:none,flat,prorata',
+            'unpaid_leave_fine_flat'           => 'sometimes|nullable|numeric|min:0|max:100000000',
+            'missed_checkout_penalty_mode'     => 'sometimes|nullable|string|in:none,flat_fine,mark_early_leave',
+            'missed_checkout_fine_amount'      => 'sometimes|nullable|numeric|min:0|max:100000000',
+            'perfect_attendance_bonus_enabled' => 'sometimes|boolean',
+            'perfect_attendance_bonus_amount'  => 'sometimes|nullable|numeric|min:0|max:1000000000',
+            'perfect_attendance_allow_leave'   => 'sometimes|boolean',
+            'night_shift_bonus_enabled'        => 'sometimes|boolean',
+            'night_shift_bonus_amount'         => 'sometimes|nullable|numeric|min:0|max:100000000',
         ];
     }
 
@@ -5502,12 +5584,397 @@ class AttendanceController extends Controller
             'default_leave_quota.min'     => 'Saldo cuti default minimal 0 hari.',
             'default_leave_quota.max'     => 'Saldo cuti default maksimal 365 hari.',
             'leave_reset_date.date_format'=> 'Format tanggal reset saldo cuti harus MM-DD (contoh: 01-01).',
+            'leave_carry_over_max_days.integer' => 'Batas hari cuti yang dibawa harus berupa angka hari.',
+            'leave_carry_over_max_days.min'     => 'Batas hari cuti yang dibawa tidak boleh negatif.',
+            'leave_carry_over_max_days.max'     => 'Batas hari cuti yang dibawa maksimal '
+                . LeaveCarryOverCalculator::MAX_POLICY_DAYS . ' hari.',
+            'leave_carry_over_expiry_months.min' => 'Masa berlaku cuti bawaan minimal 1 bulan setelah tanggal reset.',
+            'leave_carry_over_expiry_months.max' => 'Masa berlaku cuti bawaan maksimal 24 bulan.',
+            'leave_encashment_rate_per_day.numeric' => 'Nominal pencairan cuti per hari harus berupa angka rupiah.',
+            'leave_encashment_rate_per_day.min'     => 'Nominal pencairan cuti per hari tidak boleh negatif.',
+            'leave_encashment_max_days.integer' => 'Batas hari cuti yang dapat dicairkan harus berupa angka hari.',
+            'leave_encashment_max_days.min'     => 'Batas hari cuti yang dapat dicairkan tidak boleh negatif.',
+            'leave_encashment_max_days.max'     => 'Batas hari cuti yang dapat dicairkan maksimal '
+                . LeaveCarryOverCalculator::MAX_POLICY_DAYS . ' hari.',
+            'early_leave_fine_mode.in'       => 'Mode sanksi pulang cepat harus "tanpa sanksi", "denda per menit", "denda flat", atau "potong prorata".',
+            'early_leave_fine_amount.numeric'=> 'Nominal denda pulang cepat harus berupa angka rupiah.',
+            'early_leave_fine_amount.min'    => 'Nominal denda pulang cepat tidak boleh negatif.',
+            'early_leave_fine_max.min'       => 'Batas maksimum denda pulang cepat tidak boleh negatif.',
+            'alpha_penalty_mode.in'          => 'Mode sanksi mangkir harus "potong prorata", "prorata + denda", atau "tanpa potongan".',
+            'alpha_fine_flat.numeric'        => 'Nominal denda mangkir harus berupa angka rupiah.',
+            'alpha_fine_flat.min'            => 'Nominal denda mangkir tidak boleh negatif.',
+            'alpha_sp_threshold.max'         => 'Ambang Surat Peringatan maksimal 31 hari alpha.',
+            'unpaid_leave_penalty_mode.in'   => 'Mode potongan izin pribadi harus "tanpa potongan", "potongan flat per izin", atau "prorata per hari".',
+            'unpaid_leave_fine_flat.numeric' => 'Nominal potongan izin pribadi harus berupa angka rupiah.',
+            'unpaid_leave_fine_flat.min'     => 'Nominal potongan izin pribadi tidak boleh negatif.',
+            'missed_checkout_penalty_mode.in'=> 'Mode denda lupa check-out harus "tanpa sanksi", "denda flat", atau "tandai pulang cepat".',
+            'missed_checkout_fine_amount.numeric' => 'Nominal denda lupa check-out harus berupa angka rupiah.',
+            'missed_checkout_fine_amount.min'     => 'Nominal denda lupa check-out tidak boleh negatif.',
+            'perfect_attendance_bonus_amount.numeric' => 'Nominal insentif kehadiran penuh harus berupa angka rupiah.',
+            'perfect_attendance_bonus_amount.min'     => 'Nominal insentif kehadiran penuh tidak boleh negatif.',
+            'night_shift_bonus_amount.numeric' => 'Nominal premi shift malam harus berupa angka rupiah.',
+            'night_shift_bonus_amount.min'     => 'Nominal premi shift malam tidak boleh negatif.',
             'timezone.in'                 => 'Zona waktu kantor tidak dikenali. Pilihan yang tersedia: '
                 . implode(', ', array_map(
                     fn ($tz) => Timezone::label($tz) . ' (' . $tz . ')',
                     Timezone::identifiers()
                 )) . '.',
         ];
+    }
+
+    /**
+     * Guard konsistensi mode ↔ nominal untuk peraturan denda & bonus (2026-10-11).
+     *
+     * Mode yang berbasis rupiah tidak boleh disimpan tanpa nominal: kebijakan itu
+     * akan terlihat AKTIF di form kantor padahal memotong Rp0. Mode 'prorata'
+     * sengaja TIDAK diwajibkan punya nominal — besarannya diturunkan payroll dari
+     * gaji pokok karyawan.
+     *
+     * @param array $values Gabungan nilai efektif (hasil validasi, atau nilai
+     *        tersimpan yang sudah ditimpa payload update).
+     * @return array|null Body respons 422, atau NULL bila lolos.
+     */
+    private function validatePenaltyBonusAmounts(array $values): ?array
+    {
+        $guards = [
+            ['early_leave_fine_mode', ['per_minute', 'flat'], 'early_leave_fine_amount',
+                'Mode sanksi pulang cepat berbasis denda wajib mengisi nominal denda lebih dari 0.',
+                'Nominal denda pulang cepat wajib diisi lebih dari 0.'],
+            ['alpha_penalty_mode', ['prorata_plus_fine'], 'alpha_fine_flat',
+                'Mode sanksi mangkir "prorata + denda" wajib mengisi nominal denda lebih dari 0.',
+                'Nominal denda mangkir wajib diisi lebih dari 0.'],
+            ['unpaid_leave_penalty_mode', ['flat'], 'unpaid_leave_fine_flat',
+                'Mode potongan izin pribadi "flat per izin" wajib mengisi nominal potongan lebih dari 0.',
+                'Nominal potongan izin pribadi wajib diisi lebih dari 0.'],
+            ['missed_checkout_penalty_mode', ['flat_fine'], 'missed_checkout_fine_amount',
+                'Mode denda lupa check-out "denda flat" wajib mengisi nominal denda lebih dari 0.',
+                'Nominal denda lupa check-out wajib diisi lebih dari 0.'],
+        ];
+
+        foreach ($guards as [$modeKey, $needsAmount, $amountKey, $message, $fieldError]) {
+            if (in_array($values[$modeKey] ?? null, $needsAmount, true)
+                && (float) ($values[$amountKey] ?? 0) <= 0) {
+                return ['message' => $message, 'errors' => [$amountKey => [$fieldError]]];
+            }
+        }
+
+        $toggles = [
+            ['perfect_attendance_bonus_enabled', 'perfect_attendance_bonus_amount',
+                'Insentif kehadiran penuh yang diaktifkan wajib mengisi nominal bonus lebih dari 0.',
+                'Nominal insentif kehadiran penuh wajib diisi lebih dari 0.'],
+            ['night_shift_bonus_enabled', 'night_shift_bonus_amount',
+                'Premi shift malam yang diaktifkan wajib mengisi nominal premi lebih dari 0.',
+                'Nominal premi shift malam wajib diisi lebih dari 0.'],
+        ];
+
+        foreach ($toggles as [$toggleKey, $amountKey, $message, $fieldError]) {
+            if (filter_var($values[$toggleKey] ?? false, FILTER_VALIDATE_BOOLEAN)
+                && (float) ($values[$amountKey] ?? 0) <= 0) {
+                return ['message' => $message, 'errors' => [$amountKey => [$fieldError]]];
+            }
+        }
+
+        // Batas maksimum denda pulang cepat yang lebih kecil dari nominal per
+        // kejadian membuat mode 'flat' selalu terpotong ke batas — hampir pasti
+        // salah isi, bukan kebijakan yang disengaja.
+        $max    = $values['early_leave_fine_max'] ?? null;
+        $amount = $values['early_leave_fine_amount'] ?? null;
+        if (($values['early_leave_fine_mode'] ?? null) === 'flat'
+            && $max !== null && (float) $max > 0
+            && $amount !== null && (float) $amount > (float) $max) {
+            return [
+                'message' => 'Batas maksimum denda pulang cepat (Rp' . number_format((float) $max, 0, ',', '.')
+                    . ') lebih kecil dari nominal denda flat (Rp' . number_format((float) $amount, 0, ',', '.')
+                    . '), sehingga denda selalu terpotong ke batas.',
+                'errors'  => ['early_leave_fine_max' => ['Batas maksimum harus >= nominal denda flat.']],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Guard konsistensi kebijakan carry-over & pencairan sisa cuti (2026-10-13).
+     *
+     * Dua checkbox yang masing-masing butuh nominal pendamping. Yang dijaga di
+     * sini bukan tipe data (itu sudah di settingRules) melainkan KOMBINASI yang
+     * lolos tipe tetapi tidak punya arti — kelas kesalahan yang paling mahal di
+     * kebijakan bergerbang-checkbox, karena HRD melihat kotak tercentang dan
+     * menyimpulkan kebijakannya berjalan, padahal tidak ada hari yang berpindah
+     * atau tidak ada rupiah yang terbit.
+     *
+     * Dievaluasi atas nilai EFEKTIF, bukan payload: HRD yang mencentang
+     * pencairan tanpa menyertakan tarif di request yang sama harus tetap dinilai
+     * terhadap tarif yang sudah tersimpan.
+     *
+     * @param array $values Nilai efektif (payload ditimpa ke nilai tersimpan).
+     * @return array|null Body respons 422, atau NULL bila lolos.
+     */
+    private function validateLeavePolicyAmounts(array $values): ?array
+    {
+        $carryOn = filter_var($values['leave_carry_over_enabled'] ?? false, FILTER_VALIDATE_BOOLEAN);
+        $cashOn  = filter_var($values['leave_encashment_enabled'] ?? false, FILTER_VALIDATE_BOOLEAN);
+
+        $carryMax   = $values['leave_carry_over_max_days'] ?? null;
+        $cashRate   = $values['leave_encashment_rate_per_day'] ?? null;
+        $cashMax    = $values['leave_encashment_max_days'] ?? null;
+        $baseQuota  = (int) ($values['default_leave_quota'] ?? 0);
+
+        // 1) Carry-over aktif tanpa batas hari = kebijakan yang tidak membawa
+        //    apa pun. Kalkulator memperlakukan 0 hari sama dengan checkbox OFF,
+        //    jadi kombinasi ini hanya menipu pembaca form.
+        if ($carryOn && (int) ($carryMax ?? 0) <= 0) {
+            return [
+                'message' => 'Fitur bawa sisa cuti (carry-over) yang diaktifkan wajib mengisi batas '
+                    . 'jumlah hari yang boleh dibawa, lebih dari 0 hari.',
+                'errors'  => ['leave_carry_over_max_days' => ['Batas hari cuti yang dibawa wajib diisi lebih dari 0.']],
+            ];
+        }
+
+        // 2) Pencairan aktif tanpa tarif = tidak ada uang yang bisa diterbitkan,
+        //    dan sisa cuti karyawan tetap hangus meski HRD yakin sudah membuka
+        //    opsi pencairan. Ini guard yang paling penting di metode ini.
+        if ($cashOn && (float) ($cashRate ?? 0) <= 0) {
+            return [
+                'message' => 'Fitur pencairan sisa cuti yang diaktifkan wajib mengisi nominal rupiah '
+                    . 'per hari, lebih dari 0. Tanpa nominal, sisa cuti karyawan tetap hangus.',
+                'errors'  => ['leave_encashment_rate_per_day' => ['Nominal pencairan per hari wajib diisi lebih dari 0.']],
+            ];
+        }
+
+        // 2b) Pencairan HANYA berlaku atas hari bawaan: yang dicairkan adalah
+        //     hari bawaan yang masa berlakunya habis tanpa terpakai. Tanpa
+        //     carry-over tidak ada hari bawaan, sehingga kebijakan pencairannya
+        //     mati total — HRD mencentangnya dan sisa cuti karyawan tetap hangus
+        //     seluruhnya tanpa pernah ada tanda bahwa fiturnya tidak berjalan.
+        if ($cashOn && ! $carryOn) {
+            return [
+                'message' => 'Pencairan sisa cuti hanya berlaku atas hari cuti yang dibawa ke periode '
+                    . 'berikutnya (carry-over), yaitu hari bawaan yang masa berlakunya habis tanpa '
+                    . 'terpakai. Aktifkan fitur carry-over terlebih dahulu, atau matikan pencairan.',
+                'errors'  => ['leave_carry_over_enabled' => [
+                    'Aktifkan carry-over agar ada hari bawaan yang bisa dicairkan.',
+                ]],
+            ];
+        }
+
+        // 2c) Pencairan aktif tetapi hari bawaan tidak pernah kedaluwarsa
+        //     (masa berlaku NULL). Pemicu pencairan adalah peristiwa kedaluwarsa;
+        //     tanpa tanggal itu uangnya tidak akan pernah terbit. Isi 0 untuk
+        //     mencairkan di tanggal reset, atau N bulan untuk memberi karyawan
+        //     kesempatan memakainya sebagai cuti lebih dulu.
+        if ($cashOn && ($values['leave_carry_over_expiry_months'] ?? null) === null) {
+            return [
+                'message' => 'Fitur pencairan membutuhkan masa berlaku cuti bawaan, karena yang dicairkan '
+                    . 'adalah hari bawaan yang masa berlakunya habis. Isi 0 bulan agar langsung dicairkan '
+                    . 'pada tanggal reset, atau isi jumlah bulan agar karyawan diberi kesempatan '
+                    . 'memakainya sebagai cuti lebih dahulu.',
+                'errors'  => ['leave_carry_over_expiry_months' => [
+                    'Masa berlaku wajib diisi (0 = cairkan langsung saat reset).',
+                ]],
+            ];
+        }
+
+        // 3) Nominal/batas pencairan terisi padahal checkbox-nya OFF. Tidak
+        //    berbahaya secara perhitungan (kalkulator mengabaikannya), tetapi
+        //    nominal rupiah yang tersimpan tanpa kebijakan yang mengaktifkannya
+        //    adalah tampilan yang menyesatkan di form kantor: HRD akan membaca
+        //    tarifnya dan menyangka pencairan berjalan.
+        if (! $cashOn && (float) ($cashRate ?? 0) > 0) {
+            return [
+                'message' => 'Nominal pencairan sisa cuti terisi tetapi fitur pencairannya tidak diaktifkan. '
+                    . 'Centang fitur pencairan, atau kosongkan nominalnya.',
+                'errors'  => ['leave_encashment_enabled' => [
+                    'Aktifkan fitur pencairan untuk memakai nominal ini, atau kosongkan nominalnya.',
+                ]],
+            ];
+        }
+
+        if (! $carryOn && (int) ($carryMax ?? 0) > 0) {
+            return [
+                'message' => 'Batas hari bawa sisa cuti terisi tetapi fitur carry-over tidak diaktifkan. '
+                    . 'Centang fitur carry-over, atau kosongkan batas harinya.',
+                'errors'  => ['leave_carry_over_enabled' => [
+                    'Aktifkan fitur carry-over untuk memakai batas hari ini, atau kosongkan batasnya.',
+                ]],
+            ];
+        }
+
+        // 4) Batas yang melampaui kuota tahunan kantor. Sisa cuti tidak mungkin
+        //    melebihi kuotanya, jadi batas di atas kuota tidak pernah tercapai —
+        //    menandakan HRD salah membaca satuan field (mis. mengisi bulan atau
+        //    rupiah di kolom hari).
+        if ($baseQuota > 0) {
+            if ($carryOn && (int) ($carryMax ?? 0) > $baseQuota) {
+                return [
+                    'message' => "Batas hari cuti yang dibawa ({$carryMax} hari) melebihi saldo cuti default "
+                        . "kantor ({$baseQuota} hari), sehingga batas itu tidak akan pernah tercapai.",
+                    'errors'  => ['leave_carry_over_max_days' => [
+                        "Batas hari yang dibawa maksimal {$baseQuota} hari (sebesar saldo cuti default kantor).",
+                    ]],
+                ];
+            }
+
+            if ($cashOn && $cashMax !== null && (int) $cashMax > $baseQuota) {
+                return [
+                    'message' => "Batas hari cuti yang dapat dicairkan ({$cashMax} hari) melebihi saldo cuti "
+                        . "default kantor ({$baseQuota} hari), sehingga batas itu tidak akan pernah tercapai.",
+                    'errors'  => ['leave_encashment_max_days' => [
+                        "Batas hari yang dicairkan maksimal {$baseQuota} hari (sebesar saldo cuti default kantor).",
+                    ]],
+                ];
+            }
+        }
+
+        // CATATAN: guard lama "batas carry-over >= kuota mematikan pencairan"
+        // DICABUT bersama perubahan 2026-10-14. Alasannya habis: uang pencairan
+        // tidak lagi berasal dari "sisa yang tidak dibawa" melainkan dari hari
+        // BAWAAN yang masa berlakunya habis. Batas carry-over sebesar kuota
+        // sekarang justru konfigurasi yang wajar — seluruh sisa cuti dibawa,
+        // lalu yang tak terpakai dalam masa berlakunya dicairkan.
+
+        // 5) Masa kedaluwarsa tanpa carry-over. Tidak ada saldo bawaan yang
+        //    diawasi tanggal itu — menyimpannya hanya menyisakan konfigurasi
+        //    menggantung yang akan membingungkan saat carry-over diaktifkan lagi.
+        if (! $carryOn && ($values['leave_carry_over_expiry_months'] ?? null) !== null) {
+            return [
+                'message' => 'Masa berlaku cuti bawaan hanya berlaku bila fitur carry-over diaktifkan.',
+                'errors'  => ['leave_carry_over_expiry_months' => [
+                    'Kosongkan masa berlaku, atau aktifkan fitur carry-over.',
+                ]],
+            ];
+        }
+
+        return null;
+    }
+
+    /**
+     * Kalimat penjelas takdir sisa cuti sesuai kebijakan kantor.
+     *
+     * Dirakit di backend, bukan di web/mobile, karena matriks dua checkbox ini
+     * harus dibaca sama oleh semua klien. Dua implementasi matriks yang sama
+     * akan menyimpang pada perubahan aturan berikutnya, dan yang menyimpang
+     * akan memberi tahu karyawan hal yang tidak terjadi pada saldo cutinya.
+     */
+    private function leavePolicyLabel(?AttendanceSetting $office): string
+    {
+        $config = LeaveCarryOverCalculator::configFromOffice($office);
+
+        $carryOn = $config['carry_over_enabled'] && $config['carry_over_max_days'] > 0;
+        $cashOn  = $carryOn
+            && $config['encashment_enabled']
+            && $config['encashment_rate_per_day'] > 0;
+
+        if (! $carryOn) {
+            return 'Sisa cuti yang tidak digunakan akan hangus pada tanggal reset saldo cuti.';
+        }
+
+        $maxDays = $config['carry_over_max_days'];
+        $months  = $config['carry_over_expiry_months'];
+        $rate    = 'Rp' . number_format($config['encashment_rate_per_day'], 0, ',', '.');
+        $pagu    = $config['encashment_max_days'] !== null
+            ? " (maksimal {$config['encashment_max_days']} hari)"
+            : '';
+
+        // Masa berlaku 0 bulan: hari bawaan tidak diberi kesempatan dipakai,
+        // takdirnya selesai di tanggal reset. Disebut lebih dulu karena kalimat
+        // "dibawa ke periode berikutnya" akan menyesatkan di kasus ini.
+        if ($months === 0) {
+            return $cashOn
+                ? "Sisa cuti maksimal {$maxDays} hari akan dicairkan menjadi uang sebesar {$rate} "
+                    . "per hari{$pagu} pada tanggal reset, dibayarkan pada gaji bulan berikutnya. "
+                    . 'Kelebihannya akan hangus.'
+                : "Sisa cuti yang tidak digunakan akan hangus pada tanggal reset saldo cuti.";
+        }
+
+        $label = "Sisa cuti dapat dibawa ke periode berikutnya maksimal {$maxDays} hari; "
+            . 'kelebihannya hangus pada tanggal reset.';
+
+        if ($months === null) {
+            // Tanpa masa berlaku, pencairan tidak mungkin aktif (dijaga guard
+            // 2c), jadi hari bawaan hanya hidup sampai reset berikutnya.
+            return $label . ' Hari bawaan tidak memiliki masa kedaluwarsa.';
+        }
+
+        $label .= " Hari bawaan wajib digunakan dalam {$months} bulan setelah tanggal reset";
+
+        return $cashOn
+            ? "{$label}; yang tidak terpakai akan dicairkan menjadi uang sebesar {$rate} per hari{$pagu}, "
+                . 'dibayarkan pada gaji bulan berikutnya.'
+            : "{$label}, setelah itu hangus.";
+    }
+
+    /**
+     * Kalimat penjelas apa yang SUDAH terjadi pada sisa cuti satu baris riwayat.
+     *
+     * Berbeda dari leavePolicyLabel() yang menjelaskan ATURAN yang berlaku ke
+     * depan, fungsi ini membaca angka yang sudah tercatat. Keduanya bisa
+     * berbeda secara sah: HRD boleh mengubah kebijakan setelah penutupan, dan
+     * baris riwayat tetap harus menceritakan perlakuan yang ia terima dulu.
+     */
+    private function historyOutcomeLabel(\App\Models\LeaveBalanceHistory $h): string
+    {
+        $remaining = (int) $h->cuti_remaining;
+        $isExpiry  = ($h->policy_snapshot['event'] ?? null)
+            === \App\Services\Attendance\LeavePeriodCloser::EVENT_CARRY_OVER_EXPIRY;
+
+        if ($remaining <= 0) {
+            return $isExpiry
+                ? 'Seluruh hari cuti bawaan sudah terpakai sebelum masa berlakunya habis.'
+                : 'Tidak ada sisa cuti pada akhir periode ini.';
+        }
+
+        $carried   = (int) $h->carried_over_days;
+        $encashed  = (int) $h->encashed_days;
+        $forfeited = (int) $h->forfeited_days;
+
+        // Baris pengguguran masa berlaku bercerita tentang hari BAWAAN, bukan
+        // sisa cuti satu periode penuh. Memakai kalimat yang sama akan
+        // menyatakan angka yang salah: "sisa 7 hari" di sini berarti 7 hari
+        // bawaan yang belum terpakai, bukan sisa kuota tahunan karyawan.
+        if ($isExpiry) {
+            if ($encashed > 0) {
+                $amount = 'Rp' . number_format((float) $h->encashment_amount, 0, ',', '.');
+                $label  = "{$encashed} hari cuti bawaan dicairkan senilai {$amount} karena masa berlakunya habis";
+
+                return $forfeited > 0
+                    ? "{$label}, {$forfeited} hari hangus."
+                    : "{$label}.";
+            }
+
+            return "{$remaining} hari cuti bawaan hangus karena melewati masa berlakunya.";
+        }
+
+        $parts = [];
+
+        if ($carried > 0) {
+            $part = "{$carried} hari dibawa ke periode berikutnya";
+            if ($h->carry_over_expired_at) {
+                $part .= ' (berlaku s/d ' . $h->carry_over_expired_at->translatedFormat('d M Y') . ')';
+            }
+            $parts[] = $part;
+        }
+
+        if ($encashed > 0) {
+            $amount  = 'Rp' . number_format((float) $h->encashment_amount, 0, ',', '.');
+            $parts[] = "{$encashed} hari dicairkan senilai {$amount}";
+        }
+
+        if ($forfeited > 0) {
+            // Pencairan yang ditolak penjagaan anti-dobel masuk ke forfeited_days
+            // agar invarian penjumlahan utuh, tetapi penyebabnya bukan kebijakan
+            // hangus. Menyebutnya "hangus" di situ akan menuduh kantor sesuatu
+            // yang tidak ia lakukan, jadi snapshot-nya yang menentukan kalimat.
+            $parts[] = !empty($h->policy_snapshot['duplicate_encashment_blocked'])
+                ? "{$forfeited} hari tidak dicairkan ulang (periode ini sudah pernah dicairkan)"
+                : "{$forfeited} hari hangus";
+        }
+
+        if ($parts === []) {
+            return "Sisa {$remaining} hari belum tercatat takdirnya (riwayat sebelum fitur carry-over).";
+        }
+
+        return "Sisa {$remaining} hari: " . implode(', ', $parts) . '.';
     }
 
     // 10. listSettings() — daftar kantor perusahaan
@@ -5635,6 +6102,21 @@ class AttendanceController extends Controller
             ], 422);
         }
 
+        // Mode denda/bonus yang memilih nominal wajib membawa nominalnya (2026-10-11).
+        // Tanpa guard ini HRD bisa menyimpan kebijakan yang tampak aktif di form
+        // tetapi memotong/menambah Rp0 di payroll — kesalahan senyap yang baru
+        // ketahuan saat slip gaji terbit.
+        if ($error = $this->validatePenaltyBonusAmounts($validated)) {
+            return response()->json($error, 422);
+        }
+
+        // Checkbox carry-over / pencairan sisa cuti wajib membawa nominalnya
+        // (2026-10-13). Pada store seluruh nilai datang dari payload, jadi
+        // $validated SUDAH merupakan nilai efektif kantor baru ini.
+        if ($error = $this->validateLeavePolicyAmounts($validated)) {
+            return response()->json($error, 422);
+        }
+
         $actor = $request->user();
         // super_admin boleh menentukan company_id; lainnya pakai milik sendiri
         $companyId = $actor->company_id;
@@ -5727,6 +6209,83 @@ class AttendanceController extends Controller
             }
         }
 
+        // Peraturan denda & bonus (2026-10-11): nominal null eksplisit = HRD
+        // mengosongkan nominalnya (tanpa denda/bonus), sedangkan MODE tidak boleh
+        // NULL — kosong berarti kembali ke default netral kolomnya.
+        foreach ([
+            'early_leave_fine_amount', 'early_leave_fine_max', 'alpha_fine_flat',
+            'unpaid_leave_fine_flat', 'missed_checkout_fine_amount',
+            'perfect_attendance_bonus_amount', 'night_shift_bonus_amount',
+        ] as $amountField) {
+            if (array_key_exists($amountField, $validated) && $validated[$amountField] === null) {
+                $data[$amountField] = null;
+            }
+        }
+        foreach ([
+            'early_leave_fine_mode'        => EarlyLeaveFineCalculator::MODE_NONE,
+            'alpha_penalty_mode'           => AttendancePolicyCalculator::ALPHA_PRORATA,
+            'unpaid_leave_penalty_mode'    => AttendancePolicyCalculator::UNPAID_NONE,
+            'missed_checkout_penalty_mode' => MissedCheckoutFineCalculator::MODE_NONE,
+            'alpha_sp_threshold'           => 3,
+        ] as $modeField => $modeDefault) {
+            if (array_key_exists($modeField, $validated) && $validated[$modeField] === null) {
+                $data[$modeField] = $modeDefault;
+            }
+        }
+
+        // Kebijakan cuti (2026-10-13): null eksplisit = HRD mengosongkan nominal
+        // / batas / masa berlaku. Harus dikembalikan setelah array_filter di atas,
+        // jika tidak pengosongan akan diam-diam diabaikan dan guard konsistensi
+        // di bawah menilai nilai lama yang sudah dimaksudkan untuk dihapus —
+        // satu-satunya cara HRD mematikan pencairan tanpa menyisakan tarif
+        // menggantung adalah mengirim null ke kolom tarifnya.
+        foreach ([
+            'leave_carry_over_max_days', 'leave_carry_over_expiry_months',
+            'leave_encashment_rate_per_day', 'leave_encashment_max_days',
+        ] as $leaveField) {
+            if (array_key_exists($leaveField, $validated) && $validated[$leaveField] === null) {
+                $data[$leaveField] = null;
+            }
+        }
+
+        // Guard mode ↔ nominal dijalankan atas NILAI EFEKTIF (payload ditimpa di atas
+        // nilai tersimpan), bukan atas payload saja: HRD yang hanya mengirim mode baru
+        // tanpa nominal harus tetap tertahan bila nominal tersimpan masih 0.
+        $effectivePenalty = [];
+        foreach ([
+            'early_leave_fine_mode', 'early_leave_fine_amount', 'early_leave_fine_max',
+            'alpha_penalty_mode', 'alpha_fine_flat',
+            'unpaid_leave_penalty_mode', 'unpaid_leave_fine_flat',
+            'missed_checkout_penalty_mode', 'missed_checkout_fine_amount',
+            'perfect_attendance_bonus_enabled', 'perfect_attendance_bonus_amount',
+            'night_shift_bonus_enabled', 'night_shift_bonus_amount',
+        ] as $field) {
+            $effectivePenalty[$field] = array_key_exists($field, $data)
+                ? $data[$field]
+                : $attendanceSetting->{$field};
+        }
+        if ($error = $this->validatePenaltyBonusAmounts($effectivePenalty)) {
+            return response()->json($error, 422);
+        }
+
+        // Guard kebijakan carry-over & pencairan — juga atas nilai EFEKTIF.
+        // default_leave_quota ikut disertakan karena batas hari dinilai relatif
+        // terhadap kuota tahunan kantor, dan kuota itu bisa ikut berubah di
+        // request yang sama.
+        $effectiveLeave = [];
+        foreach ([
+            'default_leave_quota',
+            'leave_carry_over_enabled', 'leave_carry_over_max_days', 'leave_carry_over_expiry_months',
+            'leave_encashment_enabled', 'leave_encashment_rate_per_day', 'leave_encashment_max_days',
+        ] as $field) {
+            $effectiveLeave[$field] = array_key_exists($field, $data)
+                ? $data[$field]
+                : $attendanceSetting->{$field};
+        }
+        if ($error = $this->validateLeavePolicyAmounts($effectiveLeave)) {
+            return response()->json($error, 422);
+        }
+
         $effOtRule   = $data['overtime_rule'] ?? ($attendanceSetting->overtime_rule ?: 'government');
         $effOtAmount = array_key_exists('overtime_rate_amount', $data)
             ? $data['overtime_rate_amount']
@@ -5750,23 +6309,56 @@ class AttendanceController extends Controller
 
             // Tarif denda: kosong dan 0 sama-sama berarti "tanpa denda"; selisih
             // sen tidak boleh lolos dari pembulatan integer di settingValueEquals().
-            if (in_array($field, ['late_fine_per_minute', 'late_fine_max_per_day'], true)) {
+            if (in_array($field, [
+                'late_fine_per_minute', 'late_fine_max_per_day', 'overtime_rate_amount',
+                'early_leave_fine_amount', 'early_leave_fine_max', 'alpha_fine_flat',
+                'unpaid_leave_fine_flat', 'missed_checkout_fine_amount',
+                'perfect_attendance_bonus_amount', 'night_shift_bonus_amount',
+                'leave_encashment_rate_per_day',
+            ], true)) {
                 if ((float) ($old ?? 0) !== (float) ($new ?? 0)) {
                     $changedDangerous[] = $field;
                 }
                 continue;
             }
-            if ($field === 'overtime_rate_amount') {
-                if ((float) ($old ?? 0) !== (float) ($new ?? 0)) {
-                    $changedDangerous[] = $field;
-                }
-                continue;
-            }
-            if ($field === 'overtime_rate_taxable') {
+            if (in_array($field, [
+                'overtime_rate_taxable', 'perfect_attendance_bonus_enabled',
+                'perfect_attendance_allow_leave', 'night_shift_bonus_enabled',
+                'leave_carry_over_enabled', 'leave_encashment_enabled',
+            ], true)) {
                 if ((bool) $old !== (bool) $new) {
                     $changedDangerous[] = $field;
                 }
                 continue;
+            }
+            // Batas hari kebijakan cuti: NULL dan 0 sama-sama berarti "tanpa batas
+            // yang tersimpan", dan settingValueEquals() membandingkan NULL vs 0
+            // sebagai string ('' vs '0') sehingga akan memicu gerbang "SIMPAN"
+            // untuk perubahan yang sebenarnya tidak ada.
+            if (in_array($field, [
+                'leave_carry_over_max_days', 'leave_carry_over_expiry_months',
+                'leave_encashment_max_days',
+            ], true)) {
+                if ((int) ($old ?? 0) !== (int) ($new ?? 0)) {
+                    $changedDangerous[] = $field;
+                }
+                continue;
+            }
+            if ($field === 'early_leave_fine_mode') {
+                $old = EarlyLeaveFineCalculator::normalizeMode($old);
+                $new = EarlyLeaveFineCalculator::normalizeMode($new);
+            }
+            if ($field === 'alpha_penalty_mode') {
+                $old = AttendancePolicyCalculator::normalizeAlphaMode($old);
+                $new = AttendancePolicyCalculator::normalizeAlphaMode($new);
+            }
+            if ($field === 'unpaid_leave_penalty_mode') {
+                $old = AttendancePolicyCalculator::normalizeUnpaidLeaveMode($old);
+                $new = AttendancePolicyCalculator::normalizeUnpaidLeaveMode($new);
+            }
+            if ($field === 'missed_checkout_penalty_mode') {
+                $old = MissedCheckoutFineCalculator::normalizeMode($old);
+                $new = MissedCheckoutFineCalculator::normalizeMode($new);
             }
             if ($field === 'overtime_rule') {
                 $old = $old ?: 'government';
@@ -5805,10 +6397,43 @@ class AttendanceController extends Controller
                     . 'terhadap jam ' . Timezone::label($data['timezone']) . '.'
                 : '';
 
+            // Kebijakan cuti juga diberi peringatan tersendiri: dampaknya tidak
+            // muncul "esok hari" seperti aturan presensi lain, melainkan sekali
+            // setahun saat reset — dan saat itu berupa hak cuti yang hilang atau
+            // uang yang terbit, bukan angka yang bisa dikoreksi ulang.
+            $pesanCuti = '';
+            $leaveFields = array_intersect($changedDangerous, [
+                'leave_carry_over_enabled', 'leave_carry_over_max_days',
+                'leave_carry_over_expiry_months', 'leave_encashment_enabled',
+                'leave_encashment_rate_per_day', 'leave_encashment_max_days',
+            ]);
+            if ($leaveFields) {
+                $effCarry = array_key_exists('leave_carry_over_enabled', $data)
+                    ? filter_var($data['leave_carry_over_enabled'], FILTER_VALIDATE_BOOLEAN)
+                    : (bool) $attendanceSetting->leave_carry_over_enabled;
+                $effCash  = array_key_exists('leave_encashment_enabled', $data)
+                    ? filter_var($data['leave_encashment_enabled'], FILTER_VALIDATE_BOOLEAN)
+                    : (bool) $attendanceSetting->leave_encashment_enabled;
+                $effRate  = (float) (array_key_exists('leave_encashment_rate_per_day', $data)
+                    ? ($data['leave_encashment_rate_per_day'] ?? 0)
+                    : ($attendanceSetting->leave_encashment_rate_per_day ?? 0));
+
+                $pesanCuti = ' PERHATIAN KEBIJAKAN CUTI: perubahan ini berlaku pada RESET SALDO CUTI berikutnya.';
+                if (! $effCarry && ! $effCash) {
+                    $pesanCuti .= ' Dengan kedua fitur nonaktif, SELURUH sisa cuti karyawan akan HANGUS saat reset.';
+                } elseif ($effCash) {
+                    $pesanCuti .= ' Pencairan AKTIF: sisa cuti yang tidak dibawa akan diterbitkan sebagai '
+                        . 'penyesuaian gaji (Rp' . number_format($effRate, 0, ',', '.') . ' per hari) dan '
+                        . 'dibayarkan pada batch payroll berikutnya.';
+                } else {
+                    $pesanCuti .= ' Sisa cuti di atas batas carry-over akan HANGUS karena fitur pencairan nonaktif.';
+                }
+            }
+
             return response()->json([
                 'message' => 'Perubahan aturan presensi terdeteksi pada: ' . implode(', ', $changedDangerous) . '. ' .
                     'Perubahan ini mempengaruhi karyawan yang BELUM check-in hari ini dan seluruh presensi esok hari.' .
-                    $pesanZona . ' ' .
+                    $pesanZona . $pesanCuti . ' ' .
                     "Kirim ulang dengan confirm_dangerous = \"SIMPAN\" untuk melanjutkan.",
                 'requires_confirmation'   => true,
                 'confirmation_phrase'     => 'SIMPAN',
@@ -5959,6 +6584,42 @@ class AttendanceController extends Controller
             'flex_core_start',
             'flex_core_end',
             'flex_target_minutes',
+            // Peraturan denda & bonus (2026-10-11): seluruhnya berdampak langsung ke
+            // rupiah di slip gaji periode berjalan. alpha/izin/insentif bahkan TIDAK
+            // punya snapshot per presensi — begitu diubah, seluruh periode payroll
+            // yang belum di-generate ikut memakai nilai baru.
+            'early_leave_fine_mode',
+            'early_leave_fine_amount',
+            'early_leave_fine_max',
+            'alpha_penalty_mode',
+            'alpha_fine_flat',
+            'unpaid_leave_penalty_mode',
+            'unpaid_leave_fine_flat',
+            'missed_checkout_penalty_mode',
+            'missed_checkout_fine_amount',
+            'perfect_attendance_bonus_enabled',
+            'perfect_attendance_bonus_amount',
+            'perfect_attendance_allow_leave',
+            'night_shift_bonus_enabled',
+            'night_shift_bonus_amount',
+            // Carry-over & pencairan sisa cuti (2026-10-13). Keduanya masuk daftar
+            // karena dampaknya TIDAK BISA DIBATALKAN seperti kebijakan denda:
+            //  - mematikan carry-over menghapus hari cuti yang akan dibawa karyawan
+            //    pada reset berikutnya (hak yang hilang, bukan angka yang berubah);
+            //  - mengaktifkan pencairan + tarifnya menerbitkan PayrollAdjustment
+            //    approved pada reset berikutnya, dan uang yang sudah terbit hanya
+            //    bisa ditarik dengan membatalkan penyesuaiannya satu per satu.
+            // Tarifnya adalah SATU-SATUNYA nominal presensi yang dikalikan angka
+            // yang menumpuk setahun, sehingga salah ketik satu nol berdampak jauh
+            // lebih besar daripada di denda harian.
+            'leave_carry_over_enabled',
+            'leave_carry_over_max_days',
+            'leave_carry_over_expiry_months',
+            'leave_encashment_enabled',
+            'leave_encashment_rate_per_day',
+            'leave_encashment_max_days',
+            // alpha_sp_threshold SENGAJA tidak masuk daftar: ambang Surat Peringatan
+            // hanya informatif/pelaporan, tidak memotong rupiah.
         ];
     }
 
@@ -8724,12 +9385,27 @@ class AttendanceController extends Controller
             ],
         );
 
+        // Premi shift malam dibekukan di sini, bukan saat check-out: syaratnya
+        // melekat pada JADWAL (jam mulai >= 22:00 atau shift lintas hari), bukan
+        // pada durasi kerja. Karyawan shift malam yang lupa check-out pun tetap
+        // berhak atas preminya.
+        $nightBonus = NightShiftBonusCalculator::calculate(
+            $jadwalHariIni['work_start_time'] ?? null,
+            (bool) ($jadwalHariIni['is_cross_day'] ?? false),
+            (bool) ($jadwalHariIni['is_off'] ?? false),
+            [
+                'enabled' => $snapshotAttrs['snap_night_shift_bonus_enabled'],
+                'amount'  => $snapshotAttrs['snap_night_shift_bonus_amount'],
+            ],
+        );
+
         $attendance = Attendance::updateOrCreate(
             ['user_id' => $user->id, 'date' => $today],
             [
                 'company_id'               => $user->company_id,
                 'late_minutes'             => $lateFine['late_minutes'],
                 'late_fine_amount'         => $lateFine['late_fine_amount'],
+                'night_shift_bonus_amount' => $nightBonus,
                 'check_in_time'            => $checkInTime,
                 'check_in_lat'             => $validated['latitude'],
                 'check_in_lng'             => $validated['longitude'],
@@ -9106,6 +9782,25 @@ class AttendanceController extends Controller
         // Tandai early leave — tidak berlaku di hari libur/weekend
         if ($recalc['is_early_leave']) {
             $updateData['status'] = 'early_leave';
+
+            // Menit & denda pulang cepat (2026-10-11). Menit tetap dicatat walau
+            // modenya 'none'/'prorata' — payroll memakai menitnya untuk memotong
+            // prorata, dan insentif kehadiran penuh memakai jumlah harinya.
+            $earlyFine = $this->calculateEarlyLeaveFine(
+                $checkOutTime,
+                $schedule,
+                $scheduleDate,
+                $attendance->isFlexitimeSession($user),
+                $recalc['work_minutes'],
+                $attendance->earlyLeaveFineConfig(),
+            );
+            $updateData['early_leave_minutes']     = $earlyFine['early_leave_minutes'];
+            $updateData['early_leave_fine_amount'] = $earlyFine['early_leave_fine_amount'];
+        } else {
+            // Check-out ulang setelah koreksi: bersihkan sisa denda lama agar
+            // baris tidak membawa denda untuk kondisi yang sudah tidak berlaku.
+            $updateData['early_leave_minutes']     = null;
+            $updateData['early_leave_fine_amount'] = null;
         }
 
         $attendance->update($updateData);
@@ -9145,37 +9840,6 @@ class AttendanceController extends Controller
         }
     }
 
-    // ─── Helper: hitung menit lembur saat check-out ──────────────
-    //     Mempertimbangkan shift aktif karyawan:
-    //     - Jika shift menandai hari ini is_off=true  → seluruh menit kerja jadi lembur,
-    //       TAPI tetap harus mencapai min_overtime_minutes (anti-noise: masuk sebentar
-    //       di hari libur tidak langsung menjadi pengajuan lembur).
-    //     - Jika shift menandai hari ini is_off=false → lembur dihitung setelah jam pulang SHIFT
-    //       (berlaku meski hari ini adalah weekend/libur nasional — karyawan memang dijadwalkan masuk).
-    //     - Fallback ke perilaku lama jika tidak ada shift: hari libur/weekend → full lembur
-    //       (dengan minimum yang sama); hari kerja → selisih menit melewati work_end_time kantor.
-    //
-    //     $schedule (opsional): jadwal yang sudah di-resolve caller — bila diisi,
-    //     helper TIDAK me-resolve ulang (dipakai jalur snapshot checkout).
-    private function calculateOvertime(User $user, string $date, Carbon $checkOutTime, int $workMinutes, bool $isNationalNonWorking, ?array $schedule = null, ?Attendance $attendance = null): int
-    {
-        return app(AttendanceRecalculator::class)->calculateOvertime(
-            $user, $date, $checkOutTime, $workMinutes, $isNationalNonWorking, $schedule, $attendance
-        );
-    }
-
-    // ─── Helper: deteksi pulang lebih awal (early leave) ────────
-    //     Mempertimbangkan shift aktif: pakai jam pulang shift jika ada.
-    //     Tidak berlaku di hari libur (per jadwal shift atau kalender).
-    //     $schedule (opsional): jadwal dari caller (jalur snapshot checkout).
-    //     Mendukung jam kerja fleksibel (flexitime) dengan validasi jam inti & durasi target.
-    private function checkEarlyLeave(User $user, string $date, Carbon $checkOutTime, bool $isNationalNonWorking, ?array $schedule = null, ?int $workMinutes = null, ?Attendance $attendance = null): bool
-    {
-        return app(AttendanceRecalculator::class)->checkEarlyLeave(
-            $user, $date, $checkOutTime, $isNationalNonWorking, $schedule, $workMinutes, $attendance
-        );
-    }
-
     // ─── Helper: buat record OvertimeApproval & notifikasi HRD ──────────────
     //     Dipanggil saat checkout (manual/auto) jika ada overtime_minutes > 0.
     private function createOvertimeApproval(Attendance $attendance, bool $isAutoCheckout = false): void
@@ -9206,7 +9870,7 @@ class AttendanceController extends Controller
             'overtime_reason' => $overtimeReason,
         ]);
 
-        $overtimeFormatted = $this->formatMinutes($attendance->overtime_minutes);
+        $overtimeFormatted = Duration::formatMinutes($attendance->overtime_minutes);
         $tanggal = Carbon::parse($attendance->date)->format('d/m/Y');
 
         if ($multiApprovalEnabled && $employee?->manager_id) {
@@ -9274,13 +9938,6 @@ class AttendanceController extends Controller
         }
 
         return null;
-    }
-
-    // ─── Helper: kirim FCM push notification (fire-and-forget) ─────────────
-    //     Jika FIREBASE_SERVER_KEY tidak dikonfigurasi, langkah ini dilewati.
-    private function sendFcmPush(string $fcmToken, string $title, string $body, array $data = []): void
-    {
-        app(FcmService::class)->send($fcmToken, $title, $body, $data);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -9620,14 +10277,7 @@ class AttendanceController extends Controller
      */
     private function isOvertimeHrdLevelOnly(User $actor): bool
     {
-        $code = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
-        if (in_array($code, ['super_admin', 'admin'], true)) {
-            return false;
-        }
-
-        return $code === 'hrd'
-            || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
-            || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
+        return app(OvertimeApprovalGate::class)->isHrdLevelOnly($actor);
     }
 
     /**
@@ -9635,8 +10285,7 @@ class AttendanceController extends Controller
      */
     private function hasStructuralOvertimeSpvAuthority(User $actor): bool
     {
-        return ($actor->position && $actor->position->is_supervisor)
-            || $actor->subordinates()->exists();
+        return app(OvertimeApprovalGate::class)->hasStructuralSpvAuthority($actor);
     }
 
     /**
@@ -9766,7 +10415,7 @@ class AttendanceController extends Controller
 
         // Tambahkan format jam untuk kemudahan tampilan
         $approvals->getCollection()->transform(function ($a) {
-            $a->overtime_formatted = $this->formatMinutes((int) $a->overtime_minutes);
+            $a->overtime_formatted = Duration::formatMinutes((int) $a->overtime_minutes);
 
             // ISO8601 dikirim DENGAN offset zona cabang baris itu (snap_timezone),
             // sehingga daftar lembur lintas cabang menampilkan jam dinding masing-masing
@@ -9899,82 +10548,11 @@ class AttendanceController extends Controller
         }
 
         $step = $approval->current_step ?: 'spv';
-        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
 
         // ── STEP 1: SPV APPROVAL ──
         if ($step === 'spv') {
-            $hasSpvPermission = $actor->hasPermission(Role::MODULE_OVERTIME, 'spv');
-            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
-            // Override darurat Tahap 1 hanya untuk Admin/Super Admin. HRD (Level 2) WAJIB
-            // menunggu SPV (Level 1) — kecuali HRD sendiri SPV struktural karyawan tsb.
-            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
-            $isHrdLevelOnly = $this->isOvertimeHrdLevelOnly($actor);
-
-            $targetUser = $approval->user;
-            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
-
-            $isSpvOrAbove = $isHrdLevelOnly
-                ? ($isDirectManager || $hasSupervisorPosition)
-                : ($isDirectManager
-                    || $hasSupervisorPosition
-                    || $hasSpvPermission
-                    || $actor->isSupervisor()
-                    || $isAdminOrHrdBypass);
-
-            if (! $isSpvOrAbove && $isHrdLevelOnly) {
-                return response()->json([
-                    'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
-                    'code'    => 'WAITING_SPV_APPROVAL',
-                ], 403);
-            }
-
-            if (! $isSpvOrAbove) {
-                return response()->json([
-                    'message' => 'Persetujuan tahap pertama lembur harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
-                    'code'    => 'SPV_REQUIRED',
-                ], 403);
-            }
-
-            // Otorisasi Atasan Langsung & Divisi
-            // Jika karyawan belum memiliki manager_id yang ditunjuk:
-            // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
-            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV
-            //    perusahaan (fallback umum) — KECUALI untuk HRD Level 2. Fallback ini harus
-            //    membuktikan wewenang struktural atas karyawan spesifik ybs, bukan sekadar
-            //    "punya bawahan di tim lain"; tanpa pengecualian ini, HRD yang juga menjabat
-            //    posisi supervisor di tim manapun bisa melewati Tahap 1 untuk karyawan tanpa
-            //    manager_id/division_id sama sekali (lihat WAITING_SPV_APPROVAL).
-            $isSameDivisionSpv = false;
-            if (! $targetUser?->manager_id) {
-                if ($targetUser?->division_id) {
-                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
-                } elseif (! $isHrdLevelOnly) {
-                    $isSameDivisionSpv = true;
-                }
-            }
-
-            // Bypass darurat: hanya Super Admin & Admin yang berhak override jika Atasan Langsung berhalangan/cuti
-            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
-                if ($isHrdLevelOnly) {
-                    return response()->json([
-                        'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
-                        'code'    => 'WAITING_SPV_APPROVAL',
-                    ], 403);
-                }
-
-                if ($targetUser?->manager_id) {
-                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
-                    return response()->json([
-                        'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
-                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
-                    ], 403);
-                }
-
-                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
-                return response()->json([
-                    'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
-                    'code'    => 'SPV_DIVISION_REQUIRED',
-                ], 403);
+            if ($denial = app(OvertimeApprovalGate::class)->authorizeSpvStep($actor, $approval->user, 'Persetujuan')) {
+                return response()->json($denial, 403);
             }
 
             $approval->update([
@@ -9988,7 +10566,7 @@ class AttendanceController extends Controller
                 $actor->id,
                 $approval->company_id,
                 'overtime_spv_approved',
-                "SPV {$actor->name} menyetujui lembur #{$approval->id} ({$this->formatMinutes($approval->overtime_minutes)}) karyawan #{$approval->user_id}. Diteruskan ke HRD.",
+                "SPV {$actor->name} menyetujui lembur #{$approval->id} ({Duration::formatMinutes($approval->overtime_minutes)}) karyawan #{$approval->user_id}. Diteruskan ke HRD.",
                 'overtime_approval',
                 $approval->id
             );
@@ -10001,7 +10579,7 @@ class AttendanceController extends Controller
                 ->pluck('id');
 
             $employee = $approval->user ?: User::find($approval->user_id);
-            $overtimeFormatted = $this->formatMinutes($approval->overtime_minutes);
+            $overtimeFormatted = Duration::formatMinutes($approval->overtime_minutes);
             $tanggal = $approval->attendance ? Carbon::parse($approval->attendance->date)->format('d/m/Y') : '';
 
             foreach ($hrds as $hrdId) {
@@ -10027,15 +10605,8 @@ class AttendanceController extends Controller
 
         // ── STEP 2: HRD FINAL APPROVAL ──
         if ($step === 'hrd') {
-            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
-
-            if (! $isHrdOrAdmin) {
-                return response()->json([
-                    'message' => 'Persetujuan tahap akhir lembur hanya dapat dilakukan oleh HRD atau Admin.',
-                    'code'    => 'HRD_REQUIRED',
-                ], 403);
+            if ($denial = app(OvertimeApprovalGate::class)->authorizeHrdStep($actor, 'Persetujuan')) {
+                return response()->json($denial, 403);
             }
 
             $approval->update([
@@ -10049,7 +10620,7 @@ class AttendanceController extends Controller
                 $actor->id,
                 $approval->company_id,
                 'overtime_approved',
-                "HRD {$actor->name} menyetujui final lembur #{$approval->id} ({$this->formatMinutes($approval->overtime_minutes)}) karyawan #{$approval->user_id}",
+                "HRD {$actor->name} menyetujui final lembur #{$approval->id} ({Duration::formatMinutes($approval->overtime_minutes)}) karyawan #{$approval->user_id}",
                 'overtime_approval',
                 $approval->id
             );
@@ -10062,24 +10633,13 @@ class AttendanceController extends Controller
                 ->delete();
 
             // Notifikasi ke karyawan
-            $employee = $approval->user ?: User::find($approval->user_id);
             $tanggal  = $approval->attendance ? Carbon::parse($approval->attendance->date)->format('d/m/Y') : '';
             $this->notifyUser($approval->user_id, 'overtime_approved', [
-                'message'          => "Lembur Anda ({$this->formatMinutes($approval->overtime_minutes)}) pada {$tanggal} telah disetujui oleh HRD.",
+                'message'          => "Lembur Anda ({Duration::formatMinutes($approval->overtime_minutes)}) pada {$tanggal} telah disetujui oleh HRD.",
                 'overtime_id'      => $approval->id,
                 'overtime_minutes' => $approval->overtime_minutes,
                 'status'           => 'approved',
             ], 'overtime_approval', $approval->id);
-
-            // FCM Push
-            if ($employee && $employee->fcm_token) {
-                $this->sendFcmPush(
-                    $employee->fcm_token,
-                    '✅ Lembur Disetujui',
-                    "Lembur {$this->formatMinutes($approval->overtime_minutes)} pada {$tanggal} telah disetujui penuh oleh HRD.",
-                    ['type' => 'overtime_approved', 'overtime_id' => (string) $approval->id]
-                );
-            }
 
             return response()->json([
                 'message'  => 'Lembur berhasil disetujui (Final).',
@@ -10133,76 +10693,11 @@ class AttendanceController extends Controller
         }
 
         $step = $approval->current_step ?: 'spv';
-        $userRoleCode = strtolower($actor->roleRelation?->slug ?? $actor->role ?? '');
 
         // ── STEP 1: SPV REJECTION ──
         if ($step === 'spv') {
-            $hasSpvPermission = $actor->hasPermission(Role::MODULE_OVERTIME, 'spv');
-            $hasSupervisorPosition = ($actor->position && $actor->position->is_supervisor) || $actor->subordinates()->exists();
-            // Override darurat Tahap 1 hanya untuk Admin/Super Admin (HRD wajib menunggu SPV).
-            $isAdminOrHrdBypass = in_array($userRoleCode, ['super_admin', 'admin'], true);
-            $isHrdLevelOnly = $this->isOvertimeHrdLevelOnly($actor);
-
-            $targetUser = $approval->user;
-            $isDirectManager = ($targetUser && $targetUser->manager_id && (int) $targetUser->manager_id === (int) $actor->id);
-
-            $isSpvOrAbove = $isHrdLevelOnly
-                ? ($isDirectManager || $hasSupervisorPosition)
-                : ($isDirectManager
-                    || $hasSupervisorPosition
-                    || $hasSpvPermission
-                    || $actor->isSupervisor()
-                    || $isAdminOrHrdBypass);
-
-            if (! $isSpvOrAbove && $isHrdLevelOnly) {
-                return response()->json([
-                    'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
-                    'code'    => 'WAITING_SPV_APPROVAL',
-                ], 403);
-            }
-
-            if (! $isSpvOrAbove) {
-                return response()->json([
-                    'message' => 'Persetujuan tahap pertama lembur harus dilakukan oleh SPV/Atasan (memerlukan wewenang Level 1: SPV).',
-                    'code'    => 'SPV_REQUIRED',
-                ], 403);
-            }
-
-            // Jika karyawan belum memiliki manager_id yang ditunjuk:
-            // 1. Jika karyawan memiliki divisi, izinkan SPV dari divisi yang sama
-            // 2. Jika karyawan belum memiliki divisi dan belum memiliki manager_id, izinkan SPV
-            //    perusahaan (fallback umum) — KECUALI untuk HRD Level 2 (lihat alasan di
-            //    approveOvertime()).
-            $isSameDivisionSpv = false;
-            if (! $targetUser?->manager_id) {
-                if ($targetUser?->division_id) {
-                    $isSameDivisionSpv = ((int) $actor->division_id === (int) $targetUser->division_id);
-                } elseif (! $isHrdLevelOnly) {
-                    $isSameDivisionSpv = true;
-                }
-            }
-
-            if (! $isDirectManager && ! $isSameDivisionSpv && ! $isAdminOrHrdBypass) {
-                if ($isHrdLevelOnly) {
-                    return response()->json([
-                        'message' => 'Pengajuan lembur ini masih menunggu persetujuan Tahap 1 (SPV/Atasan Langsung). HRD baru dapat memproses setelah SPV menyetujui.',
-                        'code'    => 'WAITING_SPV_APPROVAL',
-                    ], 403);
-                }
-
-                if ($targetUser?->manager_id) {
-                    $managerName = $targetUser->manager?->name ?? 'Atasan Langsung';
-                    return response()->json([
-                        'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung ({$managerName}) dari divisi karyawan bersangkutan.",
-                        'code'    => 'DIRECT_SUPERVISOR_REQUIRED',
-                    ], 403);
-                }
-
-                $divisionName = $targetUser?->division?->name ?? 'divisi terkait';
-                return response()->json([
-                    'message' => "Persetujuan tahap 1 lembur harus dilakukan oleh Atasan Langsung (SPV) dari {$divisionName}.",
-                    'code'    => 'SPV_DIVISION_REQUIRED',
-                ], 403);
+            if ($denial = app(OvertimeApprovalGate::class)->authorizeSpvStep($actor, $approval->user, 'Penolakan')) {
+                return response()->json($denial, 403);
             }
 
             $approval->update([
@@ -10215,15 +10710,8 @@ class AttendanceController extends Controller
                 'notes'           => $request->notes,
             ]);
         } elseif ($step === 'hrd') {
-            $isHrdOrAdmin = in_array($userRoleCode, ['super_admin', 'admin', 'hrd'], true)
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'hrd')
-                || $actor->hasPermission(Role::MODULE_OVERTIME, 'manage');
-
-            if (! $isHrdOrAdmin) {
-                return response()->json([
-                    'message' => 'Persetujuan tahap akhir lembur hanya dapat dilakukan oleh HRD atau Admin.',
-                    'code'    => 'HRD_REQUIRED',
-                ], 403);
+            if ($denial = app(OvertimeApprovalGate::class)->authorizeHrdStep($actor, 'Penolakan')) {
+                return response()->json($denial, 403);
             }
 
             $approval->update([
@@ -10257,7 +10745,6 @@ class AttendanceController extends Controller
             ->delete();
 
         // Notifikasi ke karyawan
-        $employee = $approval->user ?: User::find($approval->user_id);
         $tanggal  = $approval->attendance ? Carbon::parse($approval->attendance->date)->format('d/m/Y') : '';
         $this->notifyUser($approval->user_id, 'overtime_rejected', [
             'message'          => "Pengajuan lembur Anda pada {$tanggal} ditolak: {$request->notes}",
@@ -10266,15 +10753,6 @@ class AttendanceController extends Controller
             'status'           => 'rejected',
             'reason'           => $request->notes,
         ], 'overtime_approval', $approval->id);
-
-        if ($employee && $employee->fcm_token) {
-            $this->sendFcmPush(
-                $employee->fcm_token,
-                '❌ Lembur Ditolak',
-                "Pengajuan lembur Anda pada {$tanggal} ditolak: {$request->notes}",
-                ['type' => 'overtime_rejected', 'overtime_id' => (string) $approval->id]
-            );
-        }
 
         return response()->json([
             'message'  => 'Lembur berhasil ditolak.',
@@ -10599,7 +11077,7 @@ class AttendanceController extends Controller
             ->paginate(20);
 
         $approvals->getCollection()->transform(function ($a) {
-            $a->overtime_formatted = $this->formatMinutes((int) $a->overtime_minutes);
+            $a->overtime_formatted = Duration::formatMinutes((int) $a->overtime_minutes);
 
             // check_in_time/check_out_time tetap ISO8601 (instan absolut) — dikirim
             // DENGAN offset zona cabang supaya klien yang memformatnya langsung
@@ -10733,7 +11211,7 @@ class AttendanceController extends Controller
                 'timezone'           => $tz,
                 'timezone_label'     => Timezone::label($tz),
                 'overtime_minutes'   => (int) $a->overtime_minutes,
-                'formatted_overtime' => $this->formatMinutes((int) $a->overtime_minutes),
+                'formatted_overtime' => Duration::formatMinutes((int) $a->overtime_minutes),
                 'reason'             => $a->overtime_reason ?: '-',
                 'status'             => $a->status,
                 'current_step'       => $a->current_step ?: 'spv',
@@ -11080,13 +11558,13 @@ class AttendanceController extends Controller
             $user->id,
             $user->company_id,
             'overtime_claimed',
-            "Karyawan {$user->name} mengajukan lembur {$this->formatMinutes($attendance->overtime_minutes)}: {$validated['reason']}",
+            "Karyawan {$user->name} mengajukan lembur {Duration::formatMinutes($attendance->overtime_minutes)}: {$validated['reason']}",
             'overtime_approval',
             $approval->id
         );
 
         // Notifikasi ke Atasan Langsung (SPV) dan HRD/Admin
-        $overtimeFormatted = $this->formatMinutes($attendance->overtime_minutes);
+        $overtimeFormatted = Duration::formatMinutes($attendance->overtime_minutes);
         $tanggal = Carbon::parse($attendance->date)->format('d/m/Y');
 
         $notifiedIds = [];
@@ -11340,8 +11818,13 @@ class AttendanceController extends Controller
                 ];
             } elseif ($type === 'cuti') {
                 $refOfficeQuota = $office ? (int) ($office->default_leave_quota ?? self::DEFAULT_LEAVE_QUOTA['cuti']) : self::DEFAULT_LEAVE_QUOTA['cuti'];
-                if ($refOfficeQuota > 0 && $quota > $refOfficeQuota) {
-                    $quota = max($used, $refOfficeQuota);
+                // Batas atas = standar kantor + hari bawaan periode lalu. Clamp
+                // tanpa penambahan ini akan menghapus hari bawaan karyawan pada
+                // kali pertama ia membuka saldo cutinya di aplikasi mobile.
+                $carriedOver = $b ? (int) ($b->carried_over_quota ?? 0) : 0;
+                $maxOwnQuota = $refOfficeQuota > 0 ? $refOfficeQuota + $carriedOver : 0;
+                if ($maxOwnQuota > 0 && $quota > $maxOwnQuota) {
+                    $quota = max($used, $maxOwnQuota);
                     if ($b && $quota !== (int) $b->quota) {
                         $b->update(['quota' => $quota]);
                     }
@@ -11358,6 +11841,12 @@ class AttendanceController extends Controller
                     'active'           => $isUserLeaveAllowed && $isEnabledInOffice && ($quota > 0 || $used > 0),
                     'is_unlimited'     => false,
                     'is_disabled'      => ! $isUserLeaveAllowed || ! $isEnabledInOffice,
+                    // Karyawan harus tahu bahwa sebagian saldonya adalah bawaan
+                    // yang bisa kedaluwarsa lebih cepat dari siklus tahunan —
+                    // tanpa ini, hari bawaan yang gugur terlihat seperti saldo
+                    // yang hilang tanpa sebab.
+                    'carried_over_quota'    => $carriedOver,
+                    'carry_over_expired_at' => $b?->carry_over_expired_at?->toDateString(),
                 ];
             } else {
                 $refQuota = $typeSetting
@@ -11399,6 +11888,32 @@ class AttendanceController extends Controller
             $resetInfo = [
                 'leave_reset_date'    => $office->leave_reset_date,
                 'default_leave_quota' => $office->default_leave_quota,
+                // Kebijakan atas sisa cuti saat reset. Dikirim ke mobile agar
+                // karyawan bisa memutuskan SEBELUM tanggal reset: sisa cutinya
+                // akan dibawa, dicairkan, atau hangus. Tanpa informasi ini
+                // satu-satunya cara mengetahuinya adalah menunggu dan melihat.
+                'carry_over' => [
+                    'enabled'        => (bool) $office->leave_carry_over_enabled,
+                    'max_days'       => $office->leave_carry_over_enabled
+                        ? (int) ($office->leave_carry_over_max_days ?? 0)
+                        : 0,
+                    'expiry_months'  => $office->leave_carry_over_enabled
+                        ? $office->leave_carry_over_expiry_months
+                        : null,
+                ],
+                'encashment' => [
+                    'enabled'      => (bool) $office->leave_encashment_enabled,
+                    'rate_per_day' => $office->leave_encashment_enabled
+                        ? (float) ($office->leave_encashment_rate_per_day ?? 0)
+                        : 0,
+                    'max_days'     => $office->leave_encashment_enabled
+                        ? $office->leave_encashment_max_days
+                        : null,
+                ],
+                // Kalimat siap tampil agar aplikasi mobile tidak menyusun ulang
+                // matriks kebijakan secara mandiri — dua implementasi matriks
+                // yang sama akan menyimpang begitu aturannya berubah.
+                'remaining_leave_policy_label' => $this->leavePolicyLabel($office),
             ];
         }
 
@@ -12010,16 +12525,6 @@ class AttendanceController extends Controller
                     'user_name'  => $user->name,
                     'total_days' => $totalDays,
                 ], 'leave_request', $leave->id);
-
-                $manager = User::find($user->manager_id);
-                if ($manager && $manager->fcm_token) {
-                    $this->sendFcmPush(
-                        $manager->fcm_token,
-                        '📋 Pengajuan Izin/Cuti Baru',
-                        "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) dan memerlukan persetujuan Anda.",
-                        ['type' => 'leave_requested', 'leave_id' => (string) $leave->id]
-                    );
-                }
             }
         } else {
             // Multi-approval nonaktif atau karyawan tanpa atasan: langsung notifikasi ke HRD / Admin
@@ -12037,16 +12542,6 @@ class AttendanceController extends Controller
                     'user_name'    => $user->name,
                     'current_step' => 'hrd',
                 ], 'leave_request', $leave->id);
-
-                $hrdUser = User::find($approverId);
-                if ($hrdUser && $hrdUser->fcm_token) {
-                    $this->sendFcmPush(
-                        $hrdUser->fcm_token,
-                        'Pengajuan Izin/Cuti Baru',
-                        "{$user->name} mengajukan {$leave->leave_type} ({$totalDays} hari) dan memerlukan persetujuan HRD.",
-                        ['type' => 'leave_requested', 'leave_id' => (string) $leave->id]
-                    );
-                }
             }
         }
 

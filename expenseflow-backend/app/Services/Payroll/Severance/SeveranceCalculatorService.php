@@ -66,6 +66,10 @@ class SeveranceCalculatorService
         $withholdTax = (bool) $opt['pph21'];
         $settleLoansOpt = (bool) $opt['loan_installment'];
 
+        // SENGAJA akhir bulan KALENDER, bukan Payroll::periodRange() (2026-10-12).
+        // Batch pesangon tidak membaca presensi: tanggal ini hanya untuk
+        // activeSalaryOn() & masa kerja (PP 35/2021), yaitu penanggalan efektif
+        // yang memang harus bulan kalender. Jangan diganti rentang cut-off.
         $year  = (int) $payroll->period_year;
         $month = (int) $payroll->period_month;
         $periodEnd = Carbon::create($year, $month, 1)->endOfMonth()->startOfDay();

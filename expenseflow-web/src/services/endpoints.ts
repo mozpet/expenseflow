@@ -1222,10 +1222,31 @@ export const payrollApi = {
     payroll_group_id?: number | null;
     is_year_end?: boolean;
     notes?: string;
-  }) => apiPost<{ message: string; data: any }>('/dashboard/payroll/runs', payload),
+    period_start_date?: string | null;
+    period_end_date?: string | null;
+    planned_payment_date?: string | null;
+  }) => apiPost<{ message: string; data: any; warnings?: string[]; meta?: { period_source?: string } }>('/dashboard/payroll/runs', payload),
 
   getRun: (id: number | string) =>
     apiGet<{ data: any }>(`/dashboard/payroll/runs/${id}`, undefined, { cache: false }),
+
+  // Koreksi rentang cut-off & rencana tanggal gajian batch (draft, calculated, rejected)
+  updateRun: (
+    id: number | string,
+    payload: {
+      period_start_date?: string | null;
+      period_end_date?: string | null;
+      planned_payment_date?: string | null;
+      notes?: string | null;
+    },
+  ) => apiPut<{ message: string; data: any; warnings?: string[] }>(`/dashboard/payroll/runs/${id}`, payload),
+
+  // Pratinjau rentang cut-off presensi & rencana tanggal gajian dari PayrollPeriodResolver backend
+  previewPeriod: (params: {
+    period_month: number;
+    period_year: number;
+    payroll_group_id?: number | null;
+  }) => apiGet<{ data: { period_start_date: string; period_end_date: string; planned_payment_date: string | null; source: 'group' | 'calendar' } }>('/dashboard/payroll/period-preview', params as any, { cache: false }),
 
   calculateRun: (
     id: number | string,
@@ -1263,10 +1284,29 @@ export const payrollApi = {
   listGroups: () =>
     apiGet<{ data: PayrollGroup[] }>('/dashboard/payroll/groups', undefined, { cache: false }),
 
-  createGroup: (payload: { name: string; code?: string; description?: string; is_active?: boolean }) =>
+  createGroup: (payload: {
+    name: string;
+    code?: string;
+    description?: string;
+    cutoff_day?: number | null;
+    payment_day?: number | null;
+    payment_month_offset?: number | null;
+    is_active?: boolean;
+  }) =>
     apiPost<{ message: string; data: PayrollGroup }>('/dashboard/payroll/groups', payload),
 
-  updateGroup: (id: number | string, payload: { name: string; code?: string; description?: string; is_active?: boolean }) =>
+  updateGroup: (
+    id: number | string,
+    payload: {
+      name?: string;
+      code?: string;
+      description?: string;
+      cutoff_day?: number | null;
+      payment_day?: number | null;
+      payment_month_offset?: number | null;
+      is_active?: boolean;
+    },
+  ) =>
     apiPut<{ message: string; data: PayrollGroup }>(`/dashboard/payroll/groups/${id}`, payload),
 
   deleteGroup: (id: number | string) =>

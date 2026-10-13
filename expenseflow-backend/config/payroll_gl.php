@@ -73,6 +73,29 @@ return [
             'default_code' => '5160',
             'default_name' => 'Beban Pesangon',
         ],
+        // Peraturan Denda & Bonus Kantor (2026-10-11). Premi shift malam &
+        // insentif kehadiran penuh adalah tunjangan yang terkait kebijakan
+        // presensi, bukan upah tetap — dipisah agar perusahaan bisa menilai
+        // biaya kebijakan disiplinnya sendiri.
+        'expense_attendance_incentive' => [
+            'label'        => 'Beban Premi Shift & Insentif Kehadiran',
+            'side'         => 'debit',
+            'default_code' => '5170',
+            'default_name' => 'Beban Premi & Insentif Kehadiran',
+        ],
+        // Carry-over & pencairan sisa cuti (2026-10-13). Pencairan sisa cuti
+        // adalah penyelesaian HAK yang terakumulasi sepanjang periode lalu,
+        // bukan upah atas pekerjaan bulan ini dan bukan koreksi gaji. Akuntansi
+        // cuti memperlakukannya sebagai penyelesaian kewajiban imbalan kerja,
+        // sehingga menumpuknya ke beban gaji akan menyamarkan biaya kebijakan
+        // cuti perusahaan pada bulan reset — justru angka yang ingin dinilai HRD
+        // ketika memutuskan tarif pencairan tahun berikutnya.
+        'expense_leave_encashment' => [
+            'label'        => 'Beban Pencairan Sisa Cuti Tahunan',
+            'side'         => 'debit',
+            'default_code' => '5180',
+            'default_name' => 'Beban Pencairan Cuti',
+        ],
 
         // ─── Sisi KREDIT (utang / pengurang / kas keluar) ─────────────────
         'payable_pph21' => [
@@ -98,6 +121,19 @@ return [
             'side'         => 'credit',
             'default_code' => '1201',
             'default_name' => 'Piutang Karyawan',
+        ],
+        // Peraturan Denda & Bonus Kantor (2026-10-11). Denda disiplin (pulang
+        // cepat, mangkir, lupa check-out, izin pribadi) dipisah dari potongan
+        // titipan: nominalnya tidak disetor ke pihak ketiga, melainkan menjadi
+        // pengurang beban gaji perusahaan, sehingga perlu akun sendiri agar
+        // auditor bisa menelusurinya. CATATAN: potongan ketidakhadiran &
+        // keterlambatan yang sudah ada (source 'attendance') SENGAJA tetap di
+        // payable_other — memindahkannya akan mengubah jurnal periode lampau.
+        'payable_attendance_penalty' => [
+            'label'        => 'Denda Presensi (Disiplin Kantor)',
+            'side'         => 'credit',
+            'default_code' => '2110',
+            'default_name' => 'Utang Denda Presensi',
         ],
         'payable_other' => [
             'label'        => 'Potongan Lain / Titipan',

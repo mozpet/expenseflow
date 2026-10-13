@@ -453,6 +453,9 @@ export interface PayrollGroup {
   name: string;
   code?: string | null;
   description?: string | null;
+  cutoff_day?: number | null;
+  payment_day?: number | null;
+  payment_month_offset?: number | null;
   is_active: boolean;
   users_count?: number;
   created_at?: string;
@@ -755,7 +758,53 @@ export interface LeaveTypeSettingsResponse {
   default_leave_quota?: number;
   leave_reset_date?: string | null;
   leave_multi_approval_enabled?: boolean;
+  leave_carry_over_enabled?: boolean;
+  leave_carry_over_max_days?: number | null;
+  leave_carry_over_expiry_months?: number | null;
+  leave_encashment_enabled?: boolean;
+  leave_encashment_rate_per_day?: number | null;
+  leave_encashment_max_days?: number | null;
   leave_types: LeaveTypeSettingItem[];
+}
+
+export interface LeaveBalanceHistoryItem {
+  id: number;
+  user_id: number;
+  user_name: string;
+  employee_code?: string;
+  department?: string;
+  attendance_setting_id?: number | null;
+  office_name: string;
+  period_label: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  reset_date: string;
+  reset_date_formatted: string;
+  cuti_quota: number;
+  cuti_used: number;
+  cuti_remaining: number;
+  izin_sakit_used: number;
+  leave_types_snapshot?: Record<string, any> | null;
+  notes?: string | null;
+  created_at?: string;
+  carried_over_days: number;
+  carry_over_expired_at?: string | null;
+  encashed_days: number;
+  encashment_rate_per_day?: number | null;
+  encashment_amount?: number | null;
+  encashment_adjustment_id?: number | null;
+  forfeited_days: number;
+  policy_snapshot?: {
+    leave_carry_over_enabled?: boolean;
+    leave_carry_over_max_days?: number | null;
+    leave_carry_over_expiry_months?: number | null;
+    leave_encashment_enabled?: boolean;
+    leave_encashment_rate_per_day?: number | null;
+    leave_encashment_max_days?: number | null;
+    default_leave_quota?: number | null;
+    leave_reset_date?: string | null;
+  } | null;
+  remaining_outcome_label?: string | null;
 }
 
 // ─── Payroll Types (Fase 6: Struktur & Skala Upah, Valas & PPh 26, Exit Settlement, e-Bupot XSD) ───

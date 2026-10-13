@@ -5,7 +5,7 @@ import {
   Download, Eye, Building2, Banknote, ShieldCheck, ArrowLeft, Info, Save,
   Wallet, Coins, BadgeCheck, Loader2, FileText, Clock, ChevronRight, ChevronDown,
   ShieldAlert, KeyRound, Lock, Unlock, History, SlidersHorizontal, Sparkles, CreditCard, Shield,
-  BookOpen, FileSpreadsheet, Settings, Landmark, Briefcase, Sigma, Search,
+  BookOpen, FileSpreadsheet, Settings, Landmark, Briefcase, Sigma, Search, Calendar,
 } from 'lucide-react';
 import { useDebounce } from '../hooks/useDebounce';
 import { PayrollDisbursement } from './PayrollDisbursement';
@@ -147,12 +147,29 @@ export const btnGhost =
 
 // ═══════════════════════════════════════════════════════════════
 // Komponen kecil bersama
+export const formatDateOnly = (dStr?: string | null) => {
+  if (!dStr) return '-';
+  const parts = String(dStr).slice(0, 10).split('-');
+  if (parts.length === 3) {
+    const y = parseInt(parts[0], 10);
+    const m = parseInt(parts[1], 10) - 1;
+    const d = parseInt(parts[2], 10);
+    const date = new Date(y, m, d);
+    if (!isNaN(date.getTime())) {
+      return date.toLocaleDateString('id-ID', { day: '2-digit', month: 'short', year: 'numeric' });
+    }
+  }
+  return formatDate(dStr);
+};
+
 // ═══════════════════════════════════════════════════════════════
-export type BannerState = { type: 'success' | 'error' | 'info'; text: string } | null;
+// UI State & Toast/Banner
+// ═══════════════════════════════════════════════════════════════
+export type BannerState = { type: 'success' | 'error' | 'info' | 'warning'; text: string } | null;
 
 export function useBanner() {
   const [banner, setBanner] = useState<BannerState>(null);
-  const show = useCallback((type: 'success' | 'error' | 'info', text: string) => setBanner({ type, text }), []);
+  const show = useCallback((type: 'success' | 'error' | 'info' | 'warning', text: string) => setBanner({ type, text }), []);
   useEffect(() => {
     if (banner?.type === 'success') {
       const t = setTimeout(() => setBanner(null), 4000);
@@ -167,6 +184,7 @@ export const Banner: React.FC<{ banner: BannerState; onClose: () => void }> = ({
   const map = {
     success: { cls: 'bg-emerald-50 border-emerald-200 text-emerald-700 dark:bg-emerald-950/40 dark:border-emerald-900/40 dark:text-emerald-300', icon: <CheckCircle2 className="w-4 h-4" /> },
     error:   { cls: 'bg-rose-50 border-rose-200 text-rose-700 dark:bg-rose-950/40 dark:border-rose-900/40 dark:text-rose-300', icon: <AlertCircle className="w-4 h-4" /> },
+    warning: { cls: 'bg-amber-50 border-amber-200 text-amber-700 dark:bg-amber-950/40 dark:border-amber-900/40 dark:text-amber-300', icon: <AlertTriangle className="w-4 h-4" /> },
     info:    { cls: 'bg-sky-50 border-sky-200 text-sky-700 dark:bg-sky-950/40 dark:border-sky-900/40 dark:text-sky-300', icon: <Info className="w-4 h-4" /> },
   }[banner.type];
   return (
@@ -260,6 +278,8 @@ const ProsesPayrollTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
   // Debounce 500ms; huruf pertama (1 karakter) tidak melakukan search (minChars = 2)
   const debouncedSearch = useDebounce(searchQuery, 500, 2);
 
+  const [createdWarnings, setCreatedWarnings] = useState<string[] | null>(null);
+
   const filteredRuns = useMemo(() => {
     if (!debouncedSearch) return runs;
     const q = debouncedSearch.toLowerCase();
@@ -309,8 +329,9 @@ const ProsesPayrollTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
       <RunDetailView
         runId={selectedRunId}
         canManage={canManage}
-        onBack={() => setSelectedRunId(null)}
+        onBack={() => { setSelectedRunId(null); setCreatedWarnings(null); }}
         onChanged={load}
+        initialWarnings={createdWarnings}
       />
     );
   }
@@ -409,7 +430,26 @@ const ProsesPayrollTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
                   )}
                 </div>
               </div>
-              <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-end justify-between">
+
+              {/* Rentang Cut-Off & Rencana Tanggal Gajian */}
+              <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                <span className="flex items-center gap-1 truncate" title="Rentang cut-off presensi">
+                  <Calendar className="w-3 h-3 text-indigo-500 shrink-0" />
+                  <span className="truncate">
+                    {run.period_start_date && run.period_end_date
+                      ? `${formatDateOnly(run.period_start_date)} – ${formatDateOnly(run.period_end_date)}`
+                      : 'Bulan Kalender Penuh'}
+                  </span>
+                </span>
+                {run.planned_payment_date && (
+                  <span className="flex items-center gap-1 shrink-0 text-emerald-600 dark:text-emerald-400 font-medium" title="Rencana tanggal gajian">
+                    <Banknote className="w-3 h-3 shrink-0" />
+                    <span>{formatDateOnly(run.planned_payment_date)}</span>
+                  </span>
+                )}
+              </div>
+
+              <div className="mt-2.5 pt-2 border-t border-slate-100 dark:border-slate-800 flex items-end justify-between">
                 <div>
                   <p className="text-[10px] uppercase tracking-wide text-slate-400 font-semibold">Neto</p>
                   <p className="text-sm font-bold text-slate-900 dark:text-white">{formatCurrency(run.total_net)}</p>
@@ -429,7 +469,12 @@ const ProsesPayrollTab: React.FC<{ canManage: boolean }> = ({ canManage }) => {
           offices={offices}
           groups={groups}
           onClose={() => setShowCreate(false)}
-          onCreated={(id) => { setShowCreate(false); load(); setSelectedRunId(id); }}
+          onCreated={(id, warnings) => {
+            setShowCreate(false);
+            load();
+            setCreatedWarnings(warnings && warnings.length > 0 ? warnings : null);
+            setSelectedRunId(id);
+          }}
           onError={(m) => show('error', m)}
         />
       )}
@@ -442,7 +487,7 @@ const CreateRunModal: React.FC<{
   offices: any[];
   groups: PayrollGroup[];
   onClose: () => void;
-  onCreated: (id: number) => void;
+  onCreated: (id: number, warnings?: string[]) => void;
   onError: (m: string) => void;
 }> = ({ offices, groups, onClose, onCreated, onError }) => {
   const now = new Date();
@@ -451,6 +496,11 @@ const CreateRunModal: React.FC<{
   const [runType, setRunType] = useState<'regular' | 'thr' | 'severance'>('regular');
   const [branchId, setBranchId] = useState<string>(''); // '' = semua cabang
   const [payrollGroupId, setPayrollGroupId] = useState<string>(''); // '' = semua grup
+  const [periodStartDate, setPeriodStartDate] = useState<string>('');
+  const [periodEndDate, setPeriodEndDate] = useState<string>('');
+  const [plannedPaymentDate, setPlannedPaymentDate] = useState<string>('');
+  const [periodSource, setPeriodSource] = useState<'group' | 'calendar' | null>(null);
+  const [previewLoading, setPreviewLoading] = useState<boolean>(false);
   const [isYearEnd, setIsYearEnd] = useState<boolean>(now.getMonth() + 1 === 12);
   const [notes, setNotes] = useState('');
   const [saving, setSaving] = useState(false);
@@ -464,7 +514,41 @@ const CreateRunModal: React.FC<{
     }
   }, [month, runType]);
 
+  // Auto-fill pratinjau cut-off presensi & rencana tanggal gajian
+  useEffect(() => {
+    let active = true;
+    setPreviewLoading(true);
+    payrollApi.previewPeriod({
+      period_month: month,
+      period_year: year,
+      payroll_group_id: payrollGroupId ? Number(payrollGroupId) : undefined,
+    })
+      .then((res: any) => {
+        if (!active) return;
+        const d = res?.data;
+        if (d) {
+          setPeriodStartDate(d.period_start_date || '');
+          setPeriodEndDate(d.period_end_date || '');
+          setPlannedPaymentDate(d.planned_payment_date || '');
+          setPeriodSource(d.source || null);
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (active) setPreviewLoading(false);
+      });
+    return () => { active = false; };
+  }, [month, year, payrollGroupId]);
+
   const submit = async () => {
+    if ((periodStartDate && !periodEndDate) || (!periodStartDate && periodEndDate)) {
+      onError('Tanggal mulai dan selesai cut-off presensi harus diisi berpasangan.');
+      return;
+    }
+    if (periodStartDate && periodEndDate && periodEndDate < periodStartDate) {
+      onError('Tanggal selesai cut-off tidak boleh lebih awal dari tanggal mulai.');
+      return;
+    }
     setSaving(true);
     try {
       const res = await payrollApi.createRun({
@@ -473,10 +557,13 @@ const CreateRunModal: React.FC<{
         attendance_setting_id: branchId ? Number(branchId) : null,
         run_type: runType,
         payroll_group_id: payrollGroupId ? Number(payrollGroupId) : null,
+        period_start_date: periodStartDate || undefined,
+        period_end_date: periodEndDate || undefined,
+        planned_payment_date: plannedPaymentDate || undefined,
         is_year_end: (runType === 'thr' || runType === 'severance') ? false : isYearEnd,
         notes: notes.trim() || undefined,
       });
-      onCreated(res?.data?.id);
+      onCreated(res?.data?.id, res?.warnings);
     } catch (e: any) {
       onError(errMsg(e, 'Gagal membuat batch payroll.'));
       setSaving(false);
@@ -587,6 +674,57 @@ const CreateRunModal: React.FC<{
         </Field>
       </div>
 
+      {/* Card Rentang Cut-Off Presensi & Rencana Tanggal Gajian */}
+      <div className="rounded-xl border border-indigo-100 dark:border-indigo-950/60 bg-indigo-50/40 dark:bg-indigo-950/20 p-3.5 space-y-3">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+            <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+            Jadwal Cut-Off Presensi & Rencana Gajian
+          </span>
+          {previewLoading ? (
+            <span className="text-[10px] text-slate-400 flex items-center gap-1">
+              <Loader2 className="w-3 h-3 animate-spin" /> Memuat saran...
+            </span>
+          ) : periodSource === 'group' ? (
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 dark:bg-indigo-900/60 dark:text-indigo-300">
+              Sesuai Aturan Grup
+            </span>
+          ) : (
+            <span className="text-[10px] font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+              Bulan Kalender Penuh
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="Mulai Cut-Off Presensi" hint="Awal penarikan data hadir & lembur.">
+            <input
+              type="date"
+              value={periodStartDate}
+              onChange={(e) => setPeriodStartDate(e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Selesai Cut-Off Presensi" hint="Akhir penarikan data hadir & lembur.">
+            <input
+              type="date"
+              value={periodEndDate}
+              onChange={(e) => setPeriodEndDate(e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+        </div>
+
+        <Field label="Rencana Tanggal Gajian (opsional)" hint="Estimasi tanggal transfer gaji ke karyawan.">
+          <input
+            type="date"
+            value={plannedPaymentDate}
+            onChange={(e) => setPlannedPaymentDate(e.target.value)}
+            className={inputCls}
+          />
+        </Field>
+      </div>
+
       <label className={`flex items-start gap-2.5 rounded-xl border border-slate-200 dark:border-slate-700 p-3 transition ${
         runType === 'thr'
           ? 'opacity-50 cursor-not-allowed bg-slate-50 dark:bg-slate-800/30'
@@ -612,6 +750,110 @@ const CreateRunModal: React.FC<{
       <Field label="Catatan (opsional)">
         <textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} maxLength={1000} className={inputCls} placeholder={runType === 'thr' ? 'Contoh: Pembayaran THR Hari Raya Idul Fitri' : 'Contoh: Gaji reguler bulan berjalan'} />
       </Field>
+    </Modal>
+  );
+};
+
+// ── Modal Ubah Periode Batch (Status draft / calculated / rejected) ──
+const EditBatchPeriodModal: React.FC<{
+  run: any;
+  onClose: () => void;
+  onUpdated: (message: string, warnings?: string[]) => void;
+  onError: (m: string) => void;
+}> = ({ run, onClose, onUpdated, onError }) => {
+  const [startDate, setStartDate] = useState(run?.period_start_date ?? '');
+  const [endDate, setEndDate] = useState(run?.period_end_date ?? '');
+  const [payDate, setPayDate] = useState(run?.planned_payment_date ?? '');
+  const [notes, setNotes] = useState(run?.notes ?? '');
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if ((startDate && !endDate) || (!startDate && endDate)) {
+      onError('Tanggal mulai dan selesai cut-off presensi harus diisi berpasangan.');
+      return;
+    }
+    if (startDate && endDate && endDate < startDate) {
+      onError('Tanggal selesai cut-off tidak boleh lebih awal dari tanggal mulai.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await payrollApi.updateRun(run.id, {
+        period_start_date: startDate || null,
+        period_end_date: endDate || null,
+        planned_payment_date: payDate || null,
+        notes: notes.trim() || undefined,
+      });
+      onUpdated(res?.message ?? 'Periode batch payroll berhasil diperbarui.', res?.warnings);
+    } catch (e: any) {
+      onError(errMsg(e, 'Gagal memperbarui periode batch payroll.'));
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Ubah Periode Cut-Off & Rencana Gajian"
+      icon={<Calendar className="w-4 h-4 text-indigo-500" />}
+      footer={<>
+        <button onClick={onClose} className={btnGhost} disabled={saving}>Batal</button>
+        <button onClick={submit} className={btnPrimary} disabled={saving}>
+          {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />} Simpan Perubahan
+        </button>
+      </>}
+    >
+      <div className="space-y-4">
+        {run?.status === 'calculated' && (
+          <div className="flex items-start gap-2.5 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 p-3 text-xs text-amber-800 dark:text-amber-200">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600 dark:text-amber-400" />
+            <div className="space-y-0.5 text-[11px] leading-relaxed">
+              <p className="font-semibold">Perhatian untuk Batch yang Sudah Dihitung:</p>
+              <p>Mengubah rentang tanggal cut-off presensi akan otomatis <strong>mengembalikan status batch ke DRAFT</strong>. Anda perlu menjalankan kalkulasi ulang agar slip gaji diperbarui dengan rentang presensi yang baru.</p>
+            </div>
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <Field label="Mulai Cut-Off Presensi" hint="Awal penarikan data presensi & lembur.">
+            <input
+              type="date"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+          <Field label="Selesai Cut-Off Presensi" hint="Akhir penarikan data presensi & lembur.">
+            <input
+              type="date"
+              value={endDate}
+              onChange={(e) => setEndDate(e.target.value)}
+              className={inputCls}
+            />
+          </Field>
+        </div>
+
+        <Field label="Rencana Tanggal Gajian" hint="Estimasi tanggal pembayaran / transfer gaji.">
+          <input
+            type="date"
+            value={payDate}
+            onChange={(e) => setPayDate(e.target.value)}
+            className={inputCls}
+          />
+        </Field>
+
+        <Field label="Catatan Periode (opsional)">
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            maxLength={1000}
+            className={inputCls}
+            placeholder="Catatan penyesuaian periode..."
+          />
+        </Field>
+      </div>
     </Modal>
   );
 };
@@ -701,8 +943,12 @@ export const ActionWithPinModal: React.FC<{
 
 // ── Detail run: ringkasan + aksi status + daftar payslip + jejak audit ──
 const RunDetailView: React.FC<{
-  runId: number; canManage: boolean; onBack: () => void; onChanged: () => void;
-}> = ({ runId, canManage, onBack, onChanged }) => {
+  runId: number;
+  canManage: boolean;
+  onBack: () => void;
+  onChanged: () => void;
+  initialWarnings?: string[] | null;
+}> = ({ runId, canManage, onBack, onChanged, initialWarnings }) => {
   const { user } = useAuth();
   const { banner, show, clear } = useBanner();
   const [run, setRun] = useState<any | null>(null);
@@ -710,11 +956,18 @@ const RunDetailView: React.FC<{
   const [busy, setBusy] = useState(false);
   const [selectedPayslipId, setSelectedPayslipId] = useState<number | null>(null);
   const [showReject, setShowReject] = useState(false);
+  const [showEditPeriod, setShowEditPeriod] = useState(false);
   const [showCalcOptions, setShowCalcOptions] = useState(false);
   const [viewMode, setViewMode] = useState<'payslips' | 'audit_logs'>('payslips');
   const [payslipSearch, setPayslipSearch] = useState('');
   // Debounce 500ms; huruf pertama (1 karakter) tidak melakukan search (minChars = 2)
   const debouncedPayslipSearch = useDebounce(payslipSearch, 500, 2);
+
+  useEffect(() => {
+    if (initialWarnings && initialWarnings.length > 0) {
+      show('warning', `Catatan Periode: ${initialWarnings.join(' ')}`);
+    }
+  }, [initialWarnings, show]);
 
   const filteredPayslips = useMemo(() => {
     const list = run?.payslips ?? [];
@@ -920,7 +1173,39 @@ const RunDetailView: React.FC<{
                 <p className="text-[11px] text-slate-400 flex items-center gap-1 mt-1">
                   <Building2 className="w-3 h-3" />{run.branch?.office_name ?? 'Semua Cabang'}{(run.payroll_group?.name || run.payrollGroup?.name) ? ` · Grup: ${run.payroll_group?.name ?? run.payrollGroup?.name}` : ''} · {run.employee_count ?? 0} karyawan
                 </p>
+
+                {/* Info rentang cut-off presensi & rencana tanggal gajian */}
+                <div className="mt-3 flex items-center gap-2.5 flex-wrap">
+                  <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs">
+                    <Calendar className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
+                    <span className="text-[11px] text-slate-500 dark:text-slate-400">Cut-Off Presensi:</span>
+                    <span className="text-[11px] font-semibold">
+                      {run.period_start_date && run.period_end_date
+                        ? `${formatDateOnly(run.period_start_date)} — ${formatDateOnly(run.period_end_date)}`
+                        : 'Bulan Kalender Penuh'}
+                    </span>
+                  </div>
+                  {run.planned_payment_date && (
+                    <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/40 text-emerald-800 dark:text-emerald-200 border border-emerald-200/60 dark:border-emerald-900/40 text-xs">
+                      <Banknote className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      <span className="text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">Rencana Gajian:</span>
+                      <span className="text-[11px] font-bold">{formatDateOnly(run.planned_payment_date)}</span>
+                    </div>
+                  )}
+                </div>
               </div>
+
+              {canManage && (status === 'draft' || status === 'calculated' || status === 'rejected') && (
+                <button
+                  type="button"
+                  onClick={() => setShowEditPeriod(true)}
+                  className={`${btnGhost} text-xs py-1.5 px-3 border border-slate-200 dark:border-slate-700 flex items-center gap-1.5`}
+                  title="Ubah rentang cut-off presensi atau rencana tanggal gajian"
+                >
+                  <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+                  <span>Ubah Periode</span>
+                </button>
+              )}
             </div>
 
             {run.run_type === 'severance' && (
@@ -995,9 +1280,18 @@ const RunDetailView: React.FC<{
 
               <div className="flex flex-wrap gap-2">
                 {(status === 'draft' || status === 'calculated' || status === 'rejected') && (
-                  <button onClick={doCalculate} className={btnPrimary} disabled={busy}>
-                    {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Calculator className="w-3.5 h-3.5" />} {status === 'draft' || status === 'rejected' ? 'Kalkulasi' : 'Hitung Ulang'}
-                  </button>
+                  <>
+                    <button onClick={doCalculate} className={btnPrimary} disabled={busy}>
+                      {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Calculator className="w-3.5 h-3.5" />} {status === 'draft' || status === 'rejected' ? 'Kalkulasi' : 'Hitung Ulang'}
+                    </button>
+                    <button
+                      onClick={() => setShowEditPeriod(true)}
+                      className={`${btnGhost} border border-slate-200 dark:border-slate-700`}
+                      title="Ubah rentang cut-off presensi atau tanggal gajian"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-indigo-500" /> Ubah Periode
+                    </button>
+                  </>
                 )}
 
                 {status === 'calculated' && (
@@ -1279,6 +1573,25 @@ const RunDetailView: React.FC<{
           icon={pinAction.icon}
           hasPin={Boolean(pinStatus?.has_pin)}
           onConfirm={executePinAction}
+        />
+      )}
+
+      {/* Modal Ubah Periode Batch */}
+      {showEditPeriod && run && (
+        <EditBatchPeriodModal
+          run={run}
+          onClose={() => setShowEditPeriod(false)}
+          onUpdated={(msg, warnings) => {
+            setShowEditPeriod(false);
+            load();
+            onChanged();
+            if (warnings && warnings.length > 0) {
+              show('warning', `${msg} ${warnings.join(' ')}`);
+            } else {
+              show('success', msg);
+            }
+          }}
+          onError={(m) => show('error', m)}
         />
       )}
 
@@ -3879,8 +4192,38 @@ const GroupFormModal: React.FC<{
   const [name, setName] = useState(editing?.name ?? '');
   const [code, setCode] = useState(editing?.code ?? '');
   const [description, setDescription] = useState(editing?.description ?? '');
+  const [cutoffDay, setCutoffDay] = useState<string>(
+    editing?.cutoff_day !== undefined && editing?.cutoff_day !== null ? String(editing.cutoff_day) : ''
+  );
+  const [paymentDay, setPaymentDay] = useState<string>(
+    editing?.payment_day !== undefined && editing?.payment_day !== null ? String(editing.payment_day) : ''
+  );
+  const [paymentMonthOffset, setPaymentMonthOffset] = useState<number>(
+    editing?.payment_month_offset ?? 0
+  );
   const [isActive, setIsActive] = useState<boolean>(editing?.is_active ?? true);
   const [saving, setSaving] = useState(false);
+
+  // Preset Cepat 1-Klik
+  const applyPreset = (preset: 'standard' | 'end_month' | 'beginning_month' | 'calendar') => {
+    if (preset === 'standard') {
+      setCutoffDay('20');
+      setPaymentDay('25');
+      setPaymentMonthOffset(0);
+    } else if (preset === 'end_month') {
+      setCutoffDay('25');
+      setPaymentDay('0'); // 0 = akhir bulan
+      setPaymentMonthOffset(0);
+    } else if (preset === 'beginning_month') {
+      setCutoffDay('25');
+      setPaymentDay('1');
+      setPaymentMonthOffset(1);
+    } else if (preset === 'calendar') {
+      setCutoffDay('');
+      setPaymentDay('');
+      setPaymentMonthOffset(0);
+    }
+  };
 
   const submit = async () => {
     if (!name.trim()) {
@@ -3889,10 +4232,13 @@ const GroupFormModal: React.FC<{
     }
     setSaving(true);
     try {
-      const payload = {
+      const payload: any = {
         name: name.trim(),
         code: code.trim() ? code.trim().toUpperCase() : undefined,
         description: description.trim() || undefined,
+        cutoff_day: cutoffDay === '' ? null : Number(cutoffDay),
+        payment_day: paymentDay === '' ? null : Number(paymentDay),
+        payment_month_offset: Number(paymentMonthOffset),
         is_active: isActive,
       };
       if (editing) {
@@ -3950,6 +4296,123 @@ const GroupFormModal: React.FC<{
             placeholder="Keterangan cakupan atau jadwal penggajian untuk grup ini..."
           />
         </Field>
+
+        {/* Card Pengaturan Siklus Penggajian & Cut-Off */}
+        <div className="rounded-xl border border-indigo-100 dark:border-indigo-950/60 bg-indigo-50/40 dark:bg-indigo-950/20 p-3.5 space-y-3">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-1.5">
+              <Calendar className="w-3.5 h-3.5 text-indigo-500" />
+              Siklus Cut-Off & Tanggal Gajian
+            </span>
+            <span className="text-[10px] text-slate-400">Preset Cepat</span>
+          </div>
+
+          {/* Tombol Preset 1-Klik */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+            <button
+              type="button"
+              onClick={() => applyPreset('standard')}
+              className={`p-2 rounded-lg text-[11px] font-semibold border transition text-center cursor-pointer ${
+                cutoffDay === '20' && paymentDay === '25' && paymentMonthOffset === 0
+                  ? 'border-indigo-500 bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-200'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-300'
+              }`}
+            >
+              <span className="block font-bold">Standar (25)</span>
+              <span className="text-[9px] text-slate-400 block mt-0.5">Cut 20 · Bayar 25</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('end_month')}
+              className={`p-2 rounded-lg text-[11px] font-semibold border transition text-center cursor-pointer ${
+                cutoffDay === '25' && paymentDay === '0' && paymentMonthOffset === 0
+                  ? 'border-indigo-500 bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-200'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-300'
+              }`}
+            >
+              <span className="block font-bold">Akhir Bulan</span>
+              <span className="text-[9px] text-slate-400 block mt-0.5">Cut 25 · Akhir bln</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('beginning_month')}
+              className={`p-2 rounded-lg text-[11px] font-semibold border transition text-center cursor-pointer ${
+                cutoffDay === '25' && paymentDay === '1' && paymentMonthOffset === 1
+                  ? 'border-indigo-500 bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-200'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-300'
+              }`}
+            >
+              <span className="block font-bold">Awal Bulan (1)</span>
+              <span className="text-[9px] text-slate-400 block mt-0.5">Cut 25 · Bayar 1 bln+1</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => applyPreset('calendar')}
+              className={`p-2 rounded-lg text-[11px] font-semibold border transition text-center cursor-pointer ${
+                cutoffDay === '' && paymentDay === ''
+                  ? 'border-indigo-500 bg-indigo-100 dark:bg-indigo-900/60 text-indigo-700 dark:text-indigo-200'
+                  : 'border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-900 text-slate-700 dark:text-slate-300 hover:border-indigo-300'
+              }`}
+            >
+              <span className="block font-bold">Bulan Kalender</span>
+              <span className="text-[9px] text-slate-400 block mt-0.5">Tgl 1 s/d Akhir</span>
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1">
+            <Field label="Tanggal Cut-Off Presensi" hint="Isi 1–31, atau 0 = akhir bulan, kosong = kalender.">
+              <input
+                type="number"
+                min={0}
+                max={31}
+                value={cutoffDay}
+                onChange={(e) => setCutoffDay(e.target.value)}
+                placeholder="Misal: 20"
+                className={inputCls}
+              />
+            </Field>
+
+            <Field label="Tanggal Gajian (Pay Day)" hint="Isi 1–31, atau 0 = akhir bulan.">
+              <input
+                type="number"
+                min={0}
+                max={31}
+                value={paymentDay}
+                onChange={(e) => setPaymentDay(e.target.value)}
+                placeholder="Misal: 25"
+                className={inputCls}
+              />
+            </Field>
+
+            <Field label="Bulan Tanggal Gajian" hint="Relatif terhadap periode batch.">
+              <select
+                value={paymentMonthOffset}
+                onChange={(e) => setPaymentMonthOffset(Number(e.target.value))}
+                className={inputCls}
+              >
+                <option value={0}>Bulan Yang Sama (Periode)</option>
+                <option value={1}>Bulan Berikutnya (+1)</option>
+              </select>
+            </Field>
+          </div>
+
+          {/* Keterangan simulasi */}
+          <div className="text-[11px] text-slate-500 dark:text-slate-400 bg-white/70 dark:bg-slate-900/60 rounded-lg p-2.5 border border-slate-200/60 dark:border-slate-800">
+            {cutoffDay === '' ? (
+              <span>ℹ️ <strong>Bulan Kalender Penuh:</strong> Rentang presensi & lembur dihitung dari tanggal 1 s/d hari terakhir bulan yang dipilih.</span>
+            ) : cutoffDay === '0' ? (
+              <span>ℹ️ <strong>Cut-Off Akhir Bulan:</strong> Rentang presensi dihitung tanggal 1 s/d hari terakhir bulan periode.</span>
+            ) : (
+              <span>
+                ℹ️ <strong>Simulasi Periode:</strong> Cut-off tanggal <strong>{cutoffDay}</strong> berarti data presensi dihitung dari <strong>tanggal {Number(cutoffDay) + 1} bulan sebelumnya</strong> s/d <strong>tanggal {cutoffDay} bulan periode</strong>.
+                {paymentDay !== '' && (
+                  <> Gajian direncanakan setiap tanggal <strong>{paymentDay === '0' ? 'akhir bulan' : paymentDay}</strong> {paymentMonthOffset === 1 ? 'pada bulan berikutnya' : 'di bulan yang sama'}.</>
+                )}
+              </span>
+            )}
+          </div>
+        </div>
+
         <label className="flex items-center gap-2 text-xs cursor-pointer">
           <input
             type="checkbox"
@@ -4017,6 +4480,9 @@ const GrupPayrollPanel: React.FC<{ canManage: boolean }> = ({ canManage }) => {
         name: g.name,
         code: g.code ?? undefined,
         description: g.description ?? undefined,
+        cutoff_day: g.cutoff_day,
+        payment_day: g.payment_day,
+        payment_month_offset: g.payment_month_offset,
         is_active: false,
       });
       setDeactivateOffer(null);
@@ -4067,6 +4533,7 @@ const GrupPayrollPanel: React.FC<{ canManage: boolean }> = ({ canManage }) => {
                 <th className="px-4 py-2.5 font-semibold">Nama Grup</th>
                 <th className="px-4 py-2.5 font-semibold">Kode</th>
                 <th className="px-4 py-2.5 font-semibold">Deskripsi</th>
+                <th className="px-4 py-2.5 font-semibold">Jadwal Cut-Off & Gajian</th>
                 <th className="px-4 py-2.5 font-semibold text-center">Anggota</th>
                 <th className="px-4 py-2.5 font-semibold text-center">Status</th>
                 {canManage && <th className="px-4 py-2.5 font-semibold text-right">Aksi</th>}
@@ -4080,6 +4547,21 @@ const GrupPayrollPanel: React.FC<{ canManage: boolean }> = ({ canManage }) => {
                     {g.code ? <span className="px-1.5 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">{g.code}</span> : '—'}
                   </td>
                   <td className="px-4 py-2.5 text-slate-500 dark:text-slate-400 max-w-xs truncate">{g.description || '—'}</td>
+                  <td className="px-4 py-2.5 text-[11px]">
+                    {g.cutoff_day !== null && g.cutoff_day !== undefined ? (
+                      <div>
+                        <span className="font-semibold text-slate-700 dark:text-slate-200">
+                          Cut-off: {g.cutoff_day === 0 ? 'Akhir Bulan' : `Tgl ${g.cutoff_day}`}
+                        </span>
+                        <span className="block text-[10px] text-slate-400 mt-0.5">
+                          Gajian: {g.payment_day === 0 ? 'Akhir Bulan' : g.payment_day ? `Tgl ${g.payment_day}` : '—'}
+                          {g.payment_month_offset === 1 ? ' (+1 bln)' : ''}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="text-slate-400 italic">Bulan kalender penuh (1 s/d akhir)</span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-center">
                     <span className="inline-flex items-center gap-1 font-medium text-slate-700 dark:text-slate-300">
                       <Users className="w-3 h-3 text-slate-400" />

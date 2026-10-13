@@ -57,6 +57,11 @@ class ThrCalculatorService
         $opt = array_merge(PayrollCalculator::defaultOptions(), $options);
         $withholdPph21 = (bool) $opt['pph21'];
 
+        // SENGAJA akhir bulan KALENDER, bukan Payroll::periodRange() (2026-10-12).
+        // Batch THR tidak membaca presensi sama sekali: tanggal ini hanya dipakai
+        // untuk activeSalaryOn() & monthsOfService(), yaitu penanggalan efektif
+        // yang memang harus mengikuti bulan kalender. Jangan "diperbaiki" menjadi
+        // rentang cut-off — itu akan menggeser gaji pokok & masa kerja THR.
         $year  = (int) $payroll->period_year;
         $month = (int) $payroll->period_month;
         $periodEnd = Carbon::create($year, $month, 1)->endOfMonth()->startOfDay();

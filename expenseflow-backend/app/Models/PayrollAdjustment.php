@@ -25,6 +25,25 @@ class PayrollAdjustment extends Model
     public const STATUS_APPLIED    = 'applied';
     public const STATUS_VOIDED     = 'voided';
 
+    /**
+     * Nama baku penyesuaian pencairan sisa cuti tahunan (2026-10-13).
+     *
+     * Penyesuaian ini diterbitkan LeavePeriodCloser dan dikenali kembali oleh
+     * PayrollCalculator agar jejak perhitungannya memakai STEP_LEAVE_ENCASHMENT,
+     * bukan STEP_ADJUSTMENT. Nama dijadikan konstanta -- bukan string literal di
+     * dua tempat -- karena pencocokannya berbasis nama: satu sisi yang diubah
+     * tanpa sisi lainnya akan membuat pencairan diam-diam kembali tercatat
+     * sebagai "koreksi manual" tanpa error apa pun.
+     */
+    public const NAME_LEAVE_ENCASHMENT = 'Pencairan Sisa Cuti Tahunan';
+
+    /** Penyesuaian ini pencairan sisa cuti tahunan? */
+    public function isLeaveEncashment(): bool
+    {
+        return $this->type === self::TYPE_EARNING
+            && $this->name === self::NAME_LEAVE_ENCASHMENT;
+    }
+
     protected $fillable = [
         'company_id',
         'user_id',

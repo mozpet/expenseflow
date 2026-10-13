@@ -51,6 +51,7 @@ multi-level approval dan sistem presensi (attendance) berbasis GPS.
   - Penegasan Batas Antara Role vs Jabatan & Eliminasi Total Fuzzy String Matching: SELESAI (Pemisahan tegas: Role mengatur hak akses teknis aplikasi/modul/platform; Jabatan (`positions.is_supervisor`) & Atasan Langsung (`users.manager_id`) mengatur kepemimpinan struktural dan wewenang approval Step 1 (Lembur, Cuti, Izin). Penghapusan total semua heuristik pencocokan string rentan (`str_contains('spv')`, `'manager'`, `'head'`, `'kepala'`, dll) di seluruh workflow backend. Suite pengujian `RoleVsPositionSeparationTest` lulus 100%) — 2026-09-27
   - Isolasi Tahap Approval Lembur HRD (Level 2) & SPV (Level 1): SELESAI (Pengajuan lembur yang masih di Tahap 1 / SPV tidak tampil di dashboard maupun counter summary HRD Level 2, HRD tidak dapat approve/reject sebelum SPV menyetujui [HTTP 403 WAITING_SPV_APPROVAL]; notifikasi baru lembur Tahap 1 dialihkan hanya ke SPV/Admin, HRD baru menerima notifikasi setelah disetujui SPV; UI web OvertimeApprovalView otomatis menyembunyikan tab/kartu/opsi filter SPV bila role HRD murni tanpa jabatan SPV; Admin/Super Admin tetap memegang bypass darurat) — 2026-10-04
   - Cuti Bersama Murni Keputusan Staf Tanpa Approval Berjenjang: SELESAI (Pada pengajuan cuti bersama [holiday_id != null], tidak ada approval Level 1 SPV maupun Level 2 HRD; current_step disetel NULL; cuti bersama dikecualikan dari inbox approval SPV mobile/web dan counter pending SPV/HRD; status murni ditentukan oleh respon staf biasa via mobile [Ikut/Tidak Ikut] atau auto-reject Hari H; kolom status di web AttendanceManagement menampilkan badge 'Menunggu Pilihan Staf', 'Ikut (Disetujui)', atau 'Tidak Ikut' tanpa embel-embel tahap) — 2026-10-04
+  - Carry-Over & Pencairan Sisa Cuti Tahunan ke Uang: BACKEND SELESAI (Dua checkbox independen per kantor di `attendance_settings`: `leave_carry_over_enabled` [+ batas hari & masa berlaku bulan] dan `leave_encashment_enabled` [+ nominal rupiah per hari & pagu hari]. Keduanya OFF = perilaku lama persis, sisa cuti hangus. **[MODEL DIBALIK 2026-10-14] Keduanya ON → hari di ATAS batas carry-over hangus permanen dan tidak pernah menjadi uang; hari BAWAAN adalah satu-satunya sumber hari yang bisa dicairkan, dengan `leave_carry_over_expiry_months` sebagai saklar KAPAN uangnya terbit (`0` = di tanggal reset, `N > 0` = di tanggal kedaluwarsa atas sisa yang belum terpakai, `NULL` = tidak pernah kedaluwarsa & tidak boleh dipasangkan dengan pencairan).** Invarian `remaining = dibawa + dicairkan + hangus` diperiksa di setiap keputusan. Kalkulator murni `LeaveCarryOverCalculator` + pelaksana DB `LeavePeriodCloser` yang WAJIB dilewati kedua jalur reset [otomatis anniversary & manual HRD]. Uang terbit sebagai `PayrollAdjustment` [`payroll_id` NULL + approved = menunggu batch, `is_taxable`] sehingga cair di bulan gajian grup karyawan; `payslip_items.source = 'leave_encashment'`, langkah jejak `STEP_LEAVE_ENCASHMENT`, dan pos GL `expense_leave_encashment` [5180] terpisah dari koreksi gaji manual. Snapshot kebijakan dibekukan di `leave_balance_histories` [8 kolom], hari bawaan kedaluwarsa disapu tiap jam untuk seluruh kantor oleh `expireCarryOver()` yang kini menjadi **tempat utama uang diterbitkan** (plus baris riwayat tersendiri bertanda `EVENT_CARRY_OVER_EXPIRY`), 7 guard 422 + gerbang konfirmasi `SIMPAN`, dan `remaining_leave_policy_label` siap tampil untuk mobile. Frontend BELUM — 6 tugas di [doc/kekurangnAttendance.md](file:///e:/koding/coba/backend-gawe/doc/kekurangnAttendance.md) Kategori H #8, dan kini MENYIMPANG: input masa berlaku di web masih menolak `0`) — 2026-10-13, model dibalik 2026-10-14
   - Fitur yang Di-Keep / Ditunda Sementara (Arahan User 2026-09-02):
     - Approval Matrix Bertingkat (keep dulu)
     - Invoice PRD (masih tahap PRD)
@@ -156,11 +157,11 @@ bootstrap/
 | # | Tabel | Keterangan |
 |---|-------|-----------|
 | 17 | `attendances` | Presensi harian (user_id, company_id, date, check_in_time, check_in_lat, check_in_lng, check_in_distance_meters, check_in_type [onsite/wfh/field], check_in_photo, check_out_time, check_out_lat, check_out_lng, check_out_type, status [present/late/absent], **work_minutes**, **overtime_minutes**, **is_holiday**, **auto_checkout_at**, **is_auto_checkout**, notes) |
-| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable, **variance_limit** integer nullable 0-99%, **max_claim_limit** decimal(15,2) nullable, **flex_arrival_start** default '07:00:00', **flex_arrival_end** default '10:00:00', **flex_core_start** default '10:00:00', **flex_core_end** default '15:00:00', **flex_target_minutes** default 480) |
+| 18 | `attendance_settings` | Pengaturan kantor (company_id, office_name, office_latitude, office_longitude, radius_meters default 100, work_start_time default 08:00, work_end_time default 17:00, late_tolerance_minutes default 15, require_selfie, allow_wfh, wfh_checkin_window_minutes, overtime_enabled default true, min_overtime_minutes default 30, checkout_reminder_minutes default 30, auto_checkout_grace_minutes default 60, **default_leave_quota** default 12, **leave_reset_date** 'MM-DD' nullable, **last_leave_reset_on** date nullable, **variance_limit** integer nullable 0-99%, **max_claim_limit** decimal(15,2) nullable, **flex_arrival_start** default '07:00:00', **flex_arrival_end** default '10:00:00', **flex_core_start** default '10:00:00', **flex_core_end** default '15:00:00', **flex_target_minutes** default 480, **leave_carry_over_enabled** default false, **leave_carry_over_max_days** nullable, **leave_carry_over_expiry_months** nullable 0-24 (NULL = tidak pernah kedaluwarsa, 0 = diputuskan di tanggal reset, N = hidup N bulan), **leave_encashment_enabled** default false, **leave_encashment_rate_per_day** decimal(12,2) nullable, **leave_encashment_max_days** nullable) |
 | 19 | `leave_requests` | Pengajuan cuti/izin (user_id, company_id, leave_type [VARCHAR(40), mendukung 4 tipe standar + 11 tipe katalog dinamis], start_date, end_date, total_days, reason, status [pending/approved/rejected], approved_by, approved_at, rejection_reason, document_path) |
-| 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type [VARCHAR(40)], quota, used). Unique(user_id, year, leave_type). |
+| 20 | `leave_balances` | Saldo cuti (user_id, company_id, year, leave_type [VARCHAR(40)], quota, used, **carried_over_quota** default 0, **carry_over_expired_at** date nullable). Unique(user_id, year, leave_type). **`carried_over_quota` adalah BAGIAN DARI `quota`, bukan tambahan di sampingnya** — `quota` periode baru = `default_leave_quota + carried`, sehingga `remaining = quota - used` tetap satu-satunya rumus sisa cuti. Jangan dijumlahkan lagi oleh pembaca mana pun. |
 | 20a | `leave_type_settings` | Konfigurasi toggle on/off & kuota jenis cuti tambahan per kantor (attendance_setting_id, leave_type, is_enabled, quota_days, requires_document, notes, timestamps). Unique(attendance_setting_id, leave_type). Ditambah 2026-10-01. |
-| 20a2 | `leave_balance_histories` | Riwayat & arsip saldo cuti saat reset tahunan (user_id, company_id, attendance_setting_id, period_label, period_start, period_end, reset_date, cuti_quota, cuti_used, cuti_remaining, izin_sakit_used, leave_types_snapshot JSON nullable, notes). Kolom leave_types_snapshot ditambah 2026-10-01. |
+| 20a2 | `leave_balance_histories` | Riwayat & arsip saldo cuti saat reset tahunan (user_id, company_id, attendance_setting_id, period_label, period_start, period_end, reset_date, cuti_quota, cuti_used, cuti_remaining, izin_sakit_used, leave_types_snapshot JSON nullable, notes, **carried_over_days** default 0, **carry_over_expired_at** date nullable, **encashed_days** default 0, **encashment_rate_per_day** decimal(12,2) nullable, **encashment_amount** decimal(15,2) nullable, **encashment_adjustment_id** FK→payroll_adjustments nullable, **forfeited_days** default 0, **policy_snapshot** JSON nullable). Kolom leave_types_snapshot ditambah 2026-10-01; 8 kolom snapshot carry-over/pencairan ditambah 2026-10-13. **Snapshot kebijakan dibekukan apa adanya** (tarif, pagu, status kedua checkbox) agar riwayat tetap bisa menjawab "mengapa sisa cuti saya hangus/dibawa/dicairkan sebesar itu" meski kebijakan kantor berubah kemudian — jangan dibaca ulang dari `attendance_settings` saat laporan dibuka. Invarian: `cuti_remaining = carried_over_days + encashed_days + forfeited_days`. |
 | 20b | `holidays` | Kalender libur (company_id **nullable** → NULL = libur nasional semua company, date, name, is_national). Unique (company_id, date). Dipakai untuk hitung hari kerja cuti & lembur hari libur. |
 | 20c | `overtime_approvals` | Approval lembur (attendance_id, user_id, company_id, overtime_minutes, status [pending/approved/rejected], reviewed_by, reviewed_at, notes, is_auto_checkout, overtime_reason). Dibuat saat karyawan mengajukan lembur via mobile (claimOvertime). |
 | 20d | `shifts` | Template shift (company_id, **attendance_setting_id** nullable=milik cabang/null=company-wide, name, description, is_active). Ditambah 2026-07-04. |
@@ -1017,7 +1018,8 @@ Tambah/Edit Kantor (Pengaturan → Kantor Presensi):
 - **Cuti melintasi tanggal reset — Anniversary Split (2026-08-25):** pengajuan/approval cuti
   yang rentangnya MELEWATI `leave_reset_date` kantor divalidasi DUA alokasi:
   hari kerja SEBELUM tanggal reset dibatasi sisa saldo berjalan (`quota - used`);
-  hari PADA/SETELAH reset dibatasi kuota baru (`default_leave_quota`, karena reset menset used=0).
+  hari PADA/SETELAH reset dibatasi kuota baru (`default_leave_quota` **+ hari bawaan yang
+  diproyeksikan** bila carry-over kantor aktif — lihat §Carry-Over di bawah; karena reset menset used=0).
   Contoh: reset 10 Juni, sisa 2 hari, ajukan 8–11 Juni → 2 hari sebelum vs sisa lama ✓,
   2 hari sesudah vs kuota baru ✓ → diperbolehkan. Implementasi:
   helper `splitLeaveAroundReset()` + `workingDatesBetween()` di AttendanceController;
@@ -1035,6 +1037,176 @@ Tambah/Edit Kantor (Pengaturan → Kantor Presensi):
   via `last_leave_reset_on`); tidak pernah dobel.
 - HRD menghapus jadwal reset (null) → `last_leave_reset_on` ikut di-null agar jadwal baru
   nantinya bisa langsung diproses.
+
+### Carry-Over & Pencairan Sisa Cuti Tahunan ke Uang (2026-10-13, model dibalik 2026-10-14)
+Nasib sisa cuti saat reset ditentukan **dua checkbox per kantor**. Keduanya OFF = perilaku lama
+**persis** (sisa cuti hangus), sehingga kantor yang sudah ada tidak berubah.
+
+> **PERUBAHAN 2026-10-14 — arah aliran uang DIBALIK.** Versi pertama mencairkan "sisa yang TIDAK
+> dibawa" di tanggal reset dan menghanguskan hari bawaan saat kedaluwarsa. Itu kebalikan dari yang
+> dimaksud HRD. Aturan yang benar: **kelebihan di atas batas carry-over HANGUS** di tanggal reset
+> dan tidak pernah menjadi uang; yang bisa menjadi uang justru **hari BAWAAN yang masa berlakunya
+> habis tanpa terpakai**. Karyawan lebih dulu diberi kesempatan memakainya sebagai cuti; baru
+> setelah kesempatan itu lewat perusahaan menggantinya dengan uang.
+
+| Kolom `attendance_settings` | Format | Keterangan |
+|---|---|---|
+| `leave_carry_over_enabled` | bool, default false | Checkbox 1: kantor mengizinkan sisa cuti dibawa ke periode berikutnya. OFF = tidak ada regulasi carry-over. |
+| `leave_carry_over_max_days` | int nullable | Batas hari yang boleh dibawa. Wajib > 0 bila checkbox ON. |
+| `leave_carry_over_expiry_months` | int nullable **0**-24 | **`NULL` = hari bawaan tidak pernah kedaluwarsa; `0` = hari bawaan tidak diberi waktu dipakai → takdirnya diputuskan di tanggal reset (dicairkan bila pencairan ON); `N>0` = hidup N bulan sebagai cuti.** Tiga arti berbeda. Validasi `min:0`, bukan `min:1` — `min:1` membuat "cairkan segera" mustahil dikonfigurasi. |
+| `leave_encashment_enabled` | bool, default false | Checkbox 2: hari **bawaan** yang tak terpakai dikonversi menjadi **uang**. OFF = hari bawaan benar-benar **hangus** saat masa berlakunya habis. |
+| `leave_encashment_rate_per_day` | decimal(12,2) nullable | Nominal rupiah per hari. Wajib > 0 bila checkbox ON. |
+| `leave_encashment_max_days` | int nullable | Pagu hari yang boleh dicairkan. **`NULL` = tanpa pagu; `0` = tidak ada hari yang boleh dicairkan.** Dua arti berbeda, jangan ditukar. |
+
+**Matriks kebijakan (urutan keputusan):**
+```
+remaining = quota - used   (sisa cuti pada tanggal reset)
+
+carry OFF                   → seluruh remaining HANGUS              (perilaku lama)
+carry ON, cair OFF, masa N  → maks N dibawa; KELEBIHAN HANGUS; hari bawaan yang
+                              tak terpakai HANGUS saat kedaluwarsa
+carry ON, cair OFF, masa —   → maks N dibawa (tanpa kedaluwarsa); kelebihan HANGUS
+carry ON, cair OFF, masa 0  → seluruh remaining HANGUS seketika (tak diberi waktu, tak dibayar)
+carry ON, cair ON , masa 0  → maks N DICAIRKAN di tanggal reset; kelebihan HANGUS
+carry ON, cair ON , masa N  → maks N dibawa; kelebihan HANGUS; hari bawaan yang tak
+                              terpakai DICAIRKAN pada tanggal kedaluwarsa
+
+Kasus yang diminta HRD: kuota 12, terpakai 2 → sisa 10, batas bawa 7, masa 3 bulan
+  tanggal reset  : 7 dibawa + 3 HANGUS + Rp0        (karyawan masih memegang 7 hari)
+  3 bulan kemudian: yang tak terpakai dari 7 itu → dicairkan (cair ON) / hangus (cair OFF)
+
+INVARIAN WAJIB: remaining = carried_over_days + encashed_days + forfeited_days
+```
+- **Pencairan HANYA bisa aktif bila carry-over aktif** (guard 2b, 422). Sumber hari yang bisa
+  dicairkan cuma satu: hari bawaan. Tanpa carry-over tidak ada bucket-nya, sehingga HRD mencentang
+  pencairan dan seluruh sisa cuti tetap hangus tanpa pernah ada tanda fiturnya tidak berjalan.
+- **Pencairan juga butuh masa berlaku terisi** (guard 2c, 422). Pemicu pencairan adalah peristiwa
+  kedaluwarsa; `NULL` = tidak pernah kedaluwarsa = uangnya tidak akan pernah terbit. Pesan 422-nya
+  wajib menyebut jalan keluarnya: **isi 0 untuk mencairkan di tanggal reset**.
+- **Kelebihan di atas batas carry-over tidak pernah menjadi uang.** Kantor sudah memutuskan tidak
+  mengakui hari-hari itu; membayarnya berarti membayar justru yang ia tolak bawa.
+- **Masa berlaku 0 bulan MENGHABISKAN seluruh hari bawaan hari itu** — yang tidak tertampung pagu
+  pencairan (atau seluruhnya bila pencairan OFF) hangus bersamaan, dan `carried_over_quota`
+  kembali 0. Menyisakannya sebagai hari bawaan membuatnya **abadi**: tidak ada tanggal kedaluwarsa
+  yang bisa menggugurkannya nanti, sehingga "tanpa masa berlaku" justru berarti selamanya.
+- **Hari yang sudah ditukar uang keluar dari `quota`.** Baik di `decide()` (masa 0) maupun di
+  `expireCarryOver()`, seluruh hari bawaan dikurangkan dari quota — yang dicairkan maupun yang
+  hangus. Membiarkannya tetap dipegang sebagai hak cuti berarti satu hari dibayar dua kali.
+- **`capEncashable()` dipakai BERSAMA oleh kedua peristiwa pencairan** (`decide()` saat masa 0 dan
+  `expireCarryOver()` saat kedaluwarsa). Pagu yang berbeda antar dua jalur berarti karyawan
+  menerima nominal berbeda hanya karena kantornya memilih "cair segera" atau "cair nanti".
+- **Tarif Rp0 membuat harinya HANGUS, bukan "dicairkan Rp0".** Baris slip nol rupiah hanya
+  membingungkan. Guard HTTP mencegah kombinasi ini tersimpan, tapi kalkulator tetap tidak boleh
+  menghasilkan uang nol rupiah.
+- **`MAX_POLICY_DAYS`** adalah pagu keras di `LeaveCarryOverCalculator`: kuota rusak 365 hari
+  tidak boleh menjadi tagihan pencairan 365 hari sekaligus.
+- **Kedaluwarsa** dihitung dari tanggal reset dengan `addMonthsNoOverflow()` (31 Jan + 1 bulan =
+  28/29 Feb, bukan 2/3 Mar). **Tanpa hari bawaan → tanpa tanggal kedaluwarsa** (tanggal tanpa
+  saldo yang diawasinya membuat baris saldo terus terpilih query pengguguran tiap jam).
+  `isCarryOverExpired()` memakai `>` bukan `>=`: hari terakhir masa berlaku masih SAH dipakai.
+
+**Dua kelas, pemisahan wajib dipertahankan:**
+| Kelas | Sifat | Tanggung jawab |
+|---|---|---|
+| `LeaveCarryOverCalculator` | **MURNI** — tanpa DB, tanpa jam sistem | Memutuskan BERAPA: `configFromOffice()`, `decide()`, `newPeriodQuota()`, `isCarryOverExpired()` |
+| `LeavePeriodCloser` | Menyentuh DB | MENJALANKANNYA: menerbitkan `PayrollAdjustment` (dua peristiwa), merakit kolom saldo & riwayat, **penjagaan anti-pencairan-ganda**, `expireCarryOver()` |
+
+- **Dua jalur reset WAJIB lewat `LeavePeriodCloser`:** `ResetLeaveBalancesCommand` (otomatis,
+  anniversary) dan `AttendanceController::resetOfficeLeaveBalances()` (manual HRD). Keduanya
+  menulis riwayatnya sendiri (label periode & catatan berbeda), tetapi **ANGKA dan PENERBITAN
+  UANG hanya dihasilkan kelas itu**. Tanpa aturan ini kedua jalur pasti menyimpang dan karyawan
+  yang di-reset manual mendapat perhitungan berbeda dari yang di-reset otomatis.
+- **`expireCarryOver()` adalah TEMPAT UTAMA uang terbit** (untuk masa berlaku N > 0 bulan), bukan
+  hanya penggugur saldo. Ia mengembalikan `{processed, encashed_days, encashed_amount,
+  forfeited_days}` — bukan `int` seperti versi pertama.
+- **Pengguguran kedaluwarsa dijalankan tiap jam untuk SELURUH kantor**, bukan hanya yang sedang
+  anniversary: tanggal kedaluwarsa jatuh di **tengah** periode, jadi tidak ada reset yang bisa
+  menanganinya. Yang diproses dibatasi `min(carried, quota - used)` — hari bawaan yang **sudah
+  dipakai** karyawan tidak bisa ditarik kembali maupun dibayar ulang, karena cutinya sudah diambil.
+- **Pengguguran menulis baris `leave_balance_histories` TERSENDIRI**, bukan menumpang baris reset:
+  ini peristiwa berbeda pada tanggal berbeda (mis. 3 bulan setelah reset), dan HRD harus bisa
+  melihat kapan uangnya terbit dari tab Riwayat Saldo Cuti tanpa membuka slip gaji. Barisnya
+  ditandai `policy_snapshot['event'] = LeavePeriodCloser::EVENT_CARRY_OVER_EXPIRY` (**konstanta**,
+  karena dua tempat harus mencocokkan nilai yang sama persis), dan `historyOutcomeLabel()` memakai
+  penanda itu untuk bercerita tentang hari **bawaan** — bukan sisa kuota tahunan, yang angkanya
+  berbeda arti. `cuti_remaining` di baris itu = hari bawaan yang belum terpakai, `carried_over_days
+  = 0`, sehingga invarian penjumlahan tetap utuh.
+- **Anti-dobel pada jalur kedaluwarsa tidak butuh penjagaan khusus:** `carried_over_quota`
+  dinolkan bersamaan dengan `carry_over_expired_at`, jadi baris tidak terpilih query sweep untuk
+  kedua kalinya. Penjagaan `(karyawan, reset_date)` hanya diperlukan di jalur reset, yang bisa
+  diklik dua kali pada tanggal yang sama.
+- **`quota = 0` tetap non-aktif.** Carry-over & reset tidak boleh mengaktifkan saldo yang
+  sengaja dinolkan HRD (konsisten kebijakan 2026-08-25 di atas).
+
+**Penyambungan ke payroll (*"cair di bulan gajian tanggal reset payroll"*):**
+```
+LeavePeriodCloser menerbitkan PayrollAdjustment:
+  payroll_id = NULL + status = approved   → "menunggu batch"
+  name       = PayrollAdjustment::NAME_LEAVE_ENCASHMENT   (konstanta, BUKAN literal)
+  is_taxable = true          → penghasilan atas pekerjaan, masuk bruto PPh 21
+
+Batch payroll berikutnya mengklaimnya otomatis (status → applied, payroll_id terisi)
+dan membayarnya pada tanggal gajian grup karyawan itu.
+```
+- Dipilih `PayrollAdjustment`, **bukan komponen baru di `PayrollCalculator`**, karena idempotensi
+  payroll yang sudah ada langsung berlaku: recalculate melepas lalu mengklaim ulang, hapus batch
+  melepasnya kembali ke `approved`. Bila batch bulan ini sudah dihitung/disetujui, penyesuaiannya
+  **menggantung dan ikut batch berikutnya** — tidak hilang, tidak memaksa membuka batch terkunci.
+- **Langsung `approved`, tidak `pending`:** persetujuannya adalah tindakan HRD mencentang
+  kebijakan + mengisi tarifnya (keduanya dijaga gerbang konfirmasi `SIMPAN`). Pada reset otomatis
+  tidak ada manusia yang bisa menyetujuinya.
+- **`payslip_items.source = 'leave_encashment'` adalah SATU-SATUNYA pembeda** pencairan cuti dari
+  koreksi gaji manual di seluruh rantai hilir. Jejak perhitungan memakai `STEP_LEAVE_ENCASHMENT`
+  terpisah dari `STEP_ADJUSTMENT` (karyawan harus melihat dasar cutinya, bukan "koreksi manual"
+  yang tak pernah dibuat siapa pun), dan jurnal GL mengalirkannya ke pos
+  **`expense_leave_encashment` (kode 5180, "Beban Pencairan Cuti")** — dipisah dari
+  `expense_adjustment` meski mekanismenya `PayrollAdjustment`, karena asalnya kebijakan cuti
+  kantor bukan koreksi gaji.
+
+**7 guard 422 di `validateLeavePolicyAmounts()`** (dipanggil `updateSettings()` dengan nilai
+**efektif** = payload ditimpa ke nilai tersimpan, agar form lama yang tidak mengirim kolom baru
+tidak bisa menembus guard):
+1. Carry-over ON tanpa batas hari > 0.
+2. **Pencairan ON tanpa tarif > 0** — guard terpenting: tanpanya HRD yakin sudah membuka
+   pencairan padahal sisa cuti karyawan tetap hangus.
+3. **(2b) Pencairan ON tanpa carry-over ON** — tidak ada bucket hari bawaan yang bisa dicairkan;
+   seluruh sisa cuti hangus padahal HRD yakin sudah membuka pencairan. Error pada field
+   `leave_carry_over_enabled`.
+4. **(2c) Pencairan ON dengan masa berlaku `NULL`** — hari bawaan tidak pernah kedaluwarsa, jadi
+   peristiwa pemicu pencairannya tidak akan pernah terjadi. Pesannya menyebut **isi 0** agar HRD
+   tahu cara mencairkan di tanggal reset.
+5. Tarif/batas terisi padahal checkbox-nya OFF (dan kebalikannya untuk carry-over) — nominal
+   rupiah tersimpan tanpa kebijakan yang mengaktifkannya adalah tampilan menyesatkan di form.
+6. Batas melebihi `default_leave_quota` — sisa cuti tidak mungkin melebihi kuotanya, jadi batas
+   di atas kuota menandakan HRD salah membaca satuan field (mengisi bulan/rupiah di kolom hari).
+7. Masa kedaluwarsa terisi tanpa carry-over.
+
+> **Guard lama DICABUT 2026-10-14:** *"kedua checkbox ON tetapi batas carry-over ≥ kuota"*.
+> Premisnya habis bersama pembalikan model — uang tidak lagi berasal dari "sisa yang tidak dibawa",
+> jadi batas carry-over sebesar kuota sekarang justru konfigurasi paling wajar: **seluruh sisa cuti
+> dibawa, lalu yang tak terpakai dalam masa berlakunya dicairkan.** Guard itu akan menolak
+> konfigurasi yang benar.
+
+**Gerbang konfirmasi `SIMPAN`** berlaku untuk keenam kolom, dengan dua perbandingan khusus:
+`leave_encashment_rate_per_day` dibandingkan sebagai **float** (selisih sen tidak boleh lolos
+pembulatan integer), dan ketiga kolom batas hari sebagai **int** karena `NULL` vs `0` sama-sama
+berarti "tanpa batas tersimpan" dan akan memicu gerbang untuk perubahan yang tidak ada.
+
+**Transparansi ke karyawan:** `myLeaveBalance()` mengirim `carry_over` & `encashment` (status,
+batas, tarif) + **`remaining_leave_policy_label` berupa kalimat siap tampil**. Mobile WAJIB
+memakai label itu apa adanya — **jangan menyusun ulang matriks kebijakan di Dart**; dua
+implementasi matriks yang sama pasti menyimpang begitu aturannya berubah. Tanpa informasi ini,
+satu-satunya cara karyawan mengetahui nasib sisa cutinya adalah menunggu tanggal reset.
+`leavePolicyLabel()` punya cabang terpisah untuk masa 0 (menyebut "pada tanggal reset" dan
+**tidak** menyebut "dibawa ke periode berikutnya", yang akan menyesatkan karena harinya tidak
+pernah sampai ke periode berikutnya), masa `NULL`, dan masa N > 0.
+
+**Frontend BELUM mengikuti pembalikan ini** (tugas terbuka): input `leave_carry_over_expiry_months`
+di web `SettingsManagement.tsx` masih menolak 0 dan teks bantuannya masih menjelaskan model lama.
+Lihat `doc/kekurangnAttendance.md` #8.
+
+Test: `tests/Unit/LeaveCarryOverCalculatorTest.php` (21), `tests/Feature/LeaveCarryOverEncashmentTest.php` (38),
+`tests/Feature/LeaveEncashmentPayrollTest.php` (8) — 67 test, 394 asersi, semua lolos.
 
 ### Perluasan Jenis Cuti Mandiri Sesuai UU & Kebijakan Kantor (UPDATE 2026-10-01)
 Tipe cuti pada sistem diperluas dari 4 jenis dasar (`wfh`, `izin`, `sakit`, `cuti`) dengan menambahkan **11 jenis cuti baru** yang mengacu pada regulasi pemerintah Indonesia (UU Ketenagakerjaan No. 13/2003, UU Cipta Kerja No. 6/2023, UU Kesejahteraan Ibu dan Anak No. 4/2024 / UU KIA, dan Peraturan Pemerintah) serta kebijakan kantor mandiri:
@@ -2949,6 +3121,14 @@ nyata begitu ada dua: `AutoCheckoutCommand` membangun `$checkInWib` tanpa `->set
   `MIN(waktu eksekusi, jam pulang + grace)` — **jam pulang + grace**, bukan jam pulang.
 - **Semua kegagalan validasi di dalam `DB::transaction` harus `throw new HttpResponseException`,
   bukan `return`** — return dari closure tetap commit.
+- **Kolom bercast `'date'` wajib dibandingkan dengan `whereDate()`, bukan `where()`.** Eloquent
+  menyerialkan nilai cast `date` menjadi `'Y-m-d H:i:s'`. Pada kolom DATE MySQL nilainya
+  **terpotong** sehingga perbandingan string kebetulan cocok dan bug-nya tidak terlihat di
+  produksi; pada driver yang menyimpan apa adanya ia menjadi `'2027-01-01 00:00:00'` ≠
+  `'2027-01-01'` dan kondisinya **tidak pernah terpenuhi**. Pernah terjadi nyata: penjagaan
+  anti-pencairan-ganda di `LeavePeriodCloser::close()` (`leave_balance_histories.reset_date`)
+  diam-diam tidak menyala dan karyawan dibayar **dua kali** untuk hari cuti yang sama.
+  Tertangkap `test_reset_kedua_pada_tanggal_sama_tidak_membayar_dua_kali`.
 - **`company_settings.timezone` hasil seed (`DatabaseSeeder.php:180`) tidak dibaca siapa pun.**
   Biarkan, dan **jangan** jadikan sumber zona — sumber kebenarannya adalah kolom per-cabang.
 - **"WIB berganti tanggal paling akhir"** adalah argumen keamanan struktural untuk sapuan lintas

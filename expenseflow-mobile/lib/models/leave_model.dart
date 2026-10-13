@@ -43,6 +43,9 @@ class LeaveBalanceRecord {
   final bool isUnlimited;
   final bool isDisabled;
 
+  final int carriedOverQuota; // Hari bawaan dari periode lalu yang masih dipegang
+  final String? carryOverExpiredAt; // 'YYYY-MM-DD' atau null
+
   LeaveBalanceRecord({
     required this.leaveType,
     String? leaveTypeLabel,
@@ -53,6 +56,8 @@ class LeaveBalanceRecord {
     this.active = true,
     this.isUnlimited = false,
     this.isDisabled = false,
+    this.carriedOverQuota = 0,
+    this.carryOverExpiredAt,
   })  : leaveTypeLabel = (leaveTypeLabel != null && leaveTypeLabel.isNotEmpty)
             ? leaveTypeLabel
             : leaveType,
@@ -62,6 +67,13 @@ class LeaveBalanceRecord {
   int get remaining => isUnlimited ? 0 : (remainingQuota ?? (quota - used));
   int? get nullableRemaining => isUnlimited ? null : (remainingQuota ?? (quota - used));
 
+  /// Kuota utama periode berjalan (di luar hari bawaan periode lalu)
+  int get currentPeriodQuota {
+    if (isUnlimited) return 0;
+    final base = quota - carriedOverQuota;
+    return base > 0 ? base : 0;
+  }
+
   factory LeaveBalanceRecord.fromJson(Map<String, dynamic> json) {
     final quotaVal = (json['quota'] as num?)?.toInt() ?? 0;
     final usedVal = (json['used'] as num?)?.toInt() ?? 0;
@@ -70,6 +82,8 @@ class LeaveBalanceRecord {
         remainingRaw != null ? (remainingRaw as num).toInt() : null;
     final isUnlimited =
         json['is_unlimited'] == true || json['is_unlimited'] == 1;
+    final carriedOver = (json['carried_over_quota'] as num?)?.toInt() ?? 0;
+    final carryOverExpiredAt = json['carry_over_expired_at'] as String?;
 
     return LeaveBalanceRecord(
       leaveType: (json['leave_type'] ?? '').toString(),
@@ -84,7 +98,121 @@ class LeaveBalanceRecord {
       active: json['active'] == true || json['active'] == 1,
       isUnlimited: isUnlimited,
       isDisabled: json['is_disabled'] == true || json['is_disabled'] == 1,
+      carriedOverQuota: carriedOver,
+      carryOverExpiredAt: carryOverExpiredAt,
     );
+  }
+}
+
+class CarryOverPolicy {
+  final bool enabled;
+  final int maxDays;
+  final int? expiryMonths; // null = tidak pernah kedaluwarsa, 0 = takdir di tanggal reset, N = hidup N bulan
+
+  const CarryOverPolicy({
+    required this.enabled,
+    required this.maxDays,
+    this.expiryMonths,
+  });
+
+  factory CarryOverPolicy.fromJson(Map<String, dynamic> json) {
+    final rawExpiry = json['expiry_months'];
+    final int? expiryMonths = rawExpiry != null ? (rawExpiry as num).toInt() : null;
+
+    return CarryOverPolicy(
+      enabled: json['enabled'] == true || json['enabled'] == 1,
+      maxDays: (json['max_days'] as num?)?.toInt() ?? 0,
+      expiryMonths: expiryMonths,
+    );
+  }
+}
+
+class EncashmentPolicy {
+  final bool enabled;
+  final double ratePerDay;
+  final int? maxDays; // null = tanpa pagu
+
+  const EncashmentPolicy({
+    required this.enabled,
+    required this.ratePerDay,
+    this.maxDays,
+  });
+
+  factory EncashmentPolicy.fromJson(Map<String, dynamic> json) {
+    final rawMax = json['max_days'];
+    final int? maxDays = rawMax != null ? (rawMax as num).toInt() : null;
+
+    return EncashmentPolicy(
+      enabled: json['enabled'] == true || json['enabled'] == 1,
+      ratePerDay: (json['rate_per_day'] as num?)?.toDouble() ?? 0.0,
+      maxDays: maxDays,
+    );
+  }
+}
+
+class LeaveResetInfo {
+  final String? leaveResetDate;
+  final int defaultLeaveQuota;
+  final CarryOverPolicy carryOver;
+  final EncashmentPolicy encashment;
+  final String remainingLeavePolicyLabel;
+
+  const LeaveResetInfo({
+    this.leaveResetDate,
+    required this.defaultLeaveQuota,
+    required this.carryOver,
+    required this.encashment,
+    required this.remainingLeavePolicyLabel,
+  });
+
+  factory LeaveResetInfo.fromJson(Map<String, dynamic> json) {
+    final carryOverRaw = json['carry_over'];
+    final encashmentRaw = json['encashment'];
+
+    final carryOverMap = carryOverRaw is Map<String, dynamic>
+        ? carryOverRaw
+        : (carryOverRaw is Map ? Map<String, dynamic>.from(carryOverRaw) : null);
+    final encashmentMap = encashmentRaw is Map<String, dynamic>
+        ? encashmentRaw
+        : (encashmentRaw is Map ? Map<String, dynamic>.from(encashmentRaw) : null);
+
+    return LeaveResetInfo(
+      leaveResetDate: json['leave_reset_date']?.toString(),
+      defaultLeaveQuota: (json['default_leave_quota'] as num?)?.toInt() ?? 12,
+      carryOver: carryOverMap != null
+          ? CarryOverPolicy.fromJson(carryOverMap)
+          : const CarryOverPolicy(enabled: false, maxDays: 0, expiryMonths: null),
+      encashment: encashmentMap != null
+          ? EncashmentPolicy.fromJson(encashmentMap)
+          : const EncashmentPolicy(enabled: false, ratePerDay: 0.0, maxDays: null),
+      remainingLeavePolicyLabel: (json['remaining_leave_policy_label'] ?? '').toString(),
+    );
+  }
+
+  /// Mempertahankan kompatibilitas jika diakses dengan bracket notation
+  dynamic operator [](String key) {
+    switch (key) {
+      case 'leave_reset_date':
+        return leaveResetDate;
+      case 'default_leave_quota':
+        return defaultLeaveQuota;
+      case 'remaining_leave_policy_label':
+        return remainingLeavePolicyLabel;
+      case 'carry_over':
+        return {
+          'enabled': carryOver.enabled,
+          'max_days': carryOver.maxDays,
+          'expiry_months': carryOver.expiryMonths,
+        };
+      case 'encashment':
+        return {
+          'enabled': encashment.enabled,
+          'rate_per_day': encashment.ratePerDay,
+          'max_days': encashment.maxDays,
+        };
+      default:
+        return null;
+    }
   }
 }
 

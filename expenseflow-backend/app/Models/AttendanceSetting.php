@@ -61,6 +61,30 @@ class AttendanceSetting extends Model
         'flex_core_start',
         'flex_core_end',
         'flex_target_minutes',
+        // peraturan denda & bonus kantor — migrasi 2026_10_11_000001
+        'early_leave_fine_mode',
+        'early_leave_fine_amount',
+        'early_leave_fine_max',
+        'alpha_penalty_mode',
+        'alpha_fine_flat',
+        'alpha_sp_threshold',
+        'unpaid_leave_penalty_mode',
+        'unpaid_leave_fine_flat',
+        'missed_checkout_penalty_mode',
+        'missed_checkout_fine_amount',
+        'perfect_attendance_bonus_enabled',
+        'perfect_attendance_bonus_amount',
+        'perfect_attendance_allow_leave',
+        'night_shift_bonus_enabled',
+        'night_shift_bonus_amount',
+        // carry-over & pencairan sisa cuti tahunan — migrasi 2026_10_13_000001.
+        // Keputusan atas nilai-nilai ini hanya dibuat di LeaveCarryOverCalculator.
+        'leave_carry_over_enabled',
+        'leave_carry_over_max_days',
+        'leave_carry_over_expiry_months',
+        'leave_encashment_enabled',
+        'leave_encashment_rate_per_day',
+        'leave_encashment_max_days',
     ];
 
     protected function casts(): array
@@ -98,6 +122,23 @@ class AttendanceSetting extends Model
             'last_leave_reset_on'           => 'date:Y-m-d',
             'variance_limit'                => 'integer',
             'max_claim_limit'               => 'decimal:2',
+            'early_leave_fine_amount'       => 'decimal:2',
+            'early_leave_fine_max'          => 'decimal:2',
+            'alpha_fine_flat'               => 'decimal:2',
+            'alpha_sp_threshold'            => 'integer',
+            'unpaid_leave_fine_flat'        => 'decimal:2',
+            'missed_checkout_fine_amount'   => 'decimal:2',
+            'perfect_attendance_bonus_enabled' => 'boolean',
+            'perfect_attendance_bonus_amount'  => 'decimal:2',
+            'perfect_attendance_allow_leave'   => 'boolean',
+            'night_shift_bonus_enabled'     => 'boolean',
+            'night_shift_bonus_amount'      => 'decimal:2',
+            'leave_carry_over_enabled'        => 'boolean',
+            'leave_carry_over_max_days'       => 'integer',
+            'leave_carry_over_expiry_months'  => 'integer',
+            'leave_encashment_enabled'        => 'boolean',
+            'leave_encashment_rate_per_day'   => 'decimal:2',
+            'leave_encashment_max_days'       => 'integer',
         ];
     }
 

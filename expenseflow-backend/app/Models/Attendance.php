@@ -82,6 +82,18 @@ class Attendance extends Model
         'snap_overtime_rate_amount',
         'snap_overtime_rate_unit',
         'snap_overtime_rate_taxable',
+        // denda pulang cepat, lupa check-out & premi shift malam (2026-10-11)
+        'early_leave_minutes',
+        'early_leave_fine_amount',
+        'missed_checkout_fine_amount',
+        'night_shift_bonus_amount',
+        'snap_early_leave_fine_mode',
+        'snap_early_leave_fine_amount',
+        'snap_early_leave_fine_max',
+        'snap_missed_checkout_penalty_mode',
+        'snap_missed_checkout_fine_amount',
+        'snap_night_shift_bonus_enabled',
+        'snap_night_shift_bonus_amount',
     ];
 
     protected function casts(): array
@@ -126,6 +138,15 @@ class Attendance extends Model
             'snap_late_tolerance_minutes'=> 'integer',
             'snap_overtime_rate_amount'  => 'decimal:2',
             'snap_overtime_rate_taxable' => 'boolean',
+            'early_leave_minutes'        => 'integer',
+            'early_leave_fine_amount'    => 'decimal:2',
+            'missed_checkout_fine_amount'=> 'decimal:2',
+            'night_shift_bonus_amount'   => 'decimal:2',
+            'snap_early_leave_fine_amount'     => 'decimal:2',
+            'snap_early_leave_fine_max'        => 'decimal:2',
+            'snap_missed_checkout_fine_amount' => 'decimal:2',
+            'snap_night_shift_bonus_enabled'   => 'boolean',
+            'snap_night_shift_bonus_amount'    => 'decimal:2',
         ];
     }
 
@@ -233,7 +254,30 @@ class Attendance extends Model
         $otOffice = $schedule['office'] ?? $office;
         $otCustom = $otOffice?->overtime_rule === 'custom';
 
+        // Denda pulang cepat, denda lupa check-out & premi shift malam (2026-10-11)
+        // juga mengikuti kantor PENEMPATAN. Toleransi pulang cepat diambil dari
+        // kantor acuan $office agar konsisten dengan snap_early_leave_tolerance_minutes
+        // di bawah — satu-satunya sumber yang dibaca checkEarlyLeave().
+        $early = \App\Services\Attendance\EarlyLeaveFineCalculator::configFromOffice(
+            $otOffice,
+            $office?->early_leave_tolerance_minutes !== null
+                ? (int) $office->early_leave_tolerance_minutes
+                : null
+        );
+        $night = \App\Services\Attendance\NightShiftBonusCalculator::configFromOffice($otOffice);
+
         return [
+            'snap_early_leave_fine_mode'         => $early['mode'],
+            'snap_early_leave_fine_amount'       => $early['amount'],
+            'snap_early_leave_fine_max'          => $early['max'],
+            'snap_missed_checkout_penalty_mode'  => \App\Services\Attendance\MissedCheckoutFineCalculator::normalizeMode(
+                $otOffice?->missed_checkout_penalty_mode
+            ),
+            'snap_missed_checkout_fine_amount'   => $otOffice?->missed_checkout_fine_amount !== null
+                ? (float) $otOffice->missed_checkout_fine_amount
+                : null,
+            'snap_night_shift_bonus_enabled'     => $night['enabled'],
+            'snap_night_shift_bonus_amount'      => $night['amount'],
             'snap_overtime_rule'                 => $otOffice?->overtime_rule ?: 'government',
             'snap_overtime_rate_amount'          => $otCustom ? $otOffice->overtime_rate_amount : null,
             'snap_overtime_rate_unit'            => $otCustom ? ($otOffice->overtime_rate_unit ?: 'hour') : null,
@@ -405,6 +449,59 @@ class Attendance extends Model
             'tolerance' => $this->snap_late_tolerance_minutes !== null
                 ? (int) $this->snap_late_tolerance_minutes
                 : $fallbackTolerance,
+        ];
+    }
+
+    /**
+     * Konfigurasi denda PULANG CEPAT yang dibekukan saat check-in.
+     *
+     * Baris tanpa snapshot denda (sebelum fitur 2026-10-11) → mode 'none' &
+     * nominal NULL = tanpa denda. Toleransi tetap diambil dari
+     * snap_early_leave_tolerance_minutes: NULL di sana berarti kantor MEMATIKAN
+     * fitur pulang cepat, dan EarlyLeaveFineCalculator menerjemahkannya menjadi
+     * 0 menit / 0 denda — sama seperti checkEarlyLeave().
+     *
+     * @return array{mode: string, amount: ?float, max: ?float, tolerance: ?int}
+     */
+    public function earlyLeaveFineConfig(): array
+    {
+        return [
+            'mode'   => \App\Services\Attendance\EarlyLeaveFineCalculator::normalizeMode($this->snap_early_leave_fine_mode),
+            'amount' => $this->snap_early_leave_fine_amount !== null ? (float) $this->snap_early_leave_fine_amount : null,
+            'max'    => $this->snap_early_leave_fine_max !== null ? (float) $this->snap_early_leave_fine_max : null,
+            'tolerance' => $this->snap_early_leave_tolerance_minutes !== null
+                ? (int) $this->snap_early_leave_tolerance_minutes
+                : null,
+        ];
+    }
+
+    /**
+     * Konfigurasi denda LUPA CHECK-OUT yang dibekukan saat check-in.
+     *
+     * @return array{mode: string, amount: ?float}
+     */
+    public function missedCheckoutFineConfig(): array
+    {
+        return [
+            'mode'   => \App\Services\Attendance\MissedCheckoutFineCalculator::normalizeMode($this->snap_missed_checkout_penalty_mode),
+            'amount' => $this->snap_missed_checkout_fine_amount !== null
+                ? (float) $this->snap_missed_checkout_fine_amount
+                : null,
+        ];
+    }
+
+    /**
+     * Konfigurasi PREMI SHIFT MALAM yang dibekukan saat check-in.
+     *
+     * @return array{enabled: bool, amount: ?float}
+     */
+    public function nightShiftBonusConfig(): array
+    {
+        return [
+            'enabled' => (bool) ($this->snap_night_shift_bonus_enabled ?? false),
+            'amount'  => $this->snap_night_shift_bonus_amount !== null
+                ? (float) $this->snap_night_shift_bonus_amount
+                : null,
         ];
     }
 

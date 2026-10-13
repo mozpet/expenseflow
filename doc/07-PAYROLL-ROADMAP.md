@@ -522,7 +522,17 @@ CREATE TABLE payroll_groups (
     FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE RESTRICT,
     UNIQUE KEY uq_group_code (company_id, code)
 );
+```
 
+> **✅ `cutoff_day` & `payment_day` SUDAH TERIMPLEMENTASI (2026-10-09)** — migrasi `2026_10_12_000001_add_cutoff_and_payment_day_to_payroll_groups_table.php`, diterjemahkan ke tanggal nyata oleh `app/Services/Payroll/PayrollPeriodResolver.php`, dan dipakai `PayrollCalculator` untuk menarik seluruh agregat presensi (hari hadir, alpha, denda telat, jam lembur). Rincian lengkap + tugas frontend: `doc/kekurangnAttendance.md` item **#27**.
+>
+> **Dua penyimpangan sadar dari rancangan SQL di atas:**
+> 1. **`cutoff_day` & `payment_day` dibuat NULLABLE tanpa default**, bukan `NOT NULL DEFAULT 25`/`DEFAULT 1`. Default NOT NULL akan **diam-diam menggeser jendela presensi semua grup payroll yang sudah ada** pada saat migrasi dijalankan — perubahan angka gaji tanpa persetujuan HRD. Konvensi nilai yang dipakai: `NULL` = belum diatur → **bulan kalender penuh** (perilaku lama, nol regresi); `0` = akhir bulan; `1-31` = tanggal tetap, di-clamp ke panjang bulan (cut-off 31 di Februari → 28/29).
+> 2. **Ditambah kolom `payment_month_offset`** (`TINYINT UNSIGNED NOT NULL DEFAULT 0`) yang tidak ada di rancangan: `0` = gajian pada bulan periode, `1` = bulan berikutnya. Tanpa ini, kantor yang tutup buku tanggal 20 dan menggajikan tanggal 5 bulan depan tidak bisa dinyatakan.
+>
+> Rentang hasil resolusi disimpan **per batch** di `payrolls.period_start_date`/`period_end_date`/`planned_payment_date` (migrasi `2026_10_12_000002`, baris lama di-backfill ke bulan kalendernya) sehingga HRD tetap bisa menimpanya manual saat ada libur panjang atau gajian dimajukan. `prorate_formula` **belum** diimplementasikan — pembagi prorata masih memakai `working_days_divisor` (default 21) dari pengaturan batch.
+
+```sql
 CREATE TABLE statutory_rule_versions (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     rule_type ENUM('tax_ter', 'tax_progressive', 'bpjs_kes', 'bpjs_tk', 'minimum_wage') NOT NULL,

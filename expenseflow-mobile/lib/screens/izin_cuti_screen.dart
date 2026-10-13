@@ -979,9 +979,11 @@ class _SaldoCutiTab extends StatelessWidget {
               ],
             ],
             const SizedBox(height: 16),
-            if (prov.leaveResetInfo != null &&
+            if (prov.leaveResetPolicy != null) ...[
+              _LeavePolicyCard(policy: prov.leaveResetPolicy!),
+            ] else if (prov.leaveResetInfo != null &&
                 (prov.leaveResetInfo!['leave_reset_date'] != null ||
-                    prov.leaveResetInfo!['default_leave_quota'] != null))
+                    prov.leaveResetInfo!['default_leave_quota'] != null)) ...[
               Container(
                 margin: const EdgeInsets.only(bottom: 12),
                 padding: const EdgeInsets.all(12),
@@ -996,51 +998,19 @@ class _SaldoCutiTab extends StatelessWidget {
                     const Icon(Icons.update, color: Color(0xFFE65100), size: 18),
                     const SizedBox(width: 8),
                     Expanded(
-                      child: Builder(
-                        builder: (context) {
-                          final dateStr = (prov.leaveResetInfo!['leave_reset_date'] ?? '01-01')
-                              .toString();
-                          final parts = dateStr.split('-');
-                          String prettyDate = dateStr;
-                          if (parts.length == 2) {
-                            final int? month = int.tryParse(parts[0]);
-                            final int? day = int.tryParse(parts[1]);
-                            if (month != null &&
-                                day != null &&
-                                month >= 1 &&
-                                month <= 12) {
-                              const months = [
-                                'Januari',
-                                'Februari',
-                                'Maret',
-                                'April',
-                                'Mei',
-                                'Juni',
-                                'Juli',
-                                'Agustus',
-                                'September',
-                                'Oktober',
-                                'November',
-                                'Desember',
-                              ];
-                              prettyDate = '$day ${months[month - 1]}';
-                            }
-                          }
-                          final defaultQuota = prov.leaveResetInfo!['default_leave_quota'] ?? 12;
-                          return Text(
-                            'Saldo cuti tahunan akan di-reset menjadi $defaultQuota hari pada setiap tanggal $prettyDate.',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: Color(0xFFBF360C),
-                              fontWeight: FontWeight.w500,
-                            ),
-                          );
-                        },
+                      child: Text(
+                        'Saldo cuti tahunan akan di-reset menjadi ${prov.leaveResetInfo!['default_leave_quota'] ?? 12} hari pada setiap tanggal ${formatResetDate(prov.leaveResetInfo!['leave_reset_date']?.toString())}.',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Color(0xFFBF360C),
+                          fontWeight: FontWeight.w500,
+                        ),
                       ),
                     ),
                   ],
                 ),
               ),
+            ],
             // Info note
             Container(
               padding: const EdgeInsets.all(12),
@@ -1321,6 +1291,160 @@ class _BalanceCard extends StatelessWidget {
                     ),
                   ],
                 ),
+                if (balance.leaveType == 'cuti') ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFF1F8E9),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: const Color(0xFFDCEDC8)),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Kuota Periode Berjalan',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                color: Color(0xFF33691E),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                            Text(
+                              '${balance.currentPeriodQuota} hari',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF33691E),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Row(
+                              children: [
+                                const Text(
+                                  'Cuti Bawaan Periode Lalu',
+                                  style: TextStyle(
+                                    fontSize: 11.5,
+                                    color: Color(0xFFE65100),
+                                    fontWeight: FontWeight.w500,
+                                  ),
+                                ),
+                                if (balance.carriedOverQuota > 0) ...[
+                                  const SizedBox(width: 4),
+                                  Container(
+                                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFFFFE0B2),
+                                      borderRadius: BorderRadius.circular(4),
+                                    ),
+                                    child: const Text(
+                                      'Carry-Over',
+                                      style: TextStyle(
+                                        fontSize: 9,
+                                        fontWeight: FontWeight.bold,
+                                        color: Color(0xFFBF360C),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            ),
+                            Text(
+                              '${balance.carriedOverQuota} hari',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: balance.carriedOverQuota > 0
+                                    ? const Color(0xFFE65100)
+                                    : const Color(0xFF757575),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const Divider(height: 10, thickness: 0.8, color: Color(0xFFDCEDC8)),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            const Text(
+                              'Total Kuota Aktif',
+                              style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: Color(0xFF2E7D32),
+                              ),
+                            ),
+                            Text(
+                              '${balance.quota} hari',
+                              style: const TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.bold,
+                                color: Color(0xFF2E7D32),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (balance.carriedOverQuota > 0) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.all(9),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF3E0),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: const Color(0xFFFFCC80)),
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          const Icon(Icons.warning_amber_rounded, color: Color(0xFFE65100), size: 16),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '${balance.carriedOverQuota} hari cuti dibawa dari periode sebelumnya.',
+                                  style: const TextStyle(
+                                    fontSize: 11.5,
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(0xFFBF360C),
+                                  ),
+                                ),
+                                if (balance.carryOverExpiredAt != null) ...[
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    '⏰ Pakai sebelum ${formatDateIndonesian(balance.carryOverExpiredAt)} agar tidak hangus / diproses sesuai kebijakan!',
+                                    style: const TextStyle(
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.bold,
+                                      color: Color(0xFFD84315),
+                                    ),
+                                  ),
+                                ] else ...[
+                                  const SizedBox(height: 2),
+                                  const Text(
+                                    'Hari bawaan berlaku sepanjang periode berjalan tanpa batas kedaluwarsa khusus.',
+                                    style: TextStyle(fontSize: 11, color: Color(0xFF6D4C41)),
+                                  ),
+                                ],
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ],
               ] else ...[
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -1349,3 +1473,408 @@ class _BalanceCard extends StatelessWidget {
     );
   }
 }
+
+class _LeavePolicyCard extends StatelessWidget {
+  final LeaveResetInfo policy;
+
+  const _LeavePolicyCard({required this.policy});
+
+  String _expiryMonthsLabel(int? months) {
+    if (months == null) {
+      return 'Tidak pernah kedaluwarsa';
+    } else if (months == 0) {
+      return '0 bulan (diputuskan di tanggal reset)';
+    } else {
+      return '$months bulan setelah tanggal reset';
+    }
+  }
+
+  String _encashmentTimingLabel(CarryOverPolicy carryOver) {
+    final months = carryOver.expiryMonths;
+    if (months == 0) {
+      return 'Tepat pada tanggal reset saldo cuti';
+    } else if (months == null) {
+      return 'Sesuai ketentuan kebijakan kantor';
+    } else {
+      return 'Saat masa berlaku $months bulan berakhir (untuk hari bawaan tersisa)';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final carry = policy.carryOver;
+    final encash = policy.encashment;
+    final resetDateStr = formatResetDate(policy.leaveResetDate);
+    final hasAnyPolicy = carry.enabled || encash.enabled;
+
+    return Card(
+      elevation: 0,
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
+        side: BorderSide(color: Colors.blueGrey.shade100),
+      ),
+      color: Colors.white,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(7),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFE0F2F1),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(
+                    Icons.policy_outlined,
+                    color: Color(0xFF00695C),
+                    size: 20,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Kebijakan Sisa Cuti Tahunan',
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: Color(0xFF263238),
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      Text(
+                        'Reset tiap $resetDateStr • Kuota standar: ${policy.defaultLeaveQuota} hari',
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: Color(0xFF546E7A),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 14),
+
+            // 1. Kalimat Kebijakan Resmi dari Backend (WAJIB APA ADANYA)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFF4FBF7),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: const Color(0xFFB2DFDB)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00796B),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: const Text(
+                          'Ringkasan Kebijakan Kantor',
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    policy.remainingLeavePolicyLabel.isNotEmpty
+                        ? policy.remainingLeavePolicyLabel
+                        : (hasAnyPolicy
+                            ? 'Ketentuan carry over dan pencairan cuti berlaku sesuai pengaturan kantor.'
+                            : 'Sisa cuti yang tidak digunakan akan hangus pada tanggal reset saldo cuti.'),
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF004D40),
+                      height: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 14),
+
+            // 2. Angka Pendukung & Parameter Teknis
+            const Text(
+              'Parameter Kebijakan Kantor',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: Color(0xFF455A64),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // Box Carry-Over
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: carry.enabled ? const Color(0xFFE8F5E9) : const Color(0xFFF5F5F5),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: carry.enabled ? const Color(0xFFA5D6A7) : const Color(0xFFE0E0E0),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.redo_outlined,
+                              size: 14,
+                              color: carry.enabled ? const Color(0xFF2E7D32) : const Color(0xFF757575),
+                            ),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                'Carry-Over',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: carry.enabled ? const Color(0xFF2E7D32) : const Color(0xFF757575),
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: carry.enabled ? const Color(0xFFC8E6C9) : const Color(0xFFEEEEEE),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                carry.enabled ? 'Aktif' : 'Nonaktif',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                  color: carry.enabled ? const Color(0xFF1B5E20) : const Color(0xFF757575),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        if (carry.enabled) ...[
+                          Text(
+                            'Maks. Dibawa: ${carry.maxDays} hari',
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFF1B5E20),
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            'Masa Berlaku: ${_expiryMonthsLabel(carry.expiryMonths)}',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFF33691E),
+                            ),
+                          ),
+                        ] else ...[
+                          const Text(
+                            'Sisa cuti tidak dapat dialihkan ke periode baru.',
+                            style: TextStyle(fontSize: 10, color: Color(0xFF757575)),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Box Pencairan ke Uang
+                Expanded(
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: encash.enabled ? const Color(0xFFFFF8E1) : const Color(0xFFF5F5F5),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: encash.enabled ? const Color(0xFFFFE082) : const Color(0xFFE0E0E0),
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.payments_outlined,
+                              size: 14,
+                              color: encash.enabled ? const Color(0xFFE65100) : const Color(0xFF757575),
+                            ),
+                            const SizedBox(width: 4),
+                            Expanded(
+                              child: Text(
+                                'Pencairan Uang',
+                                style: TextStyle(
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                  color: encash.enabled ? const Color(0xFFE65100) : const Color(0xFF757575),
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                              decoration: BoxDecoration(
+                                color: encash.enabled ? const Color(0xFFFFECB3) : const Color(0xFFEEEEEE),
+                                borderRadius: BorderRadius.circular(3),
+                              ),
+                              child: Text(
+                                encash.enabled ? 'Aktif' : 'Nonaktif',
+                                style: TextStyle(
+                                  fontSize: 9,
+                                  fontWeight: FontWeight.bold,
+                                  color: encash.enabled ? const Color(0xFFBF360C) : const Color(0xFF757575),
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 6),
+                        if (encash.enabled) ...[
+                          Text(
+                            formatCurrency(encash.ratePerDay),
+                            style: const TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w600,
+                              color: Color(0xFFBF360C),
+                            ),
+                          ),
+                          const Text(
+                            '/ hari kerja',
+                            style: TextStyle(fontSize: 9.5, color: Color(0xFF8D6E63)),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            encash.maxDays != null
+                                ? 'Pagu: ${encash.maxDays} hari'
+                                : 'Pagu: Tanpa batas',
+                            style: const TextStyle(
+                              fontSize: 10,
+                              color: Color(0xFFE65100),
+                            ),
+                          ),
+                        ] else ...[
+                          const Text(
+                            'Sisa cuti tidak dapat dikonversi ke uang tunai.',
+                            style: TextStyle(fontSize: 10, color: Color(0xFF757575)),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+
+            // 3. Hal yang Karyawan Perlu Tahu (Aturan 4 & 5)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: !hasAnyPolicy ? const Color(0xFFFFF3E0) : const Color(0xFFE8EAF6),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: !hasAnyPolicy ? const Color(0xFFFFCC80) : const Color(0xFFC5CAE9),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        !hasAnyPolicy ? Icons.warning_amber_rounded : Icons.info_outline,
+                        size: 15,
+                        color: !hasAnyPolicy ? const Color(0xFFD84315) : const Color(0xFF283593),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        'Penting Dipahami Karyawan:',
+                        style: TextStyle(
+                          fontSize: 11.5,
+                          fontWeight: FontWeight.bold,
+                          color: !hasAnyPolicy ? const Color(0xFFD84315) : const Color(0xFF283593),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  if (!hasAnyPolicy) ...[
+                    // Aturan 5: carry OFF dan encashment OFF
+                    const Text(
+                      '• Kantor tidak menerapkan carry-over maupun pencairan uang.\n'
+                      '• Seluruh sisa cuti tahunan yang belum terpakai akan hangus secara permanen pada tanggal reset saldo cuti.',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Color(0xFFBF360C),
+                        height: 1.4,
+                      ),
+                    ),
+                  ] else ...[
+                    // Aturan 4: Hari cuti di ATAS batas carry-over HANGUS PERMANEN dan TIDAK PERNAH jadi uang
+                    Text(
+                      '• Hari cuti di atas batas carry-over (${carry.maxDays} hari) HANGUS PERMANEN pada tanggal reset dan TIDAK PERNAH menjadi uang.',
+                      style: const TextStyle(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: Color(0xFF1A237E),
+                        height: 1.35,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    if (encash.enabled) ...[
+                      Text(
+                        '• Hanya hari bawaan (maksimal ${carry.maxDays} hari) yang berhak dicairkan menjadi uang.\n'
+                        '• Pencairan dilakukan saat masa berlaku hari bawaan berakhir: ${_encashmentTimingLabel(carry)}.',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF283593),
+                          height: 1.35,
+                        ),
+                      ),
+                    ] else ...[
+                      Text(
+                        '• Hari bawaan (maksimal ${carry.maxDays} hari) wajib digunakan dalam masa berlakunya. Hari bawaan yang tidak sempat terpakai akan hangus tanpa pencairan uang.',
+                        style: const TextStyle(
+                          fontSize: 11,
+                          color: Color(0xFF283593),
+                          height: 1.35,
+                        ),
+                      ),
+                    ],
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+

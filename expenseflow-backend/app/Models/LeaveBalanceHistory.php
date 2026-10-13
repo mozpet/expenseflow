@@ -21,6 +21,16 @@ class LeaveBalanceHistory extends Model
         'izin_sakit_used',
         'leave_types_snapshot',
         'notes',
+        // Takdir sisa cuti periode ini — dibawa / dicairkan / hangus.
+        // cuti_remaining = carried_over_days + encashed_days + forfeited_days.
+        'carried_over_days',
+        'carry_over_expired_at',
+        'encashed_days',
+        'encashment_rate_per_day',
+        'encashment_amount',
+        'encashment_adjustment_id',
+        'forfeited_days',
+        'policy_snapshot',
     ];
 
     protected function casts(): array
@@ -34,6 +44,13 @@ class LeaveBalanceHistory extends Model
             'cuti_remaining'  => 'integer',
             'izin_sakit_used' => 'integer',
             'leave_types_snapshot' => 'array',
+            'carried_over_days'       => 'integer',
+            'carry_over_expired_at'   => 'date',
+            'encashed_days'           => 'integer',
+            'encashment_rate_per_day' => 'decimal:2',
+            'encashment_amount'       => 'decimal:2',
+            'forfeited_days'          => 'integer',
+            'policy_snapshot'         => 'array',
         ];
     }
 
@@ -50,5 +67,18 @@ class LeaveBalanceHistory extends Model
     public function office(): BelongsTo
     {
         return $this->belongsTo(AttendanceSetting::class, 'attendance_setting_id');
+    }
+
+    /**
+     * Penyesuaian payroll yang mencairkan sisa cuti periode ini.
+     *
+     * Bisa NULL untuk dua alasan berbeda yang keduanya normal: tidak ada
+     * pencairan (encashed_days = 0), atau penyesuaiannya dihapus setelah
+     * terbit (FK nullOnDelete). encashment_amount tetap tersimpan di baris ini
+     * sebagai catatan nominal yang pernah diterbitkan.
+     */
+    public function encashmentAdjustment(): BelongsTo
+    {
+        return $this->belongsTo(PayrollAdjustment::class, 'encashment_adjustment_id');
     }
 }
